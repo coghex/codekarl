@@ -17,10 +17,11 @@
 #![deny(clippy::float_arithmetic)]
 
 use crate::{
-    ArchiveSink, Character, CharacterStore, Error, Populations, Sex, UNKNOWN, character_stream,
-    cycle::first_after,
+    ArchiveSink, Character, CharacterStore, Error, PopLocator, Populations, Sex, UNKNOWN,
+    character_stream,
+    cycle::{CAUSE_CHILDBIRTH, first_after},
     events::{EventError, FirstError, LogSink, World, age_years},
-    generator::{Birth, GenerateRequest, Txn, dates},
+    generator::{Birth, GenerateRequest, Txn, dates, figure::Home},
     genetics::{below, roll},
 };
 use ck_sim::GameTime;
@@ -42,6 +43,8 @@ pub struct HouseholdOutcome {
     pub children: Vec<u64>,
     /// A conception whose birth falls after today: the mother is pregnant now (her id).
     pub pregnant: Option<u64>,
+    /// The day the generated spouse died, when the death curve or a delivery took it before the start (it is archived, dated and linked).
+    pub spouse_died: Option<GameTime>,
     /// Every live character made, in order.
     pub created: Vec<u64>,
     /// Every dead ancestor made.
@@ -62,13 +65,22 @@ fn marriageable_age<P: Populations, A: ArchiveSink, L: LogSink>(
     world: &World<'_, P, A, L>,
     c: &Character,
 ) -> Result<u32, Error> {
-    let religion = world.populations.religion(&c.pop).ok_or(Error::Lifecycle)?;
+    marriageable_age_in(world, &c.pop, c.sex)
+}
+
+/// The same for a character that is not made yet: of `sex`, in `pop`.
+fn marriageable_age_in<P: Populations, A: ArchiveSink, L: LogSink>(
+    world: &World<'_, P, A, L>,
+    pop: &PopLocator,
+    sex: Sex,
+) -> Result<u32, Error> {
+    let religion = world.populations.religion(pop).ok_or(Error::Lifecycle)?;
     let ages = world
         .lifecycle
         .marriageable
         .get(&religion)
         .ok_or(Error::Lifecycle)?;
-    Ok(match c.sex {
+    Ok(match sex {
         Sex::Male => ages.m,
         Sex::Female => ages.f,
     })
@@ -95,20 +107,21 @@ impl CharacterStore {
         outcome.archived = done.archived;
         let mut first: FirstError = done.output;
         for happening in later {
-            self.emit(
-                world,
-                &happening.who,
-                happening.happening,
-                happening.date,
-                &mut first,
-            );
+            // A happening is for the living: a generated relative who died by the death curve has none.
+            let who: Vec<u64> = happening
+                .who
+                .iter()
+                .copied()
+                .filter(|id| self.live.contains_key(id))
+                .collect();
+            self.emit(world, &who, happening.happening, happening.date, &mut first);
         }
         outcome.output = first;
         Ok(outcome)
     }
 
     /// The partner of `c` of the other sex: the first living spouse.
-    fn partner_of(&self, c: &Character) -> Option<&Character> {
+    pub(crate) fn partner_of(&self, c: &Character) -> Option<&Character> {
         c.spouses
             .iter()
             .filter_map(|spouse| self.live.get(spouse))
@@ -349,7 +362,8 @@ impl CharacterStore {
     /// The generated children of a couple, month by month from the wedding to today (§7, children).
     #[expect(
         clippy::too_many_arguments,
-        reason = "the world, the transaction, the couple, the wedding and today, and the two outputs of the completion"
+        clippy::too_many_lines,
+        reason = "the world, the transaction, the couple, the wedding and today, and the two outputs of the completion; the months of one couple's married years"
     )]
     fn conceive_children<P: Populations, A: ArchiveSink, L: LogSink>(
         &mut self,
@@ -363,14 +377,20 @@ impl CharacterStore {
     ) -> Result<(), EventError> {
         let (husband_id, wife_id) = pair;
         let lower = husband_id.min(wife_id);
-        if !self.live.contains_key(&husband_id) {
-            return Err(Error::MissingCharacter.into());
-        }
-        let wife = self
-            .live
-            .get(&wife_id)
-            .cloned()
-            .ok_or(Error::MissingCharacter)?;
+        // A generated spouse may have died by the death curve (CK-370 §5): its record is archived, and the window of conceptions ends with it.
+        let husband = self.relative(&*world.archive, husband_id)?;
+        let wife = self.relative(&*world.archive, wife_id)?;
+        let curve = self.relatives_curve(world);
+        let wife_generated = out.spouse_generated
+            && out.spouse == Some(wife_id)
+            && !self.start.slot_protected.contains(&husband_id);
+        // The children of a character in a monk pop are generated relatives: they live beside the monk pop at the start (CK-370 §3 step 2), and
+        // none can be made when the whole culture is abroad.
+        let home = match self.relative_home(world, &husband.pop)? {
+            Some(Home::Abroad) => return Ok(()),
+            Some(Home::Pop(pop)) => Some(pop),
+            None => None,
+        };
         let windows = self.reserved_windows(world, &wife)?;
         let nursing = world.lifecycle.conception.nursing_months;
         let last_fertile = world.lifecycle.conception.women.last().map_or(0, |p| p.0);
@@ -392,16 +412,27 @@ impl CharacterStore {
             if held_until.is_some_and(|until| at < until) {
                 continue;
             }
-            let (Some(husband), Some(wife)) = (
-                self.live.get(&husband_id).cloned(),
-                self.live.get(&wife_id).cloned(),
+            let (Ok(husband), Ok(wife)) = (
+                self.relative(&*world.archive, husband_id),
+                self.relative(&*world.archive, wife_id),
             ) else {
                 break;
             };
             if age_years(dates::date_of(wife.birth)?, dates::date_of(at)?) > last_fertile {
                 break;
             }
+            // Neither parent conceives after its death (a generated spouse's pending end is in the transaction), a father may die after conceiving
+            // and the child is still born, and a mother who dies before the delivery loses the pregnancy: no birth.
+            let ended = |id: u64| txn.relative_deaths.get(&id).map(|(day, _)| *day);
+            if ended(wife_id).is_some_and(|died| at >= died)
+                || ended(husband_id).is_some_and(|died| at >= died)
+            {
+                break;
+            }
             let birth = first_after(at, 9)?;
+            if ended(wife_id).is_some_and(|died| birth > died) {
+                break;
+            }
             let ends = first_after(birth, nursing)?;
             // Intervals are half-open: a conception may fall on the day a nursing period ends (5a), and a generated interval may end on the
             // day a named one begins.
@@ -440,7 +471,7 @@ impl CharacterStore {
                     Sex::Female
                 };
                 let mut request = GenerateRequest::new(
-                    husband.pop.clone(),
+                    home.clone().unwrap_or_else(|| husband.pop.clone()),
                     sex,
                     Birth::On(birth),
                     &format!("household.{lower}.{index}.{child}"),
@@ -448,6 +479,7 @@ impl CharacterStore {
                 );
                 request.father = husband_id;
                 request.mother = wife_id;
+                request.relative_from = Some(birth);
                 let id = self.generate_in(world, txn, &request)?;
                 out.children.push(id);
                 later.push(Later {
@@ -457,9 +489,42 @@ impl CharacterStore {
                 });
             }
             held_until = Some(ends);
+            // A generated wife runs the risk of a delivery at each birth she gives (CK-370 §5): one who dies is archived on the day, and
+            // there are no more conceptions.
+            if curve
+                && wife_generated
+                && self.live.contains_key(&wife_id)
+                && Self::relative_childbirth_death(world, &wife, birth)?
+            {
+                txn.relative_deaths
+                    .insert(wife_id, (birth, CAUSE_CHILDBIRTH.to_owned()));
+                break;
+            }
         }
         self.hand_over_nursing(txn, wife_id, &windows, held_until, today);
         Ok(())
+    }
+
+    /// The record of `id`, live or archived: a generated relative that died by the death curve is archived, and is still the couple's.
+    fn relative<A: ArchiveSink>(&self, archive: &A, id: u64) -> Result<Character, Error> {
+        self.record(archive, id)?.ok_or(Error::MissingCharacter)
+    }
+
+    /// Move a generated relative made in this transaction from the living to the archive, dead on `day` of `cause` (CK-370 §5): its record is
+    /// as it stands, children included, and it takes no head.
+    fn archive_dead_relative<P: Populations, A: ArchiveSink, L: LogSink>(
+        &mut self,
+        world: &mut World<'_, P, A, L>,
+        txn: &mut Txn,
+        id: u64,
+        day: GameTime,
+        cause: &str,
+    ) -> Result<(), EventError> {
+        let mut record = self.take(id).ok_or(Error::MissingCharacter)?;
+        record.death = Some(day);
+        record.life.death_cause = Some(cause.to_owned());
+        txn.created.retain(|made| *made != id);
+        self.place(world, txn, record)
     }
 
     /// The completion of CK-369 §7 inside a transaction.
@@ -485,6 +550,7 @@ impl CharacterStore {
             wedding: None,
             children: Vec::new(),
             pregnant: None,
+            spouse_died: None,
             created: Vec::new(),
             archived: Vec::new(),
             output: None,
@@ -512,45 +578,75 @@ impl CharacterStore {
         // The spouse: named, or drawn and generated.
         let mut wedding: Option<GameTime> = None;
         let mut spouse = named;
+        // A spouse generated for a character in a monk pop lives beside it (CK-370 §3 step 2); where the whole culture is abroad no spouse is made.
+        let home = self.relative_home(world, &c.pop)?;
+        let protected = self.start.slot_protected.contains(&figure);
         if let Some(spouse) = spouse.and_then(|id| self.live.get(&id)) {
             let day =
                 Self::marriageable_day(world, &c)?.max(Self::marriageable_day(world, spouse)?);
             wedding = Some(day);
-        } else if let Some((year, born)) = Self::draw_marriage(world, &c, today)? {
+        } else if (protected || home != Some(Home::Abroad))
+            && let Some((year, born)) = Self::draw_marriage(world, &c, today)?
+        {
+            // The spouse a slot names lives where the slot puts her, with her husband (r18 §3 steps 2 and 5): the relatives rule moves only the
+            // relatives the household adds.
+            let pop = match &home {
+                Some(Home::Pop(pop)) if !protected => pop.clone(),
+                _ => c.pop.clone(),
+            };
+            let sex = if c.sex == Sex::Male {
+                Sex::Female
+            } else {
+                Sex::Male
+            };
+            // The first day of that year on which both are marriageable: 1 January, or the later marriageable birthday inside the year. It
+            // comes first, because the spouse lives from the wedding to today by the death curve (CK-370 §5).
+            let mut day = dates::new_year(year)?;
+            for reaches in [
+                Self::marriageable_day(world, &c)?,
+                dates::birthday(born, marriageable_age_in(world, &pop, sex)?)?,
+            ] {
+                if dates::date_of(reaches)?.year == year {
+                    day = day.max(reaches);
+                }
+            }
             let mut request = GenerateRequest::new(
-                c.pop.clone(),
-                if c.sex == Sex::Male {
-                    Sex::Female
-                } else {
-                    Sex::Male
-                },
+                pop,
+                sex,
                 Birth::On(born),
                 &format!("household.{figure}.spouse"),
                 today,
             );
             request.house = String::new();
-            let id = self.generate_in(world, txn, &request)?;
-            let generated = self.live.get(&id).cloned().ok_or(Error::MissingCharacter)?;
-            // The first day of that year on which both are marriageable: 1 January, or the later marriageable birthday inside the year.
-            let mut day = dates::new_year(year)?;
-            for who in [&c, &generated] {
-                let reaches = Self::marriageable_day(world, who)?;
-                if dates::date_of(reaches)?.year == year {
-                    day = day.max(reaches);
-                }
+            request.spouse = Some(figure);
+            request.defer_death = true;
+            // The spouse a slot names is alive at the start (CK-370 §5): she was known before this step, and rolls nothing.
+            // A spouse generated for the wedding exists because it happened: her natural-death rolls start on the 1 January after it (the wedding
+            // year is survived).
+            if !protected {
+                request.relative_from = Some(dates::new_year(dates::date_of(day)?.year + 1)?);
             }
+            let id = self.generate_in(world, txn, &request)?;
             if day <= today {
                 let (husband, wife) = if c.sex == Sex::Male {
                     (figure, id)
                 } else {
                     (id, figure)
                 };
-                self.wed(txn, husband, wife, day)?;
-                later.push(Later {
-                    happening: "marriage",
-                    who: vec![husband, wife],
-                    date: day,
-                });
+                if self.live.contains_key(&id) {
+                    self.wed(txn, husband, wife, day)?;
+                    later.push(Later {
+                        happening: "marriage",
+                        who: vec![husband, wife],
+                        date: day,
+                    });
+                } else {
+                    // The spouse died by the death curve after the wedding: archived, and still the figure's spouse.
+                    txn.touch(self, figure);
+                    if let Some(live) = self.live.get_mut(&figure) {
+                        live.spouses.push(id);
+                    }
+                }
                 wedding = Some(day);
                 spouse = Some(id);
                 out.spouse_generated = true;
@@ -570,9 +666,8 @@ impl CharacterStore {
                 (spouse_id, figure)
             };
             let sexes_differ = self
-                .live
-                .get(&spouse_id)
-                .is_some_and(|spouse| spouse.sex != c.sex);
+                .relative(&*world.archive, spouse_id)
+                .is_ok_and(|spouse| spouse.sex != c.sex);
             if sexes_differ {
                 self.conceive_children(
                     world,
@@ -583,6 +678,23 @@ impl CharacterStore {
                     &mut out,
                     &mut later,
                 )?;
+            }
+        }
+        // A generated spouse the death curve or a delivery took before the start is archived now, dated, at the earliest end the timeline found,
+        // and takes no head; one who lives is charged her head now (a full pop is raised only for someone who is there at the opening).
+        if let Some(id) = spouse.filter(|_| out.spouse_generated) {
+            if let Some((died, cause)) = txn.relative_deaths.remove(&id) {
+                self.start.pending.remove(&id);
+                self.archive_dead_relative(world, txn, id, died, &cause)?;
+                out.spouse_died = Some(died);
+            } else if self.start.pending.contains(&id) {
+                let pop = self
+                    .live
+                    .get(&id)
+                    .map(|c| c.pop.clone())
+                    .ok_or(Error::MissingCharacter)?;
+                self.check_room(&pop, world.populations)?;
+                self.start.pending.remove(&id);
             }
         }
         // The record: complete, for both.

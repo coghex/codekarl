@@ -70,6 +70,10 @@ pub(crate) struct Pops {
     /// How many births were booked and how many heads were removed for deaths: generation books none.
     pub(crate) births: Cell<u64>,
     pub(crate) deaths: Cell<u64>,
+    /// The start's safety net (CK-370): whether a full pop is raised by one head instead of refusing a character.
+    pub(crate) net: Cell<bool>,
+    /// The raises the net made, by pop.
+    pub(crate) raised: RefCell<BTreeMap<PopLocator, u64>>,
 }
 impl Pops {
     pub(crate) fn new() -> Self {
@@ -81,6 +85,8 @@ impl Pops {
             moves_allowed: Cell::new(None),
             births: Cell::new(0),
             deaths: Cell::new(0),
+            net: Cell::new(false),
+            raised: RefCell::new(BTreeMap::new()),
         }
     }
     pub(crate) fn pop(
@@ -159,6 +165,41 @@ impl Populations for Pops {
     fn add_births(&self, _: &PopLocator, count: u64) -> Result<(), Error> {
         self.births.set(self.births.get() + count);
         Ok(())
+    }
+    fn all_pops(&self) -> Vec<(PopLocator, String, String)> {
+        self.by_slot
+            .borrow()
+            .iter()
+            .map(|((place, slot), pop)| {
+                (
+                    PopLocator {
+                        place: place.clone(),
+                        slot: *slot,
+                    },
+                    pop.kind.to_owned(),
+                    pop.culture.to_owned(),
+                )
+            })
+            .collect()
+    }
+    fn make_room(&self, locator: &PopLocator) -> Result<bool, Error> {
+        if !self.net.get() {
+            return Ok(false);
+        }
+        self.by_slot
+            .borrow_mut()
+            .get_mut(&(locator.place.clone(), locator.slot))
+            .ok_or(Error::MissingPop)?
+            .heads += 1;
+        *self.raised.borrow_mut().entry(locator.clone()).or_default() += 1;
+        Ok(true)
+    }
+    fn raised_at_start(&self) -> Vec<(PopLocator, u64)> {
+        self.raised
+            .borrow()
+            .iter()
+            .map(|(pop, count)| (pop.clone(), *count))
+            .collect()
     }
     fn remove_head(&self, _: &PopLocator, _: bool) -> Result<ck_economy::HeadUndo, Error> {
         self.deaths.set(self.deaths.get() + 1);
@@ -267,6 +308,16 @@ pub(crate) fn world_with<'a, P: Populations>(
 /// The shipped life-cycle data.
 pub(crate) fn shipped() -> &'static LifeCycle {
     &rules().lifecycle
+}
+/// The shipped life-cycle data with the generated relatives' death curve **off** (CK-370 §5): every generated spouse and child survives to
+/// the day it is made, as in the first draft of the generator.
+pub(crate) fn without_relative_deaths() -> &'static LifeCycle {
+    static OFF: OnceLock<LifeCycle> = OnceLock::new();
+    OFF.get_or_init(|| {
+        let mut data = rules().lifecycle.clone();
+        data.generator.relatives.survive_by_death_curve = false;
+        data
+    })
 }
 /// The characters of a store, by id.
 pub(crate) fn people(store: &CharacterStore) -> Vec<&Character> {

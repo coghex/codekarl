@@ -131,6 +131,31 @@ pub(crate) fn curve_ratio(points: &[(u32, u64)], age: u32) -> (u128, u128) {
 /// (CK-365 §1). Derived, never stored, and never through a current pop or culture.
 #[must_use]
 pub fn shown_name(c: &Character, father: Option<&Character>, lifecycle: &LifeCycle) -> String {
+    let name = derived_name(c, father, lifecycle);
+    // The shown epithet, when the character holds one, follows (CK-365): derived from the stored state, never stored. A real figure's byname
+    // (CK-370) is an epithet held since birth: it is shown unless a held epithet is strictly more important.
+    let epithet = c.shown_epithet(&lifecycle.epithets);
+    let byname = (!c.life.byname.is_empty()).then_some(c.life.byname.as_str());
+    match (epithet, byname) {
+        (Some(epithet), Some(byname)) => {
+            let shown = if c.life.byname_importance >= epithet.importance {
+                byname
+            } else {
+                epithet.shown.as_str()
+            };
+            format!("{name} {shown}")
+        }
+        (Some(epithet), None) => format!("{name} {}", epithet.shown),
+        (None, Some(byname)) => format!("{name} {byname}"),
+        (None, None) => name,
+    }
+}
+
+/// The name of `c` with its patronymic, without an epithet (CK-364 §5, CK-370 §1): its base name and, where its recorded pool has a patronym and
+/// its father's genitive is known, the patronym and the father's genitive. A father's **authored** genitive takes precedence over the pool's, and
+/// a real figure's own authored patronymic (`mac Fergaile`) over what the pool would derive. It is the name a log line gives a character.
+#[must_use]
+pub fn derived_name(c: &Character, father: Option<&Character>, lifecycle: &LifeCycle) -> String {
     let word = lifecycle
         .pools
         .get(&c.life.pool)
@@ -139,23 +164,28 @@ pub fn shown_name(c: &Character, father: Option<&Character>, lifecycle: &LifeCyc
             Sex::Male => patronym.m.as_str(),
             Sex::Female => patronym.f.as_str(),
         });
+    // A father's authored genitive takes precedence over the pool's (CK-370 §1); a generated father's is the pool's.
     let genitive = father.and_then(|father| {
-        lifecycle
-            .pools
-            .get(&father.life.pool)?
-            .men
-            .iter()
-            .find(|(name, _)| *name == father.name)
-            .map(|(_, genitive)| genitive.as_str())
+        if father.life.genitive.is_empty() {
+            lifecycle
+                .pools
+                .get(&father.life.pool)?
+                .men
+                .iter()
+                .find(|(name, _)| *name == father.name)
+                .map(|(_, genitive)| genitive.as_str())
+        } else {
+            Some(father.life.genitive.as_str())
+        }
     });
-    let name = match (word, genitive) {
-        (Some(word), Some(genitive)) => format!("{} {word} {genitive}", c.name),
-        _ => c.name.clone(),
-    };
-    // The shown epithet, when the character holds one, follows (CK-365): derived from the stored state, never stored.
-    match c.shown_epithet(&lifecycle.epithets) {
-        Some(epithet) => format!("{name} {}", epithet.shown),
-        None => name,
+    // A real figure's authored patronymic (`mac Fergaile`) is its own and takes precedence over the form derived from the pool.
+    if c.life.patronymic.is_empty() {
+        match (word, genitive) {
+            (Some(word), Some(genitive)) => format!("{} {word} {genitive}", c.name),
+            _ => c.name.clone(),
+        }
+    } else {
+        format!("{} {}", c.name, c.life.patronymic)
     }
 }
 
@@ -528,6 +558,35 @@ impl CharacterStore {
         })
     }
 
+    /// The chance in ppb that `mother` dies at a delivery on `today`: `childbirth` x1.5 under 16 or over 40.
+    fn childbirth_chance<P: Populations, A: ArchiveSink, L: LogSink>(
+        world: &World<'_, P, A, L>,
+        mother: &Character,
+        today: GameTime,
+    ) -> Result<u32, Error> {
+        let age = Self::age_on(mother, today)?;
+        let base = u64::from(world.lifecycle.death.childbirth_ppb);
+        let chance = if (16..=40).contains(&age) {
+            base
+        } else {
+            base * u64::from(EXTREME_AGE_RISK.0) / u64::from(EXTREME_AGE_RISK.1)
+        };
+        u32::try_from(chance.min(u64::from(PPB))).map_err(|_| Error::Lifecycle)
+    }
+
+    /// Whether a **generated** wife dies at the delivery of a child on `day` (CK-370 §5): the risk of a delivery, rolled once on purpose
+    /// `relative.childbirth` on her own stream.
+    pub(crate) fn relative_childbirth_death<P: Populations, A: ArchiveSink, L: LogSink>(
+        world: &World<'_, P, A, L>,
+        mother: &Character,
+        day: GameTime,
+    ) -> Result<bool, Error> {
+        roll(
+            &mut character_stream(world.seed, mother.id, "relative.childbirth", day),
+            Self::childbirth_chance(world, mother, day)?,
+        )
+    }
+
     /// The mother's risk at a delivery, rolled once, on purpose `childbirth`: `childbirth` x1.5 under 16 or over 40.
     fn childbirth_risk<P: Populations, A: ArchiveSink, L: LogSink>(
         &mut self,
@@ -540,16 +599,9 @@ impl CharacterStore {
             return;
         }
         let risk = || -> Result<bool, Error> {
-            let age = Self::age_on(mother, today)?;
-            let base = u64::from(world.lifecycle.death.childbirth_ppb);
-            let chance = if (16..=40).contains(&age) {
-                base
-            } else {
-                base * u64::from(EXTREME_AGE_RISK.0) / u64::from(EXTREME_AGE_RISK.1)
-            };
             roll(
                 &mut character_stream(world.seed, mother.id, "childbirth", today),
-                u32::try_from(chance.min(u64::from(PPB))).map_err(|_| Error::Lifecycle)?,
+                Self::childbirth_chance(world, mother, today)?,
             )
         };
         match risk() {

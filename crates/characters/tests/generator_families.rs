@@ -13,6 +13,12 @@ use ck_economy::LifeCycle;
 use ck_sim::GameTime;
 use support::*;
 
+/// These cases are slice 7's own: the generator's rules with the relatives' death curve **off** (CK-370 §5), whose conditioned ancestors keep
+/// CK-369's streams. The shipped data (curve on) is exercised by the start's tests.
+fn shipped() -> &'static LifeCycle {
+    without_relative_deaths()
+}
+
 const PPB: u64 = 1_000_000_000;
 
 fn today() -> GameTime {
@@ -55,6 +61,9 @@ fn slot(key: &str, kind: &str, house: &str, count: u32) -> SlotRequest {
         count,
         ages: None,
         today: today(),
+        sex: None,
+        slot: String::new(),
+        noble_families_only: false,
     }
 }
 fn fill(
@@ -667,6 +676,8 @@ fn fertile() -> LifeCycle {
     data.conception.twins_ppb = 0;
     data.conception.triplets_ppb = 0;
     data.relations.mode_factor = [PPB; 3];
+    // These cases are about the rules of slice 7's households: every child lives to be counted.
+    data.generator.relatives.survive_by_death_curve = false;
     data
 }
 /// A young couple, wed on 1 January 764 (both marriageable then), with a fecundity that makes every chance 1.

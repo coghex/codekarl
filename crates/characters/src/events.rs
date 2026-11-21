@@ -335,6 +335,7 @@ fn apply_effects(
     c: &Character,
     rules: &EventRules,
     personality: &Personality,
+    excluded: &[(String, u8)],
 ) -> Result<Outcome, Error> {
     let mut out = Outcome {
         copy: c.clone(),
@@ -358,6 +359,14 @@ fn apply_effects(
                     Effect::Grant(_) => before.max(1),
                     _ => 0,
                 };
+                // A trait a real figure is never given (CK-370 §1) is not gained: nothing changes, so nothing follows from it and no line says so.
+                if after > before
+                    && excluded
+                        .iter()
+                        .any(|(known, from)| known == key && after >= *from)
+                {
+                    continue;
+                }
                 if after != before {
                     out.copy.set_grade(key, after);
                     out.changed = true;
@@ -504,7 +513,8 @@ impl CharacterStore {
         if !rolls(world.seed, id, &event.id, date, p)? {
             return Ok(Step::Continue);
         }
-        let outcome = apply_effects(event, c, world.rules, world.personality)?;
+        let excluded = self.start.excluded.get(&id).map_or(&[][..], Vec::as_slice);
+        let outcome = apply_effects(event, c, world.rules, world.personality, excluded)?;
         let line = (outcome.always_logs || outcome.changed).then(|| {
             render(
                 &event.text,

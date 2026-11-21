@@ -8027,6 +8027,19 @@ impl EconomyState {
         Ok(())
     }
 
+    /// Add one dependent to a pop at the start of a game (CK-370 §3 step 1, the start-only safety net): the pop would otherwise have fewer
+    /// heads than characters. It is **not** a birth: nothing is counted as pending. Nothing changes on an error.
+    ///
+    /// # Errors
+    /// A missing place or pop slot, or a dependent count that overflows.
+    pub fn add_start_dependent(&mut self, place: &str, slot: usize) -> Result<(), DataError> {
+        let pop = self.pop_mut(place, slot)?;
+        pop.dependents = pop.dependents.checked_add(1).ok_or_else(|| {
+            missing_data("start.dependents".to_owned(), "dependent count overflow")
+        })?;
+        Ok(())
+    }
+
     /// Remove the head of a dying character from its pop and count the death as pending (CK-364). A character under majority is a
     /// dependent if the pop has one, else a worker; an adult is a worker if the pop has one, else a dependent. A removed worker is
     /// an unemployed one if the pop has any; otherwise an employed one is removed and one position is released at once, in the
@@ -10518,8 +10531,13 @@ mod tests {
         );
         assert_eq!(starts.places["skellig_michael"].levels, Some([0, 2, 1]));
         assert_eq!(starts.places["skellig_michael"].peasants, Some(0));
-        assert_eq!(starts.places["skellig_michael"].monks, Some(10));
+        // CK-370: twelve monks (an abbot and the traditional twelve), so that its slot of eleven fits with a head spare.
+        assert_eq!(starts.places["skellig_michael"].monks, Some(12));
         assert_eq!(starts.places["skellig_michael"].labourers, Some(10));
+        // CK-370: Clogher gains a small church beside the royal hillfort: ten monks and ten labourers, levels farm 30, holdings 1, storehouse 2.
+        assert_eq!(starts.places["clogher"].monks, Some(10));
+        assert_eq!(starts.places["clogher"].labourers, Some(10));
+        assert_eq!(starts.places["clogher"].levels, Some([30, 1, 2]));
         assert_eq!(starts.places["inisfallen"].levels, Some([0, 2, 1]));
         assert_eq!(starts.places["inisfallen"].peasants, Some(0));
         assert_eq!(starts.places["inishmurray"].levels, Some([3, 2, 1]));

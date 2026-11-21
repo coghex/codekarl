@@ -27,8 +27,9 @@ pub const RECIPE_STEPS: [&str; 11] = [
     "past",
 ];
 /// The role vocabulary: a fixed list in the code, not derived from any data file. A role is stored on the record of a generated character
-/// and is separate from the office markers of slice 1 (`ruler`, `heir`, `high_cleric`). Slice 8's slot member roles are validated against it.
-pub const ROLES: [&str; 27] = [
+/// and is separate from the office markers of slice 1 (`ruler`, `heir`, `high_cleric`). Slice 8's slot member roles are validated against it;
+/// it adds `court_cleric` (a churchman living at a king's court) and `household_woman` (a woman of a king's household).
+pub const ROLES: [&str; 29] = [
     "abbess",
     "abbot",
     "anchorite",
@@ -37,10 +38,12 @@ pub const ROLES: [&str; 27] = [
     "church_servant",
     "church_tenant",
     "community_woman",
+    "court_cleric",
     "craftsman",
     "fosterling",
     "herdsman",
     "hostage",
+    "household_woman",
     "judge",
     "keeper_of_relics",
     "kinsman",
@@ -84,7 +87,7 @@ const LANGUAGE_SOURCES: [&str; 5] = [
     "exile",
 ];
 /// The keys of `[slots]` that are not a slot kind.
-const SLOT_SETTINGS: [&str; 3] = ["reach_km", "weights", "order"];
+const SLOT_SETTINGS: [&str; 4] = ["reach_km", "weights", "order", "ages"];
 
 /// A range of language strengths in thousandths, `low <= high`, both within 0..=1000.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -189,6 +192,33 @@ pub struct SlotRules {
     pub kin_milli: u32,
     /// The weight of a house of another kingdom for a hostage, in thousandths (inert until tags exist).
     pub subject_house_milli: u32,
+    /// `[slots.ages]` (CK-370 §5): the ages, both inclusive, of a generated member of a slot by role (a key of [`ROLES`]) or `other`, for a
+    /// role the table does not name; a present table always has `other`. Empty when the file has no such table: every generated member then has
+    /// [`FALLBACK_MEMBER_AGES`].
+    pub member_ages: BTreeMap<String, [u32; 2]>,
+}
+
+/// The ages of a generated slot member when the data has no `[slots.ages]` table (the table's own `other` is the data's).
+pub const FALLBACK_MEMBER_AGES: [u32; 2] = [18, 55];
+
+/// `[relatives]` (CK-370 §5).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RelativeRules {
+    /// Whether the generated parents, spouse and children of a character made at the start live to it by the life-cycle death curve (a
+    /// relative who dies is archived with its date). Absent is false: every generated relative survives, as in the first draft.
+    pub survive_by_death_curve: bool,
+}
+
+impl SlotRules {
+    /// The ages of a generated member of a slot made for `role`: the table's for the role, else its `other`, else the fallback.
+    #[must_use]
+    pub fn ages_of(&self, role: &str) -> [u32; 2] {
+        self.member_ages
+            .get(role)
+            .or_else(|| self.member_ages.get("other"))
+            .copied()
+            .unwrap_or(FALLBACK_MEMBER_AGES)
+    }
 }
 
 /// A culture's mother tongue: its language and, where the language has dialects, its dialect.
@@ -220,6 +250,8 @@ pub struct Generator {
     pub languages: LanguageRules,
     /// `[slots]`.
     pub slots: SlotRules,
+    /// `[relatives]`.
+    pub relatives: RelativeRules,
 }
 
 fn section<'t>(
@@ -546,6 +578,25 @@ fn parse_slots(source: &Source<'_>, table: &Table) -> Result<SlotRules, DataErro
     if let Some(order) = table.get("order") {
         source.text(order, "slots.order")?;
     }
+    if let Some(node) = table.get("ages") {
+        let entry = "slots.ages";
+        for (role, range) in source.table(node, entry)? {
+            if role != "other" && !ROLES.contains(&role.as_str()) {
+                return Err(source.error(
+                    format!("{entry}.{role}"),
+                    "a role of the role vocabulary, or `other`",
+                ));
+            }
+            rules.member_ages.insert(
+                role.clone(),
+                ages(source, range, &format!("{entry}.{role}"))?,
+            );
+        }
+        // A table names `other`: the ages of a role it does not name.
+        if !rules.member_ages.contains_key("other") {
+            return Err(source.error(entry, "the table must contain `other`"));
+        }
+    }
     Ok(rules)
 }
 
@@ -577,6 +628,7 @@ impl EventRules {
                 "slots",
                 "marriage_candidates",
                 "real_households",
+                "relatives",
             ],
         )?;
         let recipe = section(&source, &root, "", "recipe")?;
@@ -633,6 +685,15 @@ impl EventRules {
         )?;
         rules.languages = parse_languages(&source, section(&source, &root, "", "languages")?)?;
         rules.slots = parse_slots(&source, section(&source, &root, "", "slots")?)?;
+        if let Some(node) = root.get("relatives") {
+            let relatives = source.table(node, "relatives")?;
+            only_keys(&source, relatives, "relatives", &["survive_by_death_curve"])?;
+            // An absent key is false: every generated relative survives, as in the first draft.
+            if let Some(flag) = relatives.get("survive_by_death_curve") {
+                rules.relatives.survive_by_death_curve =
+                    source.boolean(flag, "relatives.survive_by_death_curve")?;
+            }
+        }
         // The two prose sections are descriptions: their shape only.
         for name in ["marriage_candidates", "real_households"] {
             if let Some(node) = root.get(name) {

@@ -1515,8 +1515,91 @@ fn the_shipped_generator_data_loads_and_states_what_the_file_says() {
 }
 
 #[test]
+fn generator_data_r2_gives_the_ages_of_slot_members_and_turns_the_death_curve_on_for_relatives() {
+    let data = &shipped_rules().lifecycle.generator;
+    // `[slots.ages]`: a role of the table has its range, and a role absent from it takes `other`.
+    assert_eq!(data.slots.ages_of("retainer"), [16, 45]);
+    assert_eq!(data.slots.ages_of("abbot"), [35, 70]);
+    assert_eq!(data.slots.ages_of("household_woman"), [14, 45]);
+    assert_eq!(data.slots.ages_of("lord"), [25, 60]);
+    assert_eq!(
+        data.slots.ages_of("spouse_of_ruler"),
+        [18, 55],
+        "not in the table: `other`"
+    );
+    assert_eq!(data.slots.member_ages["other"], [18, 55]);
+    // Every role of the table is in the registry (the loader refuses one that is not).
+    assert!(
+        data.slots
+            .member_ages
+            .keys()
+            .all(|role| role == "other" || crate::events::ROLES.contains(&role.as_str()))
+    );
+    // `[relatives]`: the death curve is on.
+    assert!(data.relatives.survive_by_death_curve);
+    // The two roles §1 adds to the registry are valid keys of the table (the shipped file names both).
+    assert_eq!(data.slots.member_ages["court_cleric"], [25, 60]);
+    assert_eq!(data.slots.member_ages["household_woman"], [14, 45]);
+    // A `[relatives]` table without the key, and no table at all, mean the curve is off: the parser, not only the default rules.
+    let empty = parse_generator(&edit(generator_text(), "survive_by_death_curve = true", ""))
+        .expect("an empty table loads");
+    assert!(!empty.generator.relatives.survive_by_death_curve);
+    let absent = {
+        let text = generator_text();
+        let at = text.find("[relatives]").expect("the table");
+        parse_generator(&text[..at]).expect("no table loads")
+    };
+    assert!(!absent.generator.relatives.survive_by_death_curve);
+    // A file with neither table: no ages (the fallback) and every relative survives.
+    let bare = crate::events::SlotRules::default();
+    assert_eq!(
+        bare.ages_of("retainer"),
+        crate::events::FALLBACK_MEMBER_AGES
+    );
+    assert!(!crate::events::RelativeRules::default().survive_by_death_curve);
+}
+
+#[test]
+fn generator_data_r2_refuses_an_unknown_role_a_reversed_range_and_a_flag_that_is_not_a_boolean() {
+    refused_generator(
+        "retainer = [16, 45]",
+        "squire = [16, 45]",
+        "slots.ages.squire",
+        "role",
+    );
+    refused_generator(
+        "retainer = [16, 45]",
+        "retainer = [46, 45]",
+        "slots.ages.retainer",
+        "low age exceeds",
+    );
+    refused_generator(
+        "retainer = [16, 45]",
+        "retainer = [16]",
+        "slots.ages.retainer",
+        "[low, high]",
+    );
+    // A present table must name `other`: the ages of a role it does not name.
+    refused_generator("other = [18, 55]", "", "slots.ages", "must contain `other`");
+    refused_generator(
+        "survive_by_death_curve = true",
+        "survive_by_death_curve = 1",
+        "relatives.survive_by_death_curve",
+        "true or false",
+    );
+    refused_generator(
+        "survive_by_death_curve = true",
+        "survive_by_death_curve = true\nmore = 1",
+        "relatives.more",
+        "unknown key",
+    );
+}
+
+#[test]
 fn the_role_vocabulary_is_the_fixed_list_and_every_shipped_latin_role_is_in_it() {
-    assert_eq!(crate::events::ROLES.len(), 27);
+    assert_eq!(crate::events::ROLES.len(), 29);
+    assert!(crate::events::ROLES.contains(&"household_woman"));
+    assert!(crate::events::ROLES.contains(&"court_cleric"));
     assert!(
         crate::events::ROLES
             .windows(2)

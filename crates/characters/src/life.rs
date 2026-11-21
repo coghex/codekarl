@@ -14,6 +14,44 @@ use crate::{
 use ck_sim::{Canonical, CanonicalError, GameTime, Reader};
 use std::collections::BTreeMap;
 
+/// How an archived record's end is known when it is not a dated death (CK-370 §2). A live record, and an archived record with a death
+/// date, are [`None`](Self::None).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Departure {
+    /// Nothing special: the record is live, or archived with the date of its death.
+    #[default]
+    None,
+    /// Archived dead, the date unknown: died before the 768 start in a year nobody recorded, or a dead parent whose death is not recorded.
+    /// Shown as "before 768" or "date unknown".
+    DeathUnknown,
+    /// Archived **abroad**: a relative of a character whose culture has no non-monk pop anywhere on the map. Alive or dead unknown to the
+    /// game: no pop, no head, no simulation and no death roll; family links, names and namesakes resolve through it as through any archived
+    /// record. It stays so until its land is on the map.
+    Abroad,
+}
+
+impl Canonical for Departure {
+    fn encode(&self, out: &mut Vec<u8>) -> Result<(), CanonicalError> {
+        let tag: u8 = match self {
+            Self::None => 0,
+            Self::DeathUnknown => 1,
+            Self::Abroad => 2,
+        };
+        tag.encode(out)
+    }
+    fn decode(r: &mut Reader<'_>) -> Result<Self, CanonicalError> {
+        match u8::decode(r)? {
+            0 => Ok(Self::None),
+            1 => Ok(Self::DeathUnknown),
+            2 => Ok(Self::Abroad),
+            tag => Err(CanonicalError::BadTag {
+                ty: "Departure",
+                tag,
+            }),
+        }
+    }
+}
+
 /// The state slice 4 adds to a character.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LifeRecord {
@@ -76,6 +114,17 @@ pub struct LifeRecord {
     pub languages: BTreeMap<String, u32>,
     /// Whether the household the character belongs to as a spouse has been completed (CK-369 §7); set on both spouses.
     pub household_complete: bool,
+    /// How an archived record's end is known when it is not a dated death (CK-370 §2); [`Departure::None`] for a live record.
+    pub departure: Departure,
+    /// The byname of a real figure (CK-370 §1), shown after its name as an epithet is; empty for none. Fixed for life.
+    pub byname: String,
+    /// The importance of the byname against the epithets held: that of the `epithets.toml` model it matches, else 40.
+    pub byname_importance: u32,
+    /// The authored genitive of a real figure's name (CK-370 §1): it takes precedence over the pool's wherever a genitive is used (the
+    /// patronymic of its children). Empty for a generated character, whose genitive is the pool's.
+    pub genitive: String,
+    /// The authored patronymic of a real figure (`mac Fergaile`): it takes precedence over the form the pool derives. Empty for none.
+    pub patronymic: String,
 }
 
 impl Canonical for LifeRecord {
@@ -105,7 +154,12 @@ impl Canonical for LifeRecord {
         self.tongue.encode(out)?;
         self.dialect.encode(out)?;
         self.languages.encode(out)?;
-        self.household_complete.encode(out)
+        self.household_complete.encode(out)?;
+        self.departure.encode(out)?;
+        self.byname.encode(out)?;
+        self.byname_importance.encode(out)?;
+        self.genitive.encode(out)?;
+        self.patronymic.encode(out)
     }
     fn decode(r: &mut Reader<'_>) -> Result<Self, CanonicalError> {
         Ok(Self {
@@ -135,6 +189,11 @@ impl Canonical for LifeRecord {
             dialect: String::decode(r)?,
             languages: BTreeMap::decode(r)?,
             household_complete: bool::decode(r)?,
+            departure: Departure::decode(r)?,
+            byname: String::decode(r)?,
+            byname_importance: u32::decode(r)?,
+            genitive: String::decode(r)?,
+            patronymic: String::decode(r)?,
         })
     }
 }

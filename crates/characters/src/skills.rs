@@ -470,6 +470,13 @@ impl CharacterStore {
         if !roll(&mut stream, p)? {
             return Ok(());
         }
+        // A grade of the craft a real figure is never given (CK-370 §1) is not reached during the start: no change, no line.
+        if self.start.excluded.get(&id).is_some_and(|list| {
+            list.iter()
+                .any(|(key, from)| key == craft && level + 1 >= *from)
+        }) {
+            return Ok(());
+        }
         let text = render(
             CRAFT_RISE_TEXT,
             &c.name,

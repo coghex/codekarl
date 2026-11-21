@@ -7,7 +7,7 @@
 #![deny(clippy::float_arithmetic)]
 
 use crate::{
-    ArchiveSink, CharacterStore, Error, Populations, Sex, StressKind, character_stream,
+    ArchiveSink, Character, CharacterStore, Error, Populations, Sex, StressKind, character_stream,
     culture_means,
     events::{
         EventError, FirstError, LogSink, Step, World, age_years, count_up, is_fatal, pop_facts,
@@ -27,10 +27,16 @@ use ck_sim::GameTime;
 /// Fame a duel won gives, in thousandths of a point.
 const DUEL_FAME: i64 = 2_000;
 
+/// The minds (vice/virtue and manner values) of the household a character is raised in: one entry for each parent.
+pub(crate) type HouseholdMinds = Vec<([i64; 7], [i64; 9])>;
+
 impl CharacterStore {
     /// Live the years of `id`, a live character made at its birth, from its first birthday to the last one before `today` (a birthday that
     /// falls on `today` is the in-play pass's). `parents` are the minds (vice/virtue and manner values) of its father and mother when known;
     /// a parent that is not known is a typical member of its culture, drawn on the character's stream.
+    ///
+    /// At the 768 start (CK-370 §3 step 6) the past stops at the end of 752 whatever `today` is: every later year is the burn-in's, run once
+    /// for everyone, so no year is simulated twice. A character born after that has no past.
     pub(crate) fn live_the_past<P: Populations, A: ArchiveSink, L: LogSink>(
         &mut self,
         world: &mut World<'_, P, A, L>,
@@ -40,30 +46,15 @@ impl CharacterStore {
     ) -> Result<(), EventError> {
         let c = self.live.get(&id).ok_or(Error::MissingCharacter)?;
         let birth = c.birth;
-        let years = age_years(dates::date_of(birth)?, dates::date_of(today)?);
-        let mut household = Vec::with_capacity(parents.len());
-        for (index, parent) in parents.iter().enumerate() {
-            household.push(if let Some(minds) = parent {
-                *minds
-            } else {
-                let ctx = crate::Context {
-                    rules: world.genetics,
-                    personality: world.personality,
-                    events: world.rules,
-                    lifecycle: world.lifecycle,
-                    seed: world.seed,
-                    tick: birth,
-                };
-                let means = culture_means(&ctx, world.populations, &c.pop)?;
-                let typical = personality::make_founder(
-                    &ctx,
-                    id,
-                    &format!("past.household.{index}."),
-                    means,
-                )?;
-                (typical.vice, typical.manner)
-            });
+        let today = self
+            .start
+            .past_until
+            .map_or(today, |limit| limit.min(today));
+        if birth >= today {
+            return Ok(());
         }
+        let years = age_years(dates::date_of(birth)?, dates::date_of(today)?);
+        let household = Self::household_minds(world, c, parents)?;
         let mut first: FirstError = None;
         for age in 1..=years {
             let day = dates::birthday(birth, age)?;
@@ -75,8 +66,61 @@ impl CharacterStore {
         crate::events::conclude(first)
     }
 
+    /// The minds (vice/virtue and manner values) of the household a character is raised in: its parents' where known, else two typical
+    /// members of its culture drawn on its own stream.
+    fn household_minds<P: Populations, A: ArchiveSink, L: LogSink>(
+        world: &World<'_, P, A, L>,
+        c: &Character,
+        parents: &[Option<([i64; 7], [i64; 9])>],
+    ) -> Result<HouseholdMinds, EventError> {
+        let mut household = Vec::with_capacity(parents.len());
+        for (index, parent) in parents.iter().enumerate() {
+            household.push(if let Some(minds) = parent {
+                *minds
+            } else {
+                let ctx = crate::Context {
+                    rules: world.genetics,
+                    personality: world.personality,
+                    events: world.rules,
+                    lifecycle: world.lifecycle,
+                    seed: world.seed,
+                    tick: c.birth,
+                };
+                let means = culture_means(&ctx, world.populations, &c.pop)?;
+                let typical = personality::make_founder(
+                    &ctx,
+                    c.id,
+                    &format!("past.household.{index}."),
+                    means,
+                )?;
+                (typical.vice, typical.manner)
+            });
+        }
+        Ok(household)
+    }
+
+    /// The household minds of a live character read from its recorded parents, live or archived (a parent that is not known is a typical
+    /// member of its culture), for the burn-in's years (CK-370 §3 step 7).
+    pub(crate) fn recorded_household<P: Populations, A: ArchiveSink, L: LogSink>(
+        &self,
+        world: &World<'_, P, A, L>,
+        id: u64,
+    ) -> Result<HouseholdMinds, EventError> {
+        let c = self.live.get(&id).ok_or(Error::MissingCharacter)?;
+        let mut parents = Vec::with_capacity(2);
+        for parent in [c.father, c.mother] {
+            parents.push(if parent == crate::UNKNOWN {
+                None
+            } else {
+                self.record(&*world.archive, parent)?
+                    .map(|p| (p.personality.vice, p.personality.manner))
+            });
+        }
+        Self::household_minds(world, c, &parents)
+    }
+
     /// One year of the generated past, on the birthday at which the character turns `age`.
-    fn past_year<P: Populations, A: ArchiveSink, L: LogSink>(
+    pub(crate) fn past_year<P: Populations, A: ArchiveSink, L: LogSink>(
         &mut self,
         world: &mut World<'_, P, A, L>,
         id: u64,

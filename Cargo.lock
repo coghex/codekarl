@@ -62,6 +62,7 @@ dependencies = [
  "ck-characters",
  "ck-economy",
  "ck-sim",
+ "toml",
 ]
 
 [[package]]

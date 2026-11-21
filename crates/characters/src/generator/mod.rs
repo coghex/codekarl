@@ -14,18 +14,22 @@
 
 mod candidates;
 pub(crate) mod dates;
+mod figure;
 mod households;
 mod languages;
 mod past;
 mod slots;
 
 pub use candidates::PoolTopUp;
+pub(crate) use figure::Home;
+pub use figure::{End, Fixed};
 pub use households::HouseholdOutcome;
+pub(crate) use past::HouseholdMinds;
 pub use slots::{Made, Member, SlotAges, SlotOutcome, SlotRequest};
 
 use crate::{
-    ArchiveSink, Character, CharacterStore, Context, Error, NewCharacter, Office, PopLocator,
-    Populations, Sex, UNKNOWN, character_stream, child_record,
+    ArchiveSink, Character, CharacterStore, Context, Departure, Error, NewCharacter, Office,
+    PopLocator, Populations, Sex, UNKNOWN, character_stream, child_record,
     connections::{Clergy, draw_orientation},
     cycle::{CAUSE_NATURAL, CAUSE_OLD_AGE, Pressure, curve_ratio},
     events::{EventError, LogSink, World, keep},
@@ -73,6 +77,25 @@ pub struct GenerateRequest {
     pub key: String,
     /// The day the generation is made: the end of the generated past, and the tick of the date stream.
     pub today: GameTime,
+    /// The fixed aspects of a real figure (CK-370 §2): its name, byname, languages and forced and excluded traits, which override the
+    /// recipe's. `None` for anyone else.
+    pub fixed: Option<Fixed>,
+    /// How the character ends when it is not live (CK-370 §2): a figure dead before the start, a dead parent, an **abroad** relative. Such a
+    /// character is archived, takes no head and lives no past. `None` for a live character.
+    pub end: Option<End>,
+    /// Whether the character's parents are the unknown character, not generated (CK-370: the parents of a dead parent). Only for a character
+    /// whose `father` and `mother` are [`UNKNOWN`].
+    pub bare: bool,
+    /// A generated **relative** (the spouse or a child) of a character made at the start (CK-370 §5): when the data's `[relatives]
+    /// survive_by_death_curve` is true it lives from this day to `today` by the death curve, on purposes `relative.death.<year>`; one who dies
+    /// is archived with its date, takes no head, lives no past and is linked to its family. The character itself never dies in its past
+    /// (`no_deaths`): this is for the relatives only.
+    pub relative_from: Option<GameTime>,
+    /// A spouse already made, linked from the new record at creation (an archived spouse cannot be changed after it is appended).
+    pub spouse: Option<u64>,
+    /// For a relative with `relative_from`: when the death curve takes it, keep it **live** and report the date to the caller (in the
+    /// transaction's `relative_deaths`) instead of archiving it at once, and live its past only to that date. The caller archives it.
+    pub defer_death: bool,
 }
 
 impl GenerateRequest {
@@ -92,6 +115,12 @@ impl GenerateRequest {
             has_children: false,
             key: key.to_owned(),
             today,
+            fixed: None,
+            end: None,
+            bare: false,
+            relative_from: None,
+            spouse: None,
+            defer_death: false,
         }
     }
 }
@@ -120,6 +149,9 @@ pub(crate) struct Txn {
     pub(crate) archived: Vec<u64>,
     saved: BTreeMap<u64, Character>,
     moves: Vec<MoveUndo>,
+    /// The natural deaths a generation rolled for a relative it kept **live** (`defer_death`), by identifier: the date and the cause. The
+    /// caller runs the relative's timeline (a wife's deliveries) and archives it at the earliest end it finds.
+    pub(crate) relative_deaths: BTreeMap<u64, (GameTime, String)>,
 }
 
 impl Txn {
@@ -131,6 +163,7 @@ impl Txn {
             archived: Vec::new(),
             saved: BTreeMap::new(),
             moves: Vec::new(),
+            relative_deaths: BTreeMap::new(),
         }
     }
 
@@ -151,6 +184,7 @@ impl Txn {
     fn rollback<P: Populations>(self, store: &mut CharacterStore, populations: &P) {
         for id in self.created.iter().rev() {
             store.take(*id);
+            store.start.pending.remove(id);
         }
         for (_, original) in self.saved {
             store.put(original);
@@ -173,7 +207,7 @@ pub(crate) struct Stage<'a, A> {
 impl<A: ArchiveSink> ArchiveSink for Stage<'_, A> {
     fn append(&mut self, record: &Character) -> std::io::Result<()> {
         if record.id == UNKNOWN
-            || record.death.is_none()
+            || !record.archivable()
             || self.buffer.iter().any(|held| held.id == record.id)
         {
             return Err(std::io::Error::new(
@@ -413,16 +447,84 @@ impl CharacterStore {
         )
     }
 
+    /// Whether the generated relatives live by the death curve: the data's flag, and only while the 768 start runs (CK-370 §5). A candidate or
+    /// an ancestor generated in play keeps CK-369's stream whatever the flag says.
+    pub(crate) fn relatives_curve<P: Populations, A: ArchiveSink, L: LogSink>(
+        &self,
+        world: &World<'_, P, A, L>,
+    ) -> bool {
+        self.start.past_until.is_some()
+            && world.lifecycle.generator.relatives.survive_by_death_curve
+    }
+
     /// When a generated ancestor dies, if it does before `today` (CK-369 §2): year by year from the day after `lower` (the child's birth for
     /// a mother, its conception for a father) by the death curve, on the ancestor's own stream, and for certain on the birthday of
     /// `certain_at`. The date is a day of the year of the roll.
     fn ancestor_death<P: Populations, A: ArchiveSink, L: LogSink>(
         world: &World<'_, P, A, L>,
+        curve: bool,
         c: &Character,
         lower: GameTime,
         today: GameTime,
         tick: GameTime,
     ) -> Result<Option<(GameTime, &'static str)>, Error> {
+        // The conditioned window is CK-369's whatever the data says; the stream is the legacy `ancestor` one with the relatives' curve off, and
+        // CK-370 §5's `relative` one with it on.
+        let prefix = if curve { "relative" } else { "ancestor" };
+        Self::death_by_curve(world, c, (lower, today), tick, prefix)
+    }
+
+    /// When a character dies, if it does in `window` (both ends inclusive), on **1 January** of a year (CK-370 §5: the household timeline's
+    /// natural-death round of each calendar year is taken on that day, before the day's conception check): each year whose 1 January lies in the
+    /// window is one roll on the character's stream, purpose `<prefix>.death.<year>`, at the annual chance of its age attained that day; the first
+    /// January on or after the birthday of `certain_at` is a certain death. The death is dated that 1 January.
+    pub(crate) fn death_on_january<P: Populations, A: ArchiveSink, L: LogSink>(
+        world: &World<'_, P, A, L>,
+        c: &Character,
+        window: (GameTime, GameTime),
+        tick: GameTime,
+        prefix: &str,
+    ) -> Result<Option<(GameTime, &'static str)>, Error> {
+        let (lower, today) = window;
+        let pressure = Pressure::new();
+        let certain = dates::birthday(c.birth, world.lifecycle.death.certain_at)?;
+        for year in dates::date_of(lower)?.year..=dates::date_of(today)?.year {
+            let january = dates::new_year(year)?;
+            if january < lower || january > today {
+                continue;
+            }
+            // The round is evaluated on its own date: the age attained on that 1 January, so a character is certain to die at the first
+            // January on or after the birthday of `certain_at`, never in the year before it.
+            if certain <= january {
+                return Ok(Some((january, CAUSE_OLD_AGE)));
+            }
+            let chance = CharacterStore::annual_death_ppb(
+                c,
+                world.genetics,
+                world.lifecycle,
+                &pressure,
+                january,
+            )?;
+            if roll(
+                &mut character_stream(world.seed, c.id, &format!("{prefix}.death.{year}"), tick),
+                chance,
+            )? {
+                return Ok(Some((january, CAUSE_NATURAL)));
+            }
+        }
+        Ok(None)
+    }
+
+    /// When a character dies, if it does in `window` (both ends inclusive), year by year by the death curve on its own stream, purposes
+    /// `<prefix>.death.<year>` and `<prefix>.death_day.<year>` (a generated ancestor's, and CK-370 §5's generated relatives').
+    pub(crate) fn death_by_curve<P: Populations, A: ArchiveSink, L: LogSink>(
+        world: &World<'_, P, A, L>,
+        c: &Character,
+        window: (GameTime, GameTime),
+        tick: GameTime,
+        prefix: &str,
+    ) -> Result<Option<(GameTime, &'static str)>, Error> {
+        let (lower, today) = window;
         let pressure = Pressure::new();
         let (first_year, last_year) = (dates::date_of(lower)?.year, dates::date_of(today)?.year);
         for year in first_year..=last_year {
@@ -444,7 +546,7 @@ impl CharacterStore {
                 at,
             )?;
             if roll(
-                &mut character_stream(world.seed, c.id, &format!("ancestor.death.{year}"), tick),
+                &mut character_stream(world.seed, c.id, &format!("{prefix}.death.{year}"), tick),
                 chance,
             )? {
                 let days = dates::days_between(start, end) + 1;
@@ -452,7 +554,7 @@ impl CharacterStore {
                     &mut character_stream(
                         world.seed,
                         c.id,
-                        &format!("ancestor.death_day.{year}"),
+                        &format!("{prefix}.death_day.{year}"),
                         tick,
                     ),
                     u64::try_from(days).map_err(|_| Error::Overflow)?,
@@ -520,7 +622,7 @@ impl CharacterStore {
         txn: &mut Txn,
         record: Character,
     ) -> Result<(), EventError> {
-        if record.death.is_some() {
+        if !record.is_live_form() {
             world.archive.append(&record).map_err(EventError::Archive)?;
             txn.archived.push(record.id);
             return Ok(());
@@ -535,6 +637,7 @@ impl CharacterStore {
     /// father the conception, nine months before; a window that is empty (the child is born today) has no death to roll.
     fn decide_ancestor_deaths<P: Populations, A: ArchiveSink, L: LogSink>(
         world: &World<'_, P, A, L>,
+        curve: bool,
         made: &mut [Character],
         child: u64,
         birth: GameTime,
@@ -543,6 +646,10 @@ impl CharacterStore {
         let conception = dates::months_before(birth, 9)?;
         for record in made.iter_mut() {
             record.children.push(child);
+            // An abroad relative is never rolled (CK-370 §2): it is alive or dead unknown to the game, with no date.
+            if record.life.departure == Departure::Abroad {
+                continue;
+            }
             let lower = dates::add_days(
                 if record.sex == Sex::Male {
                     conception
@@ -554,7 +661,7 @@ impl CharacterStore {
             // A window that is empty (the child is born today and the mother must survive its birth) has no death to roll.
             if lower <= today
                 && let Some((died, cause)) =
-                    Self::ancestor_death(world, record, lower, today, birth)?
+                    Self::ancestor_death(world, curve, record, lower, today, birth)?
             {
                 record.death = Some(died);
                 record.life.death_cause = Some(cause.to_owned());
@@ -569,6 +676,10 @@ impl CharacterStore {
     /// birth and the father at conception, nine months before) and then, year by year to today, by the death curve: a dead one is archived
     /// with its death date (no head), a living one is placed in the pop (it takes a head). Both generated: they are married, and each lists
     /// the child. The records are returned as made, the house of `identity` (or the new minor house it asks for) on each.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the steps of a generated couple in order: their births, their records, their home, their deaths and their placing"
+    )]
     pub(crate) fn make_ancestors<P: Populations, A: ArchiveSink, L: LogSink>(
         &mut self,
         world: &mut World<'_, P, A, L>,
@@ -662,7 +773,29 @@ impl CharacterStore {
             father.spouses.push(mother.id);
             mother.spouses.push(father.id);
         }
-        Self::decide_ancestor_deaths(world, &mut made, child, birth, today)?;
+        // At the 768 start the home of a generated parent of a character in a monk pop is resolved **before** any mortality (CK-370 §2, §3 step
+        // 2): where the whole culture is off the map the parent is an abroad record, with no pop and no death roll at all; otherwise it is rolled
+        // as every ancestor is, and one who lives is placed beside the monk pop.
+        let home = self.relative_home(world, &identity.pop)?;
+        if home == Some(Home::Abroad) {
+            for record in &mut made {
+                record.life.departure = Departure::Abroad;
+                record.pop = figure::no_pop();
+            }
+        }
+        Self::decide_ancestor_deaths(
+            world,
+            self.relatives_curve(world),
+            &mut made,
+            child,
+            birth,
+            today,
+        )?;
+        if let Some(Home::Pop(pop)) = &home {
+            for record in made.iter_mut().filter(|record| record.is_live_form()) {
+                record.pop.clone_from(pop);
+            }
+        }
         for record in made.clone() {
             self.place(world, txn, record)?;
         }
@@ -715,10 +848,10 @@ impl CharacterStore {
             store.next_id = id.checked_add(1).ok_or(Error::Overflow)?;
             Ok(id)
         };
-        let father_id = (request.father == UNKNOWN)
+        let father_id = (request.father == UNKNOWN && !request.bare)
             .then(|| allocate(self))
             .transpose()?;
-        let mother_id = (request.mother == UNKNOWN)
+        let mother_id = (request.mother == UNKNOWN && !request.bare)
             .then(|| allocate(self))
             .transpose()?;
         let child_id = allocate(self)?;
@@ -759,16 +892,23 @@ impl CharacterStore {
         };
         // The child: its name from the namesake rules, its record from the recipe, made as at its birth.
         let ctx = context(birth);
-        let plan = names::plan(
-            &ctx,
-            self,
-            &*world.archive,
-            child_id,
-            request.sex,
-            birth,
-            [father_rec.as_ref(), mother_rec.as_ref()],
-            &BTreeSet::new(),
-        )?;
+        // A real figure's name is its own: no namesake and no exclusion of its siblings' names (CK-370 §2).
+        let plan = match &request.fixed {
+            Some(fixed) => names::Plan {
+                namesake: Some(fixed.name.clone()),
+                excluded: BTreeSet::new(),
+            },
+            None => names::plan(
+                &ctx,
+                self,
+                &*world.archive,
+                child_id,
+                request.sex,
+                birth,
+                [father_rec.as_ref(), mother_rec.as_ref()],
+                &BTreeSet::new(),
+            )?,
+        };
         let mut child = child_record(
             &ctx,
             NewCharacter {
@@ -794,8 +934,21 @@ impl CharacterStore {
         }
         if let Some(role) = &request.role {
             role.clone_into(&mut child.life.role);
+            // A role that is a craft (`judge`, `poet`, `scribe`, `herdsman` ...) grants the craft at C (grade 1), as the slot's people have it
+            // from the start (CK-370 §3 step 5).
+            if world.rules.craft_rise.skills.contains_key(role) && child.grade(role) == 0 {
+                child.set_grade(role, 1);
+            }
         }
         languages::set_tongue(world, &mut child)?;
+        if let Some(fixed) = &request.fixed {
+            // At the start the traits it is never given are enforced where they would be gained, through the years that follow.
+            if self.start.past_until.is_some() {
+                self.start.excluded.insert(child_id, fixed.excluded.clone());
+            }
+            fixed.apply(&mut child);
+            languages::fix_languages(world, &mut child, fixed)?;
+        }
         // Orientation: the clergy weights in a monk pop, and a cleric with children draws only straight or bisexual.
         if world.lifecycle.connections.loaded
             && world.populations.kind(&request.pop).as_deref() == Some("monk")
@@ -812,9 +965,51 @@ impl CharacterStore {
                 clergy,
             )?;
         }
-        self.check_room(&child.pop, world.populations)?;
-        txn.created.push(child_id);
-        self.put(child);
+        if let Some(spouse) = request.spouse {
+            child.spouses.push(spouse);
+        }
+        // A generated relative lives from the day it is given to today by the death curve (CK-370 §5): the first death it rolls ends it.
+        let mut end = request.end;
+        if end.is_none()
+            && self.relatives_curve(world)
+            && let Some(from) = request.relative_from
+        {
+            let lower = from.max(dates::add_days(child.birth, 1)?);
+            // A spouse kept live for the household's timeline rolls on the 1 January of each year (CK-370 §5), a child on a day of its year.
+            let rolled = if lower > today {
+                None
+            } else if request.defer_death {
+                Self::death_on_january(world, &child, (lower, today), birth, "relative")?
+            } else {
+                Self::death_by_curve(world, &child, (lower, today), birth, "relative")?
+            };
+            if let Some((died, cause)) = rolled {
+                if request.defer_death {
+                    txn.relative_deaths
+                        .insert(child_id, (died, cause.to_owned()));
+                } else {
+                    child.life.death_cause = Some(cause.to_owned());
+                    end = Some(End::Dead(died));
+                }
+            }
+        }
+        if let Some(end) = end {
+            // An archived character takes no head, lives no past and has no languages to finalize (CK-370 §2).
+            end.apply(&mut child);
+            self.place(world, txn, child)?;
+        } else if request.defer_death
+            && request.relative_from.is_some()
+            && self.relatives_curve(world)
+        {
+            // A spouse whose fate is for the household's timeline to decide holds no head until she is known to survive.
+            txn.created.push(child_id);
+            self.put(child);
+            self.start.pending.insert(child_id);
+        } else {
+            self.check_room(&child.pop, world.populations)?;
+            txn.created.push(child_id);
+            self.put(child);
+        }
         // The existing live parents list the child; a generated parent already does.
         for parent in [request.father, request.mother] {
             if parent != UNKNOWN && self.live.contains_key(&parent) {
@@ -826,6 +1021,9 @@ impl CharacterStore {
                 }
             }
         }
+        if end.is_some() {
+            return Ok(child_id);
+        }
         // The generated past, then the languages, once.
         let household: Vec<_> = [&father_rec, &mother_rec]
             .into_iter()
@@ -835,8 +1033,17 @@ impl CharacterStore {
                     .map(|p| (p.personality.vice, p.personality.manner))
             })
             .collect();
-        self.live_the_past(world, child_id, today, &household)?;
-        self.finalize_languages(world, child_id, mother_rec.as_ref())?;
+        // A relative kept live until its timeline is run lives its past to the day the curve takes it, no further.
+        let lived_to = txn
+            .relative_deaths
+            .get(&child_id)
+            .map_or(today, |(died, _)| (*died).min(today));
+        self.live_the_past(world, child_id, lived_to, &household)?;
+        match &request.fixed {
+            // A real figure's languages are its own: nothing the past gained is added, and what the data gives is kept.
+            Some(fixed) => self.scrub_excluded(child_id, fixed),
+            None => self.finalize_languages(world, child_id, mother_rec.as_ref())?,
+        }
         Ok(child_id)
     }
 }

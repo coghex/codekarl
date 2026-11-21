@@ -161,9 +161,14 @@ descriptions: the behaviour they describe is code.
 
 | File | Revision | Pijul change | SHA-256 |
 |---|---|---|---|
-| `lifecycle/generator.toml` | r1 | `RBD5D3G5` | `651837c64acaa588ac25633bfe81deade1d1aed878f6a3b5023d796eb017bb9c` |
+| `lifecycle/generator.toml` | r2 | `WPHUUKNN` | `f6ee7dd0e2fb5e33f208fb8293fe95a0bab53bb62b0026ca2d35dd995155a92d` |
 
-Source of the copy: `codekarl-content/lifecycle/generator.toml` (2026-11-20).
+Source of the copy: `codekarl-content/lifecycle/generator.toml` (2026-11-20; r1 was change `RBD5D3G5`, SHA-256 `651837c6…`).
+
+r2 (CK-370, change `WPHUUKNN`) adds `[slots.ages]`, the ages of a generated slot member by role (a role of the vocabulary, or `other`; each `[low, high]`
+in whole years), and `[relatives] survive_by_death_curve`: when true, the generated spouse and children of a character made at the start live to it by
+the life-cycle death curve and the ones who die are archived with their dates. The loader refuses a role outside the vocabulary, a reversed range and a
+flag that is not a boolean; without the tables the start uses ages of 18 to 55 and the generated spouse and children of a character made at the start survive (the conditioned mortality of generated parents, CK-369's, runs either way: on its own stream with the flag off or whenever the 768 start is not running, on `relative.death.<year>` with the flag on during the start only; a spouse's January rounds read the age attained that 1 January).
 
 The design it implements:
 

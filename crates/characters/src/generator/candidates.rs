@@ -45,7 +45,7 @@ impl CharacterStore {
         }
         let have = self.marriage_pool(world, seeker, today)?.len();
         for index in 0..minimum.saturating_sub(have) {
-            match self.generate_candidate(world, seeker, today, index) {
+            match self.generate_candidate(world, seeker, today, index, 0) {
                 Ok(Some((id, failure))) => {
                     made.push(id);
                     if let Some(failure) = failure {
@@ -60,12 +60,17 @@ impl CharacterStore {
     }
 
     /// One candidate for `seeker`, or `None` when no age can be drawn for it.
-    fn generate_candidate<P: Populations, A: ArchiveSink, L: LogSink>(
+    ///
+    /// `relax` is how far the age window is loosened (CK-370 §3 step 5, a spouse a slot always gets): 0 is the pool's own (within the seeker's
+    /// free gap, marriageable and inside the fertile ages); 1 drops the fertile ages (`[max(M, A - G), A + G]`: A the seeker's age, G the free
+    /// gap, M her marriageable minimum); 2 is her marriageable minimum alone, for the case where that window is empty.
+    pub(crate) fn generate_candidate<P: Populations, A: ArchiveSink, L: LogSink>(
         &mut self,
         world: &mut World<'_, P, A, L>,
         seeker: u64,
         today: GameTime,
         index: usize,
+        relax: u8,
     ) -> Result<Option<(u64, Option<EventError>)>, EventError> {
         let s = self
             .live
@@ -92,11 +97,17 @@ impl CharacterStore {
         } else {
             marriageable.f
         };
-        let low = age
-            .saturating_sub(gap)
-            .max(own)
-            .max(curve.first().map_or(0, |point| point.0));
-        let high = (age + gap).min(curve.last().map_or(0, |point| point.0));
+        let (low, high) = match relax {
+            0 => (
+                age.saturating_sub(gap)
+                    .max(own)
+                    .max(curve.first().map_or(0, |point| point.0)),
+                (age + gap).min(curve.last().map_or(0, |point| point.0)),
+            ),
+            1 => (age.saturating_sub(gap).max(own), age + gap),
+            // Empty (the youngest marriageable age is beyond his gap): her age is the marriageable minimum.
+            _ => (own, own),
+        };
         if low > high {
             return Ok(None);
         }

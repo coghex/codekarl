@@ -43,6 +43,15 @@ pub struct SlotRequest {
     pub ages: Option<SlotAges>,
     /// The day.
     pub today: GameTime,
+    /// The sex the slot row asks for (CK-370 §1: a row's authored sex): only a character of it is chosen, and a child generated for the place is
+    /// of it. `None` for either (slice 7's own rule: a fosterling or student is drawn of either sex, a hostage is a man).
+    pub sex: Option<Sex>,
+    /// The key of the data slot the places are in, recorded on each character placed (empty: the request's `key`, which is also the identity
+    /// of the draws).
+    pub slot: String,
+    /// For a student: only a child of a **noble** family is taken (CK-370: the `from_noble_families` rows), not one of a church or peasant
+    /// family. Ignored for the other kinds.
+    pub noble_families_only: bool,
 }
 
 /// A member of a slot other than a fosterling, a hostage or a student (a retainer, a monk, a woman of the household): generated into the
@@ -61,6 +70,8 @@ pub struct Member {
     pub office: Option<Office>,
     /// The key of the request, unique within the slot.
     pub key: String,
+    /// The key of the slot the member fills, recorded on it with its role as the kind of its place (empty for none).
+    pub slot: String,
 }
 
 /// The result of a slot fill that committed.
@@ -134,7 +145,14 @@ impl CharacterStore {
                 request.role = Some(member.role.clone());
                 request.house.clone_from(&member.house);
                 request.office = member.office;
-                ids.push(store.generate_in(staged, txn, &request)?);
+                let id = store.generate_in(staged, txn, &request)?;
+                if !member.slot.is_empty()
+                    && let Some(c) = store.live.get_mut(&id)
+                {
+                    member.slot.clone_into(&mut c.life.slot_key);
+                    member.role.clone_into(&mut c.life.slot_kind);
+                }
+                ids.push(id);
             }
             Ok(ids)
         })?;
@@ -207,7 +225,7 @@ impl CharacterStore {
         let mut primary: Weighted = Vec::new();
         let mut peasants: Weighted = Vec::new();
         for c in self.live.values() {
-            if !c.life.slot_key.is_empty() {
+            if !c.life.slot_key.is_empty() || request.sex.is_some_and(|sex| sex != c.sex) {
                 continue;
             }
             let range = match c.sex {
@@ -249,11 +267,14 @@ impl CharacterStore {
                     primary.push((c.id, 1000));
                 }
                 "student" => {
-                    if (kind == "noble" || kind == "monk")
+                    if (kind == "noble" || (kind == "monk" && !request.noble_families_only))
                         && Self::within_reach(world, &request.court, &c.pop)
                     {
                         primary.push((c.id, 1000));
-                    } else if kind == "peasant" && c.pop.place == request.court.place {
+                    } else if kind == "peasant"
+                        && !request.noble_families_only
+                        && c.pop.place == request.court.place
+                    {
                         peasants.push((c.id, 1000));
                     }
                 }
@@ -315,7 +336,11 @@ impl CharacterStore {
             self.relocate(id, request.court.clone(), request.today);
         }
         if let Some(live) = self.live.get_mut(&id) {
-            request.key.clone_into(&mut live.life.slot_key);
+            if request.slot.is_empty() {
+                request.key.clone_into(&mut live.life.slot_key);
+            } else {
+                request.slot.clone_into(&mut live.life.slot_key);
+            }
             request.kind.clone_into(&mut live.life.slot_kind);
         }
         match request.kind.as_str() {
@@ -470,10 +495,10 @@ impl CharacterStore {
         let today = request.today;
         let purpose = format!("slot.{}.{}.{place}", request.key, request.kind);
         let mut stream = court_stream(seed, &request.court, &format!("{purpose}.child"), today);
-        let sex = if request.kind == "hostage" || below(&mut stream, 2)? == 0 {
-            Sex::Male
-        } else {
-            Sex::Female
+        let sex = match request.sex {
+            Some(sex) => sex,
+            None if request.kind == "hostage" || below(&mut stream, 2)? == 0 => Sex::Male,
+            None => Sex::Female,
         };
         let [low, high] = match sex {
             Sex::Male => ages.male,
