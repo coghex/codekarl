@@ -54,8 +54,8 @@ reads each from its text and never through a binary float (chances in parts per 
 
 | File | Revision | Pijul change | SHA-256 |
 |---|---|---|---|
-| `events/character-events.toml` | r1 (56 events) | `L4LZSWKS` | `e5fe8c75e83ed10593bde5133388dc34c6fc883e245d69f3686770e39a63476c` |
-| `events/attributes-skills.toml` | r2 (with the `[catalog]` of 57 keys) | `L4LZSWKS` | `42e4e66cf858c67d98073feadec95f586fea55df71e260ca1cd42e7b1545a234` |
+| `events/character-events.toml` | r2 (56 events) | `UBXVOCVQ` | `9497fbbf0547a916fdd8162f6a701879860e3a2ea854c020e7a395ce5beb7fa4` |
+| `events/attributes-skills.toml` | r3 (with the `[catalog]` of 57 keys) | `UBXVOCVQ` | `062a57c331ad021f795a1d161bf2aea6d41ef007cf9e238ea964c53efadd31b0` |
 
 Source of the copies: `codekarl-content/events/` (2026-11-19/20).
 

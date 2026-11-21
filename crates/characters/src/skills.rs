@@ -97,11 +97,16 @@ fn grown_fast(
         .copied()
         .unwrap_or(0);
     let factor = c.life.use_factor.get(skill).copied().unwrap_or(1000);
-    let used = i128::from(profile) * i128::from(factor);
+    let focus = if rules.focus_on_use {
+        focus_multiplier(rules, c, skill)
+    } else {
+        1000
+    };
+    let used = (i128::from(profile) * i128::from(factor) * focus).min(1_000_000_000);
     let diligence = MILLION + DILIGENCE_PER_POINT * i128::from(c.personality.vice[SLOTH_DILIGENCE]);
     let level = i128::from(c.skill(skill));
     let curve = (CURVE_LEVEL * 1000) * (CURVE_LEVEL * 1000) + level * level;
-    // gain = gain_num / gain_den; loss = loss_num / 1e9, the level times the decay of the used and unused shares.
+    // gain = gain_num / gain_den; loss = loss_num / 1e12, the level times the decay of the used and unused shares.
     let gain_num = product(&[
         i128::from(rules.gain_rate),
         used,
@@ -109,19 +114,20 @@ fn grown_fast(
         diligence,
         (CURVE_LEVEL * 1000) * (CURVE_LEVEL * 1000),
     ])?;
-    let gain_den = product(&[1_000_000_000_000_000_000, curve])?;
+    let gain_den = product(&[1_000_000_000_000_000_000_000, curve])?;
     let loss_num = product(&[
         level,
-        i128::from(rules.decay_used) * used + i128::from(rules.decay_unused) * (MILLION - used),
+        i128::from(rules.decay_used) * used
+            + i128::from(rules.decay_unused) * (1_000_000_000 - used),
     ])?;
     // level + gain - loss rounded once to the nearest thousandth, ties away from zero, without ever multiplying the level by the
     // common denominator: the whole parts and the remainders of the two fractions are taken apart, over `gain_den`.
     let (gain_whole, gain_rest) = (gain_num.div_euclid(gain_den), gain_num.rem_euclid(gain_den));
     let (loss_whole, loss_rest) = (
-        loss_num.div_euclid(1_000_000_000),
-        loss_num.rem_euclid(1_000_000_000),
+        loss_num.div_euclid(1_000_000_000_000),
+        loss_num.rem_euclid(1_000_000_000_000),
     );
-    let fraction = gain_rest - loss_rest * (gain_den / 1_000_000_000);
+    let fraction = gain_rest - loss_rest * (gain_den / 1_000_000_000_000);
     let (carry, rest) = (fraction.div_euclid(gain_den), fraction.rem_euclid(gain_den));
     let whole = level + gain_whole - loss_whole + carry;
     let up = rest > gain_den - rest || (rest == gain_den - rest && whole >= 0);
@@ -129,7 +135,7 @@ fn grown_fast(
 }
 
 /// [`grown`] in unbounded integers, for a level whose intermediates do not fit 128 bits: the same formula over the common denominator
-/// `1e18 x (12,000^2 + level^2)`, `level x den + gain - loss` rounded once. The loss never exceeds the level, so it is not negative.
+/// `1e21 x (12,000^2 + level^2)`, `level x den + gain - loss` rounded once. The loss never exceeds the level, so it is not negative.
 fn grown_exact(
     rules: &SkillRules,
     c: &Character,
@@ -143,15 +149,21 @@ fn grown_exact(
         .copied()
         .unwrap_or(0);
     let factor = c.life.use_factor.get(skill).copied().unwrap_or(1000);
+    let focus = if rules.focus_on_use {
+        focus_multiplier(rules, c, skill)
+    } else {
+        1000
+    };
     let used =
-        u128::try_from(i128::from(profile) * i128::from(factor)).map_err(|_| Error::Event)?;
+        u128::try_from((i128::from(profile) * i128::from(factor) * focus).min(1_000_000_000))
+            .map_err(|_| Error::Event)?;
     let nonneg = |value: i128| u128::try_from(value.max(0)).unwrap_or(0);
     let diligence =
         nonneg(MILLION + DILIGENCE_PER_POINT * i128::from(c.personality.vice[SLOTH_DILIGENCE]));
     let level = Big::new(nonneg(i128::from(c.skill(skill))));
     let flat = Big::new(144_000_000);
     let curve = flat.add(&level.mul(&level));
-    let den = Big::new(1_000_000_000_000_000_000).mul(&curve);
+    let den = Big::new(1_000_000_000_000_000_000_000).mul(&curve);
     let gain = bigint::product(&[
         nonneg(i128::from(rules.gain_rate)),
         used,
@@ -162,7 +174,7 @@ fn grown_exact(
     let decay = nonneg(
         i128::from(rules.decay_used) * i128::try_from(used).map_err(|_| Error::Event)?
             + i128::from(rules.decay_unused)
-                * (MILLION - i128::try_from(used).map_err(|_| Error::Event)?),
+                * (1_000_000_000 - i128::try_from(used).map_err(|_| Error::Event)?),
     );
     let loss = level
         .mul(&Big::new(decay))

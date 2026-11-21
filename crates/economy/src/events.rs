@@ -30,8 +30,8 @@ pub const HUMOUR_FLOOR: i64 = 200;
 pub const STRESS_FACTOR_DIVISOR: i64 = 20;
 /// The lowest and highest virtue or manner factor, in thousandths.
 pub const PAIR_FACTOR_BOUNDS: [i64; 2] = [100, 3000];
-/// Skill divisor of the craft factor: `0.1 + skill / 20`.
-pub const CRAFT_FACTOR_DIVISOR: i64 = 20;
+/// Skill divisor of the craft factor: `(skill / 10)^2`.
+pub const CRAFT_FACTOR_DIVISOR: i64 = 10;
 /// The skill level of a full craft-rise chance: the chance is `rise x skill / 15`.
 pub const CRAFT_RISE_DIVISOR: i64 = 15;
 /// The most a yearly skill growth rate may be, in thousandths (100,000 levels a year): the loader's validated contract, so
@@ -317,6 +317,8 @@ pub struct SkillRules {
     pub use_spread: i64,
     /// Use profiles by pop type and sex (`'m'` or `'f'`), thousandths.
     pub profiles: BTreeMap<(String, char), BTreeMap<String, i64>>,
+    /// Whether focus also multiplies yearly skill use.
+    pub focus_on_use: bool,
     /// Multiplier of the skills of a focus.
     pub focus_on: i64,
     /// Multiplier of the other skills.
@@ -1742,6 +1744,7 @@ impl EventRules {
                         rules.focus_off = value;
                     }
                 }
+                "on_use" => rules.focus_on_use = source.boolean(node, &entry)?,
                 "odds" => {
                     for (name, odds) in source.table(node, &entry)? {
                         let at = format!("{entry}.{name}");

@@ -318,7 +318,7 @@ fn the_exact_chance_is_one_rational_rounded_down_once_and_capped_at_one() {
     // Below the threshold the stress factor is 1.
     c.personality.stress = 0;
     assert_eq!(chance_ppb(event, &c, &pop).expect("chance"), 250_000_000);
-    // A cause multiplies: 0.03 x black bile 10 (1.75) x over 6 = 0.315 exactly.
+    // A cause multiplies: 0.021 x black bile 10 (1.75) x over 6 = 0.2205 exactly.
     let cause = shipped()
         .events
         .iter()
@@ -326,7 +326,7 @@ fn the_exact_chance_is_one_rational_rounded_down_once_and_capped_at_one() {
         .expect("event");
     c.personality.stress = 100_000;
     c.genetics.value[11] = 10_000;
-    assert_eq!(chance_ppb(cause, &c, &pop).expect("chance"), 315_000_000);
+    assert_eq!(chance_ppb(cause, &c, &pop).expect("chance"), 220_500_000);
     // And the product is capped at 1.
     let capped = only_events(
         r#"
@@ -512,7 +512,7 @@ fn the_shipped_drank_less_at_c_logs_with_none() {
 fn a_successful_roll_that_changes_nothing_writes_no_line() {
     let rules = edited(
         &[(
-            "chance = 0.03\nfactors = [{ humour = \"black_bile\" }, { stress = \"cause\" }]\neffects = [{ raise_grade = \"melancholy\" }]\ntext = \"Grief settled",
+            "chance = 0.021\nfactors = [{ humour = \"black_bile\" }, { stress = \"cause\" }]\neffects = [{ raise_grade = \"melancholy\" }]\ntext = \"Grief settled",
             "chance = 1\nfactors = [{ humour = \"black_bile\" }, { stress = \"cause\" }]\neffects = [{ raise_grade = \"melancholy\" }]\ntext = \"Grief settled",
         )],
         &[],
@@ -1017,7 +1017,7 @@ fn the_birthday_pass_runs_one_order_and_a_craft_gained_that_day_first_rises_next
                 "chance = 0.005\neffects = [{ grant = \"saintly\" }",
                 "chance = 1\neffects = [{ grant = \"saintly\" }",
             ),
-            ("chance = 0.00067\nfactors", "chance = 1\nfactors"),
+            ("chance = 0.0004\nfactors", "chance = 1\nfactors"),
         ],
         &[("rise = 0.05", "rise = 1")],
     );
@@ -1212,9 +1212,8 @@ fn home_education_moves_a_child_toward_the_teacher_by_the_stated_fraction_and_fo
         .run_birthdays(&mut world(&rules, &mut env, &POPS), date(768, 4, 4))
         .expect("birthday");
     let c = get(&store, 2);
-    // Theology: growth from 0 at use 0.9 (monk) with aptitude (intellect 10) is 3 x 0.9 = 2.7; then, at age 10 (factor 1.0),
-    // 0.05 x (10 - 2.7) x 1.5 = 0.5475, which rounds to 0.548.
-    assert_eq!(c.skill("theology"), 2700 + 548, "church focus x1.5");
+    // Theology use is capped at 1 after focus: growth is 3, then education adds 0.525.
+    assert_eq!(c.skill("theology"), 3525, "church focus x1.5");
     // Husbandry: no use by a monk, so 0 from growth; then 0.05 x 10 x 0.7 = 0.35.
     assert_eq!(c.skill("husbandry"), 350, "off-focus x0.7");
 }
@@ -1639,5 +1638,92 @@ fn a_level_education_produces_still_grows_at_the_next_birthday() {
     store
         .run_birthdays(&mut world(&rules, &mut env, &POPS), date(769, 4, 4))
         .expect("a representable level grows and decays");
-    assert_eq!(get(&store, 2).skill("martial_prowess"), 59_392_742_400_000);
+    assert_eq!(get(&store, 2).skill("martial_prowess"), 61_440_768_000_000);
+}
+
+#[test]
+fn craft_curve_uses_the_exact_skill_square() {
+    let event = shipped()
+        .events
+        .iter()
+        .find(|e| e.id == "craft_poet")
+        .unwrap();
+    let pop = PopFacts {
+        kind: "noble".into(),
+        group: "gaelic".into(),
+        luxuries_pm: 600,
+    };
+    let mut c = man(1, "a");
+    for (skill, expected) in [
+        (0, 0),
+        (5000, 100_000),
+        (10_000, 400_000),
+        (16_500, 1_089_000),
+    ] {
+        c.life.skills.insert("oratory".into(), skill);
+        assert_eq!(chance_ppb(event, &c, &pop).unwrap(), expected);
+    }
+}
+
+#[test]
+fn focus_multiplies_yearly_use_and_can_be_disabled() {
+    let mut rules = only_events("");
+    rules
+        .skills
+        .profiles
+        .get_mut(&("noble".into(), 'm'))
+        .unwrap()
+        .insert("leadership".into(), 800);
+    rules
+        .skills
+        .focus_skills
+        .insert("test".into(), vec!["leadership".into()]);
+    rules.skills.focus_on = 1500;
+    rules.skills.focus_off = 500;
+    rules
+        .skills
+        .profiles
+        .get_mut(&("noble".into(), 'm'))
+        .unwrap()
+        .insert("husbandry".into(), 800);
+    let run = |on: bool| {
+        let mut r = rules.clone();
+        r.skills.focus_on_use = on;
+        let mut c = person(1, date(750, 4, 4), "a", Sex::Male);
+        c.life.focus = "test".into();
+        use_factor_one(&mut c);
+        let mut store = store_of(vec![c]);
+        let mut env = Env::new(if on { "focus-on" } else { "focus-off" });
+        store
+            .run_birthdays(&mut world(&r, &mut env, &POPS), date(768, 4, 4))
+            .unwrap();
+        (
+            get(&store, 1).skill("leadership"),
+            get(&store, 1).skill("husbandry"),
+        )
+    };
+    assert_eq!(run(true), (3000, 1200));
+    assert_eq!(run(false), (2400, 2400));
+}
+
+#[test]
+fn focus_on_use_defaults_to_false_and_rejects_non_boolean() {
+    assert!(shipped().skills.focus_on_use);
+    assert!(!edited(&[], &[("on_use = true", "")]).skills.focus_on_use);
+    let pop_types: Vec<&str> = rules().pop_types.iter().map(|p| p.id.as_str()).collect();
+    let bad = asset("events/attributes-skills.toml").replace("on_use = true", "on_use = 1");
+    assert!(
+        EventRules::parse(
+            "character-events.toml",
+            &asset("events/character-events.toml"),
+            "attributes-skills.toml",
+            &bad,
+            &Registry {
+                peoples: &rules().peoples,
+                genetics: &rules().genetics,
+                pop_types: &pop_types
+            },
+        )
+        .is_err()
+    );
 }
