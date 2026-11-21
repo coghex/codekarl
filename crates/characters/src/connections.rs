@@ -1501,11 +1501,14 @@ impl CharacterStore {
 
 impl CharacterStore {
     /// Backfill the passions of a character promoted to the full tier (CK-368 §9). On the first pass after the promotion the **window** is
-    /// fixed and saved on the character as its own commit: `to` is the last completed year that day (stopping before a year a full-tier birthday already rolled live since the promotion) and `from` the later of
-    /// `last_full_year + 1`, `to - max_years + 1` and the year after its birth; an empty window saves nothing and backfills nothing. Then each
+    /// fixed and saved on the character as its own commit. `from` is the later of `last_full_year + 1`, the unadjusted calendar cutoff
+    /// (the last completed year that day minus `max_years - 1`) and the year after birth. `to` is that last completed year, stopping before
+    /// any year a full-tier birthday already rolled live since the promotion; this does not change the cutoff. An empty window saves nothing
+    /// and backfills nothing. Then each
     /// yearly live moment whose condition holds for a year of the window rolls once at the top-up chance (purpose
     /// `passion.backfill.<moment>.<year>`, seeded by the saved game seed and that year's birthday), and a success is the gain or renewal of
-    /// §6 as of that birthday. All of it is **one commit** with the clearing of the saved window and the last full-tier year set to `to`
+    /// §6 as of that birthday. All of it is **one commit** with the clearing of the saved window and the last full-tier year set to the later
+    /// of its current value and `to` (never lowered)
     /// (a character's own passions and record only); a failure before it commits nothing, keeps the window and is tried again by the next
     /// pass with the same years and draws. A failed life-log line after the commit is not retried. No strand is replayed and no fade applied.
     ///
