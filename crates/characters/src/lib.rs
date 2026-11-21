@@ -13,6 +13,7 @@ pub mod connections;
 pub mod cycle;
 pub mod epithets;
 pub mod events;
+pub mod figures;
 mod fixtures;
 pub mod generator;
 pub mod genetics;
@@ -21,11 +22,12 @@ pub mod marriage;
 pub(crate) mod names;
 pub mod personality;
 pub mod skills;
+pub mod start;
 pub mod ties;
 pub use connections::{PopTargets, opinion, top_up_chance_ppb};
 pub use events::{EventError, LogSink, World};
 pub use genetics::{Context, GeneticRecord, Mendel};
-pub use life::LifeRecord;
+pub use life::{Departure, LifeRecord};
 pub use personality::{
     EventKind, LevelTrait, PersonalityRecord, Standing, StressKind, personality_opinion, threshold,
 };
@@ -102,6 +104,25 @@ pub trait Populations {
     /// Put back a head removed by [`remove_head`](Self::remove_head) whose death did not commit (CK-364). A source with no ledger has
     /// nothing to put back.
     fn restore_head(&self, _undo: &HeadUndo) {}
+    /// The start-only safety net (CK-370 §3 step 1, from the approved rule that a pop never falls below its characters): when placing a live
+    /// character would leave a pop with fewer heads than characters, the creation asks here first. A source that **raises the pop by one
+    /// dependent** returns `true`; the default raises nothing, so the creation refuses a full pop (slice 7's rule, which stands in play).
+    /// The addition is not a birth, and a transaction that rolls back does not take it back: the start is all or nothing.
+    ///
+    /// # Errors
+    /// Refuses a missing pop or a count that overflows.
+    fn make_room(&self, _locator: &PopLocator) -> Result<bool, Error> {
+        Ok(false)
+    }
+    /// The dependents the start's safety net has added, by pop (CK-370 §3 step 1), for the start log. A source with no safety net returns none.
+    fn raised_at_start(&self) -> Vec<(PopLocator, u64)> {
+        Vec::new()
+    }
+    /// Every pop of the map as `(locator, pop type, culture)` in place and slot order, for the 768 start's placement of generated relatives
+    /// (CK-370 §3 step 2). A source that does not list its pops returns none, so no pop is found.
+    fn all_pops(&self) -> Vec<(PopLocator, String, String)> {
+        Vec::new()
+    }
     /// Return the distance in whole metres between the places of two pops (CK-366: the marriage pool), 0 for pops of one place, or
     /// `None` when either is unknown or the places are beyond what the source measures. There is no default: a source that wraps
     /// another must forward the query, so that it cannot silently report every place as out of reach.
@@ -162,6 +183,23 @@ impl Populations for ck_economy::EconomyState {
     fn genetics(&self, locator: &PopLocator) -> Option<PopGenetics> {
         pop_genetics(self, locator).cloned()
     }
+    fn all_pops(&self) -> Vec<(PopLocator, String, String)> {
+        self.places
+            .iter()
+            .flat_map(|place| {
+                place.pops.iter().enumerate().map(|(slot, pop)| {
+                    (
+                        PopLocator {
+                            place: place.id.clone(),
+                            slot: u32::try_from(slot).unwrap_or(u32::MAX),
+                        },
+                        pop.kind.clone(),
+                        pop.culture.clone(),
+                    )
+                })
+            })
+            .collect()
+    }
     /// The economy holds no map positions: only pops of one place have a known distance (0).
     fn distance_m(&self, a: &PopLocator, b: &PopLocator) -> Option<u64> {
         (a.place == b.place
@@ -189,6 +227,12 @@ pub struct Ledger<'a> {
     nearby: Option<&'a BTreeMap<String, Vec<NearbyPlace>>>,
     /// The display names of places by id, for the log lines that name a place (CK-368); none known without a map.
     place_names: Option<&'a BTreeMap<String, String>>,
+    /// The start's safety net (CK-370): `Some` while pops are raised by a dependent instead of refusing a character, holding each pop's
+    /// additions; `None` in play, where slice 7's refusal stands.
+    raised: RefCell<Option<BTreeMap<PopLocator, u64>>>,
+    /// The head moves between pops made while the start's safety net is on, in order, and not undone (CK-370: the slots' fosterlings and
+    /// students move with their heads): `(from, to)`.
+    moved: RefCell<Vec<(PopLocator, PopLocator)>>,
 }
 impl<'a> Ledger<'a> {
     /// Lend the economy to a pass. Without a map, only pops of one place are a known distance apart.
@@ -197,6 +241,8 @@ impl<'a> Ledger<'a> {
             economy: RefCell::new(economy),
             nearby: None,
             place_names: None,
+            raised: RefCell::new(None),
+            moved: RefCell::new(Vec::new()),
         }
     }
     /// Lend the economy to a pass together with the places within reach of each place and their distances in ground metres.
@@ -208,6 +254,8 @@ impl<'a> Ledger<'a> {
             economy: RefCell::new(economy),
             nearby: Some(nearby),
             place_names: None,
+            raised: RefCell::new(None),
+            moved: RefCell::new(Vec::new()),
         }
     }
     /// Give the pass the display names of places by id, which the log lines that name a place show.
@@ -215,6 +263,27 @@ impl<'a> Ledger<'a> {
     pub fn with_place_names(mut self, names: &'a BTreeMap<String, String>) -> Self {
         self.place_names = Some(names);
         self
+    }
+    /// Turn on the start's safety net (CK-370 §3 step 1): a pop that would hold fewer heads than characters is raised by one dependent
+    /// instead of refusing the character, and each addition is counted ([`raised`](Self::raised)). For the 768 start only.
+    #[must_use]
+    pub fn with_start_safety_net(self) -> Self {
+        *self.raised.borrow_mut() = Some(BTreeMap::new());
+        self
+    }
+    /// The head moves between pops made since the start's safety net was turned on and not undone, in order, as `(from, to)`.
+    #[must_use]
+    pub fn moved(&self) -> Vec<(PopLocator, PopLocator)> {
+        self.moved.borrow().clone()
+    }
+    /// The dependents the safety net has added, by pop, in pop order (empty when it is off or nothing was needed).
+    #[must_use]
+    pub fn raised(&self) -> Vec<(PopLocator, u64)> {
+        self.raised
+            .borrow()
+            .as_ref()
+            .map(|counts| counts.iter().map(|(pop, n)| (pop.clone(), *n)).collect())
+            .unwrap_or_default()
     }
 }
 impl Populations for Ledger<'_> {
@@ -247,11 +316,29 @@ impl Populations for Ledger<'_> {
     fn genetics(&self, locator: &PopLocator) -> Option<PopGenetics> {
         Populations::genetics(&**self.economy.borrow(), locator)
     }
+    fn all_pops(&self) -> Vec<(PopLocator, String, String)> {
+        Populations::all_pops(&**self.economy.borrow())
+    }
+    fn raised_at_start(&self) -> Vec<(PopLocator, u64)> {
+        self.raised()
+    }
     fn add_births(&self, locator: &PopLocator, count: u64) -> Result<(), Error> {
         self.economy
             .borrow_mut()
             .add_character_births(&locator.place, locator.slot as usize, count)
             .map_err(|_| Error::MissingPop)
+    }
+    fn make_room(&self, locator: &PopLocator) -> Result<bool, Error> {
+        let mut raised = self.raised.borrow_mut();
+        let Some(counts) = raised.as_mut() else {
+            return Ok(false);
+        };
+        self.economy
+            .borrow_mut()
+            .add_start_dependent(&locator.place, locator.slot as usize)
+            .map_err(|_| Error::MissingPop)?;
+        *counts.entry(locator.clone()).or_default() += 1;
+        Ok(true)
     }
     fn remove_head(&self, locator: &PopLocator, minor: bool) -> Result<HeadUndo, Error> {
         self.economy
@@ -281,17 +368,25 @@ impl Populations for Ledger<'_> {
         to: &PopLocator,
         minor: bool,
     ) -> Result<MoveUndo, Error> {
-        self.economy
+        let undo = self
+            .economy
             .borrow_mut()
             .move_character_head(
                 (&from.place, from.slot as usize),
                 (&to.place, to.slot as usize),
                 minor,
             )
-            .map_err(|_| Error::MissingPop)
+            .map_err(|_| Error::MissingPop)?;
+        if self.raised.borrow().is_some() {
+            self.moved.borrow_mut().push((from.clone(), to.clone()));
+        }
+        Ok(undo)
     }
     fn restore_move(&self, undo: &MoveUndo) {
         self.economy.borrow_mut().restore_character_move(undo);
+        if self.raised.borrow().is_some() {
+            self.moved.borrow_mut().pop();
+        }
     }
 }
 /// A bare head-count function knows no cultures, so a character cannot be created into its pops.
@@ -393,6 +488,21 @@ pub struct Character {
     pub life: Box<LifeRecord>,
     /// Orientation, the dates the place and pop were joined, strands and passions (CK-368). Boxed to keep the record small.
     pub ties: Box<Ties>,
+}
+impl Character {
+    /// Whether this record is one the archive holds (CK-370 §2): exactly one of a dated death, an unknown death or an **abroad** state
+    /// ([`Departure`]). A live record is none of them, and a record that is two at once is not canonical. An **abroad** record has **no pop**
+    /// on the map: its place is empty (`generator::figure::no_pop`), so it names no pop of the economy.
+    #[must_use]
+    pub fn archivable(&self) -> bool {
+        self.death.is_some() != (self.life.departure != Departure::None)
+            && (self.life.departure != Departure::Abroad || self.pop.place.is_empty())
+    }
+    /// Whether this record is live: no death, and no archive state.
+    #[must_use]
+    pub fn is_live_form(&self) -> bool {
+        self.death.is_none() && self.life.departure == Departure::None
+    }
 }
 impl Canonical for Character {
     fn encode(&self, o: &mut Vec<u8>) -> Result<(), CanonicalError> {
@@ -565,6 +675,26 @@ impl std::fmt::Display for Error {
     }
 }
 impl std::error::Error for Error {}
+/// Settings that hold only while the 768 start runs (CK-370 §3): never saved, never part of a comparison of two states that differ in nothing else
+/// (both are off in a saved or loaded store).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct StartMode {
+    /// Generated pasts and the simulated lives of living figures stop at this day (the end of 752): the burn-in runs every later year
+    /// once, for everyone. `None` in play, where a past runs to the day it is made.
+    pub(crate) past_until: Option<GameTime>,
+    /// Generated living relatives of a character in a monk pop live outside it (§3 step 2), or abroad.
+    pub(crate) relatives_beside_monks: bool,
+    /// The traits a real figure is never given (CK-370 §1), by identifier: a trait change that would cross the list is not made, so no effect
+    /// of it follows and no line records it.
+    pub(crate) excluded: BTreeMap<u64, Vec<(String, u8)>>,
+    /// The living figures whose **generated** spouse a slot names (a `spouse_of_ruler` of theirs: CK-370 §5): that spouse is alive at the start
+    /// and rolls neither the death curve nor a childbirth risk.
+    pub(crate) slot_protected: BTreeSet<u64>,
+    /// A generated spouse whose fate the household's timeline has not yet decided (CK-370 §5): live in the store so that lineage and marriage
+    /// can refer to it, but **not counted** against its pop's heads, so that one who dies before the opening never charges (or raises) a head.
+    /// The household charges the head once she is known to survive.
+    pub(crate) pending: BTreeSet<u64>,
+}
 /// Live state. Archive and logs are owned separately by the game session.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CharacterStore {
@@ -582,6 +712,8 @@ pub struct CharacterStore {
     /// The live characters by house (a commoner is in none): derived like `by_place`, so a house's head and ruling status are found
     /// among its members, not among everyone.
     by_house: BTreeMap<String, BTreeSet<u64>>,
+    /// The settings of the 768 start, off outside it: derived, never saved.
+    pub(crate) start: StartMode,
     /// How many characters candidate discovery has visited (a test-only count of the work done).
     #[cfg(feature = "test-fixtures")]
     visited: Visits,
@@ -607,6 +739,7 @@ impl Default for CharacterStore {
             by_place: BTreeMap::new(),
             by_pop: BTreeMap::new(),
             by_house: BTreeMap::new(),
+            start: StartMode::default(),
             #[cfg(feature = "test-fixtures")]
             visited: Visits::default(),
         }
@@ -842,6 +975,20 @@ impl CharacterStore {
             self.root = seed | 1;
         }
     }
+    /// Begin the 768 start (CK-370 §3): generated pasts and the simulated lives of living figures stop at `past_until` (the end of 752), and
+    /// the generated living relatives of a character in a monk pop live outside the monk pop (or abroad). Not saved. Call
+    /// [`end_start`](Self::end_start) when the start is done, whether it succeeded or not.
+    pub fn begin_start(&mut self, past_until: GameTime) {
+        self.start = StartMode {
+            past_until: Some(past_until),
+            relatives_beside_monks: true,
+            ..StartMode::default()
+        };
+    }
+    /// End the 768 start: a store plays by slice 7's rules again.
+    pub fn end_start(&mut self) {
+        self.start = StartMode::default();
+    }
     /// The seed of draws that must not depend on the day they are taken: the game's own once fixed, else the pass's.
     #[must_use]
     pub(crate) const fn stable_seed(&self, pass_seed: u64) -> u64 {
@@ -863,7 +1010,22 @@ impl CharacterStore {
     }
     fn check_room(&self, pop: &PopLocator, populations: &impl Populations) -> Result<(), Error> {
         let heads = populations.heads(pop).ok_or(Error::MissingPop)?;
-        if u64::try_from(self.pop_count(pop)).map_err(|_| Error::Overflow)? >= heads {
+        // A spouse still awaiting the household's timeline holds no head yet.
+        let pending = self
+            .start
+            .pending
+            .iter()
+            .filter(|id| self.live.get(id).is_some_and(|c| c.pop == *pop))
+            .count();
+        let count = u64::try_from(self.pop_count(pop).saturating_sub(pending))
+            .map_err(|_| Error::Overflow)?;
+        if count >= heads {
+            // Only the start's safety net (CK-370) raises a full pop; in play this refuses.
+            if populations.make_room(pop)?
+                && count < populations.heads(pop).ok_or(Error::MissingPop)?
+            {
+                return Ok(());
+            }
             return Err(Error::PopFull);
         }
         Ok(())
@@ -1303,7 +1465,7 @@ fn index_record(
     record: &Character,
     offset: u64,
 ) -> std::io::Result<()> {
-    if record.id == UNKNOWN || record.death.is_none() || index.insert(record.id, offset).is_some() {
+    if record.id == UNKNOWN || !record.archivable() || index.insert(record.id, offset).is_some() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             "invalid or duplicate archive id",
@@ -1416,7 +1578,7 @@ impl Archive {
 }
 impl ArchiveSink for Archive {
     fn append(&mut self, record: &Character) -> std::io::Result<()> {
-        if record.id == UNKNOWN || record.death.is_none() || self.index.contains_key(&record.id) {
+        if record.id == UNKNOWN || !record.archivable() || self.index.contains_key(&record.id) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "invalid or duplicate archive id",
@@ -1447,7 +1609,7 @@ impl ArchiveSink for Archive {
         let mut at: Vec<u64> = Vec::with_capacity(records.len());
         for record in records {
             if record.id == UNKNOWN
-                || record.death.is_none()
+                || !record.archivable()
                 || self.index.contains_key(&record.id)
                 || !seen.insert(record.id)
             {
@@ -1717,7 +1879,7 @@ impl CharacterStore {
                 *id == UNKNOWN
                     || *id != c.id
                     || *id >= self.next_id
-                    || c.death.is_some()
+                    || !c.is_live_form()
                     || archive.contains(*id)
             })
             || archive.ids().any(|id| id >= self.next_id)

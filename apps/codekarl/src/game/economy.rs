@@ -313,7 +313,7 @@ mod tests {
     }
 
     #[test]
-    fn the_768_start_gives_each_of_the_33_noble_houses_a_demesne_and_its_labourers() {
+    fn the_768_start_gives_each_of_the_34_noble_houses_a_demesne_and_its_labourers() {
         let assets = ireland_assets();
         let directory = assets.join("scenarios/ireland-768");
         let scenario = ck_map::load_scenario(&directory).unwrap();
@@ -323,7 +323,8 @@ mod tests {
             report.iter().all(|line| !line.contains(" demesne: ")),
             "no demesne level is cut at the 768 start: {report:?}"
         );
-        assert_eq!(data.nobles.len(), 33);
+        // 33 houses of the P1 start and, from CK-370, Carraig Aille (one level).
+        assert_eq!(data.nobles.len(), 34);
 
         let (mut heads_added, mut jobs_filled, mut nobles_total) = (0, 0, 0);
         for (id, noble) in &data.nobles {
@@ -404,12 +405,12 @@ mod tests {
             );
             jobs_filled += demesne.employment[labourer_index].workers;
         }
-        assert_eq!(nobles_total, 1180);
-        assert_eq!(jobs_filled, 590, "590 paid workers where no level is cut");
+        assert_eq!(nobles_total, 1200);
+        assert_eq!(jobs_filled, 600, "600 paid workers where no level is cut");
         assert_eq!(
             heads_added,
-            16 * 13 + 32 * 17 + 66 * 3,
-            "the households of 13, 17 and 3 houses of 1, 2 and 4 levels"
+            16 * 14 + 32 * 17 + 66 * 3,
+            "the households of 14, 17 and 3 houses of 1, 2 and 4 levels"
         );
     }
 

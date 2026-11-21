@@ -1,0 +1,5734 @@
+# Ireland 768: the structured fields the loader reads (r3; r3: household women and Cashel's court cleric in the noble pop at royal
+# sites. r2: r2 2026-11-20 for CK-370 review: structured dates, alive_at_start, pop_kind,
+# dead parents' birth and seat, monastery slot members in the monk pop, Monasterboice's abbot). Drafted by Claude (ck-designer-1), 2026-11-20, for characters slice 8.
+# Companion to figures/ireland-768.toml (the research record: names, dates, roles, languages, notes, beats). This file adds, keyed by
+# figure key: house and subhouse (households-r4; subhouses are L7 data, stored now), house of birth where it differs, the office
+# marker (ruler / high_cleric; heir is the succession law's, L1), parent and spouse keys, the dead fathers the figures name, the known
+# relationships as strands, and the generated slots as structured members. Houses are group keys; display names come with L7.
+# Rulers: the 31 kings and heads of royal kin in office at 9 October 768. high_cleric: bishops, and abbots or abbesses of churches of
+# size 2 or more (size-math-r3). Notes: .pipeline/coordination/history-scratch/figures-load-r1.md.
+
+# pop_kind: the pop the figure joins at its location: "noble" = the place's noble pop (p1-nobles-start; Dún Sobhairce's is dal_riatan),
+# "monk" = the place's monk pop (Mayo's is northumbrian). born / died: years (estimated where flagged); died_date where the day is known;
+# died_before_start: died before 768, year unknown. alive_at_start: false for the six who died in 768 before 9 October (archived).
+
+[[figure]]
+key = "niall_frossach"
+house = "cenel_neogain"
+office = "ruler"
+father = "fergal_mac_maele_duin"
+mother = "aithiochta"
+spouse = "dunlaith"
+born = 718
+died = 778
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "dunlaith"
+house = "cenel_neogain"
+house_of_birth = "cenel_conaill"
+father = "flaithbertach_mac_loingsig"
+spouse = "niall_frossach"
+born = 735
+born_estimated = true
+died = 798
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "aed_oirdnide"
+house = "cenel_neogain"
+father = "niall_frossach"
+mother = "dunlaith"
+born = 754
+born_estimated = true
+died = 819
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "colman_mac_neill"
+house = "cenel_neogain"
+father = "niall_frossach"
+mother = "dunlaith"
+born = 756
+born_estimated = true
+died = 815
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "mael_duin_mac_aedo_allain"
+house = "cenel_neogain"
+father = "aed_allan"
+born = 738
+born_estimated = true
+died = 788
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "murchad_mac_maele_duin"
+house = "cenel_neogain"
+father = "mael_duin_mac_aedo_allain"
+born = 765
+born_estimated = true
+died = 823
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "conchobar_ua_maele_duin"
+house = "cenel_neogain"
+born = 725
+born_estimated = true
+died = 772
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "aithiochta"
+house = "cenel_neogain"
+house_of_birth = "ciannachta"
+born = 695
+born_estimated = true
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "fer_da_chrich"
+father = "suibne"
+born = 710
+born_estimated = true
+died = 768
+died_date = "0768-05-18"
+alive_at_start = false
+pop_kind = "monk"
+
+[[figure]]
+key = "cernach_mac_suibni"
+father = "suibne"
+born = 715
+born_estimated = true
+died = 784
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "echu_mac_cernaig"
+father = "cernach_mac_suibni"
+born = 745
+born_estimated = true
+died = 796
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "cu_dinaisc"
+office = "high_cleric"
+born = 720
+born_estimated = true
+died = 791
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "dub_da_leithe_mac_sinaig"
+born = 735
+born_estimated = true
+died = 793
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "condmach_mac_duib_da_leithe"
+father = "dub_da_leithe_mac_sinaig"
+born = 760
+born_estimated = true
+died = 807
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "airechtach_ua_faelain"
+born = 720
+born_estimated = true
+died = 794
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "foendelach_mac_moenaig"
+born = 735
+born_estimated = true
+died = 795
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "affiath"
+born = 730
+born_estimated = true
+died = 794
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "gormgal_mac_dindataig"
+born = 750
+born_estimated = true
+died = 806
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "donngal_mac_buachaill"
+house = "airthir"
+born = 735
+born_estimated = true
+died = 791
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "ua_miannaig"
+born = 710
+born_estimated = true
+died = 768
+alive_at_start = false
+pop_kind = "monk"
+
+[[figure]]
+key = "folachtach_tigi_tua"
+office = "high_cleric"
+born = 715
+born_estimated = true
+died = 770
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "forbasach_ua_cernaig"
+born = 715
+born_estimated = true
+died = 771
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "collbrann"
+born = 718
+born_estimated = true
+died = 776
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "rechtnia"
+born = 725
+born_estimated = true
+died = 784
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "sneidriagail"
+born = 728
+born_estimated = true
+died = 786
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "murgal_cluana"
+born = 730
+born_estimated = true
+died = 789
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "saerbergg"
+born = 732
+born_estimated = true
+died = 791
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "ioseph_ua_cernaig"
+born = 735
+born_estimated = true
+died = 794
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "anaile"
+born = 740
+born_estimated = true
+died = 799
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "ailmedair"
+born = 740
+born_estimated = true
+died = 797
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "connmach_mac_muirmid"
+born = 745
+born_estimated = true
+died = 798
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "gallbran_ua_lingain"
+born = 725
+born_estimated = true
+died = 773
+died_estimated = true
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "lerthan"
+office = "high_cleric"
+born = 715
+born_estimated = true
+died = 773
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "condal_ingen_murchada"
+born = 735
+born_estimated = true
+died = 797
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "fine_cille_dara"
+born = 750
+born_estimated = true
+died = 805
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "muiredach_mac_cathail"
+office = "high_cleric"
+born = 720
+born_estimated = true
+died = 787
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "lomthuili"
+born = 720
+born_estimated = true
+died = 787
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "sneidbran"
+born = 722
+born_estimated = true
+died = 787
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "eodus_ua_dicolla"
+born = 740
+born_estimated = true
+died = 798
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "faelan_mac_cellaig"
+father = "cellach_mac_dunchada"
+born = 760
+born_estimated = true
+died = 804
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "muirenn_ingen_cellaig"
+father = "cellach_mac_dunchada"
+born = 765
+born_estimated = true
+died = 831
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "dub_indrecht_mac_cathail"
+house = "ui_briuin"
+subhouse = "sil_cathail"
+father = "cathal"
+born = 730
+born_estimated = true
+died = 768
+alive_at_start = false
+pop_kind = "noble"
+
+[[figure]]
+key = "donn_cothaid_mac_cathail"
+house = "ui_fiachrach_muaidhe"
+office = "ruler"
+born = 735
+born_estimated = true
+died = 773
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "flaithri_mac_domnaill"
+house = "ui_briuin"
+subhouse = "sil_cellaig"
+born = 728
+born_estimated = true
+died = 779
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "artgal_mac_cathail"
+house = "ui_briuin"
+subhouse = "sil_cathail"
+father = "cathal"
+born = 732
+born_estimated = true
+died = 791
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "dub_dibeirg_mac_cathail"
+house = "ui_briuin"
+subhouse = "sil_cathail"
+father = "cathal"
+born = 733
+born_estimated = true
+died = 787
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "fogartach_mac_cathail"
+house = "ui_briuin"
+subhouse = "sil_cathail"
+father = "cathal"
+born = 734
+born_estimated = true
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "tipraite_mac_taidg"
+house = "ui_briuin"
+subhouse = "sil_muiredaig"
+born = 740
+born_estimated = true
+died = 786
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "tomaltach_mac_murgail"
+house = "ui_briuin"
+subhouse = "sil_muiredaig"
+office = "ruler"
+born = 735
+born_estimated = true
+died = 774
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "muirgius_mac_tommaltaig"
+house = "ui_briuin"
+subhouse = "sil_muiredaig"
+father = "tomaltach_mac_murgail"
+born = 760
+born_estimated = true
+died = 815
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "colla_mac_fergusso"
+house = "ui_briuin"
+subhouse = "sil_cellaig"
+born = 750
+born_estimated = true
+died = 796
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "cinaed_mac_artgail"
+house = "ui_briuin"
+subhouse = "sil_cathail"
+father = "artgal_mac_cathail"
+born = 758
+born_estimated = true
+died = 792
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "connmach_mac_duinn_cothaid"
+house = "ui_fiachrach_muaidhe"
+father = "donn_cothaid_mac_cathail"
+born = 750
+born_estimated = true
+died = 787
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "cathal_mac_ailello"
+house = "ui_fiachrach_muaidhe"
+born = 755
+born_estimated = true
+died = 816
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "cathussach_mac_eterscelai"
+house = "eoganacht_aine"
+office = "ruler"
+born = 715
+born_estimated = true
+died = 769
+died_estimated = true
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "artri_mac_cathail"
+house = "eoganacht_glendamnach"
+born = 740
+born_estimated = true
+died = 821
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "olchobar_mac_duib_indrecht"
+house = "eoganacht_aine"
+born = 745
+born_estimated = true
+died = 805
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "crimthann_cenel_fingin"
+house = "eoganacht_chaisil"
+born = 740
+born_estimated = true
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "eithne_ingen_bresail"
+house = "cenel_neogain"
+spouse = "niall_frossach"
+born = 730
+born_estimated = true
+died = 768
+alive_at_start = false
+pop_kind = "noble"
+
+[[figure]]
+key = "donnchad_midi"
+house = "clann_cholmain"
+office = "ruler"
+father = "domnall_midi"
+mother = "ailbine_ingen_ailello"
+spouse = "be_fail_ingen_cathail"
+born = 733
+died = 797
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "ailbine_ingen_ailello"
+house = "clann_cholmain"
+house_of_birth = "ciannachta"
+born = 710
+born_estimated = true
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "muiredach_mac_domnaill"
+house = "clann_cholmain"
+father = "domnall_midi"
+mother = "ailbine_ingen_ailello"
+born = 740
+born_estimated = true
+died = 802
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "indrechtach_mac_domnaill"
+house = "clann_cholmain"
+father = "domnall_midi"
+mother = "ailbine_ingen_ailello"
+born = 742
+born_estimated = true
+died = 797
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "finnechta_mac_domnaill"
+house = "clann_cholmain"
+father = "domnall_midi"
+mother = "ailbine_ingen_ailello"
+born = 745
+born_estimated = true
+died = 797
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "diarmait_odar_mac_domnaill"
+house = "clann_cholmain"
+father = "domnall_midi"
+mother = "ailbine_ingen_ailello"
+born = 747
+born_estimated = true
+died = 797
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "eithne_ingen_domnaill"
+house = "clann_cholmain"
+father = "domnall_midi"
+mother = "ailbine_ingen_ailello"
+born = 752
+born_estimated = true
+died = 795
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "be_fail_ingen_cathail"
+house = "clann_cholmain"
+house_of_birth = "ui_briuin"
+spouse = "donnchad_midi"
+born = 740
+born_estimated = true
+died = 801
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "domnall_mac_donnchada"
+house = "clann_cholmain"
+father = "donnchad_midi"
+mother = "be_fail_ingen_cathail"
+born = 762
+born_estimated = true
+died = 799
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "congalach_mac_conaing"
+house = "ui_chonaing"
+office = "ruler"
+born = 738
+born_estimated = true
+died = 778
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "diarmait_mac_conaing"
+house = "ui_chonaing"
+born = 740
+born_estimated = true
+died = 786
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "conaing_mac_dungaile"
+house = "ui_chonaing"
+born = 750
+born_estimated = true
+died = 786
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "coirpre_mac_fogartaig"
+house = "ui_chernaig"
+office = "ruler"
+born = 722
+born_estimated = true
+died = 771
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "niall_mac_conaill"
+house = "ui_chernaig"
+born = 730
+born_estimated = true
+died = 778
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "mael_duin_mac_fergusa"
+house = "ui_chernaig"
+born = 745
+born_estimated = true
+died = 785
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "cernach_mac_flainn"
+house = "ui_chernaig"
+born = 740
+born_estimated = true
+died = 770
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "flaithbertach_mac_flainn"
+house = "ui_chernaig"
+born = 740
+born_estimated = true
+died = 770
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "ruaidri_mac_faelain"
+house = "ui_faelain"
+office = "ruler"
+born = 740
+born_estimated = true
+died = 785
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "cellach_mac_dunchada"
+house = "ui_dunchada"
+office = "ruler"
+born = 725
+born_estimated = true
+died = 776
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "finsnechta_cethardec"
+house = "ui_dunchada"
+father = "cellach_mac_dunchada"
+born = 750
+born_estimated = true
+died = 808
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "aed_mac_cellaig"
+house = "ui_dunchada"
+father = "cellach_mac_dunchada"
+born = 758
+born_estimated = true
+died = 829
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "bran_ardchenn"
+house = "ui_muiredaig"
+office = "ruler"
+born = 740
+born_estimated = true
+died = 795
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "fiachnae_mac_aedo_roin"
+house = "dal_fiatach"
+office = "ruler"
+born = 722
+born_estimated = true
+died = 789
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "eochaid_mac_fiachnai"
+house = "dal_fiatach"
+father = "fiachnae_mac_aedo_roin"
+born = 750
+born_estimated = true
+died = 810
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "cairell_mac_fiachnai"
+house = "dal_fiatach"
+father = "fiachnae_mac_aedo_roin"
+born = 755
+born_estimated = true
+died = 819
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "loingsech_mac_fiachnai"
+father = "fiachnae_mac_aedo_roin"
+born = 758
+born_estimated = true
+died = 800
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "diarmait_ua_aedo_roin"
+born = 755
+born_estimated = true
+died = 825
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "maicnia_mac_cellaig"
+office = "high_cleric"
+born = 715
+born_estimated = true
+died = 780
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "dungal_mac_loegairi"
+born = 735
+born_estimated = true
+died = 790
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "domnall_mac_aeda_muindeirg"
+house = "cenel_conaill"
+office = "ruler"
+father = "aed_muinderg"
+born = 740
+born_estimated = true
+died = 804
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "donnchad_mac_aeda_muindeirg"
+house = "cenel_conaill"
+father = "aed_muinderg"
+born = 742
+born_estimated = true
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "mael_bresail_mac_murchada"
+house = "cenel_conaill"
+father = "murchad_mac_flaithbertaig"
+born = 762
+born_estimated = true
+died = 819
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "ciaran_ratha_maige_oenaig"
+born = 720
+born_estimated = true
+died = 784
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "colgu_mac_cellaig"
+house = "ui_chremthainn"
+office = "ruler"
+born = 735
+born_estimated = true
+died = 781
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "artgal_clochair"
+office = "high_cleric"
+born = 715
+born_estimated = true
+died = 770
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "aengus_mac_ailene"
+house = "mugdorna"
+office = "ruler"
+born = 730
+born_estimated = true
+died = 779
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "dunchad_mac_ailene"
+house = "mugdorna"
+born = 735
+born_estimated = true
+died = 778
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "cathrua_mugdorna"
+house = "mugdorna"
+born = 740
+born_estimated = true
+died = 786
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "cathal_mac_echach"
+house = "ui_chremthainn"
+born = 750
+born_estimated = true
+died = 791
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "domnall_mac_colgen"
+house = "ui_chremthainn"
+father = "colgu_mac_cellaig"
+born = 755
+born_estimated = true
+died = 791
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "dub_calgaid"
+house = "ui_cheinnselaig"
+subhouse = "sil_chormaic"
+office = "ruler"
+father = "laidcnen_mac_con_mella"
+born = 730
+born_estimated = true
+died = 769
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "cennselach_mac_brain"
+house = "ui_cheinnselaig"
+subhouse = "sil_maeluidir"
+born = 730
+born_estimated = true
+died = 770
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "eterscel_mac_aeda"
+house = "ui_cheinnselaig"
+born = 735
+born_estimated = true
+died = 778
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "cairpre_mac_laidcnen"
+house = "ui_cheinnselaig"
+subhouse = "sil_chormaic"
+father = "laidcnen_mac_con_mella"
+born = 738
+born_estimated = true
+died = 793
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "dub_da_chrich_mac_laidcnen"
+house = "ui_cheinnselaig"
+subhouse = "sil_chormaic"
+father = "laidcnen_mac_con_mella"
+born = 740
+born_estimated = true
+died = 782
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "cellach_tosach"
+house = "ui_cheinnselaig"
+born = 758
+born_estimated = true
+died = 809
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "dub_innrecht_mac_fergusa"
+office = "high_cleric"
+born = 720
+born_estimated = true
+died = 781
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "cathal_fernann"
+born = 740
+born_estimated = true
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "fiannachtach_fernann"
+born = 740
+born_estimated = true
+died = 799
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "toim_snama"
+house = "osraige"
+office = "ruler"
+born = 730
+born_estimated = true
+died = 770
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "dungal_mac_cellaig"
+house = "osraige"
+born = 735
+born_estimated = true
+died = 772
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "faelan_mac_forbasaig"
+house = "osraige"
+born = 742
+born_estimated = true
+died = 786
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "fergal_mac_anmchada"
+house = "osraige"
+father = "anmchad_mac_con_cherca"
+born = 752
+born_estimated = true
+died = 802
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "scandlan_ua_taidg"
+office = "high_cleric"
+born = 715
+born_estimated = true
+died = 782
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "fergil_virgil"
+born = 705
+born_estimated = true
+died = 784
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "tnuthgal_saigir"
+office = "high_cleric"
+born = 715
+born_estimated = true
+died = 776
+died_estimated = true
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "mac_oc_saigir"
+born = 730
+born_estimated = true
+died = 788
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "snedchest_mac_tuamchu"
+office = "high_cleric"
+born = 715
+born_estimated = true
+died = 778
+died_estimated = true
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "conall_mac_in_tsair"
+born = 715
+born_estimated = true
+died = 778
+died_estimated = true
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "ultan_bennchair"
+born = 720
+born_estimated = true
+died = 782
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "augustin_bennchair"
+born = 720
+born_estimated = true
+died = 780
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "sirne_bennchair"
+born = 725
+born_estimated = true
+died = 791
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "tomas_bennchair"
+born = 735
+born_estimated = true
+died = 794
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "airmedach_bennchair"
+born = 740
+born_estimated = true
+died = 800
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "airlid_cluana"
+office = "high_cleric"
+born = 715
+born_estimated = true
+died = 772
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "fulartach_cluana"
+office = "high_cleric"
+born = 715
+born_estimated = true
+died = 779
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "gaedel_cluana"
+born = 720
+born_estimated = true
+died = 776
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "faelgus_mac_tnuthgail"
+born = 725
+born_estimated = true
+died = 783
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "dub_da_bairenn"
+born = 730
+born_estimated = true
+died = 787
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "crunnmael_cluana"
+born = 735
+born_estimated = true
+died = 793
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "clothchu_cluana"
+born = 735
+born_estimated = true
+died = 796
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "cinaed_mac_cumascaig"
+born = 740
+born_estimated = true
+died = 793
+died_estimated = true
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "enchorach_ua_dodain"
+office = "high_cleric"
+born = 710
+born_estimated = true
+died = 769
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "mael_combair"
+born = 730
+born_estimated = true
+died = 790
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "ceithernach_glinne"
+born = 735
+born_estimated = true
+died = 799
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "mimtenacha_glinne"
+born = 740
+born_estimated = true
+died = 800
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "ceithernach_ua_herumain"
+office = "high_cleric"
+born = 710
+born_estimated = true
+died = 773
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "flaithnia_mac_congaile"
+born = 720
+born_estimated = true
+died = 781
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "mac_flaithniad"
+born = 730
+born_estimated = true
+died = 783
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "tipraite_mac_ferchair"
+born = 730
+born_estimated = true
+died = 795
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "muiredach_cluana_fearta"
+born = 735
+born_estimated = true
+died = 792
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "muiredach_mac_olchobair"
+born = 745
+born_estimated = true
+died = 802
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "cennfaelad_cluana_fearta"
+born = 745
+born_estimated = true
+died = 807
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "cennselach_mac_con_bairnne"
+born = 700
+born_estimated = true
+died = 763
+alive_at_start = false
+pop_kind = "monk"
+
+[[figure]]
+key = "senchan_imlecha"
+office = "high_cleric"
+born = 715
+born_estimated = true
+died = 781
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "cuan_imlecha"
+born = 730
+born_estimated = true
+died = 787
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "aedan_lis_moir"
+born = 700
+born_estimated = true
+died = 768
+died_date = "0768-07-19"
+alive_at_start = false
+pop_kind = "monk"
+
+[[figure]]
+key = "suairlech_ua_con_chiarain"
+office = "high_cleric"
+born = 715
+born_estimated = true
+died = 774
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "eogan_mac_ronchinn"
+born = 720
+born_estimated = true
+died = 776
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "airdmesach_lis_moir"
+born = 720
+born_estimated = true
+died = 778
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "orach_lis_moir"
+born = 725
+born_estimated = true
+died = 781
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "suairlech_anchorite"
+born = 725
+born_estimated = true
+died = 783
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "selbach_corcaige"
+office = "high_cleric"
+born = 710
+born_estimated = true
+died = 774
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "teroc_corcaige"
+born = 725
+born_estimated = true
+died = 792
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "connmach_mac_donait"
+born = 740
+born_estimated = true
+died = 800
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "cumascach_tire_da_glas"
+office = "high_cleric"
+born = 715
+born_estimated = true
+died = 784
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "clemens_tire_da_glas"
+born = 735
+born_estimated = true
+died = 802
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "lergal_mac_neimhith"
+office = "high_cleric"
+born = 715
+born_estimated = true
+died = 779
+died_estimated = true
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "ioseph_ua_foilene"
+born = 725
+born_estimated = true
+died = 785
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "senchan_biror"
+born = 730
+born_estimated = true
+died = 796
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "mac_riagoil"
+born = 762
+born_estimated = true
+died = 822
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "aedan_maige_eo"
+office = "high_cleric"
+born = 710
+born_estimated = true
+died = 773
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "leutfrid_maige_eo"
+born = 730
+born_estimated = true
+died = 786
+died_estimated = true
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "aldulf_maige_eo"
+born = 745
+born_estimated = true
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "forbasach_mac_maile_tola"
+office = "high_cleric"
+born = 715
+born_estimated = true
+died = 779
+died_estimated = true
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "aedan_rois_comain"
+born = 720
+born_estimated = true
+died = 781
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "aildobur_rois_comain"
+born = 745
+born_estimated = true
+died = 800
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "colcu_ua_duinechda"
+born = 730
+born_estimated = true
+died = 796
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "joseph_scottus"
+born = 750
+born_estimated = true
+died = 795
+died_estimated = true
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "aedgen_britt"
+born = 747
+born_estimated = true
+died = 863
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "dublitir_finnglaissi"
+born = 730
+born_estimated = true
+died = 796
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "cainchomrac_finnglaissi"
+born = 730
+born_estimated = true
+died = 791
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "flann_mac_cellaig"
+born = 745
+born_estimated = true
+died = 812
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "donngal_mac_nuadat"
+office = "high_cleric"
+born = 710
+born_estimated = true
+died = 775
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "fianchu_loga"
+born = 715
+born_estimated = true
+died = 775
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "fedach_mac_cormaic"
+born = 725
+born_estimated = true
+died = 789
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "cosgrach_ua_fraeich"
+born = 735
+born_estimated = true
+died = 802
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "cuanu_loga"
+born = 750
+born_estimated = true
+died = 825
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "torbach_mac_gormain"
+born = 745
+born_estimated = true
+died = 808
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "cuana_mainistrech"
+born = 740
+born_estimated = true
+died = 805
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "fiangus_ross_cre"
+born = 735
+born_estimated = true
+died = 805
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "elarius_locha_cre"
+born = 735
+born_estimated = true
+died = 807
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "dianchride"
+born = 745
+born_estimated = true
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "aengus_mac_crunnmail"
+office = "high_cleric"
+born = 715
+born_estimated = true
+died = 783
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "fergus_damliacc"
+born = 715
+born_estimated = true
+died = 783
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "eicnech_mac_eistenaig"
+born = 720
+born_estimated = true
+died = 781
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "cathnia_damliacc"
+born = 750
+born_estimated = true
+died = 810
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "finan_cluana_eois"
+office = "high_cleric"
+born = 720
+born_estimated = true
+died = 778
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "eireannach_mac_eichen"
+office = "high_cleric"
+born = 710
+born_estimated = true
+died = 774
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "muiredach_mac_aimirgein"
+born = 735
+born_estimated = true
+died = 805
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "olchobar_mac_flainn"
+house = "ui_fidgeinte"
+born = 738
+born_estimated = true
+died = 796
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "mugthigern_mac_cellaig"
+born = 720
+born_estimated = true
+died = 785
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "rechtabra_mac_mugthigirn"
+father = "mugthigern_mac_cellaig"
+born = 755
+born_estimated = true
+died = 819
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "ua_becc_fobair"
+office = "high_cleric"
+born = 705
+born_estimated = true
+died = 770
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "aedgein_fobair"
+office = "high_cleric"
+born = 715
+born_estimated = true
+died = 771
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "fechtach_fobair"
+born = 720
+born_estimated = true
+died = 781
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "rechtlaiten_fobair"
+born = 720
+born_estimated = true
+died = 783
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "fairchellach_fobair"
+born = 750
+born_estimated = true
+died = 814
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "conall_mac_crunnmail"
+office = "high_cleric"
+born = 715
+born_estimated = true
+died = 784
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "colgu_mac_crunnmail"
+born = 720
+born_estimated = true
+died = 787
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "frecmarc_lusca"
+born = 730
+born_estimated = true
+died = 791
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "muiredach_mac_oengusa"
+born = 730
+born_estimated = true
+died = 791
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "maenach_mac_oengusa"
+born = 735
+born_estimated = true
+died = 796
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "feirgil_ua_taidc"
+born = 750
+born_estimated = true
+died = 800
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "maenach_mac_colggen"
+father = "colgu_mac_crunnmail"
+born = 750
+born_estimated = true
+died = 805
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "ailill_mac_fergusa"
+house = "ui_chernaig"
+born = 750
+born_estimated = true
+died = 800
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "ailill_lothra"
+office = "high_cleric"
+born = 720
+born_estimated = true
+died = 780
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "colum_mac_faelgusa"
+office = "high_cleric"
+born = 720
+born_estimated = true
+died = 788
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "coibdenach_lothra"
+born = 740
+born_estimated = true
+died = 809
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "echtgal_mac_tuathail"
+office = "high_cleric"
+born = 725
+born_estimated = true
+died = 788
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "dub_indrecht_mac_cathasaig"
+house = "eoganacht_aine"
+born = 725
+born_estimated = true
+died = 777
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "ultan_ua_bir_derg"
+office = "high_cleric"
+born = 710
+born_estimated = true
+died = 774
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "aurthaile_fathain"
+born = 730
+born_estimated = true
+died = 793
+died_estimated = true
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "fothad_na_canoine"
+born = 750
+born_estimated = true
+died = 819
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "mael_duin_mac_aedo"
+house = "eoganacht_locha_lein"
+office = "ruler"
+born = 730
+born_estimated = true
+died = 786
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "cobthach_mac_maele_duin"
+house = "eoganacht_locha_lein"
+father = "mael_duin_mac_aedo"
+born = 760
+born_estimated = true
+died = 833
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "cu_chongelt_mac_cairpri"
+house = "eoganacht_locha_lein"
+born = 745
+born_estimated = true
+died = 791
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "aed_allain_mac_cairpri"
+house = "eoganacht_locha_lein"
+born = 755
+born_estimated = true
+died = 803
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "aed_ailgin"
+house = "ui_maine"
+office = "ruler"
+born = 725
+born_estimated = true
+died = 772
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "dunchad_ua_daimine"
+house = "ui_maine"
+born = 738
+born_estimated = true
+died = 785
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "conall_mac_fidgaill"
+house = "ui_maine"
+born = 740
+born_estimated = true
+died = 787
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "amalgaid_ua_maine"
+house = "ui_maine"
+born = 740
+born_estimated = true
+died = 791
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "ailill_mac_indrechtaig"
+house = "ui_maine"
+born = 742
+born_estimated = true
+died = 799
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "cathmug_mac_duinn_chothaig"
+house = "ui_fiachrach_muaidhe"
+father = "donn_cothaid_mac_cathail"
+born = 755
+born_estimated = true
+died = 787
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "artri_mac_ailella"
+house = "mugdorna"
+born = 750
+born_estimated = true
+died = 802
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "flathrua_mac_fiachrach"
+house = "dal_naraidi"
+office = "ruler"
+born = 720
+born_estimated = true
+died = 774
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "cinaed_ciarrge"
+house = "dal_naraidi"
+born = 740
+born_estimated = true
+died = 776
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "tomaltach_mac_indrechtaig"
+house = "dal_naraidi"
+born = 732
+born_estimated = true
+died = 790
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "bresal_mac_flaithri"
+house = "dal_naraidi"
+father = "flathrua_mac_fiachrach"
+born = 750
+born_estimated = true
+died = 792
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "aed_find_mac_echdach"
+house = "cenel_ngabrain"
+office = "ruler"
+born = 730
+born_estimated = true
+died = 778
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "fergus_mac_echdach"
+house = "cenel_ngabrain"
+born = 735
+born_estimated = true
+died = 781
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "donncoirce_dal_riata"
+house = "cenel_ngabrain"
+born = 745
+born_estimated = true
+died = 792
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "torpaid_corco_modruad"
+house = "corcu_modruad"
+office = "ruler"
+born = 725
+born_estimated = true
+died = 769
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "cenn_faelad_ua_fidgeinte"
+house = "ui_fidgeinte"
+office = "ruler"
+born = 725
+born_estimated = true
+died = 774
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "scandlan_mac_flainn"
+house = "ui_fidgeinte"
+born = 738
+born_estimated = true
+died = 786
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "murchad_mac_flainn"
+house = "ui_fidgeinte"
+born = 745
+born_estimated = true
+died = 807
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "cinaed_mac_flainn"
+house = "ui_failge"
+office = "ruler"
+born = 720
+born_estimated = true
+died = 770
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "cellach_mac_flainn"
+house = "ui_failge"
+born = 725
+born_estimated = true
+died = 770
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "mugron_mac_flainn"
+house = "ui_failge"
+born = 728
+born_estimated = true
+died = 782
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "domnall_mac_flaithnia"
+house = "ui_failge"
+born = 745
+born_estimated = true
+died = 783
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "flaithnia_mac_cinaeda"
+house = "ui_failge"
+father = "cinaed_mac_flainn"
+born = 750
+born_estimated = true
+died = 806
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "oengus_mac_mugroin"
+house = "ui_failge"
+father = "mugron_mac_flainn"
+born = 760
+born_estimated = true
+died = 803
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "maenach_mac_colmain"
+office = "high_cleric"
+born = 705
+born_estimated = true
+died = 773
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "robartach_mac_maenaig"
+father = "maenach_mac_colmain"
+born = 725
+born_estimated = true
+died = 787
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "congal_mac_maenaig"
+father = "maenach_mac_colmain"
+born = 740
+born_estimated = true
+died = 806
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "suibne_mac_maenaig"
+father = "maenach_mac_colmain"
+born = 752
+born_estimated = true
+died = 814
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "ailill_mac_cormaic"
+born = 735
+born_estimated = true
+died = 802
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "suibne_atha_truim"
+born = 725
+born_estimated = true
+died = 796
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "cenn_faelad_mac_rumain"
+born = 745
+born_estimated = true
+died = 821
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "ailbran_mac_lugdach"
+office = "high_cleric"
+born = 720
+born_estimated = true
+died = 781
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "fer_fugaill"
+office = "high_cleric"
+born = 720
+born_estimated = true
+died = 789
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "mael_aichthen"
+office = "high_cleric"
+born = 710
+born_estimated = true
+died = 772
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "oengus_ceile_de"
+born = 755
+born_estimated = true
+died = 824
+died_estimated = true
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "siadal_ua_comain"
+born = 738
+born_estimated = true
+died = 799
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "aedan_rathain"
+born = 725
+born_estimated = true
+died = 792
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "ainfchellach_condaire"
+born = 725
+born_estimated = true
+died = 778
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "gormgal_mac_conaill_cru"
+house = "ui_echach_cobo"
+office = "ruler"
+born = 725
+born_estimated = true
+died = 776
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "eochu_mac_ailella"
+house = "ui_echach_cobo"
+born = 745
+born_estimated = true
+died = 801
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "mael_bresail_mac_ailella"
+house = "ui_echach_cobo"
+born = 755
+born_estimated = true
+died = 825
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "nuadu_ua_bolcain"
+born = 725
+born_estimated = true
+died = 781
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "ferdomnach_tuama"
+born = 730
+born_estimated = true
+died = 782
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "conchobor_mac_cumascaig"
+house = "ui_fhiachrach_aidne"
+office = "ruler"
+born = 725
+born_estimated = true
+died = 769
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "art_mac_flaithnia"
+house = "ui_fhiachrach_aidne"
+born = 735
+born_estimated = true
+died = 772
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "anluan_mac_conchobair"
+house = "ui_fhiachrach_aidne"
+father = "conchobor_mac_cumascaig"
+born = 758
+born_estimated = true
+died = 805
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "maenach_ua_maenaig"
+born = 720
+born_estimated = true
+died = 781
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "bec_mac_conla"
+house = "tethbae"
+office = "ruler"
+born = 720
+born_estimated = true
+died = 771
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "diarmait_mac_becc"
+house = "tethbae"
+father = "bec_mac_conla"
+born = 748
+born_estimated = true
+died = 791
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "echaid_mac_focartaig"
+office = "high_cleric"
+born = 725
+born_estimated = true
+died = 785
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "murgal_mac_ninnida"
+office = "high_cleric"
+born = 710
+born_estimated = true
+died = 769
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "aed_mac_cairpri_rechrann"
+born = 725
+born_estimated = true
+died = 773
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "feradach_mac_segeni"
+born = 740
+born_estimated = true
+died = 799
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "constans_locha_eirne"
+born = 720
+born_estimated = true
+died = 778
+alive_at_start = true
+pop_kind = "monk"
+
+[[figure]]
+key = "cathal_mac_conaill_menn"
+house = "cenel_coirpri"
+office = "ruler"
+born = 710
+born_estimated = true
+died = 771
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "cathmug_mac_flaithbertaig"
+house = "cenel_coirpri"
+born = 735
+born_estimated = true
+died = 792
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "cu_gamna_mac_naenennaig"
+house = "cenel_cairpri_tethbae"
+office = "ruler"
+born = 730
+born_estimated = true
+died = 784
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "dub_innrecht_mac_artgaile"
+house = "cenel_cairpri_tethbae"
+born = 755
+born_estimated = true
+died = 799
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "murchad_mac_connmaig"
+house = "cenel_cairpri_tethbae"
+born = 755
+born_estimated = true
+died = 799
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "aengus_mac_fogartaig"
+house = "cenel_loegairi"
+office = "ruler"
+born = 715
+born_estimated = true
+died = 771
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "mael_duin_mac_oengusa"
+house = "cenel_loegairi"
+father = "aengus_mac_fogartaig"
+born = 742
+born_estimated = true
+died = 784
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "cu_rai_mac_oengusa"
+house = "cenel_loegairi"
+father = "aengus_mac_fogartaig"
+born = 748
+born_estimated = true
+died = 797
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "cinaed_mac_anmchada"
+house = "ui_liathain"
+office = "ruler"
+born = 730
+born_estimated = true
+died = 790
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "dunchad_mac_flainn_feorna"
+house = "ciarraige_luachra"
+office = "ruler"
+born = 715
+born_estimated = true
+died = 782
+alive_at_start = true
+pop_kind = "noble"
+
+[[figure]]
+key = "mael_cobo_mac_flainn_feorna"
+house = "ciarraige_luachra"
+born = 725
+born_estimated = true
+died = 796
+alive_at_start = true
+pop_kind = "noble"
+
+# Dead fathers named by figures but not in the figures file: archived characters. born: the eldest named child's birth minus 30
+# (estimated); location: the house's seat (Suibne: a bishop of Ard Mhacha).
+[[dead_parent]]
+key = "fergal_mac_maele_duin"
+name = "Fergal"
+genitive = "Fergaile"
+sex = "m"
+died = 722
+house = "cenel_neogain"
+born = 688
+born_estimated = true
+pop_kind = "noble"
+location = "ailech"
+
+[[dead_parent]]
+key = "flaithbertach_mac_loingsig"
+name = "Flaithbertach"
+genitive = "Flaithbertaig"
+sex = "m"
+died = 765
+house = "cenel_conaill"
+born = 705
+born_estimated = true
+pop_kind = "noble"
+location = "raphoe"
+
+[[dead_parent]]
+key = "aed_allan"
+name = "Áed Allán"
+genitive = "Áeda Alláin"
+sex = "m"
+died = 743
+house = "cenel_neogain"
+born = 708
+born_estimated = true
+pop_kind = "noble"
+location = "ailech"
+
+[[dead_parent]]
+key = "suibne"
+name = "Suibne"
+genitive = "Suibni"
+sex = "m"
+house = ""
+born = 680
+born_estimated = true
+pop_kind = "monk"
+location = "armagh"
+
+[[dead_parent]]
+key = "cathal"
+name = "Cathal"
+genitive = "Cathail"
+sex = "m"
+died = 735
+house = "ui_briuin"
+born = 700
+born_estimated = true
+pop_kind = "noble"
+location = "rathcroghan"
+
+[[dead_parent]]
+key = "domnall_midi"
+name = "Domnall Midi"
+genitive = "Domnaill"
+sex = "m"
+died = 763
+house = "clann_cholmain"
+born = 703
+born_estimated = true
+pop_kind = "noble"
+location = "uisneach"
+
+[[dead_parent]]
+key = "aed_muinderg"
+name = "Áed Muinderg"
+genitive = "Áeda Muindeirg"
+sex = "m"
+died = 747
+house = "cenel_conaill"
+born = 710
+born_estimated = true
+pop_kind = "noble"
+location = "raphoe"
+
+[[dead_parent]]
+key = "murchad_mac_flaithbertaig"
+name = "Murchad"
+genitive = "Murchada"
+sex = "m"
+died = 767
+house = "cenel_conaill"
+born = 732
+born_estimated = true
+pop_kind = "noble"
+location = "raphoe"
+
+[[dead_parent]]
+key = "laidcnen_mac_con_mella"
+name = "Laidcnén"
+genitive = "Laidcnéin"
+sex = "m"
+house = "ui_cheinnselaig"
+born = 700
+born_estimated = true
+pop_kind = "noble"
+location = "ferns"
+
+[[dead_parent]]
+key = "anmchad_mac_con_cherca"
+name = "Anmchad"
+genitive = "Anmchada"
+sex = "m"
+house = "osraige"
+born = 722
+born_estimated = true
+pop_kind = "noble"
+location = "gowran"
+
+# Known relationships, as strands (connections-r4; set by hand and kept, r135). Bonds are mutual; one row per pair.
+[[strand]]
+a = "aed_oirdnide"
+b = "niall_frossach"
+kind = "rival"
+strength = 3
+
+[[strand]]
+a = "fer_da_chrich"
+b = "airechtach_ua_faelain"
+kind = "rival"
+strength = 2
+
+[[strand]]
+a = "cu_dinaisc"
+b = "dub_da_leithe_mac_sinaig"
+kind = "rival"
+strength = 3
+
+[[strand]]
+a = "cathussach_mac_eterscelai"
+b = "mael_duin_mac_aedo"
+kind = "rival"
+strength = 3
+
+[[strand]]
+a = "donnchad_midi"
+b = "niall_frossach"
+kind = "rival"
+strength = 3
+
+[[strand]]
+a = "ruaidri_mac_faelain"
+b = "bran_ardchenn"
+kind = "rival"
+strength = 3
+
+[[strand]]
+a = "dub_calgaid"
+b = "cennselach_mac_brain"
+kind = "rival"
+strength = 3
+
+[[strand]]
+a = "cennselach_mac_brain"
+b = "eterscel_mac_aeda"
+kind = "rival"
+strength = 2
+
+[[strand]]
+a = "cathal_fernann"
+b = "fiannachtach_fernann"
+kind = "rival"
+strength = 2
+
+[[strand]]
+a = "toim_snama"
+b = "dungal_mac_cellaig"
+kind = "rival"
+strength = 3
+
+[[strand]]
+a = "cathmug_mac_duinn_chothaig"
+b = "dub_dibeirg_mac_cathail"
+kind = "rival"
+strength = 3
+
+[[strand]]
+a = "cinaed_ciarrge"
+b = "tomaltach_mac_indrechtaig"
+kind = "rival"
+strength = 3
+
+[[strand]]
+a = "tomaltach_mac_indrechtaig"
+b = "eochaid_mac_fiachnai"
+kind = "friend"
+strength = 2
+
+[[strand]]
+a = "cinaed_mac_flainn"
+b = "cellach_mac_dunchada"
+kind = "rival"
+strength = 3
+
+[[strand]]
+a = "cinaed_mac_flainn"
+b = "mael_duin_mac_aedo"
+kind = "rival"
+strength = 2
+
+[[strand]]
+a = "art_mac_flaithnia"
+b = "aed_ailgin"
+kind = "friend"
+strength = 1
+
+# Dublitir's friendship with Máel Ruain waits until Máel Ruain is a figure (Tallaght, 774).
+# Generated slots: members by role, count, pop type and sex. Students from noble families at church schools live in the monk pop (taken from
+# noble families nearby by slot filling, as fosterlings are); church stewards are in the monk pop.
+[[slot]]
+key = "ailech_court"
+location = "ailech"
+[[slot.member]]
+role = "retainer"
+count = 6
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "retainer"
+count = 1
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "judge"
+count = 1
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "poet"
+count = 1
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "steward"
+count = 1
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "hostage"
+count = 2
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "fosterling"
+count = 2
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "household_woman"
+count = 3
+pop = "noble"
+sex = "f"
+
+[[slot]]
+key = "armagh_community"
+location = "armagh"
+[[slot.member]]
+role = "lector"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "lector"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "prior"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "anchorite"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "scribe"
+count = 4
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 6
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "fosterling"
+count = 3
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "clonmacnoise_community"
+location = "clonmacnoise"
+[[slot.member]]
+role = "lector"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "lector"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "prior"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "bishop"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "anchorite"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "scribe"
+count = 2
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 4
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "student"
+count = 3
+pop = "monk"
+sex = "m"
+from_noble_families = true
+
+[[slot]]
+key = "kildare_community"
+location = "kildare"
+[[slot.member]]
+role = "prior"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "lector"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "anchorite"
+count = 1
+pop = "monk"
+sex = "f"
+[[slot.member]]
+role = "nun"
+count = 6
+pop = "monk"
+sex = "f"
+[[slot.member]]
+role = "monk"
+count = 4
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "scribe"
+count = 2
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "student"
+count = 2
+pop = "monk"
+sex = "m"
+from_noble_families = true
+
+[[slot]]
+key = "rathcroghan_court"
+location = "rathcroghan"
+[[slot.member]]
+role = "retainer"
+count = 6
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "champion"
+count = 1
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "judge"
+count = 1
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "poet"
+count = 1
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "hostage"
+count = 2
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "fosterling"
+count = 2
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "household_woman"
+count = 3
+pop = "noble"
+sex = "f"
+
+[[slot]]
+key = "cashel_court"
+location = "cashel"
+[[slot.member]]
+role = "retainer"
+count = 6
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "champion"
+count = 1
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "judge"
+count = 1
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "poet"
+count = 1
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "hostage"
+count = 2
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "fosterling"
+count = 2
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "household_woman"
+count = 3
+pop = "noble"
+sex = "f"
+[[slot.member]]
+role = "court_cleric"
+count = 1
+pop = "noble"
+sex = "m"
+
+[[slot]]
+key = "uisneach_court"
+location = "uisneach"
+[[slot.member]]
+role = "retainer"
+count = 6
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "champion"
+count = 1
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "judge"
+count = 1
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "poet"
+count = 1
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "hostage"
+count = 2
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "fosterling"
+count = 2
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "household_woman"
+count = 3
+pop = "noble"
+sex = "f"
+
+[[slot]]
+key = "knowth_court"
+location = "knowth"
+[[slot.member]]
+role = "retainer"
+count = 3
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "poet"
+count = 1
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "fosterling"
+count = 1
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "household_woman"
+count = 2
+pop = "noble"
+sex = "f"
+
+[[slot]]
+key = "lagore_court"
+location = "lagore"
+[[slot.member]]
+role = "retainer"
+count = 3
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "poet"
+count = 1
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "fosterling"
+count = 1
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "household_woman"
+count = 2
+pop = "noble"
+sex = "f"
+
+[[slot]]
+key = "naas_court"
+location = "naas"
+[[slot.member]]
+role = "retainer"
+count = 4
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "judge"
+count = 1
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "fosterling"
+count = 1
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "household_woman"
+count = 2
+pop = "noble"
+sex = "f"
+
+[[slot]]
+key = "lyons_hill_court"
+location = "lyons_hill"
+[[slot.member]]
+role = "retainer"
+count = 6
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "champion"
+count = 1
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "judge"
+count = 1
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "poet"
+count = 1
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "hostage"
+count = 2
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "fosterling"
+count = 2
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "household_woman"
+count = 3
+pop = "noble"
+sex = "f"
+
+[[slot]]
+key = "mullaghmast_court"
+location = "mullaghmast"
+[[slot.member]]
+role = "retainer"
+count = 4
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "poet"
+count = 1
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "fosterling"
+count = 1
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "household_woman"
+count = 2
+pop = "noble"
+sex = "f"
+
+[[slot]]
+key = "downpatrick_court"
+location = "downpatrick"
+[[slot.member]]
+role = "retainer"
+count = 6
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "champion"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "judge"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "poet"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "hostage"
+count = 2
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "fosterling"
+count = 2
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "community_woman"
+count = 3
+pop = "monk"
+sex = "f"
+[[slot.member]]
+role = "monk"
+count = 4
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "scribe"
+count = 1
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "raphoe_court"
+location = "raphoe"
+[[slot.member]]
+role = "retainer"
+count = 6
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "champion"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "judge"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "poet"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "hostage"
+count = 2
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "fosterling"
+count = 2
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "community_woman"
+count = 3
+pop = "monk"
+sex = "f"
+[[slot.member]]
+role = "monk"
+count = 2
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "clogher_court"
+location = "clogher"
+[[slot.member]]
+role = "retainer"
+count = 5
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "judge"
+count = 1
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "poet"
+count = 1
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "craftsman"
+count = 2
+pop = "labourer"
+sex = "m"
+[[slot.member]]
+role = "fosterling"
+count = 2
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "community_woman"
+count = 2
+pop = "monk"
+sex = "f"
+[[slot.member]]
+role = "monk"
+count = 3
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "ferns_court"
+location = "ferns"
+[[slot.member]]
+role = "prior"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "lector"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "anchorite"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "scribe"
+count = 2
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 5
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "retainer"
+count = 6
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "judge"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "poet"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "fosterling"
+count = 2
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "community_woman"
+count = 3
+pop = "monk"
+sex = "f"
+
+[[slot]]
+key = "gowran_court"
+location = "gowran"
+[[slot.member]]
+role = "retainer"
+count = 6
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "champion"
+count = 1
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "judge"
+count = 1
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "poet"
+count = 1
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "hostage"
+count = 2
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "fosterling"
+count = 2
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "household_woman"
+count = 3
+pop = "noble"
+sex = "f"
+
+[[slot]]
+key = "aghaboe_community"
+location = "aghaboe"
+[[slot.member]]
+role = "prior"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "lector"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "scribe"
+count = 2
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 4
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "seirkieran_community"
+location = "seirkieran"
+[[slot.member]]
+role = "prior"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "scribe"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 4
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "bangor_community"
+location = "bangor"
+[[slot.member]]
+role = "lector"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "lector"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "scribe"
+count = 3
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "student"
+count = 4
+pop = "monk"
+sex = "m"
+from_noble_families = true
+[[slot.member]]
+role = "prior"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 5
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "clonard_community"
+location = "clonard"
+[[slot.member]]
+role = "lector"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "lector"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "scribe"
+count = 2
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "student"
+count = 4
+pop = "monk"
+sex = "m"
+from_noble_families = true
+[[slot.member]]
+role = "prior"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "steward"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 4
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "durrow_community"
+location = "durrow"
+[[slot.member]]
+role = "abbot"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "prior"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "scribe"
+count = 2
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 5
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "glendalough_community"
+location = "glendalough"
+[[slot.member]]
+role = "prior"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "scribe"
+count = 2
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 4
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "craftsman"
+count = 2
+pop = "labourer"
+sex = "m"
+[[slot.member]]
+role = "anchorite"
+count = 1
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "clonfert_community"
+location = "clonfert"
+[[slot.member]]
+role = "prior"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "lector"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "scribe"
+count = 2
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 4
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "student"
+count = 3
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "emly_community"
+location = "emly"
+[[slot.member]]
+role = "prior"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "lector"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "steward"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "scribe"
+count = 2
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 5
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "student"
+count = 2
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "lismore_community"
+location = "lismore"
+[[slot.member]]
+role = "lector"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "lector"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "scribe"
+count = 2
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "student"
+count = 4
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "bishop"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "prior"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 4
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "craftsman"
+count = 1
+pop = "labourer"
+sex = "m"
+
+[[slot]]
+key = "cork_community"
+location = "cork"
+[[slot.member]]
+role = "prior"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "lector"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "scribe"
+count = 2
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 5
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "movilla_community"
+location = "movilla"
+[[slot.member]]
+role = "abbot"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "prior"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "scribe"
+count = 2
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 4
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "craftsman"
+count = 2
+pop = "labourer"
+sex = "m"
+[[slot.member]]
+role = "craftsman"
+count = 1
+pop = "labourer"
+sex = "m"
+
+[[slot]]
+key = "derry_community"
+location = "derry"
+[[slot.member]]
+role = "abbot"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "prior"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "scribe"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 4
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "terryglass_community"
+location = "terryglass"
+[[slot.member]]
+role = "prior"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "lector"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "scribe"
+count = 2
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 4
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "birr_community"
+location = "birr"
+[[slot.member]]
+role = "prior"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "lector"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "scribe"
+count = 2
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 4
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "mayo_community"
+location = "mayo"
+[[slot.member]]
+role = "abbot"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "prior"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "scribe"
+count = 2
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 6
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "steward"
+count = 1
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "roscommon_community"
+location = "roscommon"
+[[slot.member]]
+role = "prior"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "lector"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "scribe"
+count = 2
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 4
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "devenish_community"
+location = "devenish"
+[[slot.member]]
+role = "abbot"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "prior"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "scribe"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 4
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "church_servant"
+count = 1
+pop = "labourer"
+sex = "m"
+
+[[slot]]
+key = "nendrum_community"
+location = "nendrum"
+[[slot.member]]
+role = "abbot"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "prior"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "scribe"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 4
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "craftsman"
+count = 2
+pop = "labourer"
+sex = "m"
+[[slot.member]]
+role = "church_servant"
+count = 1
+pop = "labourer"
+sex = "m"
+
+[[slot]]
+key = "finglas_community"
+location = "finglas"
+[[slot.member]]
+role = "abbot"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "scribe"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "anchorite"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 4
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "louth_community"
+location = "louth"
+[[slot.member]]
+role = "prior"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "scribe"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "anchorite"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 4
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "monasterboice_community"
+location = "monasterboice"
+[[slot.member]]
+role = "abbot"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "prior"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "scribe"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "lector"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 6
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "nun"
+count = 2
+pop = "monk"
+sex = "f"
+
+[[slot]]
+key = "roscrea_community"
+location = "roscrea"
+[[slot.member]]
+role = "abbot"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "prior"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 5
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "anchorite"
+count = 1
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "duleek_community"
+location = "duleek"
+[[slot.member]]
+role = "prior"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "scribe"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 5
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "clones_community"
+location = "clones"
+[[slot.member]]
+role = "prior"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "scribe"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 5
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "old_leighlin_community"
+location = "old_leighlin"
+[[slot.member]]
+role = "bishop"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "prior"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "scribe"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 5
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "scattery_community"
+location = "scattery"
+[[slot.member]]
+role = "abbot"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "prior"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "scribe"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 5
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "church_servant"
+count = 1
+pop = "labourer"
+sex = "m"
+
+[[slot]]
+key = "iniscealtra_community"
+location = "iniscealtra"
+[[slot.member]]
+role = "abbot"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "prior"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "scribe"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 4
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "church_servant"
+count = 1
+pop = "labourer"
+sex = "m"
+
+[[slot]]
+key = "cloyne_community"
+location = "cloyne"
+[[slot.member]]
+role = "abbot"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "prior"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "scribe"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 5
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "fore_community"
+location = "fore"
+[[slot.member]]
+role = "prior"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "scribe"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 6
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "steward"
+count = 1
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "drumcliff_community"
+location = "drumcliff"
+[[slot.member]]
+role = "abbot"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "prior"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "scribe"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 5
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "ardfert_community"
+location = "ardfert"
+[[slot.member]]
+role = "abbot"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "prior"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "scribe"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 5
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "ardmore_community"
+location = "ardmore"
+[[slot.member]]
+role = "abbot"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "prior"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "scribe"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 4
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "anchorite"
+count = 1
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "lusk_community"
+location = "lusk"
+[[slot.member]]
+role = "steward"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "lector"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 6
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "church_tenant"
+count = 2
+pop = "peasant"
+sex = "m"
+
+[[slot]]
+key = "swords_community"
+location = "swords"
+[[slot.member]]
+role = "abbot"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "prior"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "scribe"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 4
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "killeany_community"
+location = "killeany"
+[[slot.member]]
+role = "abbot"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "prior"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "scribe"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 4
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "church_servant"
+count = 1
+pop = "labourer"
+sex = "m"
+
+[[slot]]
+key = "mungret_community"
+location = "mungret"
+[[slot.member]]
+role = "prior"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "scribe"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 6
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "lorrha_community"
+location = "lorrha"
+[[slot.member]]
+role = "prior"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "scribe"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 5
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "knockainey_household"
+location = "knockainey"
+[[slot.member]]
+role = "lord"
+count = 1
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "spouse_of_lord"
+count = 1
+pop = "noble"
+sex = "f"
+[[slot.member]]
+role = "kinsman"
+count = 2
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "retainer"
+count = 4
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "poet"
+count = 1
+pop = "noble"
+sex = "m"
+
+[[slot]]
+key = "fahan_community"
+location = "fahan"
+[[slot.member]]
+role = "prior"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "scribe"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 5
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "keeper_of_relics"
+count = 1
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "locha_lein_court"
+location = "locha_lein"
+[[slot.member]]
+role = "spouse_of_ruler"
+count = 1
+pop = "noble"
+sex = "f"
+[[slot.member]]
+role = "kinsman"
+count = 2
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "retainer"
+count = 6
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "champion"
+count = 1
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "judge"
+count = 1
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "poet"
+count = 1
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "hostage"
+count = 2
+pop = "noble"
+sex = "m"
+
+[[slot]]
+key = "ui_maine_court"
+location = "ui_maine_seat"
+[[slot.member]]
+role = "spouse_of_ruler"
+count = 1
+pop = "noble"
+sex = "f"
+[[slot.member]]
+role = "kinsman"
+count = 2
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "retainer"
+count = 4
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "poet"
+count = 1
+pop = "noble"
+sex = "m"
+
+[[slot]]
+key = "rathmore_court"
+location = "rathmore"
+[[slot.member]]
+role = "spouse_of_ruler"
+count = 1
+pop = "noble"
+sex = "f"
+[[slot.member]]
+role = "kinsman"
+count = 2
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "retainer"
+count = 5
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "poet"
+count = 1
+pop = "noble"
+sex = "m"
+
+[[slot]]
+key = "dunseverick_household"
+location = "dunseverick"
+[[slot.member]]
+role = "lord"
+count = 1
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "spouse_of_lord"
+count = 1
+pop = "noble"
+sex = "f"
+[[slot.member]]
+role = "retainer"
+count = 3
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "church_servant"
+count = 1
+pop = "labourer"
+sex = "m"
+
+[[slot]]
+key = "carraig_aille_household"
+location = "carraig_aille"
+[[slot.member]]
+role = "lord"
+count = 1
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "spouse_of_lord"
+count = 1
+pop = "noble"
+sex = "f"
+[[slot.member]]
+role = "kinsman"
+count = 1
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "retainer"
+count = 3
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "herdsman"
+count = 2
+pop = "peasant"
+sex = "m"
+[[slot.member]]
+role = "craftsman"
+count = 1
+pop = "labourer"
+sex = "m"
+
+[[slot]]
+key = "corco_modruad_household"
+location = "corco_modruad"
+[[slot.member]]
+role = "spouse_of_ruler"
+count = 1
+pop = "noble"
+sex = "f"
+[[slot.member]]
+role = "kinsman"
+count = 2
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "retainer"
+count = 3
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "herdsman"
+count = 2
+pop = "peasant"
+sex = "m"
+
+[[slot]]
+key = "bruree_court"
+location = "bruree"
+[[slot.member]]
+role = "spouse_of_ruler"
+count = 1
+pop = "noble"
+sex = "f"
+[[slot.member]]
+role = "kinsman"
+count = 2
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "retainer"
+count = 5
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "poet"
+count = 1
+pop = "noble"
+sex = "m"
+
+[[slot]]
+key = "rathangan_court"
+location = "rathangan"
+[[slot.member]]
+role = "spouse_of_ruler"
+count = 1
+pop = "noble"
+sex = "f"
+[[slot.member]]
+role = "retainer"
+count = 5
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "poet"
+count = 1
+pop = "noble"
+sex = "m"
+
+[[slot]]
+key = "inisfallen_community"
+location = "inisfallen"
+[[slot.member]]
+role = "abbot"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "scribe"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 3
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "church_servant"
+count = 1
+pop = "labourer"
+sex = "m"
+
+[[slot]]
+key = "slane_community"
+location = "slane"
+[[slot.member]]
+role = "prior"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "scribe"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 5
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "keeper_of_relics"
+count = 1
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "trim_community"
+location = "trim"
+[[slot.member]]
+role = "abbot"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "bishop"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "scribe"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 4
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "clondalkin_community"
+location = "clondalkin"
+[[slot.member]]
+role = "prior"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "scribe"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 4
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "taghmon_community"
+location = "taghmon"
+[[slot.member]]
+role = "abbot"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "scribe"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 4
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "clonenagh_community"
+location = "clonenagh"
+[[slot.member]]
+role = "prior"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "scribe"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 6
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "killeigh_community"
+location = "killeigh"
+[[slot.member]]
+role = "abbot"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "prior"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "scribe"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 5
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "rahan_community"
+location = "rahan"
+[[slot.member]]
+role = "abbot"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "anchorite"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "scribe"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 4
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "lemanaghan_community"
+location = "lemanaghan"
+[[slot.member]]
+role = "abbot"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 3
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "anchorite"
+count = 1
+pop = "monk"
+sex = "f"
+[[slot.member]]
+role = "community_woman"
+count = 2
+pop = "monk"
+sex = "f"
+
+[[slot]]
+key = "connor_community"
+location = "connor"
+[[slot.member]]
+role = "bishop"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "abbot"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "scribe"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 4
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "antrim_community"
+location = "antrim"
+[[slot.member]]
+role = "abbot"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 4
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "saul_community"
+location = "saul"
+[[slot.member]]
+role = "abbot"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 3
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "keeper_of_relics"
+count = 1
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "dromore_community"
+location = "dromore"
+[[slot.member]]
+role = "abbot"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "scribe"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 4
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "ui_echach_court"
+location = "ui_echach_seat"
+[[slot.member]]
+role = "spouse_of_ruler"
+count = 1
+pop = "noble"
+sex = "f"
+[[slot.member]]
+role = "kinsman"
+count = 1
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "retainer"
+count = 4
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "poet"
+count = 1
+pop = "noble"
+sex = "m"
+
+[[slot]]
+key = "cong_community"
+location = "cong"
+[[slot.member]]
+role = "abbot"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 3
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "tuam_community"
+location = "tuam"
+[[slot.member]]
+role = "abbot"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 3
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "craftsman"
+count = 1
+pop = "labourer"
+sex = "m"
+
+[[slot]]
+key = "annaghdown_community"
+location = "annaghdown"
+[[slot.member]]
+role = "abbot"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 3
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "kilmacduagh_community"
+location = "kilmacduagh"
+[[slot.member]]
+role = "abbot"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "bishop"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 3
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "aidne_court"
+location = "aidne_seat"
+[[slot.member]]
+role = "spouse_of_ruler"
+count = 1
+pop = "noble"
+sex = "f"
+[[slot.member]]
+role = "kinsman"
+count = 1
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "retainer"
+count = 4
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "poet"
+count = 1
+pop = "noble"
+sex = "m"
+
+[[slot]]
+key = "inishmurray_community"
+location = "inishmurray"
+[[slot.member]]
+role = "abbot"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 4
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "church_servant"
+count = 1
+pop = "labourer"
+sex = "m"
+
+[[slot]]
+key = "skellig_michael_community"
+location = "skellig_michael"
+[[slot.member]]
+role = "abbot"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 10
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "inishbofin_community"
+location = "inishbofin"
+[[slot.member]]
+role = "abbot"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "anchorite"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 4
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "church_servant"
+count = 1
+pop = "labourer"
+sex = "m"
+
+[[slot]]
+key = "tory_community"
+location = "tory"
+[[slot.member]]
+role = "abbot"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 3
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "church_servant"
+count = 1
+pop = "labourer"
+sex = "m"
+
+[[slot]]
+key = "dromiskin_community"
+location = "dromiskin"
+[[slot.member]]
+role = "abbot"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "keeper_of_relics"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 3
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "dunleer_community"
+location = "dunleer"
+[[slot.member]]
+role = "abbot"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "bishop"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "scribe"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 4
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "ardstraw_community"
+location = "ardstraw"
+[[slot.member]]
+role = "bishop"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 3
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "carndonagh_community"
+location = "carndonagh"
+[[slot.member]]
+role = "abbot"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 2
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "elphin_community"
+location = "elphin"
+[[slot.member]]
+role = "bishop"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 3
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "craftsman"
+count = 1
+pop = "labourer"
+sex = "m"
+
+[[slot]]
+key = "inchbofin_community"
+location = "inchbofin"
+[[slot.member]]
+role = "abbot"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 4
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "church_servant"
+count = 1
+pop = "labourer"
+sex = "m"
+
+[[slot]]
+key = "ardagh_community"
+location = "ardagh"
+[[slot.member]]
+role = "bishop"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 3
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "tethbae_court"
+location = "tethbae_seat"
+[[slot.member]]
+role = "spouse_of_ruler"
+count = 1
+pop = "noble"
+sex = "f"
+[[slot.member]]
+role = "kinsman"
+count = 1
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "retainer"
+count = 4
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "craftsman"
+count = 1
+pop = "labourer"
+sex = "m"
+
+[[slot]]
+key = "killala_community"
+location = "killala"
+[[slot.member]]
+role = "bishop"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 3
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "ross_carbery_community"
+location = "ross_carbery"
+[[slot.member]]
+role = "abbot"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "lector"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "student"
+count = 3
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "ahenny_community"
+location = "ahenny"
+[[slot.member]]
+role = "monk"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 2
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "st_mullins_community"
+location = "st_mullins"
+[[slot.member]]
+role = "abbot"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "scribe"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 3
+pop = "monk"
+sex = "m"
+
+[[slot]]
+key = "inchcleraun_community"
+location = "inchcleraun"
+[[slot.member]]
+role = "prior"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "scribe"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 6
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "church_servant"
+count = 1
+pop = "labourer"
+sex = "m"
+
+[[slot]]
+key = "hare_island_community"
+location = "hare_island"
+[[slot.member]]
+role = "abbot"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 3
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "church_servant"
+count = 1
+pop = "labourer"
+sex = "m"
+
+[[slot]]
+key = "rechru_community"
+location = "rechru"
+[[slot.member]]
+role = "scribe"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 4
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "church_servant"
+count = 1
+pop = "labourer"
+sex = "m"
+
+[[slot]]
+key = "inis_patraic_community"
+location = "inis_patraic"
+[[slot.member]]
+role = "abbot"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 3
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "church_servant"
+count = 1
+pop = "labourer"
+sex = "m"
+
+[[slot]]
+key = "inishmacsaint_community"
+location = "inishmacsaint"
+[[slot.member]]
+role = "abbot"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 3
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "church_servant"
+count = 1
+pop = "labourer"
+sex = "m"
+
+[[slot]]
+key = "white_island_community"
+location = "white_island"
+[[slot.member]]
+role = "abbot"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 3
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "church_servant"
+count = 1
+pop = "labourer"
+sex = "m"
+
+[[slot]]
+key = "inishkeel_community"
+location = "inishkeel"
+[[slot.member]]
+role = "abbot"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 3
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "church_servant"
+count = 1
+pop = "labourer"
+sex = "m"
+
+[[slot]]
+key = "inishkea_north_community"
+location = "inishkea_north"
+[[slot.member]]
+role = "abbot"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 3
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "church_servant"
+count = 1
+pop = "labourer"
+sex = "m"
+
+[[slot]]
+key = "inishglora_community"
+location = "inishglora"
+[[slot.member]]
+role = "abbot"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 3
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "church_servant"
+count = 1
+pop = "labourer"
+sex = "m"
+
+[[slot]]
+key = "church_island_valentia_community"
+location = "church_island_valentia"
+[[slot.member]]
+role = "abbot"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 3
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "church_servant"
+count = 1
+pop = "labourer"
+sex = "m"
+
+[[slot]]
+key = "illaunloughan_community"
+location = "illaunloughan"
+[[slot.member]]
+role = "craftsman"
+count = 4
+pop = "labourer"
+sex = "m"
+
+[[slot]]
+key = "church_island_currane_community"
+location = "church_island_currane"
+[[slot.member]]
+role = "abbot"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 3
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "church_servant"
+count = 1
+pop = "labourer"
+sex = "m"
+
+[[slot]]
+key = "spike_island_community"
+location = "spike_island"
+[[slot.member]]
+role = "abbot"
+count = 1
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "monk"
+count = 3
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "church_servant"
+count = 1
+pop = "labourer"
+sex = "m"
+
+[[slot]]
+key = "cairpre_seat_court"
+location = "cairpre_seat"
+[[slot.member]]
+role = "spouse_of_ruler"
+count = 1
+pop = "noble"
+sex = "f"
+[[slot.member]]
+role = "kinsman"
+count = 1
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "retainer"
+count = 4
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "poet"
+count = 1
+pop = "noble"
+sex = "m"
+
+[[slot]]
+key = "granard_court"
+location = "granard"
+[[slot.member]]
+role = "spouse_of_ruler"
+count = 1
+pop = "noble"
+sex = "f"
+[[slot.member]]
+role = "kinsman"
+count = 1
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "retainer"
+count = 4
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "poet"
+count = 1
+pop = "noble"
+sex = "m"
+
+[[slot]]
+key = "loegaire_seat_court"
+location = "loegaire_seat"
+[[slot.member]]
+role = "spouse_of_ruler"
+count = 1
+pop = "noble"
+sex = "f"
+[[slot.member]]
+role = "retainer"
+count = 4
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "poet"
+count = 1
+pop = "noble"
+sex = "m"
+
+[[slot]]
+key = "uliathain_seat_court"
+location = "uliathain_seat"
+[[slot.member]]
+role = "spouse_of_ruler"
+count = 1
+pop = "noble"
+sex = "f"
+[[slot.member]]
+role = "kinsman"
+count = 2
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "retainer"
+count = 4
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "poet"
+count = 1
+pop = "noble"
+sex = "m"
+
+[[slot]]
+key = "ciarraige_seat_court"
+location = "ciarraige_seat"
+[[slot.member]]
+role = "spouse_of_ruler"
+count = 1
+pop = "noble"
+sex = "f"
+[[slot.member]]
+role = "kinsman"
+count = 2
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "retainer"
+count = 4
+pop = "noble"
+sex = "m"
+[[slot.member]]
+role = "poet"
+count = 1
+pop = "noble"
+sex = "m"
+
+[[slot]]
+key = "monaincha_community"
+location = "monaincha"
+[[slot.member]]
+role = "anchorite"
+count = 2
+pop = "monk"
+sex = "m"
+[[slot.member]]
+role = "church_servant"
+count = 1
+pop = "labourer"
+sex = "m"
+[[slot.member]]
+role = "community_woman"
+count = 2
+pop = "monk"
+sex = "f"

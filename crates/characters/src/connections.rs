@@ -182,6 +182,16 @@ impl PopTargets {
     }
 }
 
+/// Whether the strand kind `name` is a bond (friend, rival, lover: stored on both members) and not a feeling (stored on its holder alone).
+pub(crate) fn is_bond_kind(name: &str) -> bool {
+    kind_index(name).is_some_and(is_bond)
+}
+
+/// Whether `name` is a strand kind of slice 6 (`friend`, `rival`, `lover`, `love`, `respect`, `envy`, `fear` or `hatred`).
+pub(crate) fn is_strand_kind(name: &str) -> bool {
+    kind_index(name).is_some()
+}
+
 /// The strand kind named `name`.
 fn kind_index(name: &str) -> Option<usize> {
     ck_economy::events::ALL_KINDS
@@ -715,11 +725,20 @@ fn close_kin(a: &Character, b: &Character) -> bool {
 // Writing strands: growth, fade, the life-log lines
 
 impl CharacterStore {
-    fn name_of(&self, id: u64) -> String {
-        self.live
-            .get(&id)
-            .map(|c| c.name.clone())
-            .unwrap_or_default()
+    /// The name a strand line gives a character (CK-370 §1): its derived name, the name and its patronymic. A figure's authored patronymic and
+    /// a father's authored genitive take precedence over the pool's forms, and a generated character's line carries the pool's.
+    fn name_of<P: Populations, A: ArchiveSink, L: LogSink>(
+        &self,
+        world: &World<'_, P, A, L>,
+        id: u64,
+    ) -> String {
+        let Some(c) = self.live.get(&id) else {
+            return String::new();
+        };
+        let father = (c.father != UNKNOWN)
+            .then(|| self.record(&*world.archive, c.father).ok().flatten())
+            .flatten();
+        crate::cycle::derived_name(c, father.as_ref(), world.lifecycle)
     }
 
     fn link_mut(&mut self, holder: u64, partner: u64) -> Option<&mut Link> {
@@ -741,6 +760,39 @@ impl CharacterStore {
                 *slot = (*slot).max(year);
             }
         }
+    }
+
+    /// Set the strand of `kind` between two live characters to an authored `strength` (CK-370 §3 step 8), overriding what the burn-in made for
+    /// the pair and kind: a bond (friend, rival, lover) on both members, a feeling on `holder` alone. The strand's last growth is `year`.
+    ///
+    /// # Errors
+    /// Refuses a kind that is not slice 6's, a strength above 10 and a character that is not live.
+    pub(crate) fn set_authored_strand(
+        &mut self,
+        holder: u64,
+        partner: u64,
+        kind: &str,
+        strength: u8,
+        year: u16,
+    ) -> Result<(), Error> {
+        let kind = kind_index(kind).ok_or(Error::Event)?;
+        if strength > MAX_STRENGTH
+            || !self.live.contains_key(&holder)
+            || !self.live.contains_key(&partner)
+        {
+            return Err(Error::Event);
+        }
+        let sides: Vec<(u64, u64)> = if is_bond(kind) {
+            vec![(holder, partner), (partner, holder)]
+        } else {
+            vec![(holder, partner)]
+        };
+        for (x, y) in sides {
+            let link = self.link_mut(x, y).ok_or(Error::MissingCharacter)?;
+            link.strands[kind].strength = strength;
+            link.strands[kind].grew = link.strands[kind].grew.max(year);
+        }
+        Ok(())
     }
 
     /// Add 1 to the strand `holder` has toward `partner` (a new strand starts at 1, at most 10) and set its last growth year; a bond is
@@ -836,8 +888,8 @@ impl CharacterStore {
         };
         for (owner, other) in owners {
             let rendered = line
-                .replace("{name}", &self.name_of(owner))
-                .replace("{other}", &self.name_of(other));
+                .replace("{name}", &self.name_of(world, owner))
+                .replace("{other}", &self.name_of(world, other));
             Self::line(world, owner, date, &rendered, first);
         }
     }
@@ -1699,6 +1751,29 @@ impl CharacterStore {
         years: u32,
         today: GameTime,
     ) -> Result<(), EventError> {
+        self.burn_in_with(world, years, today, |_, _, _, _, _| Ok(()))
+    }
+
+    /// The burn-in with a step of the caller's own at the head of every character's year (CK-370 §3 step 7): `yearly(store, world, id, day,
+    /// age)` runs on the character's birthday of the year, **before** its strand and passion stages, so that one pass over the years does
+    /// slice 4's yearly stages (events, crafts, skills, standing) and slice 6's (strands, passions) together. A failure is kept and the years
+    /// go on, as for the stages themselves.
+    ///
+    /// # Errors
+    /// The first failure, once every year has been run.
+    pub(crate) fn burn_in_with<P: Populations, A: ArchiveSink, L: LogSink>(
+        &mut self,
+        world: &mut World<'_, P, A, L>,
+        years: u32,
+        today: GameTime,
+        mut yearly: impl FnMut(
+            &mut Self,
+            &mut World<'_, P, A, L>,
+            u64,
+            GameTime,
+            u32,
+        ) -> Result<(), EventError>,
+    ) -> Result<(), EventError> {
         if !world.lifecycle.connections.loaded {
             return Ok(());
         }
@@ -1715,8 +1790,12 @@ impl CharacterStore {
             }
             order.sort();
             for (when, id) in order {
-                if !self.live.contains_key(&id) {
+                let Some(born) = self.live.get(&id).map(|c| c.birth) else {
                     continue;
+                };
+                let age = u32::from(year.saturating_sub(date_of(born)?.year));
+                if let Err(error) = yearly(self, world, id, when, age) {
+                    keep(&mut first, error);
                 }
                 for step in [0, 1, 2] {
                     let result = match step {

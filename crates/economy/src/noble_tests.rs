@@ -700,30 +700,31 @@ fn with_the_demesne_store_full_the_excess_goes_on_by_the_overflow_route() {
 // ---------------------------------------------------------------- the 768 start data
 
 #[test]
-fn the_shipped_768_start_data_holds_33_noble_houses() {
+fn the_shipped_768_start_data_holds_34_noble_houses() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
     let rules = Rules::load(root.join("game/economy.toml")).unwrap();
     let data = ScenarioEconomy::load(root.join("scenarios/ireland-768/economy.toml")).unwrap();
     data.validate_cultures(&rules.peoples, "economy.toml")
         .unwrap();
-    assert_eq!(data.nobles.len(), 33);
+    // CK-370 added Carraig Aille (20 nobles, one level, ten labourers) to the 33 houses of the P1 start.
+    assert_eq!(data.nobles.len(), 34);
     assert_eq!(
         data.nobles.values().map(|noble| noble.people).sum::<u64>(),
-        1180
+        1200
     );
     assert_eq!(
         data.nobles
             .values()
             .map(|noble| noble.labourers)
             .sum::<u64>(),
-        590
+        600
     );
     assert_eq!(
         data.nobles
             .values()
             .map(|noble| u64::from(noble.demesne_levels))
             .sum::<u64>(),
-        59
+        60
     );
     for (id, noble) in &data.nobles {
         assert!(
@@ -751,6 +752,16 @@ fn the_shipped_768_start_data_holds_33_noble_houses() {
     let dunseverick = &data.nobles["dunseverick"];
     assert_eq!(dunseverick.culture, "dal_riatan");
     assert_eq!(data.places["dunseverick"].culture.as_deref(), Some("ulaid"));
+    let carraig = &data.nobles["carraig_aille"];
+    assert_eq!(
+        (
+            carraig.culture.as_str(),
+            carraig.people,
+            carraig.demesne_levels,
+            carraig.labourers
+        ),
+        ("mumu", 20, 1, 10)
+    );
     let armagh = &data.nobles["armagh"];
     assert_eq!(
         (

@@ -29,6 +29,7 @@ mod owner;
 mod presses;
 mod run;
 mod setup;
+mod start_768;
 mod storage;
 mod views;
 

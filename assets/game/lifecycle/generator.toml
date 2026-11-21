@@ -1,4 +1,4 @@
-# The character generator (draft r1). Drafted by Claude (ck-designer-1), 2026-11-20, for characters slice 7. The recipe of char-gen-r6
+# The character generator (draft r2; r2, CK-370: slot member ages, generated relatives die by the death curve). Drafted by Claude (ck-designer-1), 2026-11-20, for characters slice 7. The recipe of char-gen-r6
 # (tools/char_gen.py, untracked, the reference), as data. Notes and approvals: .pipeline/coordination/history-scratch/generator-data-r1.md.
 # Every rule below uses the data of slices 2-6 (genetics, personality, events, life cycle, connections); this file says the order,
 # the generated-past specifics, the reference rates the tests hold, slot filling and generated families.
@@ -81,6 +81,43 @@ order = "after every real figure and household exists"   # the 768 start: slots 
 # Other members of a slot (retainers, monks, women of the household ...) are generated into the slot's pop with families of the
 # same culture: parents generated (dead or living by age), a spouse if married at their age (life-cycle wish curve at birth), children
 # by the conception rules over their past.
+
+# Ages of generated slot members (r2, CK-370; designer placeholders, TUNE), drawn uniformly. Fosterlings, hostages and students
+# take their ages above. A spouse of a ruler or lord, when generated, takes the wife's age by the marriage scoring (within the
+# free gap of her husband, at least marriageable).
+[slots.ages]
+abbot = [35, 70]
+bishop = [35, 70]
+prior = [30, 60]
+anchorite = [30, 70]
+keeper_of_relics = [30, 65]
+lector = [25, 55]
+court_cleric = [25, 60]
+scribe = [18, 60]
+monk = [15, 70]
+nun = [15, 65]
+community_woman = [16, 60]
+church_servant = [14, 55]
+church_tenant = [18, 55]
+judge = [30, 65]
+poet = [25, 65]
+steward = [25, 60]
+lord = [25, 60]
+kinsman = [16, 55]
+champion = [20, 40]
+retainer = [16, 45]
+craftsman = [16, 55]
+herdsman = [14, 55]
+household_woman = [14, 45]
+other = [18, 55]
+
+# Generated relatives (r2, CK-370). `[past] no_deaths` keeps only the generated character itself alive. Its generated parents,
+# spouse and children each live to the start with the life-cycle death curve (life-cycle.toml [death], with the childbirth
+# risk for a wife at each birth); a relative who died is made, archived dead with a date of death, and shown in the tree.
+# Without this every child of a generated past survived, households came out too large and the start safety net raised
+# 19 pops by 217 (seed 7).
+[relatives]
+survive_by_death_curve = true
 
 # ======== Generated marriage candidates (life-cycle.toml [marriage.pool], when fewer than 3) ========
 [marriage_candidates]

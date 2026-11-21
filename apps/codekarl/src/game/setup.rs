@@ -55,7 +55,7 @@ pub(crate) struct Prepared {
     /// Map-derived makeshift shelter by place, not saved in `EconomyState`.
     shelter_by_place: BTreeMap<String, u64>,
     saves: PathBuf,
-    storage: super::character_storage::Storage,
+    pub(super) storage: super::character_storage::Storage,
     /// Where the scheduler's daily system finds the character storage (CK-363).
     characters_io: super::character_storage::Handle,
 }
@@ -221,13 +221,24 @@ pub(crate) fn prepare(
         }
         let storage =
             super::character_storage::Storage::empty(storage_parent).map_err(|e| e.to_string())?;
+        let mut economy_state = economy_state;
+        let characters = new_game_characters(
+            directory,
+            &scenario,
+            economy_rules.as_deref(),
+            &mut economy_state,
+            &storage.path,
+            seed,
+            start_time,
+            log,
+        )?;
         (
             Simulation::new(
                 start_time,
                 seed,
                 GameState {
                     economy: economy_state,
-                    characters: ck_characters::CharacterStore::default(),
+                    characters,
                 },
                 scheduler(),
                 apply,
@@ -761,6 +772,70 @@ impl ck_characters::LogSink for Logged {
             Self::Down(reason) => Err(io::Error::other(reason.clone())),
         }
     }
+}
+
+/// The characters of a new game (CK-370): a scenario that ships its real figures (the research and load files [`hashes::figure_files`] names) starts with them, their families, the slots' people and the fifteen years of the burn-in, on its economy: the safety net may
+/// raise a pop's dependents, which the start log reports. Any other scenario starts with none.
+///
+/// # Errors
+/// A figures file that cannot be read or does not load, or a refusal of the start: the game does not start.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the scenario's directory and map, the rules, the economy to start on, where the storage is, the seed, the day and the log"
+)]
+fn new_game_characters(
+    directory: &Path,
+    scenario: &ck_map::Scenario,
+    rules: Option<&Rules>,
+    economy: &mut ck_economy::EconomyState,
+    storage: &Path,
+    seed: u64,
+    start: GameTime,
+    log: &mut dyn FnMut(Level, String),
+) -> Result<ck_characters::CharacterStore, String> {
+    let figures = hashes::figure_files(directory).map_err(|error| format!("[game] {error}"))?;
+    let Some([research, load]) = figures else {
+        return Ok(ck_characters::CharacterStore::default());
+    };
+    let rules = rules.ok_or_else(|| {
+        format!(
+            "[game] scenario `{}` starts with its real figures and needs the shared rules (`game/economy.toml`)",
+            scenario.id
+        )
+    })?;
+    let read = |path: &Path| {
+        std::fs::read_to_string(path)
+            .map_err(|error| format!("[game] cannot read {}: {error}", path.display()))
+    };
+    let data = ck_characters::figures::FigureData::parse(&read(&research)?, &read(&load)?)
+        .map_err(|error| format!("[game] scenario `{}`: {error}", scenario.id))?;
+    let names = place_names(scenario);
+    // Every place is within reach of every other at the start: the relatives of clergy are placed at the nearest place that has a pop for
+    // them, however far (CK-370 §3 step 2), and the slots still apply their own reach.
+    let reach = marriage_reach(scenario, u64::MAX);
+    let mut archive = open_archive(storage);
+    let mut logs = open_logs(storage);
+    let ledger = ck_characters::Ledger::with_nearby(economy, &reach)
+        .with_place_names(&names)
+        .with_start_safety_net();
+    let mut world = ck_characters::World {
+        rules: &rules.events,
+        personality: &rules.personality,
+        genetics: &rules.genetics,
+        lifecycle: &rules.lifecycle,
+        seed,
+        populations: &ledger,
+        archive: &mut archive,
+        logs: &mut logs,
+    };
+    let mut characters = ck_characters::CharacterStore::default();
+    let report = characters
+        .start_768(&mut world, &data, start)
+        .map_err(|error| format!("[game] scenario `{}`: {error}", scenario.id))?;
+    for line in report.lines() {
+        log(Level::Info, line);
+    }
+    Ok(characters)
 }
 
 /// The display names of the scenario's places by id, which the character log lines show for a place.

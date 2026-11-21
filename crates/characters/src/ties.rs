@@ -126,6 +126,32 @@ pub struct Passion {
     pub last_fade: GameTime,
 }
 
+/// An authored feeling another character holds toward an archived one, kept as history on its record (CK-370 §3 step 3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InboundFeeling {
+    /// The holder's identifier.
+    pub holder: u64,
+    /// The kind: an index of `ck_economy::events::ALL_KINDS`.
+    pub kind: u8,
+    /// The strength, 1..=10.
+    pub strength: u8,
+}
+
+impl Canonical for InboundFeeling {
+    fn encode(&self, out: &mut Vec<u8>) -> Result<(), CanonicalError> {
+        self.holder.encode(out)?;
+        self.kind.encode(out)?;
+        self.strength.encode(out)
+    }
+    fn decode(r: &mut Reader<'_>) -> Result<Self, CanonicalError> {
+        Ok(Self {
+            holder: u64::decode(r)?,
+            kind: u8::decode(r)?,
+            strength: u8::decode(r)?,
+        })
+    }
+}
+
 /// The state slice 6 adds to a character.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Ties {
@@ -152,6 +178,10 @@ pub struct Ties {
     pub links: BTreeMap<u64, Link>,
     /// The passions, in the order gained.
     pub passions: Vec<Passion>,
+    /// The authored feelings **others hold toward** this character, kept only on a record archived at the start (CK-370 §3 step 3): the holder's
+    /// identifier, the kind (an index of `ck_economy::events::ALL_KINDS`) and the strength. History, not a live bond: the holder, a live
+    /// figure, keeps nothing of it, and nothing reads it as a strand.
+    pub inbound: Vec<InboundFeeling>,
 }
 
 impl Default for Ties {
@@ -166,6 +196,7 @@ impl Default for Ties {
             backfill: (0, 0),
             links: BTreeMap::new(),
             passions: Vec::new(),
+            inbound: Vec::new(),
         }
     }
 }
@@ -238,7 +269,8 @@ impl Canonical for Ties {
         self.backfill.0.encode(out)?;
         self.backfill.1.encode(out)?;
         self.links.encode(out)?;
-        self.passions.encode(out)
+        self.passions.encode(out)?;
+        self.inbound.encode(out)
     }
     fn decode(r: &mut Reader<'_>) -> Result<Self, CanonicalError> {
         Ok(Self {
@@ -251,6 +283,7 @@ impl Canonical for Ties {
             backfill: (u16::decode(r)?, u16::decode(r)?),
             links: BTreeMap::decode(r)?,
             passions: Vec::decode(r)?,
+            inbound: Vec::decode(r)?,
         })
     }
 }
@@ -267,6 +300,23 @@ impl Ties {
                 self.links
                     .get(&partner)
                     .map(|link| link.strands[at].strength)
+            })
+            .unwrap_or(0)
+    }
+
+    /// The strength (0 for none) of the authored feeling of `kind` that `holder` holds **toward** this character, as an archived record
+    /// keeps it from the start (see [`inbound`](Self::inbound)).
+    #[must_use]
+    pub fn inbound_strength(&self, holder: u64, kind: &str) -> u8 {
+        ck_economy::events::ALL_KINDS
+            .iter()
+            .position(|known| *known == kind)
+            .and_then(|at| u8::try_from(at).ok())
+            .and_then(|at| {
+                self.inbound
+                    .iter()
+                    .find(|feeling| feeling.holder == holder && feeling.kind == at)
+                    .map(|feeling| feeling.strength)
             })
             .unwrap_or(0)
     }

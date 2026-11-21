@@ -8,6 +8,9 @@ Every place was placed by hand at its named site; none was placed by noise or pr
 |---|---|
 | `scenario.toml` | The id (`ireland_768`), the map (`ireland`, resolved to `assets/map/ireland/`), the start date and the locations file |
 | `locations.toml` | One `[[location]]` per place |
+| `economy.toml` | The deterministic opening estimate of each place's people, buildings and stores, and the noble houses |
+| `ireland-768.toml` | The research record of the real figures (CK-370): names, bynames, languages, places, notes. Read with the file below |
+| `ireland-768-load.toml` | The structure of the real figures (CK-370): houses, offices, parents and spouses, dates, the dead parents, the known strands and the slots |
 | `SOURCES.md` | This file |
 
 The kinds, their sizes, catchment radii and glyphs are `assets/map/ireland/location_kinds.toml`, shared by every scenario on that map.
@@ -318,3 +321,33 @@ enter this scenario's `economy.toml` as `[nobles.<place>]` tables. Both are copi
   ten a level, and merged into the place's labourer pop (at Armagh, the monastery's). The data's `labourers` is checked against the
   authored levels, not used as the head count.
 - **Land order**: holdings, then the demesne, then the farm: the lord's land before the free farmers.
+
+## Real figures and the 768 start (CK-370, characters slice 8)
+
+The game starts with characters (some 2,900 live on the tested seeds): 282 real figures and what the generator makes around them. The two data files are
+copies, byte for byte, of the designer's files in `codekarl-content` (`figures/`), and they join the scenario hash (`scenario_hash` reads
+both, found by the scenario's own id, `ireland_768` being `ireland-768.toml` and `ireland-768-load.toml` wherever the folder is; both are required of this scenario, and no other scenario has this start), so a save made with other figures is refused.
+
+| Copy | Source | SHA-256 of the source | Origin |
+|---|---|---|---|
+| `ireland-768.toml`: 282 figures with their research notes | `codekarl-content/figures/ireland-768.toml` | `744c4fec99dcb21dcb3e49eebaff35d7d65ae9dbce653b674d657cb809ce48ac` | ck-designer-1, 2026-11-16, from `owner-direction-designer-r139` to `-r144`; reviewed on the figures review page |
+| `ireland-768-load.toml`: houses, offices, parent and spouse keys, structured dates, `pop_kind`, ten dead parents, 16 strands, 118 slots (r3, change `XAAGSNIT`) | `codekarl-content/figures/ireland-768-load.toml` | `cb8a816459b2997f724d28013ccc8419e26aff8e8dbb5990afa4185af8d87970` | ck-designer-1, 2026-11-20, with the designer's rulings in `history-scratch/ck370-dispositions-r1.md` (SHA-256 `bf5f9e18c8c8e3f11d617be1cd44e8906967a77eed99e8fc2b107bfc2680a13f`) |
+
+- **Each field has one source.** The research file owns the name, genitive, byname, patronymic, sex, `location`, mother tongue, second
+  languages and forced traits (`beats`, `role` and `note` are kept and inert); the load file owns the house, house of birth, subhouse (kept
+  for L7), office, parent and spouse keys, `pop_kind` (the place's first noble or monk pop in slot order) and the structured dates. A year
+  alone is 1 January. The prose `born`, `died`, `pop` and parent fields of the research file are not read.
+- **Dead before the start** (six figures) and the ten dead parents are archived with their dates, never live; a death with no date is
+  archived as *unknown*. Generated relatives (r18, the designer's ruling) of a character placed at a **monastic place** (a monk pop and no peasant pop and no
+  noble pop: the hermitages and island monasteries, figure or slot member, monk or lay) live at the nearest peasant pop of the character's
+  culture (else the nearest labourer pop, else noble), or **abroad** when no non-monk pop of the culture is on the map (Mayo's Northumbrian
+  monks); the character stays put. Anywhere else a lay character's relatives live in his own pop (a noble seat keeps its families, with or
+  without peasants), and a monk's relatives live in the place's peasant pop (else labourer, else noble). Anyone a slot names, including the
+  generated wife who fills a spouse slot, lives where the slot puts them, with her husband.
+- **Economy additions** (designer data r2, `history-scratch/ck370-dispositions-r1.md`): a noble pop at Carraig Aille (20 nobles, one demesne
+  level, 10 labourers; 34 noble houses, 1,200 nobles and 600 labourer positions in all); Clogher gains a small church (10 monks, 10
+  labourers, levels farm 30, holdings 1, storehouse 2); Skellig Michael's monks go from 10 to 12 (an abbot and the traditional twelve).
+- **The safety net** (the approved rule that a pop never falls below its characters): at the start only, a pop that would hold fewer heads
+  than characters is raised by one dependent instead of refusing a character, and each addition is counted in the start log. The designer's
+  join expected it only at Uisneach, by a few; with generator data r2 (generated relatives live to the start by the death curve) it fires at 15
+  pops for 91 dependents on seed 7 (Uisneach +14, Ciarraige +11, Aidne and Lagore +10; the start log of a new game lists each pop), `assets/game/lifecycle/generator.toml`.

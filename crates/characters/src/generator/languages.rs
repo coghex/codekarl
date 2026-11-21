@@ -54,6 +54,44 @@ pub(crate) fn set_tongue<P: Populations, A: ArchiveSink, L: LogSink>(
     Ok(())
 }
 
+/// Give a real figure the languages its data gives (CK-370 §1): the mother tongue (the dialect of the culture's tongue when it is the same
+/// language, else none) and exactly the second languages it names, the mother tongue never being one of them.
+///
+/// # Errors
+/// Refuses a pop whose culture has no tongue.
+pub(crate) fn fix_languages<P: Populations, A: ArchiveSink, L: LogSink>(
+    world: &World<'_, P, A, L>,
+    record: &mut Character,
+    fixed: &super::Fixed,
+) -> Result<(), Error> {
+    if !fixed.tongue.is_empty() {
+        let culture = world
+            .populations
+            .culture(&record.pop)
+            .ok_or(Error::Culture)?;
+        let home = world
+            .lifecycle
+            .generator
+            .tongues
+            .get(&culture)
+            .ok_or(Error::Culture)?;
+        record.life.dialect = if home.language == fixed.tongue {
+            home.dialect.clone()
+        } else {
+            String::new()
+        };
+        record.life.tongue.clone_from(&fixed.tongue);
+    }
+    record.life.languages.clear();
+    for (language, strength) in &fixed.second_languages {
+        if *language != record.life.tongue {
+            let held = record.life.languages.entry(language.clone()).or_insert(0);
+            *held = (*held).max(*strength);
+        }
+    }
+    Ok(())
+}
+
 /// A strength drawn uniformly in `range` on the character's stream of purpose `language.<source>`.
 fn strength(seed: u64, c: &Character, source: &str, range: StrengthRange) -> Result<u32, Error> {
     let span = u64::from(range.high - range.low) + 1;

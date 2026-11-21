@@ -38,6 +38,7 @@ fn read(directory: &Path, name: &str) -> Result<(String, Vec<u8>), String> {
 
 #[derive(Deserialize)]
 struct ScenarioKeys {
+    id: Option<String>,
     map: String,
     locations: String,
 }
@@ -47,7 +48,7 @@ struct MapKeys {
     layers: std::collections::BTreeMap<String, String>,
 }
 
-/// The scenario's own files: `scenario.toml` and the locations file it names.
+/// The scenario's own files: `scenario.toml`, the locations file it names, its economy and the real figures it ships.
 ///
 /// # Errors
 /// A file that cannot be read, or a `scenario.toml` without its `map` and `locations` keys.
@@ -61,7 +62,58 @@ pub(crate) fn scenario_hash(directory: &Path) -> Result<String, String> {
     if directory.join("economy.toml").exists() {
         files.push(read(directory, "economy.toml")?);
     }
+    // The real figures a scenario ships (CK-370) join its hash.
+    for path in figure_files(directory)?.iter().flatten() {
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        files.push(read(directory, name)?);
+    }
     Ok(content_hash(files))
+}
+
+/// The scenarios that start with real figures (CK-370): by id, so that a scenario moved or renamed is still found.
+const FIGURE_SCENARIOS: [&str; 1] = ["ireland_768"];
+
+/// The two files of the real figures a supported scenario ships (CK-370), the research file and the load file, named by the scenario's **own id**
+/// (`ireland_768` is `ireland-768.toml` and `ireland-768-load.toml`) wherever its directory is, so that loading and hashing find the same files
+/// of a scenario that is moved or renamed. A scenario that is not one of [`FIGURE_SCENARIOS`] is outside the 768 start (`None`); a supported one
+/// without either file is refused, never started without its characters.
+///
+/// # Errors
+/// An unreadable `scenario.toml`, or a supported scenario missing either of its two files.
+pub(crate) fn figure_files(directory: &Path) -> Result<Option<[PathBuf; 2]>, String> {
+    let (_, scenario) = read(directory, "scenario.toml")?;
+    let Some(id) = scenario_keys(&scenario)?.id else {
+        return Ok(None);
+    };
+    // Only the scenarios that ship real figures have this start; another scenario is outside it, whatever files its folder holds.
+    if !FIGURE_SCENARIOS.contains(&id.as_str()) {
+        return Ok(None);
+    }
+    let base = id.replace('_', "-");
+    let files = [
+        directory.join(format!("{base}.toml")),
+        directory.join(format!("{base}-load.toml")),
+    ];
+    let missing: Vec<String> = files
+        .iter()
+        .filter(|path| !path.exists())
+        .filter_map(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_owned)
+        })
+        .collect();
+    if missing.is_empty() {
+        Ok(Some(files))
+    } else {
+        Err(format!(
+            "scenario `{id}` starts with its real figures and needs both its figure files ({base}.toml, {base}-load.toml): missing {}",
+            missing.join(", ")
+        ))
+    }
 }
 
 /// Hash shared economy rules (including the genetic, personality, character event, life-cycle and generator data) and the map's terrain suitability inputs.

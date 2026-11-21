@@ -428,6 +428,9 @@ fn a_slot_of_an_unknown_kind_is_refused_and_a_court_that_does_not_exist_too() {
         count: 1,
         ages: None,
         today: today(),
+        sex: None,
+        slot: String::new(),
+        noble_families_only: false,
     };
     let error = store
         .fill_slot(&mut world(shipped(), &mut env, &pops, 1), &asked)
@@ -1051,6 +1054,7 @@ fn members_of_a_slot_are_generated_into_its_pop_with_their_role_in_one_transacti
         house: String::new(),
         office: None,
         key: format!("{role}.{n}"),
+        slot: String::new(),
     };
     let members = [
         member("abbot", Sex::Male, 0),

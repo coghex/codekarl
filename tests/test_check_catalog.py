@@ -2510,6 +2510,29 @@ GUARDS: tuple[Guard, ...] = (
             "assets/scenarios/ireland-768/",
         ),
     ),
+    # CK-370: a new game of the shipped 768 scenario loads the shipped rules (with the life-cycle, generator and genetic files), the map and
+    # the scenario with its real figures.
+    Guard(
+        "apps/codekarl/src/game/tests/start_768.rs",
+        "rust.app",
+        (
+            "assets/game/",
+            "assets/map/ireland/",
+            "assets/scenarios/ireland-768/",
+        ),
+    ),
+    # CK-370: the start's tests add an event of their own to the shipped character events.
+    Guard(
+        "crates/characters/tests/start.rs",
+        "economy.core",
+        ("assets/game/events/character-events.toml",),
+    ),
+    # CK-370: the loader's tests read the shipped figure files.
+    Guard(
+        "crates/characters/tests/figures.rs",
+        "economy.core",
+        ("assets/scenarios/ireland-768/",),
+    ),
     # The registry's shipped-data tests read the registry outside the economy crate.
     Guard("crates/economy/src/peoples.rs", "economy.core", ("assets/game/peoples.toml",)),
     # CK-225: economy's shipped-data validation tests load both rules and Ireland's authored starts.
