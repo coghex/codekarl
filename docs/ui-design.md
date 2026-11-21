@@ -3860,7 +3860,7 @@ opens the **character screen** over the left slot.
   to the nearest, a tie away from zero.
 - **The glossary** is now two files loaded as one: `assets/ui/glossary.toml` and the designer's `assets/ui/glossary_characters.toml` (a byte copy,
   cited in `assets/ui/SOURCES.md`). A link may name a term of either, a key in both is a load error, and the reader lists both.
-- **Not in 9a:** orientation (its icons are not drawn), the relations tab (9b), the pop tab and the life-log button (9c), layered portraits, heirs,
+- **Not in 9a:** orientation (its icons are not drawn), the relations tab (9b, §3.26), the pop tab and the life-log button (9c, §3.27), layered portraits, heirs,
   titles and kingdoms (L1), captives (L4), the actions tab (L2) and archived characters in the list. A generated character whose father is
   archived shows its base name without the patronymic, because the view does not read the archive.
 
@@ -3902,7 +3902,48 @@ only: the unknown portrait at 24 UI pixels, seven to a row, the dead dimmed.
   character no longer live closes the screen. `lib/cards.lua` now tells an item's `on_click` where in the item the release was, and a tooltip span may
   carry a `colour`.
 - **Not in 9b:** the family tree (no design yet), heirs and claims (L1), lords and concubines, the actions tab, opening a dead character's screen, the
-  pop tab and the life-log button (9c), layered portraits, orientation.
+  pop tab and the life-log button (9c, §3.27), layered portraits, orientation.
+
+### 3.27 The pop tab and the life log (CK-378)
+
+Characters slice 9c, the last part of slice 9 (`history-scratch/characters-ui-r12.md` "The pop tab", `mockups/character-pop.png`, the life-log button of
+r120; spec r2). The "pop" tab shows the pop the character belongs to; a button on every tab opens the character's life log.
+
+- **The exact pop.** The character view carries each character's **pop locator**, place and slot (a place can hold two pops of one kind: Clonmacnoise
+  has two peasant pops), and for each pop the live characters in it, most important first (9a §2), built in the same pass. `game.character_pop(id,
+  revision)` returns the place, the slot and those characters as cards. The tab reads the economy view of that slot at that revision
+  (`game.place(place, revision).pops[slot + 1]`), never another pop of the same kind and never a newer revision: the location panel's `pop_size` and
+  `pop_food` tooltip classes take an optional `revision` argument beside the pop index, and the tab passes its own, so a tooltip shows the revision the
+  tab shows even when the panel has pinned a newer one (a read that is refused leaves the tab at its revision).
+- **Identity**: "<pop kind> at <place>" (the kind in its pop colour, the place in the term colour), then "<culture> · <religion>" as glossary terms, and
+  at the right an **open location** button (the ledger's monochrome location icon and the words) that closes the character screen and shows that place in
+  the location panel.
+- **People**: workers, dependents and food days, each with its number and the location panel's tooltip for it. No wealth: pops hold none yet.
+- **Satisfaction**: a bar on the game's **-100..+100** scale (filled from the left end to the value) with a grey tick at the pop's **equilibrium**,
+  and "value/equilibrium" in signed whole numbers. The equilibrium is the economy's own baseline for the pop's present needs
+  (`ck_economy::satisfaction_equilibrium`, the function the monthly drift aims at, shown as `PopView::equilibrium`). Then necessities, niceties and
+  luxuries met, each a bar and a percentage with the location panel's numbers (per mille by floor division, the bar clamped to 0..1000) and its
+  `needs` tooltip. **Politics** is left out until the desired-laws model exists.
+- **Characters**: the live characters of the pop in that revision as portraits like the relations tab's (seven to a row, two rows, then a "+N" chip
+  listing the rest); hover gives the name, the house line and the role line; a click opens that character's screen, replacing this one. The viewed
+  character is included and framed. The tab scrolls with the stack's bar and reads again on each delivered revision as the other tabs do.
+- **The life log button** is a small icon button with the `scroll` of the approved set (`lib/button.lua` draws it from `ui/characters/` at its own
+  9 by 9 size), tooltip "life log", at the right of the header's name line on every tab. It opens the **life log window**, "life of <name>", exactly
+  over the screen (`lib/character_log.lua`): every line of the log with its date in the dim colour before it, oldest first, one line per moment wrapped
+  under a hanging indent, in the stack with its bar, opened **scrolled to the newest** at the bottom; an empty log says "nothing yet" in the dim colour.
+  Escape closes the topmost window, so the log first and then the screen; the x closes it too. It is read when it opens and when a new revision
+  arrives (`game.character_log(id, revision)`), never each frame, keeping its scroll unless it was at the end, where it stays at the end; a new
+  world, the character's death or another character's screen closes it.
+- **The data path of the log.** The simulation owns the life-log file (append-only records, each its length and its body). A published view records
+  its world's log **as of publication**: a `ck_characters::LogSource` is the one reader of the file, extended at each publication from the bytes added
+  since the last (never rescanning) and keeping the **offsets of each character's records**; a `LogView` is that index fixed at the published length.
+  The length ends at the last **complete** write (a record whose length or body is not all on disk is a write in progress and lies outside it), so a
+  later append, even one with the same or an earlier date, is invisible to an earlier revision. A read decodes only the selected character's indexed
+  records, orders them by date with the order written for equal dates, and leaves out any dated after the revision's day. A load replaces the
+  storage, but a view of the old world keeps its directory alive through its reader exactly as the archive's does (§3.26), so a pinned read completes
+  from its own world, and the files go with the last view.
+- **Not in 9c:** pop wealth, politics (desired laws), the actions tab (L2), heirs (L1), dead characters' screens and logs, the family tree, layered
+  portraits, orientation.
 
 ## 4. Packages and ownership
 
