@@ -48,6 +48,7 @@ fn person(id: u64, born: GameTime, humours: [i64; 4], mind: PersonalityRecord) -
         genetics: Box::new(genetics),
         personality: mind,
         life: Box::default(),
+        ties: Box::default(),
     }
 }
 
@@ -57,6 +58,7 @@ fn store_of(characters: Vec<Character>) -> CharacterStore {
     let mut bytes = Vec::new();
     next.encode(&mut bytes).unwrap();
     live.encode(&mut bytes).unwrap();
+    0_u64.encode(&mut bytes).unwrap();
     CharacterStore::from_bytes(&bytes).unwrap()
 }
 
@@ -325,6 +327,7 @@ fn the_daily_passes_run_the_event_engine_with_the_character_storage_on_the_first
         at(768, 5, 2, 12),
         9,
         &BTreeMap::new(),
+        &BTreeMap::new(),
         Some(&handle),
     )
     .unwrap();
@@ -338,6 +341,7 @@ fn the_daily_passes_run_the_event_engine_with_the_character_storage_on_the_first
         &mut state,
         at(768, 5, 1, 12),
         9,
+        &BTreeMap::new(),
         &BTreeMap::new(),
         Some(&handle),
     )
@@ -366,6 +370,7 @@ fn the_daily_passes_run_the_event_engine_with_the_character_storage_on_the_first
         &mut state,
         at(768, 6, 1, 12),
         9,
+        &BTreeMap::new(),
         &BTreeMap::new(),
         Some(&handle),
     );
@@ -396,11 +401,95 @@ fn an_unavailable_log_does_not_stop_the_state_updates_and_is_reported() {
         at(768, 5, 1, 12),
         9,
         &BTreeMap::new(),
+        &BTreeMap::new(),
         Some(&handle),
     );
     assert!(result.is_err(), "the unwritable line is reported");
     let monk = state.characters.get(1).unwrap();
     assert_eq!(monk.personality.honour, 950, "the birthday's fade ran");
     assert_eq!(monk.grade("hospitaller"), 0, "the monthly precedence ran");
+    std::fs::remove_dir_all(&directory).ok();
+}
+
+#[test]
+fn a_place_passion_written_by_the_production_pass_names_the_place_by_its_authored_name() {
+    // CK-368 §8: the log line a passion's gain writes shows the scenario's display name for a place, not the key the state keeps.
+    let directory = std::env::temp_dir().join(format!("ck-passes-names-{}", std::process::id()));
+    std::fs::remove_dir_all(&directory).ok();
+    std::fs::create_dir_all(&directory).unwrap();
+    let handle: crate::game::character_storage::Handle =
+        Arc::new(std::sync::Mutex::new(Some(directory.clone())));
+    let mut rules = shipped_rules();
+    for moment in &mut rules.lifecycle.connections.passions.moments {
+        if moment.key == "long_rule" {
+            moment.chance_ppb = 1_000_000_000;
+        }
+    }
+    // A ruler of long standing at the fixture place, on its birthday.
+    let mut chief = person(1, at(740, 6, 15, 0), [5000; 4], mind(0, 0));
+    chief.office = Some(ck_characters::Office::Ruler);
+    chief.full_until = Some(at(900, 1, 1, 0));
+    let mut state = GameState {
+        economy: economy_with_a_noble_pop(),
+        characters: store_of(vec![chief]),
+    };
+    let names: BTreeMap<String, String> = [("fixture".to_owned(), "Ard Mhacha".to_owned())].into();
+    run_character_passes(
+        &rules,
+        &mut state,
+        at(768, 6, 15, 12),
+        9,
+        &BTreeMap::new(),
+        &names,
+        Some(&handle),
+    )
+    .unwrap();
+    let passions = &state.characters.get(1).unwrap().ties.passions;
+    assert_eq!(passions.len(), 1);
+    // The state keeps the key.
+    assert_eq!(passions[0].target.key, "fixture");
+    let lines: Vec<String> = ck_characters::LifeLog::open(directory.join("LOGS"))
+        .unwrap()
+        .read(1)
+        .unwrap()
+        .into_iter()
+        .map(|line| line.text)
+        .collect();
+    assert!(
+        lines.contains(&"c1 came to love Ard Mhacha.".to_owned()),
+        "{lines:?}"
+    );
+}
+
+#[test]
+fn the_first_daily_phase_backfills_a_promotion_before_the_deaths_and_the_economy() {
+    // CK-368 §9 (review 11): the pending backfill of a promoted character runs at the start of phase A, before the day's deaths can
+    // archive it; it is committed (window cleared, last full-tier year advanced) by that phase alone.
+    let directory = std::env::temp_dir().join(format!("ck-passes-backfill-{}", std::process::id()));
+    std::fs::remove_dir_all(&directory).ok();
+    std::fs::create_dir_all(&directory).unwrap();
+    let handle: crate::game::character_storage::Handle =
+        Arc::new(std::sync::Mutex::new(Some(directory.clone())));
+    let rules = shipped_rules();
+    let mut noble = person(1, at(700, 6, 15, 0), [5000; 4], mind(0, 0));
+    noble.ties.promoted = Some(765);
+    noble.ties.last_full = 765;
+    let mut state = GameState {
+        economy: economy_with_a_noble_pop(),
+        characters: store_of(vec![noble]),
+    };
+    super::super::setup::run_pre_economy_passes(
+        &rules,
+        &mut state,
+        at(768, 5, 2, 12),
+        9,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        Some(&handle),
+    )
+    .unwrap();
+    let held = state.characters.get(1).expect("alive");
+    assert_eq!(held.ties.promoted, None, "the promotion was taken up");
+    assert_eq!((held.ties.backfill, held.ties.last_full), ((0, 0), 767));
     std::fs::remove_dir_all(&directory).ok();
 }

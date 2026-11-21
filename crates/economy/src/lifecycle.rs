@@ -123,7 +123,7 @@ pub struct RelationRules {
     pub avoid_necessities: u32,
     /// The lust/chastity value (thousandths) at which the mode moves a step.
     pub shift_at: i64,
-    /// A lover strand's yearly trying chance, in ppb (read for slice 6; unused here).
+    /// The chance in ppb that a lover is trying for a calendar year (CK-368 §10).
     pub lover_trying_ppb: u32,
 }
 
@@ -318,9 +318,11 @@ pub struct LifeCycle {
     pub namesakes: Namesakes,
     /// The epithets of `epithets.toml`, in the order the file writes them (CK-365).
     pub epithets: Vec<Epithet>,
+    /// `connections.toml`: contact, strands, orientation, passions, opinion terms and log lines (CK-368).
+    pub connections: events::Connections,
 }
 
-/// The text of the three files, each with the name errors report it by.
+/// The text of the four files, each with the name errors report it by.
 pub struct Files<'a> {
     /// `life-cycle.toml`: `(file name, text)`.
     pub life: (&'a str, &'a str),
@@ -328,6 +330,8 @@ pub struct Files<'a> {
     pub names: (&'a str, &'a str),
     /// `epithets.toml`.
     pub epithets: (&'a str, &'a str),
+    /// `connections.toml` (CK-368).
+    pub connections: (&'a str, &'a str),
 }
 
 /// What the life-cycle data is validated against.
@@ -1008,7 +1012,7 @@ fn parse_namesakes(source: &Source<'_>, node: &Node) -> Result<Namesakes, DataEr
 }
 
 impl LifeCycle {
-    /// Load `life-cycle.toml`, `names.toml` and `epithets.toml` from `directory` and validate them against the registry.
+    /// Load `life-cycle.toml`, `names.toml`, `epithets.toml` and `connections.toml` from `directory` and validate them against the registry.
     ///
     /// # Errors
     /// Returns a source-qualified error for unreadable or invalid data.
@@ -1027,17 +1031,19 @@ impl LifeCycle {
         let (life_file, life) = read("life-cycle.toml")?;
         let (names_file, names) = read("names.toml")?;
         let (epithets_file, epithets) = read("epithets.toml")?;
+        let (connections_file, connections) = read("connections.toml")?;
         Self::parse(
             &Files {
                 life: (&life_file, &life),
                 names: (&names_file, &names),
                 epithets: (&epithets_file, &epithets),
+                connections: (&connections_file, &connections),
             },
             registry,
         )
     }
 
-    /// Parse and validate the three files' text; the file names appear in errors.
+    /// Parse and validate the four files' text; the file names appear in errors.
     ///
     /// # Errors
     /// Returns a source-qualified error for the first invalid entry.
@@ -1045,6 +1051,7 @@ impl LifeCycle {
         let (life_file, life) = files.life;
         let (names_file, names) = files.names;
         let (epithets_file, epithets) = files.epithets;
+        let (connections_file, connections) = files.connections;
         let source = Source { file: life_file };
         let root = source.document(life)?;
         for key in root.keys() {
@@ -1094,6 +1101,15 @@ impl LifeCycle {
                 pop_types: registry.pop_types,
             },
             registry.religions,
+        )?;
+        rules.connections = registry.events.parse_connections(
+            connections_file,
+            connections,
+            &events::Registry {
+                peoples: registry.peoples,
+                genetics: registry.genetics,
+                pop_types: registry.pop_types,
+            },
         )?;
         Ok(rules)
     }

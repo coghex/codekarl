@@ -474,7 +474,7 @@ impl CharacterStore {
         world.populations.add_births(&m.pop, count)?;
         let children: Vec<u64> = records.iter().map(|child| child.id).collect();
         for child in records {
-            self.live.insert(child.id, child);
+            self.put(child);
         }
         self.next_id = next;
         for parent in [father_id, mother] {
@@ -580,6 +580,8 @@ impl CharacterStore {
         world: &mut World<'_, P, A, L>,
         today: GameTime,
     ) -> Result<(), EventError> {
+        // A lover's mode for a calendar year is drawn on the game's own seed: fixed now if no pass has fixed it yet.
+        self.fix_seed(world.seed);
         let women: Vec<u64> = self
             .live
             .values()
@@ -642,13 +644,30 @@ impl CharacterStore {
         husband: &Character,
         today: GameTime,
     ) -> Result<u32, Error> {
+        let age_f = Self::age_on(woman, today)?;
+        let mode = Self::mode(world, woman, husband, age_f)?;
+        self.conception_ppb_in(world, woman, husband, today, mode)
+    }
+
+    /// [`conception_ppb`](Self::conception_ppb) for a couple whose relation mode is `mode` (0 trying, 1 neutral, 2 avoidance): a lover
+    /// is not married to the woman, and his mode is the year's draw (CK-368 §10).
+    ///
+    /// # Errors
+    /// As [`conception_ppb`](Self::conception_ppb).
+    pub fn conception_ppb_in<P: Populations, A: ArchiveSink, L: LogSink>(
+        &self,
+        world: &World<'_, P, A, L>,
+        woman: &Character,
+        husband: &Character,
+        today: GameTime,
+        mode: usize,
+    ) -> Result<u32, Error> {
         let rules = &world.lifecycle.conception;
         let (age_f, age_m) = (Self::age_on(woman, today)?, Self::age_on(husband, today)?);
         let fecundity = |c: &Character| {
             let shown = c.shown_stat(world.genetics, stat("fecundity"));
             (u128::try_from(shown.max(0)).unwrap_or(0), 10_000)
         };
-        let mode = Self::mode(world, woman, husband, age_f)?;
         let mut ratios = vec![
             curve_ratio(&rules.women, age_f),
             curve_ratio(&rules.men, age_m),
@@ -687,6 +706,19 @@ impl CharacterStore {
             .filter(|spouse| spouse.sex == Sex::Male)
             .collect();
         husbands.sort_by_key(|husband| husband.id);
+        // Then her live male lovers who are not also her spouse, in identifier order (CK-368 §10): each pair's mode for the calendar year
+        // is one draw at 1 January, so it is the same on every monthly check and after a reload.
+        let mut lovers: Vec<&Character> = woman
+            .ties
+            .links
+            .iter()
+            .filter(|(partner, link)| {
+                link.strands[2].strength > 0 && !woman.spouses.contains(partner)
+            })
+            .filter_map(|(partner, _)| self.live.get(partner))
+            .filter(|partner| partner.sex == Sex::Male)
+            .collect();
+        lovers.sort_by_key(|lover| lover.id);
         let mut conceived = None;
         for husband in husbands {
             let chance = self.conception_ppb(world, woman, husband, today)?;
@@ -697,6 +729,35 @@ impl CharacterStore {
             if hit {
                 conceived = Some(husband.id);
                 break;
+            }
+        }
+        if conceived.is_none() {
+            let new_year = crate::connections::new_year(today)?;
+            for lover in lovers {
+                let trying = roll(
+                    &mut character_stream(
+                        self.stable_seed(world.seed),
+                        id,
+                        &format!("lover_mode.{}", lover.id),
+                        new_year,
+                    ),
+                    world.lifecycle.relations.lover_trying_ppb,
+                )?;
+                let chance =
+                    self.conception_ppb_in(world, woman, lover, today, usize::from(!trying))?;
+                let hit = roll(
+                    &mut character_stream(
+                        world.seed,
+                        id,
+                        &format!("conception.{}", lover.id),
+                        today,
+                    ),
+                    chance,
+                )?;
+                if hit {
+                    conceived = Some(lover.id);
+                    break;
+                }
             }
         }
         if let Some(father) = conceived {

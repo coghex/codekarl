@@ -28,6 +28,10 @@ fn epithets_text() -> &'static str {
     static TEXT: OnceLock<String> = OnceLock::new();
     TEXT.get_or_init(|| asset("epithets.toml"))
 }
+fn connections_text() -> &'static str {
+    static TEXT: OnceLock<String> = OnceLock::new();
+    TEXT.get_or_init(|| asset("connections.toml"))
+}
 fn shipped_rules() -> &'static Rules {
     static RULES: OnceLock<Rules> = OnceLock::new();
     RULES.get_or_init(|| {
@@ -46,6 +50,7 @@ fn parse_all(life: &str, names: &str, epithets: &str) -> Result<LifeCycle, DataE
             life: ("life-cycle.toml", life),
             names: ("names.toml", names),
             epithets: ("epithets.toml", epithets),
+            connections: ("connections.toml", connections_text()),
         },
         &Registry {
             events: &rules.events,
@@ -823,6 +828,7 @@ fn an_epithet_scope_that_is_both_a_subgroup_and_a_religion_is_refused() {
             life: ("life-cycle.toml", life_text()),
             names: ("names.toml", names_text()),
             epithets: ("epithets.toml", epithets_text()),
+            connections: ("connections.toml", connections_text()),
         },
         &Registry {
             events: &rules.events,
@@ -1201,4 +1207,215 @@ fn a_weight_coefficient_is_any_non_negative_value_the_representation_holds() {
             "too large",
         );
     }
+}
+
+// --- connections.toml (CK-368) -----------------------------------------------------------------------------------------------
+
+fn parse_connections(text: &str) -> Result<LifeCycle, DataError> {
+    let rules = shipped_rules();
+    let pop_types: Vec<&str> = rules.pop_types.iter().map(|p| p.id.as_str()).collect();
+    LifeCycle::parse(
+        &Files {
+            life: ("life-cycle.toml", life_text()),
+            names: ("names.toml", names_text()),
+            epithets: ("epithets.toml", epithets_text()),
+            connections: ("connections.toml", text),
+        },
+        &Registry {
+            events: &rules.events,
+            genetics: &rules.genetics,
+            peoples: &rules.peoples,
+            pop_types: &pop_types,
+            religions: &rules.religions,
+        },
+    )
+}
+fn refused_connections(from: &str, to: &str, entry: &str, problem: &str) {
+    let error = parse_connections(&edit(connections_text(), from, to)).unwrap_err();
+    assert!(
+        error.entry.contains(entry) && error.problem.contains(problem),
+        "expected `{entry}` / `{problem}`, got {error:?}"
+    );
+    assert_eq!(error.file, "connections.toml");
+}
+
+#[test]
+fn the_shipped_connections_load_inert_entries_included_and_state_what_the_file_says() {
+    let data = &shipped_rules().lifecycle.connections;
+    assert!(data.loaded);
+    // Four settings act, four are inert.
+    let live: Vec<&str> = data
+        .settings
+        .iter()
+        .filter(|(_, setting)| setting.live)
+        .map(|(name, _)| name.as_str())
+        .collect();
+    assert_eq!(live, ["court", "household", "monastery", "same_location"]);
+    assert_eq!(data.settings["household"].contact_ppb, 900_000_000);
+    assert_eq!(data.extra_setting_ppb, 50_000_000);
+    assert_eq!(
+        (
+            data.circle.floor_ppb,
+            data.circle.size,
+            data.circle.min_age,
+            data.circle.lover_min_age
+        ),
+        (100_000_000, 20, 6, 16)
+    );
+    assert_eq!(data.strands.base_ppb["friend"], 120_000_000);
+    assert_eq!(data.strands.friend_withdrawn[6], 400_000_000);
+    assert_eq!(data.strands.friend_age_gap, 20);
+    assert_eq!(data.strands.rival_at, 5);
+    assert_eq!(data.strands.hatred_chance_ppb, 100_000_000);
+    assert_eq!(data.strands.happenings["rescue"].kinds, ["love", "respect"]);
+    assert_eq!(data.orientation.weights, [92, 4, 3, 1]);
+    assert_eq!(data.orientation.parent_boost_ppb, 1_500_000_000);
+    assert_eq!(
+        (data.passions.full_ppb, data.passions.coarse_ppb),
+        (1_000_000_000, 100_000_000)
+    );
+    assert_eq!(
+        (data.passions.start_strength, data.passions.fade_years),
+        (3, 10)
+    );
+    // Four live moments and three inert ones, the inert ones with their deferred targets.
+    let live_moments: Vec<&str> = data
+        .passions
+        .moments
+        .iter()
+        .filter(|m| m.live)
+        .map(|m| m.key.as_str())
+        .collect();
+    assert_eq!(
+        live_moments,
+        ["cleric_fervour", "house_glory", "kin_killed", "long_rule"]
+    );
+    assert_eq!(data.passions.moments.iter().filter(|m| !m.live).count(), 3);
+    assert!(data.passions.moments.iter().any(|m| matches!(
+        &m.target,
+        crate::events::Target::Deferred(text) if text == "the victor's tag"
+    )));
+    let rule = data
+        .passions
+        .moments
+        .iter()
+        .find(|m| m.key == "long_rule")
+        .expect("long_rule");
+    assert_eq!(rule.when.ruler_years_min, Some(10));
+    let glory = data
+        .passions
+        .moments
+        .iter()
+        .find(|m| m.key == "house_glory")
+        .expect("house_glory");
+    assert!(glory.when.in_ruling_house);
+    assert_eq!(glory.when.fame_min, Some(10_000));
+    assert_eq!((data.max_years, data.burn_in_years), (15, 15));
+    assert_eq!(data.opinion_strands["hatred"], -4000);
+    assert_eq!(data.opinion_passions["loyalty"], 2000);
+    assert_eq!(
+        data.log["friend"].made,
+        "{name} and {other} became friends."
+    );
+    assert_eq!(data.passion_faded, "{name}'s {kind} for {target} faded.");
+}
+
+#[test]
+fn each_live_connections_entry_is_validated_and_names_its_entry() {
+    refused_connections(
+        "[circle]\n",
+        "[circle]\nsurprise = 1\n",
+        "circle.surprise",
+        "unknown key",
+    );
+    refused_connections(
+        "floor = 0.1 ",
+        "floor = 1.5 ",
+        "circle.floor",
+        "probability",
+    );
+    refused_connections("size = 20 ", "size = -1 ", "circle.size", "whole number");
+    refused_connections(
+        "max_years = 15",
+        "max_years = -1",
+        "settling_in.max_years",
+        "whole number",
+    );
+    refused_connections(
+        "skills_divisor = 60",
+        "skills_divisor = 0",
+        "respect.skills_divisor",
+        "positive",
+    );
+    refused_connections(
+        "envy_divisor = 3",
+        "envy_divisor = 0",
+        "envy.envy_divisor",
+        "positive",
+    );
+    refused_connections(
+        "age_gap_years = 20 ",
+        "age_gap_years = 0 ",
+        "friend.age_gap_years",
+        "positive",
+    );
+    refused_connections(
+        "withdrawn = [1, 0.8, 0.8, 0.7, 0.6, 0.5, 0.4]",
+        "withdrawn = [1, 0.8, 0.8]",
+        "friend.withdrawn",
+        "seven values",
+    );
+    refused_connections(
+        "weights = { straight = 92, gay = 4, bisexual = 3, asexual = 1 }",
+        "weights = { straight = 0, gay = 0, bisexual = 0, asexual = 0 }",
+        "orientation.weights",
+        "sum above 0",
+    );
+    refused_connections(
+        "value = 0.9, live = true",
+        "value = 1.5, live = true",
+        "household.value",
+        "probability",
+    );
+    refused_connections(
+        "start_strength = 3 ",
+        "start_strength = 0 ",
+        "start_strength",
+        "1..10",
+    );
+}
+
+#[test]
+fn a_live_moment_is_checked_against_the_vocabulary_and_the_targets_the_engine_resolves_an_inert_one_is_not()
+ {
+    // A condition outside slice 4's vocabulary plus the four of this slice.
+    refused_connections(
+        "when = { ruler_years_min = 10 }",
+        "when = { ruler_years_min = 10, ransomed_by_church = true }",
+        "long_rule.when",
+        "unknown key",
+    );
+    // A target the engine does not resolve.
+    refused_connections(
+        "passion = { kind = \"love\", target = \"the character's location\" }",
+        "passion = { kind = \"love\", target = \"the victor's tag\" }",
+        "long_rule.passion.target",
+        "resolves",
+    );
+    // A negative condition value.
+    refused_connections(
+        "years_in_pop_min = 10",
+        "years_in_pop_min = -1",
+        "years_in_pop_min",
+        "whole number",
+    );
+    // An inert moment may carry a deferred condition and target: the shipped `church_shelter` does, and it loads.
+    assert!(parse_connections(connections_text()).is_ok());
+    // But even an inert entry has its shape checked: a chance outside 0..1.
+    refused_connections(
+        "chance = 0.1\nlive = false",
+        "chance = 2.0\nlive = false",
+        "defeat.chance",
+        "probability",
+    );
 }

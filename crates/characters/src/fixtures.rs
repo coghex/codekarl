@@ -67,9 +67,10 @@ impl CharacterStore {
         &mut self,
         id: u64,
         pop: PopLocator,
+        day: GameTime,
         populations: &impl Populations,
     ) -> Result<(), Error> {
-        self.move_to(id, pop, populations)
+        self.move_to(id, pop, day, populations)
     }
     /// `indulge` without precedence.
     ///

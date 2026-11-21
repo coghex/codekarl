@@ -329,6 +329,8 @@ fn write_genetics(root: &Path, haplogroups: &str, traits: &str) {
     fs::write(root.join("game/lifecycle/names.toml"), "names").unwrap();
     // And the epithets (CK-365).
     fs::write(root.join("game/lifecycle/epithets.toml"), "epithets").unwrap();
+    // And the connections and passions (CK-368).
+    fs::write(root.join("game/lifecycle/connections.toml"), "connections").unwrap();
 }
 
 #[test]
@@ -352,7 +354,14 @@ fn editing_any_life_cycle_file_changes_the_rules_hash() {
         "epithets edited",
     )
     .unwrap();
-    assert_ne!(hashes::rules_hash(&dir.0).unwrap(), names);
+    let epithets = hashes::rules_hash(&dir.0).unwrap();
+    assert_ne!(epithets, names);
+    fs::write(
+        dir.0.join("game/lifecycle/connections.toml"),
+        "connections edited",
+    )
+    .unwrap();
+    assert_ne!(hashes::rules_hash(&dir.0).unwrap(), epithets);
 }
 
 #[test]

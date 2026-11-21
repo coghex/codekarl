@@ -439,7 +439,7 @@ pub(crate) fn keep(first: &mut FirstError, error: EventError) {
     first.get_or_insert(error);
 }
 
-fn conclude(first: FirstError) -> Result<(), EventError> {
+pub(crate) fn conclude(first: FirstError) -> Result<(), EventError> {
     first.map_or(Ok(()), Err)
 }
 
@@ -508,7 +508,7 @@ impl CharacterStore {
             self.bereave(world, &dead, date, first);
             return Ok(Step::Died);
         }
-        self.live.insert(id, outcome.copy);
+        self.put(outcome.copy);
         if let Some(text) = line {
             Self::line(world, id, date, &text, first);
         }
@@ -650,8 +650,25 @@ impl CharacterStore {
         happening: &str,
         date: GameTime,
     ) -> Result<(), EventError> {
+        self.report_happening_with(world, id, happening, None, date)
+    }
+
+    /// [`report_happening`](Self::report_happening) with the other character of the happening (CK-368 §5): after the happening's
+    /// events for `id`, the strand rules of the happening run, only if both are still alive.
+    ///
+    /// # Errors
+    /// As [`report_happening`](Self::report_happening).
+    pub fn report_happening_with<P: Populations, A: ArchiveSink, L: LogSink>(
+        &mut self,
+        world: &mut World<'_, P, A, L>,
+        id: u64,
+        happening: &str,
+        counterpart: Option<u64>,
+        date: GameTime,
+    ) -> Result<(), EventError> {
         let mut first = None;
         self.dispatch(world, id, happening, date, &mut first)?;
+        self.after_happening(world, id, happening, counterpart, date, &mut first)?;
         conclude(first)
     }
 
@@ -817,7 +834,7 @@ impl CharacterStore {
         pop: PopLocator,
         day: GameTime,
     ) -> Result<(), EventError> {
-        self.move_to(id, pop, world.populations)?;
+        self.move_to(id, pop, day, world.populations)?;
         self.apply_precedence(world, id, day)
     }
 

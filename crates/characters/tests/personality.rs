@@ -128,6 +128,7 @@ fn person(id: u64, birth: GameTime, humours: [i64; 4], mind: PersonalityRecord) 
         genetics: Box::new(genetics),
         personality: mind,
         life: Box::default(),
+        ties: Box::default(),
     }
 }
 const BALANCED: [i64; 4] = [5000; 4];
@@ -144,6 +145,7 @@ fn store_of(characters: Vec<Character>) -> CharacterStore {
     let mut bytes = Vec::new();
     next.encode(&mut bytes).expect("encode");
     live.encode(&mut bytes).expect("encode");
+    0_u64.encode(&mut bytes).expect("encode");
     CharacterStore::from_bytes(&bytes).expect("a store of these records")
 }
 fn mind_of(store: &CharacterStore, id: u64) -> PersonalityRecord {
@@ -843,9 +845,15 @@ fn vice_virtue_is_held_to_seven_and_a_manner_beyond_twenty_is_kept() {
         },
     );
     // (9 x 10 - 24) / 9 = 7.333 plus the humour compatibility 5: clamping the 24 to 20 would give 7.778.
-    assert_eq!(ck_characters::opinion(shipped(), &a, &b), Ok(7333 + 5000));
+    assert_eq!(
+        ck_characters::personality_opinion(shipped(), &a, &b),
+        Ok(7333 + 5000)
+    );
     a.personality.manner[0] = 24_000;
-    assert_eq!(ck_characters::opinion(shipped(), &a, &b), Ok(10_000 + 5000));
+    assert_eq!(
+        ck_characters::personality_opinion(shipped(), &a, &b),
+        Ok(10_000 + 5000)
+    );
 }
 
 #[test]
@@ -1128,9 +1136,9 @@ fn bare(id: u64) -> Character {
 }
 /// Opinion of `b` by `a` less the opinion of two bare characters (manner 10 + humour 5 = 15 points).
 fn extra(a: &Character, b: &Character) -> i64 {
-    let base = ck_characters::opinion(shipped(), &bare(1), &bare(2)).expect("opinion");
+    let base = ck_characters::personality_opinion(shipped(), &bare(1), &bare(2)).expect("opinion");
     assert_eq!(base, 15_000);
-    ck_characters::opinion(shipped(), a, b).expect("opinion") - base
+    ck_characters::personality_opinion(shipped(), a, b).expect("opinion") - base
 }
 
 #[test]
@@ -1143,7 +1151,7 @@ fn opinion_manner_and_humour_compatibility_are_clamped_to_their_maxima() {
     let a = bare(1);
     let manner = |gap: i64| {
         let b = person(2, date(750, 1, 1), BALANCED, apart(gap));
-        ck_characters::opinion(rules, &a, &b).unwrap() - 5000
+        ck_characters::personality_opinion(rules, &a, &b).unwrap() - 5000
     };
     assert_eq!(manner(0), 10_000);
     assert_eq!(manner(9000), 1000);
@@ -1157,7 +1165,7 @@ fn opinion_manner_and_humour_compatibility_are_clamped_to_their_maxima() {
             [5000 + gap, 5000 - gap, 5000 + gap, 5000 - gap],
             mind(),
         );
-        ck_characters::opinion(rules, &a, &b).unwrap() - 10_000
+        ck_characters::personality_opinion(rules, &a, &b).unwrap() - 10_000
     };
     assert_eq!(humour(0), 5000);
     assert_eq!(humour(2000), 3000);
@@ -1167,7 +1175,7 @@ fn opinion_manner_and_humour_compatibility_are_clamped_to_their_maxima() {
     let far = person(2, date(750, 1, 1), [0, 10_000, 0, 10_000], mind());
     let mid = person(3, date(750, 1, 1), [10_000, 0, 10_000, 0], mind());
     assert_eq!(
-        ck_characters::opinion(rules, &far, &mid).unwrap(),
+        ck_characters::personality_opinion(rules, &far, &mid).unwrap(),
         10_000 - 5000
     );
     // manner is a mean over nine pairs, rounded to the nearest thousandth: (90 - 1) / 9 = 9.889.
@@ -1181,7 +1189,7 @@ fn opinion_manner_and_humour_compatibility_are_clamped_to_their_maxima() {
         },
     );
     assert_eq!(
-        ck_characters::opinion(rules, &a, &one).unwrap(),
+        ck_characters::personality_opinion(rules, &a, &one).unwrap(),
         10_000 - 111 + 5000
     );
 }
@@ -1339,12 +1347,18 @@ fn reading_opinion_changes_nothing() {
     b.personality.drunkard = 2;
     let store = store_of(vec![a, b]);
     let before = bytes(&store);
-    let first = store.opinion(shipped(), 1, 2).unwrap();
-    assert_eq!(store.opinion(shipped(), 1, 2), Ok(first));
-    assert_ne!(store.opinion(shipped(), 2, 1), Ok(first + 1));
+    let first = store.personality_opinion(shipped(), 1, 2).unwrap();
+    assert_eq!(store.personality_opinion(shipped(), 1, 2), Ok(first));
+    assert_ne!(store.personality_opinion(shipped(), 2, 1), Ok(first + 1));
     assert_eq!(bytes(&store), before);
-    assert_eq!(store.opinion(shipped(), 1, 9), Err(Error::MissingCharacter));
-    assert_eq!(store.opinion(shipped(), 9, 1), Err(Error::MissingCharacter));
+    assert_eq!(
+        store.personality_opinion(shipped(), 1, 9),
+        Err(Error::MissingCharacter)
+    );
+    assert_eq!(
+        store.personality_opinion(shipped(), 9, 1),
+        Err(Error::MissingCharacter)
+    );
 }
 
 // --- Save, archive, no floating point --------------------------------------------------------------------------------
@@ -1419,7 +1433,8 @@ fn opinion_standing_with_extreme_weights_is_held_to_the_cap_without_overflow() {
                 ..mind()
             },
         );
-        ck_characters::opinion(&data, &bare(1), &b).expect("a valid case never fails") - 15_000
+        ck_characters::personality_opinion(&data, &bare(1), &b).expect("a valid case never fails")
+            - 15_000
     };
     // three products of 2^126: their sum overflows 128 bits, the cap decides.
     assert_eq!(weighted([i64::MIN; 3], [i64::MIN; 3]), 20_000);

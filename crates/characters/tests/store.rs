@@ -106,7 +106,8 @@ fn empty_store_and_streams_are_deterministic() {
     let store = CharacterStore::default();
     assert_eq!(
         store.to_bytes().expect("encode"),
-        [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        // The next identifier, no live characters, and the game's seed (0 until fixed).
+        [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
     );
     let mut a = character_stream(5, 1, "birth", date(800, 1, 1));
     let first = a.draw();
@@ -372,6 +373,7 @@ fn unknown_missing_pops_and_record_size() {
                 place: "bad".into(),
                 slot: 99
             },
+            date(770, 1, 2),
             &|_: &PopLocator| None
         )
         .is_err()

@@ -9,6 +9,7 @@ use std::{
 };
 
 pub mod body;
+pub mod connections;
 pub mod cycle;
 pub mod epithets;
 pub mod events;
@@ -19,12 +20,15 @@ pub mod marriage;
 pub(crate) mod names;
 pub mod personality;
 pub mod skills;
+pub mod ties;
+pub use connections::{PopTargets, opinion, top_up_chance_ppb};
 pub use events::{EventError, LogSink, World};
 pub use genetics::{Context, GeneticRecord, Mendel};
 pub use life::LifeRecord;
 pub use personality::{
-    EventKind, LevelTrait, PersonalityRecord, Standing, StressKind, opinion, threshold,
+    EventKind, LevelTrait, PersonalityRecord, Standing, StressKind, personality_opinion, threshold,
 };
+pub use ties::{Orientation, Passion, PassionTarget, Strand, Ties};
 
 /// The placeholder for an ungenerated ancestor. It is never a live character.
 pub const UNKNOWN: u64 = 0;
@@ -55,6 +59,12 @@ pub trait Populations {
     }
     /// Return the pop's luxuries fulfilment in permille, or `None` when it is unknown (CK-363, `pop_luxuries_min`).
     fn luxuries_pm(&self, _locator: &PopLocator) -> Option<u16> {
+        None
+    }
+    /// Return the display name of a passion's target (CK-368 §8: the `{target}` of a log line): `kind` is `place`, `religion`, `house` or
+    /// `culture` and `key` the canonical key that state and opinion keep. `None` shows the key itself. The economy holds no display names,
+    /// so a source with names (the UI's) overrides this; a source that wraps another should forward it.
+    fn target_name(&self, _kind: &str, _key: &str) -> Option<String> {
         None
     }
     /// Return the religion key of the pop, or `None` when it is unknown (CK-364: the Latin church's days of abstinence).
@@ -176,6 +186,8 @@ pub struct Ledger<'a> {
     economy: RefCell<&'a mut ck_economy::EconomyState>,
     /// The places within reach of each place, nearest first, for the marriage pool (CK-366); none known without a map.
     nearby: Option<&'a BTreeMap<String, Vec<NearbyPlace>>>,
+    /// The display names of places by id, for the log lines that name a place (CK-368); none known without a map.
+    place_names: Option<&'a BTreeMap<String, String>>,
 }
 impl<'a> Ledger<'a> {
     /// Lend the economy to a pass. Without a map, only pops of one place are a known distance apart.
@@ -183,6 +195,7 @@ impl<'a> Ledger<'a> {
         Self {
             economy: RefCell::new(economy),
             nearby: None,
+            place_names: None,
         }
     }
     /// Lend the economy to a pass together with the places within reach of each place and their distances in ground metres.
@@ -193,10 +206,25 @@ impl<'a> Ledger<'a> {
         Self {
             economy: RefCell::new(economy),
             nearby: Some(nearby),
+            place_names: None,
         }
+    }
+    /// Give the pass the display names of places by id, which the log lines that name a place show.
+    #[must_use]
+    pub fn with_place_names(mut self, names: &'a BTreeMap<String, String>) -> Self {
+        self.place_names = Some(names);
+        self
     }
 }
 impl Populations for Ledger<'_> {
+    fn target_name(&self, kind: &str, key: &str) -> Option<String> {
+        if kind == "place"
+            && let Some(name) = self.place_names.and_then(|names| names.get(key))
+        {
+            return Some(name.clone());
+        }
+        Populations::target_name(&**self.economy.borrow(), kind, key)
+    }
     fn heads(&self, locator: &PopLocator) -> Option<u64> {
         Populations::heads(&**self.economy.borrow(), locator)
     }
@@ -362,6 +390,8 @@ pub struct Character {
     /// Attributes, deed counters, skills, use factors, focus and the holds-land flag (CK-363), the name pool and the pregnancy
     /// (CK-364). Boxed, as the genetics are, to keep the record small.
     pub life: Box<LifeRecord>,
+    /// Orientation, the dates the place and pop were joined, strands and passions (CK-368). Boxed to keep the record small.
+    pub ties: Box<Ties>,
 }
 impl Canonical for Character {
     fn encode(&self, o: &mut Vec<u8>) -> Result<(), CanonicalError> {
@@ -379,7 +409,8 @@ impl Canonical for Character {
         self.full_until.encode(o)?;
         (*self.genetics).encode(o)?;
         self.personality.encode(o)?;
-        (*self.life).encode(o)
+        (*self.life).encode(o)?;
+        (*self.ties).encode(o)
     }
     fn decode(r: &mut Reader<'_>) -> Result<Self, CanonicalError> {
         Ok(Self {
@@ -398,6 +429,7 @@ impl Canonical for Character {
             genetics: Box::new(GeneticRecord::decode(r)?),
             personality: PersonalityRecord::decode(r)?,
             life: Box::new(LifeRecord::decode(r)?),
+            ties: Box::new(Ties::decode(r)?),
         })
     }
 }
@@ -417,6 +449,10 @@ pub struct NewCharacter {
     pub house: String,
 }
 impl NewCharacter {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the record is made of the id, both parents and the genetics, personality, life and ties made for it"
+    )]
     fn into_record(
         self,
         id: u64,
@@ -425,6 +461,7 @@ impl NewCharacter {
         genetics: GeneticRecord,
         personality: PersonalityRecord,
         life: LifeRecord,
+        ties: Ties,
     ) -> Character {
         Character {
             id,
@@ -442,6 +479,7 @@ impl NewCharacter {
             genetics: Box::new(genetics),
             personality,
             life: Box::new(life),
+            ties: Box::new(ties),
         }
     }
 }
@@ -525,25 +563,67 @@ impl std::error::Error for Error {}
 pub struct CharacterStore {
     next_id: u64,
     live: BTreeMap<u64, Character>,
+    /// The game's own seed for draws that must not depend on the day they are taken on (CK-368: a calendar year's lover mode, the
+    /// strand rolls of a year and their replay): fixed once by [`fix_seed`](Self::fix_seed) from the first pass's draw and saved, 0 until
+    /// then.
+    root: u64,
+    /// The live characters by place (location id): derived from `live`, never saved, rebuilt on load (CK-368: a character's candidates
+    /// for strands are the characters at its location, so the work does not grow with the characters elsewhere).
+    by_place: BTreeMap<String, BTreeSet<u64>>,
+    /// The live characters by pop: derived like `by_place`.
+    by_pop: BTreeMap<PopLocator, BTreeSet<u64>>,
+    /// The live characters by house (a commoner is in none): derived like `by_place`, so a house's head and ruling status are found
+    /// among its members, not among everyone.
+    by_house: BTreeMap<String, BTreeSet<u64>>,
+    /// How many characters candidate discovery has visited (a test-only count of the work done).
+    #[cfg(feature = "test-fixtures")]
+    visited: Visits,
 }
+/// A test-only counter that never takes part in a comparison of two stores.
+#[cfg(feature = "test-fixtures")]
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Visits(pub(crate) std::cell::Cell<u64>);
+#[cfg(feature = "test-fixtures")]
+impl PartialEq for Visits {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+#[cfg(feature = "test-fixtures")]
+impl Eq for Visits {}
 impl Default for CharacterStore {
     fn default() -> Self {
         Self {
             next_id: 1,
             live: BTreeMap::new(),
+            root: 0,
+            by_place: BTreeMap::new(),
+            by_pop: BTreeMap::new(),
+            by_house: BTreeMap::new(),
+            #[cfg(feature = "test-fixtures")]
+            visited: Visits::default(),
         }
     }
 }
 impl Canonical for CharacterStore {
     fn encode(&self, o: &mut Vec<u8>) -> Result<(), CanonicalError> {
         self.next_id.encode(o)?;
-        self.live.encode(o)
+        self.live.encode(o)?;
+        self.root.encode(o)
     }
     fn decode(r: &mut Reader<'_>) -> Result<Self, CanonicalError> {
-        Ok(Self {
-            next_id: u64::decode(r)?,
-            live: BTreeMap::decode(r)?,
-        })
+        let next_id = u64::decode(r)?;
+        let live: BTreeMap<u64, Character> = BTreeMap::decode(r)?;
+        let root = u64::decode(r)?;
+        let mut store = Self {
+            next_id,
+            root,
+            ..Self::default()
+        };
+        for (_, record) in live {
+            store.put(record);
+        }
+        Ok(store)
     }
 }
 /// An independent stream for a character and purpose. Re-requesting the same tuple restarts at the first draw;
@@ -665,6 +745,7 @@ fn child_record(
         .or_else(|| parents[1].map(|mother| mother.life.house.clone()))
         .unwrap_or_default();
     life.house.clone_from(&life.house_of_birth);
+    let ties = connections::make_ties(ctx, id, new.sex, parents)?;
     let mut record = new.into_record(
         id,
         parents[0].map_or(UNKNOWN, |parent| parent.id),
@@ -672,6 +753,7 @@ fn child_record(
         genetics,
         personality,
         life,
+        ties,
     );
     // The body (CK-367): its weight and the first sample of its food record.
     CharacterStore::start_body(ctx, &mut record, populations)?;
@@ -679,6 +761,85 @@ fn child_record(
 }
 
 impl CharacterStore {
+    /// Insert or replace the live record of `id`, keeping the indexes by place, pop and house current.
+    pub(crate) fn put(&mut self, record: Character) {
+        let id = record.id;
+        let (pop, house) = (record.pop.clone(), record.life.house.clone());
+        if let Some(old) = self.live.insert(id, record) {
+            self.unindex(id, &old.pop, &old.life.house);
+        }
+        self.index(id, &pop, &house);
+    }
+    fn index(&mut self, id: u64, pop: &PopLocator, house: &str) {
+        self.by_place
+            .entry(pop.place.clone())
+            .or_default()
+            .insert(id);
+        self.by_pop.entry(pop.clone()).or_default().insert(id);
+        if !house.is_empty() {
+            self.by_house
+                .entry(house.to_owned())
+                .or_default()
+                .insert(id);
+        }
+    }
+    fn unindex(&mut self, id: u64, pop: &PopLocator, house: &str) {
+        fn drop_from<K: Ord + Clone>(map: &mut BTreeMap<K, BTreeSet<u64>>, key: &K, id: u64) {
+            if let Some(ids) = map.get_mut(key) {
+                ids.remove(&id);
+                if ids.is_empty() {
+                    map.remove(key);
+                }
+            }
+        }
+        drop_from(&mut self.by_place, &pop.place, id);
+        drop_from(&mut self.by_pop, pop, id);
+        if !house.is_empty() {
+            drop_from(&mut self.by_house, &house.to_owned(), id);
+        }
+    }
+    /// Remove the live record of `id`, keeping the indexes current.
+    pub(crate) fn take(&mut self, id: u64) -> Option<Character> {
+        let old = self.live.remove(&id)?;
+        self.unindex(id, &old.pop, &old.life.house);
+        Some(old)
+    }
+    /// Set the house of the live character `id`, keeping the house index current.
+    pub(crate) fn set_house(&mut self, id: u64, house: &str) {
+        let Some(mut record) = self.live.get(&id).cloned() else {
+            return;
+        };
+        house.clone_into(&mut record.life.house);
+        self.put(record);
+    }
+    /// Move the live character `id` into `pop` on `day`: its pop, the place index and the dates it joined the pop and the place.
+    pub(crate) fn relocate(&mut self, id: u64, pop: PopLocator, day: GameTime) {
+        let Some(mut record) = self.live.get(&id).cloned() else {
+            return;
+        };
+        if record.pop == pop {
+            return;
+        }
+        if record.pop.place != pop.place {
+            record.ties.location_since = day;
+        }
+        record.ties.in_pop_since = day;
+        record.pop = pop;
+        self.put(record);
+    }
+    /// Fix the game's own seed from `seed` (the first pass's draw) unless it is fixed already. It is saved with the store, so every later
+    /// draw that must be the same whenever it is taken (an annual mode, a year's rolls and their replay) is a function of the game, the
+    /// character and the date alone.
+    pub fn fix_seed(&mut self, seed: u64) {
+        if self.root == 0 {
+            self.root = seed | 1;
+        }
+    }
+    /// The seed of draws that must not depend on the day they are taken: the game's own once fixed, else the pass's.
+    #[must_use]
+    pub(crate) const fn stable_seed(&self, pass_seed: u64) -> u64 {
+        if self.root == 0 { pass_seed } else { self.root }
+    }
     /// Look up a live record.
     #[must_use]
     pub fn get(&self, id: u64) -> Option<&Character> {
@@ -691,7 +852,7 @@ impl CharacterStore {
     /// Number of live characters attached to a pop.
     #[must_use]
     pub fn pop_count(&self, pop: &PopLocator) -> usize {
-        self.live.values().filter(|c| &c.pop == pop).count()
+        self.by_pop.get(pop).map_or(0, BTreeSet::len)
     }
     fn check_room(&self, pop: &PopLocator, populations: &impl Populations) -> Result<(), Error> {
         let heads = populations.heads(pop).ok_or(Error::MissingPop)?;
@@ -726,9 +887,10 @@ impl CharacterStore {
         life.pool = pool;
         life.house.clone_from(&new.house);
         life.house_of_birth.clone_from(&new.house);
-        let mut record = new.into_record(id, UNKNOWN, UNKNOWN, genetics, personality, life);
+        let ties = connections::make_ties(ctx, id, new.sex, [None, None])?;
+        let mut record = new.into_record(id, UNKNOWN, UNKNOWN, genetics, personality, life, ties);
         Self::start_body(ctx, &mut record, populations)?;
-        self.live.insert(id, record);
+        self.put(record);
         self.next_id = next;
         Ok(id)
     }
@@ -794,7 +956,7 @@ impl CharacterStore {
         // Everything above is validated and computed, so the writes below cannot fail. A child can only add a
         // qualification (a live ruler's child is full at once, by `tier`'s derivation), never remove one, so no grace
         // period is started.
-        self.live.insert(id, record);
+        self.put(record);
         self.next_id = next;
         for parent in [lineage.father, lineage.mother] {
             if let Some(c) = self.live.get_mut(&parent)
@@ -806,13 +968,18 @@ impl CharacterStore {
         Ok(id)
     }
     fn qualifies(&self, id: u64) -> bool {
+        #[cfg(feature = "test-fixtures")]
+        self.visited.0.set(self.visited.0.get() + 1);
         let Some(c) = self.get(id) else {
             return false;
         };
+        // A spouse or child of a living ruler: found through the character's own spouses and parents, whose lists name it back.
         c.office.is_some()
-            || self.live.values().any(|r| {
-                r.office == Some(Office::Ruler)
-                    && (r.spouses.contains(&id) || r.children.contains(&id))
+            || c.spouses.iter().chain([&c.father, &c.mother]).any(|other| {
+                self.live.get(other).is_some_and(|r| {
+                    r.office == Some(Office::Ruler)
+                        && (r.spouses.contains(&id) || r.children.contains(&id))
+                })
             })
     }
     /// Derived tier on the supplied day.
@@ -833,6 +1000,13 @@ impl CharacterStore {
             .copied()
             .filter(|id| self.qualifies(*id))
             .collect();
+        // Who was in the full tier, by the effective tier (a lapsed qualification still in its grace period is full), on the day of the change.
+        let was: BTreeSet<u64> = self
+            .live
+            .keys()
+            .copied()
+            .filter(|id| self.tier(*id, day) == Some(Tier::Full))
+            .collect();
         let end = grace_end(day)?;
         f(self);
         for id in before {
@@ -840,6 +1014,22 @@ impl CharacterStore {
                 && let Some(c) = self.live.get_mut(&id)
             {
                 c.full_until = Some(end);
+            }
+        }
+        // A character in the full tier now that was coarse on the day of the change has been promoted: its passion backfill is due at the
+        // first daily pass after it, with the baseline of that moment, recorded so that it survives a save (CK-368 §9). Regaining a
+        // qualification during grace, or keeping one, is no promotion.
+        let promoted: Vec<u64> = self
+            .live
+            .keys()
+            .copied()
+            .filter(|id| !was.contains(id) && self.tier(*id, day) == Some(Tier::Full))
+            .collect();
+        for id in promoted {
+            if let Some(c) = self.live.get_mut(&id)
+                && c.ties.promoted.is_none()
+            {
+                c.ties.promoted = Some(c.ties.last_full);
             }
         }
         Ok(())
@@ -858,6 +1048,9 @@ impl CharacterStore {
         }
         self.change(day, |s| {
             if let Some(c) = s.live.get_mut(&id) {
+                if c.office != office {
+                    c.ties.office_since = office.map(|_| day);
+                }
                 c.office = office;
             }
         })
@@ -1125,9 +1318,14 @@ impl CharacterStore {
         dead.life.death_cause = cause.map(str::to_owned);
         archive.append(&dead)?;
         self.change(day, |s| {
-            s.live.remove(&id);
+            s.take(id);
         })
-        .map_err(std::io::Error::other)
+        .map_err(std::io::Error::other)?;
+        // Its strands end without a line (CK-368 §4): no live character keeps a link to the dead.
+        for c in self.live.values_mut() {
+            c.ties.links.remove(&id);
+        }
+        Ok(())
     }
     /// End a marriage, updating both partners and any resulting grace periods.
     /// # Errors
@@ -1152,6 +1350,7 @@ impl CharacterStore {
         &mut self,
         id: u64,
         pop: PopLocator,
+        day: GameTime,
         populations: &impl Populations,
     ) -> Result<(), Error> {
         let heads = populations.heads(&pop).ok_or(Error::MissingPop)?;
@@ -1162,9 +1361,7 @@ impl CharacterStore {
         if u64::try_from(self.pop_count(&pop)).map_err(|_| Error::Overflow)? >= heads {
             return Err(Error::PopFull);
         }
-        if let Some(c) = self.live.get_mut(&id) {
-            c.pop = pop;
-        }
+        self.relocate(id, pop, day);
         Ok(())
     }
 }

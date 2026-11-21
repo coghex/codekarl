@@ -80,7 +80,7 @@ impl Records<'_> {
 /// - `grandfather`: that parent's parent of the same sex (father's father, mother's mother), if known, live or dead;
 /// - `uncle`: a brother of the father (sister of the mother) who has died: an archived child (by recorded parentage) of either of
 ///   the parent's own parents;
-/// - `fathers_friend`: none until slice 6;
+/// - `fathers_friend`: the side parent's friends of the child's sex (CK-368), from his live or archived record;
 /// - `ancestor`: any known dead ancestor of the child's sex on that side beyond the grandfather's generation.
 fn candidates(
     records: &Records<'_>,
@@ -154,7 +154,19 @@ fn candidates(
                 generation = next;
             }
         }
-        // `fathers_friend` has no candidate until a friend strand exists (slice 6).
+        // `fathers_friend` (CK-368 §10): the characters of the child's sex who hold a friend strand with the side's parent, read from
+        // his current strands or, if he is dead, from his archived record (`side` is whichever record is held). A friend need not be
+        // dead: a friend strand ends when its friend dies, so a live parent holds only living friends.
+        "fathers_friend" => {
+            for (partner, link) in &side.ties.links {
+                if link.strands[0].strength > 0
+                    && let Some(friend) = records.get(*partner)?
+                    && friend.sex == sex
+                {
+                    found.insert(friend.id, friend);
+                }
+            }
+        }
         _ => {}
     }
     Ok(found.into_values().collect())

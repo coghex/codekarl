@@ -94,6 +94,7 @@ fn character(id: u64, born: GameTime, pop: &PopLocator, sex: Sex) -> Character {
         genetics: Box::new(genetics),
         personality: PersonalityRecord::default(),
         life: Box::default(),
+        ties: Box::default(),
     }
 }
 
@@ -103,6 +104,7 @@ fn store_of(characters: Vec<Character>) -> CharacterStore {
     let mut bytes = Vec::new();
     next.encode(&mut bytes).unwrap();
     live.encode(&mut bytes).unwrap();
+    0_u64.encode(&mut bytes).unwrap();
     CharacterStore::from_bytes(&bytes).unwrap()
 }
 

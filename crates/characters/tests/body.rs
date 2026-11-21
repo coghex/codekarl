@@ -210,6 +210,7 @@ fn person(id: u64, birth: GameTime, place: &str, sex: Sex) -> Character {
         genetics: Box::new(genetics),
         personality: PersonalityRecord::default(),
         life: Box::new(life),
+        ties: Box::default(),
     };
     character.life.weight = character.base_weight(&rules().genetics);
     character
@@ -220,6 +221,7 @@ fn store_of(characters: Vec<Character>) -> CharacterStore {
     let mut bytes = Vec::new();
     next.encode(&mut bytes).expect("encode");
     live.encode(&mut bytes).expect("encode");
+    0_u64.encode(&mut bytes).expect("encode");
     CharacterStore::from_bytes(&bytes).expect("a store of these records")
 }
 fn get(store: &CharacterStore, id: u64) -> &Character {

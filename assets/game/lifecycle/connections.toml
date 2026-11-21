@@ -1,0 +1,245 @@
+# Connections and passions (draft r3; r3: opinion terms and log lines. r2: r2: settings defined on what exists, passion moments structured, targets). Drafted by Claude (ck-designer-1), 2026-11-19, for characters slice 6. Notes and approvals:
+# .pipeline/coordination/history-scratch/lifecycle-data-r1.md. Design: connections-r4 (approved r135-r136, r146-r147), connections-r5
+# (passions, r184), size-math-r3 (tiers, r185-r186). Numbers are tools/char_gen.py's (tested r137: a court of 13 after a 15-year burn-in
+# held about 10 bonds at 2+ and 17 feelings at 3+) or marked TUNE.
+
+# ======== Contact (connections-r4 §1): computed from where characters are, never stored ========
+# r2 (CK-365 prep): each setting defined on what exists now; settings whose systems are unbuilt are inert (contact 0) until then.
+[contact.settings]
+household = { value = 0.9, live = true, rule = "same pop AND (same non-empty house OR close kin: spouse, parent, child, sibling)" }
+monastery = { value = 0.6, live = true, rule = "the same monk pop" }
+court = { value = 0.5, live = true, rule = "both in a noble pop at a location where a living character with the ruler marker lives" }
+same_location = { value = 0.1, live = true, rule = "the same location, different pops" }
+council = { value = 0.7, live = false, rule = "offices (deferred)" }
+army = { value = 0.6, live = false, rule = "war (L5)" }
+hostage = { value = 0.5, live = false, rule = "captivity (L4)" }
+foster_kin = { value = 0.9, live = false, rule = "fosterage (slot filling, slice 7); after fosterage 0.5 for life" }
+[contact]
+extra_setting = 0.05      # the highest setting counts; each further shared live setting adds this, capped at 1 (TUNE)
+
+[circle]
+floor = 0.1               # partners below this contact are outside the circle
+size = 20                 # the closest partners, at most (work stays bounded: size-math-r3)
+min_age = 6               # no strands before this age
+lover_min_age = 16
+
+# ======== Strands: the yearly roll per partner in the circle (connections-r4 §2) ========
+# chance of a strand kind this year = base x contact x the kind's factors (below). Success adds 1 to the strand (a new strand at 1,
+# at most 10); a year with contact below `fade_below` takes 1 away; at 0 it ends. Every change writes both lives' logs.
+[strands]
+base = { friend = 0.12, rival = 0.06, lover = 0.04, love = 0.06, respect = 0.06, envy = 0.04, fear = 0.04, hatred = 0.006 }
+fade_below = 0.3
+hatred_from_rivalry = { rival_at = 5, chance = 0.10 }   # a rivalry at 5+ makes hatred this likely a year
+# tiers (r185, r186): the full tier rolls with everyone in its circle; the coarse tier only with full-tier partners in the same setting
+
+# factors (char_gen bond_factor / feeling_factor; each product floored where marked):
+[strands.friend]          # mutual
+gregarious_per_point = 0.03     # 1 + 0.03 x the pair's mean solitary_gregarious, floored 0.1
+kindness_per_point = 0.05       # 1 + 0.05 x the pair's mean envy_kindness, floored 0.1
+humours_alike = 0.2             # 1 + 0.2 x (1 - sum of |humour differences| / 20)
+withdrawn = [1, 0.8, 0.8, 0.7, 0.6, 0.5, 0.4]   # x per melancholy grade and per recluse grade, each character
+drunkards = [1, 1.25, 1.5, 2, 2.5, 3, 4]       # both drunkards, by the lower grade (grades-r18)
+age_gap_years = 20              # / (1 + |age difference| / 20)
+
+[strands.rival]           # mutual
+same_power = 1.5                # both hold the same power level above 0
+ambition_per_point = 0.03       # 1 + 0.03 x the pair's mean content_ambitious, floored 0.1
+envy_per_point = -0.05          # 1 - 0.05 x the pair's mean envy_kindness, floored 0.1
+parent_child = 0.2
+age_gap_years = 15
+
+[strands.lover]           # mutual; 0 unless each is attracted to the other (orientation), not kin, both 16+
+lust_per_point = -0.08          # 1 - 0.08 x the pair's mean lust_chastity, floored 0.05
+beauty = [1, 1, 1, 2, 3, 4, 5]  # x per beauty grade, each character
+ill_favoured = [1, 1, 1, 0.7, 0.5, 0.4, 0.3]
+married_elsewhere = 0.5         # either is married to someone else
+age_gap_years = 15
+# the church's rules (adultery, kin) and discovery are later (connections-r4 §2 proposal)
+
+[strands.love]            # one-way, a toward b
+spouse = 4
+parent_child = 5
+beauty_if_attracted = [1, 1, 1, 2, 3, 4, 5]   # when a is attracted to b and not kin
+
+[strands.respect]         # one-way
+# (1 + b's fame / 10, fame floored at 0) x (sum of b's skills / 60) x (1 + 0.3 x b's power level)
+fame_per = 0.1
+skills_divisor = 60
+power_per = 0.3
+
+[strands.envy]            # one-way
+# (max(0, -a's envy_kindness) / 3 + 0.2) x (1 + 0.3 x b's beauty grade) x (1.5 if b's power > a's)
+envy_divisor = 3
+envy_floor = 0.2
+beauty_per_grade = 0.3
+more_power = 1.5
+
+[strands.fear]            # one-way
+# max(0, b's power - a's power) x (1 + 0.5 x b's rage_fits grade) x (2 if b is ill_favoured S or above) x (1 - 0.02 x a's wary_daring)
+rage_per_grade = 0.5
+grim_face = 2.0
+daring_per_point = -0.02
+
+[strands.hatred]          # one-way; mostly from happenings (an insult, a kinsman killed) and rivalries (above)
+patience_per_point = -0.05      # 1 - 0.05 x a's wrath_patience (TUNE)
+kindness_per_point = -0.05
+
+# Happenings make or change strands directly (connections-r4 §2, events-r3), each +1 (TUNE): battle comrades friend (contact army);
+# a rescue love and respect; an insult hatred toward the insulter; a kinsman killed hatred toward the killer from all close kin;
+# a duel rival or respect.
+[strands.happenings]
+battle_comrades = { kind = "friend", chance = 0.2 }
+rescue = { kinds = ["love", "respect"], chance = 1.0 }
+insult = { kind = "hatred", chance = 0.5 }
+kin_killed = { kind = "hatred", chance = 1.0 }
+duel = { kinds = ["rival", "respect"], chance = 0.5 }
+
+# ======== Orientation (connections-r4 §4; r134, r136, r146-r147) ========
+[orientation]
+weights = { straight = 92, gay = 4, bisexual = 3, asexual = 1 }   # rolled once at birth, never changes
+parent_boost = 1.5        # x on gay and bisexual for a child of a gay or bisexual parent (r136)
+clergy = { gay = 2.0, bisexual = 2.0, asexual = 3.0 }   # x for a character in a monk pop when generated (r146-r147)
+# a cleric generated with children rolls from straight and bisexual only (r147)
+
+# ======== Passions: only from events and moments, never at birth; sparing (r184, connections-r5) ========
+[passions]
+tier = { full = 1.0, coarse = 0.1 }   # x on every passion moment's chance (r184: lesser characters rarely gain one)
+start_strength = 3        # a new passion's strength (1..10); a repeat moment adds 1
+fade_years = 10           # a passion with no renewing moment loses 1 every this many years (TUNE)
+
+# Targets are stored as { kind, key }: kind "place" (a location id), "religion" (a religion key), "house" (a house key), "culture" (a
+# culture key); "tag" and "title" join when they exist. Several passions may share a target (personality-r12).
+# Moments: structured in the slice 4 vocabulary plus these keys: ruler_years_min (years since the ruler marker was set at the
+# character's current location: slice 1 records the marker's date), years_in_pop_min (years since joining the current pop),
+# in_ruling_house (a member of a house with a living ruler), standing_min = { fame = n }. live = false: inert until its system.
+# chance: before the tier factor (TUNE).
+[passions.moments.kin_killed]
+trigger = "happening:kin_killed"          # reported with the killer
+when = {}
+passion = { kind = "hatred", target = "the killer's house" }   # a tag when tags exist; nothing if the killer has no house
+chance = 0.5
+live = true
+
+[passions.moments.defeat]
+trigger = "happening:defeat"
+when = {}
+passion = { kind = "fear", target = "the victor's tag" }
+chance = 0.1
+live = false                              # tags and war (L5)
+
+[passions.moments.long_rule]
+trigger = "yearly"
+when = { ruler_years_min = 10 }
+passion = { kind = "love", target = "the character's location" }
+chance = 0.05
+live = true
+
+[passions.moments.church_shelter]
+trigger = "happening:released"
+when = { ransomed_by_church = true }
+passion = { kind = "loyalty", target = "the character's religion" }
+chance = 0.5
+live = false                              # ransom and shelter (L4)
+
+[passions.moments.cleric_fervour]
+trigger = "yearly"
+when = { pop_type = ["monk"], years_in_pop_min = 10, skill_min = { theology = 12 } }
+passion = { kind = "loyalty", target = "the character's religion" }
+chance = 0.03
+live = true
+
+[passions.moments.house_glory]
+trigger = "yearly"
+when = { in_ruling_house = true, standing_min = { fame = 10 } }   # stand-in for "a house whose head holds a title" until titles (L1)
+passion = { kind = "loyalty", target = "the character's house" }
+chance = 0.03
+live = true
+
+[passions.moments.exile_return]
+trigger = "happening:returned_from_exile"
+when = {}
+passion = { kind = "love", target = "the character's birth location" }   # needs the birth location recorded at birth
+chance = 0.3
+live = false                              # exile and return (actions, L2)
+
+# ======== Settling in and the burn-in (connections-r4 §3, §6; r135) ========
+[settling_in]
+# a character placed mid-game, or promoted to the full tier, runs the yearly strand rolls it missed: one per year it has been in the
+# setting, at most `max_years`, seeded by its id and each year's date, against the existing characters in its circle
+max_years = 15
+
+[burn_in]
+years = 15                # the 768 start: everyone, before the game begins (passion moments included)
+
+# ======== Opinion terms (r3; personality-r12 §Opinion: friend, lover, love, respect positive; rival, hatred, envy negative; fear small
+# negative, its weight is obedience later). Added to opinion(a, b) from slice 3, per point of strength (1..10). TUNE. ========
+[opinion.strands]
+# bonds are mutual: both a and b add the term toward each other
+friend = 3
+lover = 3
+rival = -2
+# feelings are one-way: only a's feelings toward b count in opinion(a, b)
+love = 4
+respect = 2
+envy = -2
+fear = -1
+hatred = -4
+
+[opinion.passions]
+# a's passions whose target is b's house, religion, culture or location (b's tag or title when they exist), per point of strength
+loyalty = 2
+love = 2
+hatred = -3
+fear = -1
+
+# ======== Life-log lines (r3; player-facing, glossary style, the owner checks the wording before they ship) ========
+# Logged when a strand is made, reaches 5 or 10, and ends; not every point. Bonds are written to both lives' logs ({name} is the log's
+# owner, {other} the partner); feelings to the holder's log only.
+[log.friend]
+made = "{name} and {other} became friends."
+at_5 = "{name} and {other} became close friends."
+at_10 = "{name} and {other} became the closest of friends."
+ended = "{name} and {other} drifted apart."
+[log.rival]
+made = "{name} and {other} became rivals."
+at_5 = "The rivalry between {name} and {other} grew bitter."
+at_10 = "{name} and {other} became sworn rivals."
+ended = "{name} and {other} put their rivalry behind them."
+[log.lover]
+made = "{name} and {other} became lovers."
+at_5 = "{name} and {other} grew devoted to each other."
+at_10 = "{name} and {other} could not be parted."
+ended = "{name} and {other} parted as lovers."
+[log.love]
+made = "{name} came to love {other}."
+at_5 = "{name}'s love for {other} grew deep."
+at_10 = "{name}'s love for {other} became a burning passion."
+ended = "{name}'s love for {other} faded."
+[log.respect]
+made = "{name} came to respect {other}."
+at_5 = "{name} came to hold {other} in high regard."
+at_10 = "{name} came to revere {other}."
+ended = "{name} no longer respects {other}."
+[log.envy]
+made = "{name} came to envy {other}."
+at_5 = "Envy of {other} gnawed at {name}."
+at_10 = "{name}'s envy of {other} consumed them."
+ended = "{name}'s envy of {other} faded."
+[log.fear]
+made = "{name} came to fear {other}."
+at_5 = "{name} came to dread {other}."
+at_10 = "{name} lived in terror of {other}."
+ended = "{name} no longer fears {other}."
+[log.hatred]
+made = "{name} came to hate {other}."
+at_5 = "{name}'s hatred of {other} hardened."
+at_10 = "{name}'s hatred of {other} became a burning passion."
+ended = "{name}'s hatred of {other} cooled."
+[log.passion]
+# {target} is the target's display name (the place, the religion, the house); {kind} the passion's word
+gained_loyalty = "{name} grew loyal to {target}."
+gained_love = "{name} came to love {target}."
+gained_hatred = "{name} came to hate {target}."
+gained_fear = "{name} came to fear {target}."
+at_10 = "{name}'s {kind} for {target} became a burning passion."
+faded = "{name}'s {kind} for {target} faded."

@@ -83,7 +83,7 @@ values in millionths, every other quantity in thousandths). **The names of the n
 | `lifecycle/life-cycle.toml` | r1 | `KXAUBYA6` | `a231dd162fd8f5fdaa7e012cd0748831444a7413b4a38ec022b5f95c57f4f44d` |
 | `lifecycle/names.toml` | r1 | `KXAUBYA6` | `54f0ffe059c02129f5762f38b220fdaac1cb37058412f201321881d308f236bf` |
 
-Source of the copies: `codekarl-content/lifecycle/` (2026-11-19). `epithets.toml` is imported by 5b (below) and `connections.toml` is not imported here (slice 6).
+Source of the copies: `codekarl-content/lifecycle/` (2026-11-19). `epithets.toml` is imported by 5b and `connections.toml` by slice 6 (both below).
 
 The design they implement:
 
@@ -121,3 +121,30 @@ The design it implements:
 value, or a key that is both a subgroup and a religion, is a load error, as are an unknown key, a bad value, a `later` epithet with a
 `when` or a `chance`, and a gainable epithet without them. The condition vocabulary is slice 4's plus `grade_min`, `stat_max_by_sex`,
 `weight_ratio_min`, `count_min` and `adult`, which an event's `when` still refuses.
+
+## Connections and passions (CK-368, characters slice 6)
+
+`lifecycle/connections.toml` is the designer's data (ck-designer-1), copied **byte for byte** from `codekarl-content/lifecycle/connections.toml`
+(r3, change `AXA4PPEY`, 2026-11-20). It holds the contact settings (four live, four inert), the circle, the eight strand kinds with their
+chance factors, the happenings that make strands, orientation, passions (four live moments, three inert), the settling-in and burn-in
+lengths, the opinion terms and the life-log lines. Every number marked TUNE is a placeholder; the model is not. The loader reads each decimal
+from its text (a chance, a factor or a per-point weight in parts per billion, an opinion weight in thousandths of a point) and never through a
+binary float. **The log lines are player-facing; the owner checks their wording.** An inert entry (`live = false` moments, and the `council`,
+`army`, `hostage` and `foster_kin` settings) is admitted with its deferred conditions and targets: only its shape is checked, and it never acts.
+
+| File | Revision | Pijul change | SHA-256 |
+|---|---|---|---|
+| `lifecycle/connections.toml` | r3 | `AXA4PPEY` | `823157ad664a377761963923ead88668be43b7aefcb2457489c728a53d325395` |
+
+Source of the copy: `codekarl-content/lifecycle/connections.toml` (2026-11-20).
+
+The design it implements:
+
+- `history-scratch/lifecycle-data-r1.md` (SHA-256 `98d938e7…`) and the owner-approved `history-scratch/characters-spec-r1.md` (SHA-256 `1d3f8a56…`).
+- The approved specification: CK-368 r4, SHA-256 `5b4603a0f77ea9440751b72edb6d609053bb307ab2797876db89cd5d8f8c0590`.
+
+`connections.toml` joins the save's `rules_hash` (a changed table refuses an existing save) and the `economy.core` check paths
+(`assets/game/lifecycle/`). The loader refuses an unknown key, a probability or contact outside 0..1, a negative strength, size or year
+count, a zero divisor (`skills_divisor`, `envy_divisor`, `age_gap_years`), a grade table that is not seven values, orientation weights that
+do not sum above 0, a live moment's `when` key outside slice 4's vocabulary plus `ruler_years_min`, `years_in_pop_min`, `in_ruling_house` and
+`standing_min`, and a live moment's target that is not one of the five the engine resolves.

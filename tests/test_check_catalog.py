@@ -2505,6 +2505,7 @@ GUARDS: tuple[Guard, ...] = (
             "assets/game/lifecycle/life-cycle.toml",
             "assets/game/lifecycle/names.toml",
             "assets/game/lifecycle/epithets.toml",
+            "assets/game/lifecycle/connections.toml",
             "assets/scenarios/ireland-768/",
         ),
     ),
@@ -2595,6 +2596,7 @@ GUARDS: tuple[Guard, ...] = (
             "assets/game/lifecycle/life-cycle.toml",
             "assets/game/lifecycle/names.toml",
             "assets/game/lifecycle/epithets.toml",
+            "assets/game/lifecycle/connections.toml",
         ),
     ),
     # CK-364, CK-365: the characters crate's life-cycle tests load the shipped rules (and with them the three life-cycle files) and
@@ -2608,6 +2610,7 @@ GUARDS: tuple[Guard, ...] = (
             "assets/game/lifecycle/life-cycle.toml",
             "assets/game/lifecycle/names.toml",
             "assets/game/lifecycle/epithets.toml",
+            "assets/game/lifecycle/connections.toml",
         ),
     ),
     Guard(
@@ -2619,6 +2622,7 @@ GUARDS: tuple[Guard, ...] = (
             "assets/game/lifecycle/life-cycle.toml",
             "assets/game/lifecycle/names.toml",
             "assets/game/lifecycle/epithets.toml",
+            "assets/game/lifecycle/connections.toml",
         ),
     ),
     # CK-366: the marriage tests load the shipped rules (and with them the life-cycle files, whose `[marriage.*]` tables they read) and
@@ -2632,6 +2636,7 @@ GUARDS: tuple[Guard, ...] = (
             "assets/game/lifecycle/life-cycle.toml",
             "assets/game/lifecycle/names.toml",
             "assets/game/lifecycle/epithets.toml",
+            "assets/game/lifecycle/connections.toml",
         ),
     ),
     # CK-367: the upbringing, height and weight tests load the shipped rules (and with them the life-cycle files, whose `[upbringing]` and
@@ -2645,6 +2650,21 @@ GUARDS: tuple[Guard, ...] = (
             "assets/game/lifecycle/life-cycle.toml",
             "assets/game/lifecycle/names.toml",
             "assets/game/lifecycle/epithets.toml",
+            "assets/game/lifecycle/connections.toml",
+        ),
+    ),
+    # CK-368: the connections and passions tests load the shipped rules (and with them the four life-cycle files, whose strand rules
+    # they read) and the attributes file for a world with no events.
+    Guard(
+        "crates/characters/tests/connections.rs",
+        "economy.core",
+        (
+            "assets/game/economy.toml",
+            "assets/game/events/attributes-skills.toml",
+            "assets/game/lifecycle/life-cycle.toml",
+            "assets/game/lifecycle/names.toml",
+            "assets/game/lifecycle/epithets.toml",
+            "assets/game/lifecycle/connections.toml",
         ),
     ),
     # CK-359: the noble, demesne and rent tests load the same shipped rules and Ireland's noble houses.
