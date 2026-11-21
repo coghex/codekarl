@@ -1,4 +1,4 @@
-# Attributes, deeds, precedence and skills (draft r2; r2 adds [catalog]). Drafted by Claude (ck-designer-1), 2026-11-19, for characters slice 4.
+# Attributes, deeds, precedence and skills (draft r3; r2 adds [catalog]; r3, CK-369: the focus multiplies skill use). Drafted by Claude (ck-designer-1), 2026-11-19, for characters slice 4.
 # Notes and approvals: .pipeline/coordination/history-scratch/events-data-r1.md. Keys follow lists/attributes.md (approved).
 # Numbers are tools/char_gen.py's (tested with the owner r137-r138) or marked TUNE; placeholders to tune.
 
@@ -145,6 +145,9 @@ craftsmanship = 0.2
 # their ruler's household (L6); generated characters get one by these odds.
 on = 1.5
 off = 0.7
+# r3 (CK-369): the focus also multiplies the character's yearly use profile, for life, in play and in a generated past alike
+# (char_gen: use = min(1, profile x focus multiplier x the use spread)); home education keeps its own focus multiplier too
+on_use = true
 martial = ["martial_prowess", "leadership", "horsemanship"]
 statecraft = ["administration", "oratory", "leadership"]
 learning = ["scholarship", "oratory", "medicine"]

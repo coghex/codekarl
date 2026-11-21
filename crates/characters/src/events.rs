@@ -229,10 +229,8 @@ fn factor_ratio(factor: &Factor, c: &Character, pop: &PopFacts) -> Result<(u128,
         }
         Factor::Craft(skill) => {
             let scale = i128::from(CRAFT_FACTOR_DIVISOR) * 1000;
-            (
-                unsigned(scale / 10 + i128::from(c.skill(skill)))?,
-                unsigned(scale)?,
-            )
+            let level = unsigned(i128::from(c.skill(skill)))?;
+            (level * level, unsigned(scale * scale)?)
         }
         Factor::PopType(table) => milli(table.get(&pop.kind).copied().unwrap_or(0))?,
         Factor::CultureGroup(table) => milli(table.get(&pop.group).copied().unwrap_or(1000))?,
