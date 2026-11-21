@@ -141,7 +141,7 @@ Source of the copy: `codekarl-content/lifecycle/connections.toml` (2026-11-20).
 The design it implements:
 
 - `history-scratch/lifecycle-data-r1.md` (SHA-256 `98d938e7…`) and the owner-approved `history-scratch/characters-spec-r1.md` (SHA-256 `1d3f8a56…`).
-- The approved specification: CK-368 r4, SHA-256 `5b4603a0f77ea9440751b72edb6d609053bb307ab2797876db89cd5d8f8c0590`.
+- The approved specification: CK-368 r11, SHA-256 `0369a5fb215f6b63e9a3c37213ebdea1a601801b1db3bf2209011fba383aa5aa`.
 
 `connections.toml` joins the save's `rules_hash` (a changed table refuses an existing save) and the `economy.core` check paths
 (`assets/game/lifecycle/`). The loader refuses an unknown key, a probability or contact outside 0..1, a negative strength, size or year
