@@ -152,7 +152,7 @@ local bar_visible = true
 buttons_library.new = function(spec)
   local created = real_button_new(spec)
   if spec.text == "places" then places_text_buttons = places_text_buttons + 1 end
-  if spec.icon == "location" or spec.icon == "pops" then
+  if spec.icon == "location" or spec.icon == "pops" or spec.icon == "characters" then
     bar_buttons[spec.icon] = created
   end
   if spec.icon == "cards" or spec.icon == "rows" then look_buttons[spec.icon] = created end
@@ -176,7 +176,7 @@ function announce_bars()
     local width, height = button:size()
     note(string.format("bar %s %g %g %g %g", key, button.x, button.y, width, height))
   end
-  for _, key in ipairs({"location", "pops"}) do
+  for _, key in ipairs({"location", "pops", "characters"}) do
     local button = bar_buttons[key]
     local width, height = button:size()
     note(string.format("bar %s %g %g %g %g", key, button.x, button.y, width, height))
@@ -1144,6 +1144,7 @@ fn click_ledger_row(rig: &mut Rig, row: usize, width: u32, height: u32) {
 }
 
 mod cards;
+pub(crate) mod characters;
 mod ledger;
 mod market_table;
 mod mode_bar;

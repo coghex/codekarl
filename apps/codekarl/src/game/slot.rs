@@ -35,6 +35,10 @@ pub(crate) struct SimSnapshot {
     pub(crate) economy_revision: u64,
     /// The economy view of that revision, immutable and published in this same write as the time fields (design §6).
     pub(crate) economy: Option<Arc<EconomyView>>,
+    /// The world: `0` for the session's first, one more each time the simulation is replaced (a named or guarded load, a quickload). It never
+    /// falls and is not saved. Every later snapshot carries the risen number, so the UI sees a load even when the snapshot the load
+    /// published was replaced before the UI read it (latest wins), and even when the pause reason has changed again (CK-375 §1).
+    pub(crate) world: u64,
 }
 
 impl std::fmt::Display for SimSnapshot {
@@ -58,6 +62,7 @@ impl SimSnapshot {
             || self.paused != other.paused
             || self.unsaved != other.unsaved
             || self.economy_revision != other.economy_revision
+            || self.world != other.world
     }
 }
 

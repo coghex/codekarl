@@ -59,6 +59,9 @@ fn store_of(characters: Vec<Character>) -> CharacterStore {
     next.encode(&mut bytes).unwrap();
     live.encode(&mut bytes).unwrap();
     0_u64.encode(&mut bytes).unwrap();
+    BTreeMap::<String, String>::new()
+        .encode(&mut bytes)
+        .unwrap();
     CharacterStore::from_bytes(&bytes).unwrap()
 }
 

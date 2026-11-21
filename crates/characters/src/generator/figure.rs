@@ -41,6 +41,8 @@ impl End {
 /// The fixed aspects of a real figure (CK-370 §1, §2): the part of a record that the data decides and the recipe does not.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Fixed {
+    /// The authored key of a real figure or a dead parent (CK-375); kept on the record, so that the UI knows a real figure.
+    pub key: String,
     /// The base name; never drawn from the pool, and never a namesake.
     pub name: String,
     /// The authored genitive of the name; empty for the pool's.
@@ -103,6 +105,7 @@ impl Fixed {
     /// Apply the fixed traits and the byname to a new record: the forced traits first, then the exclusions (a trait that is both is refused
     /// by the loader, so the order never decides).
     pub(crate) fn apply(&self, c: &mut Character) {
+        c.life.figure.clone_from(&self.key);
         c.life.genitive.clone_from(&self.genitive);
         c.life.patronymic.clone_from(&self.patronymic);
         c.life.byname.clone_from(&self.byname);

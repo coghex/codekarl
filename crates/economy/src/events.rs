@@ -342,6 +342,9 @@ pub struct SkillRules {
 pub struct EventRules {
     /// The catalog, in key order (the "catalog order" precedence runs in).
     pub catalog: BTreeMap<String, CatalogEntry>,
+    /// The words a catalog key shows as on the character screen's chips where they are not the key with `_` as a space (CK-375): `cele_de`
+    /// is "Céle Dé". Every key is a key of the catalog.
+    pub catalog_names: BTreeMap<String, String>,
     /// The events, in data order.
     pub events: Vec<Event>,
     /// The deeds, in key order.
@@ -1447,7 +1450,14 @@ impl EventRules {
             &attributes_source,
             &root,
             "",
-            &["catalog", "deeds", "craft_rise", "keep_while", "skills"],
+            &[
+                "catalog",
+                "catalog_names",
+                "deeds",
+                "craft_rise",
+                "keep_while",
+                "skills",
+            ],
         )?;
         let section = |name: &str| -> Result<&Table, DataError> {
             attributes_source.table(required(&attributes_source, &root, "", name)?, name)
@@ -1487,8 +1497,25 @@ impl EventRules {
                 }
             }
         }
+        // The words of a chip (CK-375): a key that shows as other than itself; a key the catalog lacks is refused.
+        let mut catalog_names = BTreeMap::new();
+        if let Some(node) = root.get("catalog_names") {
+            for (key, value) in attributes_source.table(node, "catalog_names")? {
+                let entry = format!("catalog_names.{key}");
+                if !catalog.contains_key(key) {
+                    return Err(attributes_source
+                        .error(&entry, format!("`{key}` is not a key of the catalog")));
+                }
+                let words = attributes_source.text(value, &entry)?;
+                if words.is_empty() {
+                    return Err(attributes_source.error(&entry, "the words are empty"));
+                }
+                catalog_names.insert(key.clone(), words.to_owned());
+            }
+        }
         let mut rules = Self {
             catalog,
+            catalog_names,
             ..Self::default()
         };
         rules.culture_group = registry

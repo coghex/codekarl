@@ -148,6 +148,8 @@ pub(crate) struct Core<S, C> {
     /// The revision of `view`; `0` while the core has no view.
     revision: u64,
     view: Option<Arc<EconomyView>>,
+    /// The world the snapshots carry: it rises each time the simulation is replaced by a load.
+    world: u64,
 }
 
 impl<S, C> Core<S, C>
@@ -229,6 +231,7 @@ where
             views,
             revision: 0,
             view: None,
+            world: 0,
         };
         core.refresh_view();
         core.publish_if_changed();
@@ -277,6 +280,7 @@ where
             unsaved: self.unsaved,
             economy_revision: self.revision,
             economy: self.view.clone(),
+            world: self.world,
         }
     }
 
@@ -604,6 +608,7 @@ where
                 self.clock = Clock::new();
                 self.paused = Some(PauseReason::Load);
                 self.unsaved = false;
+                self.world += 1;
                 self.refresh_view();
                 self.log(Level::Info, format!("loaded {} ({filename})", entry.name));
                 Ok(())
@@ -638,6 +643,7 @@ where
                 self.clock = Clock::new();
                 self.paused = Some(PauseReason::Load);
                 self.unsaved = false;
+                self.world += 1;
                 self.refresh_view();
                 let date = self.snapshot().date;
                 self.log(Level::Info, format!("loaded {} at {date}", path.display()));

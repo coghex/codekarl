@@ -24,7 +24,7 @@ fn assets() -> PathBuf {
 }
 
 /// A new game of the shipped 768 scenario on `seed`: the scratch directory (the game's storage lives in it), the game and the log.
-fn shipped(seed: u64) -> (Dir, Prepared, Vec<(Level, String)>) {
+pub(super) fn shipped(seed: u64) -> (Dir, Prepared, Vec<(Level, String)>) {
     let dir = Dir::new();
     let game = GameConfig {
         scenario: assets().join("scenarios/ireland-768"),
@@ -141,7 +141,7 @@ fn the_shipped_figures_join_the_scenarios_places_and_pops_before_any_generation(
         hash,
         "the same files, the same hash"
     );
-    for file in ["ireland-768.toml", "ireland-768-load.toml"] {
+    for file in ["ireland-768.toml", "ireland-768-load.toml", "houses.toml"] {
         let path = named.join(file);
         let text = fs::read_to_string(&path).unwrap();
         fs::write(&path, format!("{text}\n# changed\n")).unwrap();

@@ -100,7 +100,10 @@ local function visible(self)
   return first, last
 end
 
+-- The widget of the item at `index`. It keeps the item it was made for: a refresh (`set_items`) can replace the array between the press and a
+-- release that was routed against the old frame, and the release must act for the item that was pressed, never for whatever moved into its row.
 local function item_widget(self, index, key)
+  local represented = self.items[index]
   local widget = {pressed = false}
   function widget:on_event(event, eligible)
     if self.cards.closed then return end
@@ -113,7 +116,7 @@ local function item_widget(self, index, key)
       local was_pressed = self.pressed
       self.pressed = false
       pointer.pressed(key, false)
-      local item = self.cards.items[index]
+      local item = represented
       if was_pressed and eligible ~= false and event.inside == true and item ~= nil and item.on_click ~= nil then
         item.on_click()
       end
@@ -123,7 +126,7 @@ local function item_widget(self, index, key)
     end
   end
   function widget:functional()
-    local item = self.cards.items[index]
+    local item = represented
     return item ~= nil and item.on_click ~= nil
   end
   function widget:on_overflow()

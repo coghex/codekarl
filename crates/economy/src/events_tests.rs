@@ -546,3 +546,49 @@ fn an_events_conditions_refuse_the_epithet_only_keys() {
         );
     }
 }
+
+#[test]
+fn the_words_a_chip_shows_are_loaded_and_each_names_a_key_of_the_catalog() {
+    let rules = parse(events_text(), attributes_text()).expect("shipped events");
+    // The nine forms of r4: the key with `_` as a space is the default and is not listed.
+    assert_eq!(rules.catalog_names.len(), 9);
+    assert_eq!(rules.catalog_names["cele_de"], "Céle Dé");
+    assert_eq!(rules.catalog_names["twin_bearer"], "bearer of twins");
+    assert_eq!(rules.catalog_names["left_handed"], "left-handed");
+    assert!(
+        rules
+            .catalog_names
+            .keys()
+            .all(|key| rules.catalog.contains_key(key))
+    );
+    // A file with no table has none: the words are the keys'.
+    let start = attributes_text()
+        .find("\n[catalog_names]\n")
+        .expect("the shipped table");
+    let without = &attributes_text()[..start];
+    assert!(
+        parse(events_text(), without)
+            .expect("loads without it")
+            .catalog_names
+            .is_empty()
+    );
+    // A key the catalog does not have, an empty form and a form that is not text are refused, each by name.
+    refused_attributes(
+        "[catalog_names]\ncele_de = \"Céle Dé\"",
+        "[catalog_names]\nnot_a_key = \"Céle Dé\"",
+        "catalog_names.not_a_key",
+        "not a key of the catalog",
+    );
+    refused_attributes(
+        "cele_de = \"Céle Dé\"",
+        "cele_de = \"\"",
+        "catalog_names.cele_de",
+        "empty",
+    );
+    refused_attributes(
+        "cele_de = \"Céle Dé\"",
+        "cele_de = 3",
+        "catalog_names.cele_de",
+        "",
+    );
+}

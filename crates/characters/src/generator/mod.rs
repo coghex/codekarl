@@ -148,6 +148,8 @@ pub(crate) struct Txn {
     /// The archived characters this transaction made, in order.
     pub(crate) archived: Vec<u64>,
     saved: BTreeMap<u64, Character>,
+    /// The minor houses this transaction named, which a rollback forgets (CK-375).
+    named_houses: Vec<String>,
     moves: Vec<MoveUndo>,
     /// The natural deaths a generation rolled for a relative it kept **live** (`defer_death`), by identifier: the date and the cause. The
     /// caller runs the relative's timeline (a wife's deliveries) and archives it at the earliest end it finds.
@@ -162,6 +164,7 @@ impl Txn {
             created: Vec::new(),
             archived: Vec::new(),
             saved: BTreeMap::new(),
+            named_houses: Vec::new(),
             moves: Vec::new(),
             relative_deaths: BTreeMap::new(),
         }
@@ -191,6 +194,9 @@ impl Txn {
         }
         store.next_id = self.next_id;
         store.root = self.root;
+        for key in &self.named_houses {
+            store.house_names.remove(key);
+        }
         for undo in self.moves.iter().rev() {
             populations.restore_move(undo);
         }
@@ -760,7 +766,12 @@ impl CharacterStore {
         }
         let house = match (&identity.minor_house_at, made.first()) {
             (Some(place), Some(father)) if ids[0].is_some() => {
-                self.minor_house_key(&*world.archive, &father.name, place)?
+                let key = self.minor_house_key(&*world.archive, &father.name, place)?;
+                // The house is named once, now, from its founder (CK-375): the name is saved with the key and never recomputed.
+                let name = minor_house_name(world, &identity.pop, father);
+                self.house_names.insert(key.clone(), name);
+                txn.named_houses.push(key.clone());
+                key
             }
             _ => identity.house.clone(),
         };
@@ -1045,5 +1056,31 @@ impl CharacterStore {
             None => self.finalize_languages(world, child_id, mother_rec.as_ref())?,
         }
         Ok(child_id)
+    }
+}
+
+/// The display name of a new minor house made for `founder`, the father whose name its key carries (CK-375): in a Gaelic culture (the culture
+/// of the pop, whose subgroup is `gaelic`) "Clann <the founder's genitive>", with the genitive of the name's pool; "house of <name>" where the
+/// pool has no genitive for the name, and in any other culture.
+fn minor_house_name<P: Populations, A: ArchiveSink, L: LogSink>(
+    world: &World<'_, P, A, L>,
+    pop: &PopLocator,
+    founder: &Character,
+) -> String {
+    let gaelic = world
+        .populations
+        .culture(pop)
+        .and_then(|culture| world.rules.culture_group.get(&culture))
+        .is_some_and(|group| group == "gaelic");
+    let genitive = world
+        .lifecycle
+        .pools
+        .get(&founder.life.pool)
+        .and_then(|pool| pool.men.iter().find(|(name, _)| *name == founder.name))
+        .map(|(_, genitive)| genitive.as_str())
+        .filter(|genitive| !genitive.is_empty());
+    match genitive {
+        Some(genitive) if gaelic => format!("Clann {genitive}"),
+        _ => format!("house of {}", founder.name),
     }
 }

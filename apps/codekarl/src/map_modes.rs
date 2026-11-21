@@ -259,6 +259,7 @@ mod tests {
                     ..PlaceView::default()
                 })
                 .collect(),
+            ..EconomyView::default()
         })
     }
 
@@ -342,6 +343,7 @@ mod tests {
             1,
             &Arc::new(EconomyView {
                 places: vec![PlaceView::default(); PLACES - 1],
+                ..EconomyView::default()
             }),
         );
         modes.observe(2, &view(0));
@@ -414,6 +416,7 @@ mod tests {
         // A view for the wrong number of places (a scenario that does not match its map) is refused by the lane, named.
         let wrong = Arc::new(EconomyView {
             places: vec![PlaceView::default(); PLACES - 1],
+            ..EconomyView::default()
         });
         modes.observe(1, &wrong);
         let before = sink.published();

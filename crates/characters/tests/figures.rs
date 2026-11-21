@@ -2,7 +2,7 @@
 
 use ck_characters::{
     Office, PopLocator, Sex,
-    figures::{FigureData, FigureError, PopKind, Range},
+    figures::{FigureData, FigureError, HouseName, Houses, PopKind, Range},
 };
 use ck_economy::events::ROLES;
 
@@ -399,4 +399,92 @@ fn a_figures_own_exclusions_add_to_the_defaults_and_never_replace_them() {
         1
     );
     assert_eq!(niall.excluded.len(), 10);
+}
+
+fn houses_text() -> String {
+    read("houses.toml")
+}
+
+#[test]
+fn the_shipped_house_names_load_and_name_every_house_the_load_file_uses() {
+    let data = shipped()
+        .with_houses(&houses_text())
+        .expect("the houses join");
+    assert_eq!(data.houses.houses.len(), 35);
+    assert_eq!(data.houses.subhouses.len(), 5);
+    let niall = data.figure("niall_frossach").expect("Niall");
+    let named = &data.houses.houses[&niall.house];
+    assert_eq!(named.line(), "Uí Néill · Cenél nEógain");
+    // A house with no dynasty shows its name alone.
+    assert_eq!(data.houses.houses["ui_maine"].line(), "Uí Maine");
+    assert_eq!(data.houses.subhouses["sil_cathail"].house, "ui_briuin");
+    // The same file is read for a loaded game, with no figures to check it against.
+    assert_eq!(Houses::parse(&houses_text()).expect("parses"), data.houses);
+}
+
+#[test]
+fn a_house_key_the_houses_file_does_not_name_is_a_load_error_but_the_empty_house_is_not() {
+    let houses = houses_text();
+    // A load-file house the file lacks.
+    let (research, load) = files();
+    let renamed = load.replacen("house = \"cenel_neogain\"", "house = \"cenel_nowhere\"", 1);
+    assert_ne!(renamed, load);
+    let error = FigureData::parse(&research, &renamed)
+        .expect("parses by itself")
+        .with_houses(&houses)
+        .expect_err("refused");
+    assert!(
+        matches!(&error, FigureError::UnknownKey { key, .. } if key == "cenel_nowhere"),
+        "{error}"
+    );
+    // A subhouse the file lacks, and a house of birth.
+    let subhouse = load.replacen(
+        "subhouse = \"sil_cathail\"",
+        "subhouse = \"sil_nowhere\"",
+        1,
+    );
+    assert!(
+        FigureData::parse(&research, &subhouse)
+            .expect("parses")
+            .with_houses(&houses)
+            .is_err()
+    );
+    // The empty house needs no name: the shipped load file has figures with none.
+    let data = shipped().with_houses(&houses).expect("joins");
+    assert!(data.figures.iter().any(|figure| figure.house.is_empty()));
+}
+
+#[test]
+fn a_malformed_houses_file_is_refused_by_name() {
+    for (what, text) in [
+        (
+            "an unknown table",
+            "[houses]\na = { name = \"A\" }\n".to_owned(),
+        ),
+        (
+            "an unknown field",
+            "[house]\na = { name = \"A\", rank = \"high\" }\n".to_owned(),
+        ),
+        ("no name", "[house]\na = { dynasty = \"D\" }\n".to_owned()),
+        ("an empty name", "[house]\na = { name = \"\" }\n".to_owned()),
+        (
+            "a subhouse of a house the file does not name",
+            "[house]\na = { name = \"A\" }\n[subhouse]\ns = { name = \"S\", house = \"b\" }\n"
+                .to_owned(),
+        ),
+        ("not toml", "[house".to_owned()),
+    ] {
+        assert!(Houses::parse(&text).is_err(), "{what}");
+    }
+    let ok =
+        Houses::parse("[house]\na = { name = \"A\", dynasty = \"D\" }\nb = { name = \"B\" }\n")
+            .expect("parses");
+    assert_eq!(
+        ok.houses["a"],
+        HouseName {
+            name: "A".to_owned(),
+            dynasty: "D".to_owned()
+        }
+    );
+    assert_eq!(ok.houses["b"].line(), "B");
 }

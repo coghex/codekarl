@@ -1,0 +1,347 @@
+# Character glossary draft (r1). APPROVED by the owner 2026-11-15 (owner-direction-designer-r81). r2 (r96): stress and stress
+# threshold reworded, no stress-break kinds (mental breaks are open); trait, temperament tracking updated. Re-review the two texts. r3 (CK-375 review): skill starts at 0, fecundity is the stat, languages set at the making. Drafted by Claude (ck-designer-1),
+# 2026-11-15, from owner-direction-designer-r77 and the
+# design notes it cites. A draft for the owner: not in the game; a change to a shipped entry's text needs the owner's approval.
+#
+# Format: as assets/ui/glossary.toml. [term.<key>] with `title` and `text`; {key} or {key|words} links another term (this file's,
+# or the game glossary's: pop, satisfaction, culture, religion, food_days ...).
+#
+# Tracking (owner r77: "keep track of what effects what"): the comment line above each entry lists
+#   affects: system (status), ...     what the value feeds
+#   from: ...                         what sets or changes it
+# Status: D designed (a design note has a rule), F foreseen (expected, no rule yet), P proposal (designer, not yet agreed).
+# None of this is a game rule until the design moves into data (owner r78).
+# The system names are a fixed vocabulary, each in one domain (war, naval, health, stress, learning, intrigue, politics, economy,
+# laws, church, society, personality, looks, character), so `stats_index.py` can build the system -> values view and count how many
+# domains a value reaches: a value in many domains is a split candidate (r77). "drift" = pulls a virtue scale toward a sin.
+
+# ===== General =====
+
+# affects: (group)
+[term.body_stat]
+title = "body"
+text = "What a character is born with and grows into: {height}, {weight}, {strength}, {wit}, {intellect}, {cunning}, {longevity}, {constitution} and {fecundity}. {trait|Traits} and food can change them."
+
+# affects: (group) | from: use, education, disuse
+[term.skill]
+title = "skill"
+text = "A learned ability with a level that starts at 0 and seldom passes 20. A skill grows with use and education and fades with disuse. Each skill matters for its own kind of task."
+
+# affects: (group)
+[term.humour]
+title = "humour"
+text = "One of the four bodily substances of medieval medicine: {blood}, {yellow_bile|yellow bile}, {black_bile|black bile} and {phlegm}, each 0 to 10. Their balance sets a character's {temperament} and how they bear {stress}."
+
+# affects: (group)
+[term.virtue]
+title = "virtue"
+text = "Seven scales from -7, a deadly sin, to +7, its opposite virtue. Deeds move them; indulging in sin relieves {stress}."
+
+# affects: (group)
+[term.manner]
+title = "manner"
+text = "Nine scales of how a character deals with others, each from -20 to +20."
+
+# affects: (group) | from: deed log
+[term.standing]
+title = "standing"
+text = "How others see a character: {popularity}, {fame} and {honour}. It follows from their deeds, not their wishes."
+
+# affects: stats (D), skills (D) | from: birth, inheritance, events
+[term.trait]
+title = "trait"
+text = "A condition of body or mind, inborn or acquired. Traits change {body_stat|body} values and {skill|skills}."
+
+# affects: stats (D), skills (D), events (D) | from: birth, events
+[term.attribute]
+title = "attribute"
+text = "What a character is or has become: an expertise, a background, a calling. Some have a {class_level|class-level}."
+
+# affects: attributes (D), the craft's work (F) | from: a character moment, its chance scaled by the associated skill (r117, r184)
+[term.craft]
+title = "craft"
+text = "A rare gift found in a moment of a life, not taught: a poet, a judge, a smith. The chance grows with the matching {skill}: a poet with {oratory}, a judge, genealogist, scribe or Latinist with {scholarship}, a physician with {medicine}, a smith or builder with {craftsmanship}, a navigator with {seamanship}, a horse breeder or huntsman with {horsemanship}, a master of herds with {husbandry}, a merchant with {administration}, a harper or wit with {oratory}. Once found, a craft never fades, and its {class_level|class-level} rises with the work."
+
+# affects: speech with others (F), marriage and diplomacy ease (F) | from: set when the character is made; never changes (r160, r184)
+[term.language]
+title = "languages"
+text = "A mother tongue, always fluent, and any second languages, each from 0 (cannot speak it) to 1 (fluent), set when the person is made: a childhood in fosterage or as a hostage among other speakers gives their tongue. After that a person's languages never change; a people's do."
+
+# affects: traits (D), attributes (D)
+[term.class_level]
+title = "class-level"
+text = "The grade of a trait or attribute, from C through B, A and S to SS and SSS. Each grade brings its own effects."
+
+# ===== Body =====
+
+# affects: personal combat (F), rout (F), battle (F) | from: traits (hunchback), injuries
+[term.strength]
+title = "strength"
+text = "Bodily power. It counts in personal combat, in surviving a rout and in a commander's own fighting."
+
+# affects: personal combat (F), epithets (F), portrait (F) | from: pop nutrition in childhood (P), traits (dwarfism)
+[term.height]
+title = "height"
+text = "Height in centimetres, set while growing up by how well the {pop} ate. A small edge in personal combat."
+
+# affects: personal combat (F), epithets (F), portrait (F), longevity (F) | from: pop nutrition (F), gluttony (P)
+[term.weight]
+title = "weight"
+text = "Weight in kilograms. It follows the {pop|pop's} food: an underfed pop's people grow thin, an overfed pop's grow heavy, and either extreme shortens {longevity|life}."
+
+# affects: skill growth (P), diplomacy (P), negotiation (P), relationships (P), event checks (F)
+[term.wit]
+title = "wit"
+text = "Quickness with people: the right word, the apt reply. It speeds the learning of {oratory} and helps in diplomacy, bargaining and company."
+
+# affects: skill growth (D), education (D), economy (P), event checks (F)
+[term.intellect]
+title = "intellect"
+text = "Power of mind for study and order. It speeds education at any age and the learning of {scholarship}, {administration}, {theology} and {medicine}, and helps run an economy."
+
+# affects: plots (D), commerce (D), battle (P), event checks (F)
+[term.cunning]
+title = "cunning"
+text = "Craft and guile. It helps in plots and in trade, and in battle it finds the ambush and the feint."
+
+# affects: death curve (F), healing (D) | from: weight (F), traits (long-lived), age
+[term.longevity]
+title = "longevity"
+text = "How long the body lasts: it slows the chance of death with age and speeds the healing of injuries."
+
+# affects: disease (F), poison (F), injury (P), festering (D), set adrift (P), fetters (P)
+[term.constitution]
+title = "constitution"
+text = "The body's resistance to disease, poison and injury, and to wounds festering."
+
+# affects: conception (D) | from: age, traits (barren)
+[term.fecundity]
+title = "fecundity"
+text = "How readily a character conceives or fathers a child, set at birth. The chance of a child in a month also rises and falls with both partners' ages and depends on both partners' fecundity."
+
+# ===== Skills =====
+
+# affects: battle (F), succession (D), movements (F)
+[term.leadership]
+title = "leadership"
+text = "Commanding men. It makes a commander better in battle, adds to a claim where the succession law values it, and drives a movement led by the character."
+
+# affects: artists (F), burghers (F)
+[term.craftsmanship]
+title = "craftsmanship"
+text = "Making things well. It matters most to artists, and gives burghers an advantage."
+
+# affects: sailing (F), sea disasters (F), naval battle (F), blockade (F), naval casualties (F), naval supply (F), sea raiding (F), set adrift (P)
+[term.seamanship]
+title = "seamanship"
+text = "Handling ships. A fleet under a good seaman sails faster, weathers storms and disasters, fights and blockades better, loses fewer men and uses less supply. Raiders use it to destroy defending ships."
+
+# affects: education (D), learning (F)
+[term.scholarship]
+title = "scholarship"
+text = "Learning from books and teachers. It speeds a character's learning at any age, and the study of law, poetry and genealogy."
+
+# affects: mounted battle (F)
+[term.horsemanship]
+title = "horsemanship"
+text = "Fighting and leading from the saddle. It decides how well mounted troops fight under the character."
+
+# affects: personal combat (F), rout (F), succession (D)
+[term.martial_prowess]
+title = "martial prowess"
+text = "Skill at arms. It counts in personal combat, in a rout, and in a claim where the succession law values it."
+
+# affects: diplomacy (D), movements (F) | from: traits (beauty, harelip, stammer, deaf)
+[term.oratory]
+title = "oratory"
+text = "Speaking and persuading. A ruler's oratory gives his country more weight in diplomacy."
+
+# affects: law timing (P), law cooldown (P), control (F)
+[term.administration]
+title = "administration"
+text = "Running officials and records. A ruler's administration shortens the time a new law takes to come into force and the wait before it can be changed again."
+
+# affects: church offices (P), religion law change (P), church (F) | from: traits (visions), black bile (D)
+[term.theology]
+title = "theology"
+text = "Knowledge of the faith. It qualifies a character for church offices and lowers the cost when a religion's head changes its laws."
+
+# affects: treatment (F), humour correction (F)
+[term.medicine]
+title = "medicine"
+text = "Healing the sick and wounded. A physician's medicine will treat injuries and illness."
+
+# affects: pop work (P)
+[term.husbandry]
+title = "husbandry"
+text = "Keeping cattle and working land. It raises the agricultural yields of the character's {pop}."
+
+# ===== Humours =====
+
+# affects: stress recovery (D), drift (D), temperament (D) | from: birth, age (parked hook; r97, r98)
+[term.blood]
+title = "blood"
+text = "The hot, wet humour of spring and childhood. Much blood makes a character cheerful and quick to shed {stress}, and draws them toward lust and gluttony."
+
+# affects: stress intake (D), drift (D), battle (F), temperament (D) | from: birth, age (parked hook; r97, r98)
+[term.yellow_bile]
+title = "yellow bile"
+text = "The hot, dry humour of summer and youth. It makes a character bold and quick to anger: insult and defeat cost more {stress}, and it draws them toward wrath and pride."
+
+# affects: stress recovery (D), drift (D), temperament (D) | from: birth, age (parked hook; r97, r98)
+[term.black_bile]
+title = "black bile"
+text = "The cold, dry humour of autumn and maturity. It makes a character thoughtful and gloomy: they shed {stress} slowly and lean toward envy."
+
+# affects: stress threshold (D), stress intake (D), drift (D), reactions (F), temperament (D) | from: birth, age (parked hook; r97, r98)
+[term.phlegm]
+title = "phlegm"
+text = "The cold, wet humour of winter and old age. It makes a character calm and slow: {stress} builds slowly, they are slow to react, and they lean toward sloth."
+
+# affects: opinion (D) | from: humours
+[term.temperament]
+title = "temperament"
+text = "The name of a character's strongest {humour}: sanguine, choleric, melancholic or phlegmatic. Four close humours make a balanced temperament."
+
+# ===== Virtues =====
+
+# affects: plots (D), opinion (P)
+[term.pride_humility]
+title = "pride and humility"
+text = "Pride helps in plots; humility softens the sting of being outranked."
+
+# affects: commerce (D), popularity (P), honour (P)
+[term.greed_charity]
+title = "greed and charity"
+text = "Greed sharpens trade. Charity raises {popularity} and {honour}."
+
+# affects: conception (D)
+[term.lust_chastity]
+title = "lust and chastity"
+text = "Whether a couple tries for children or avoids them."
+
+# affects: plots (D), relationships (P)
+[term.envy_kindness]
+title = "envy and kindness"
+text = "Envy helps in plots; kindness makes friendships grow stronger."
+
+# affects: stress intake (D), weight (P)
+[term.gluttony_temperance]
+title = "gluttony and temperance"
+text = "Temperance lessens {stress}; gluttony puts on {weight}."
+
+# affects: lashing out (P), siege (P), negotiation (P), battle (F)
+[term.wrath_patience]
+title = "wrath and patience"
+text = "Wrath is readiness to strike, in anger or in cold calculation; it may make a character lash out. Patience helps in sieges and long negotiations. Both will matter most in battle."
+
+# affects: skill growth (P), administrative duties (F)
+[term.sloth_diligence]
+title = "sloth and diligence"
+text = "Diligence makes {skill|skills} grow faster with use; sloth makes them grow slower and fade faster. Both matter most in administrative duties."
+
+# ===== Manner =====
+
+# affects: plots (D), leaks (F)
+[term.guarded_open]
+title = "guarded and open"
+text = "Whether a character keeps counsel. Open characters let plans leak."
+
+# affects: plots (D), negotiation (F), honour (F)
+[term.deceitful_honest]
+title = "deceitful and honest"
+text = "Whether a character lies. Deceit helps plots and bargaining but costs {honour} when caught."
+
+# affects: plots (F), accepting offers (F)
+[term.suspicious_trusting]
+title = "suspicious and trusting"
+text = "How readily a character believes others: suspicion guards against plots, trust accepts offers."
+
+# affects: rout (D), battle (F), raiding (F), duels (F), war (F)
+[term.wary_daring]
+title = "wary and daring"
+text = "How much risk a character takes: whether they stand or flee in a rout, raid, duel or go to war."
+
+# affects: conversion (F), movements (F), laws (F), unusual skills (P)
+[term.traditional_curious]
+title = "traditional and curious"
+text = "How a character meets the new: other faiths, movements, new laws and unusual learning."
+
+# affects: negotiation (F), siege (F), claims (F), fetters (P)
+[term.yielding_stubborn]
+title = "yielding and stubborn"
+text = "How long a character holds out in a negotiation or a siege, or before giving up a claim."
+
+# affects: relationships (D), stress (F)
+[term.solitary_gregarious]
+title = "solitary and gregarious"
+text = "How a character takes company: the gregarious make friends readily and suffer alone, the solitary suffer in crowds."
+
+# affects: claims (F), coups (F), accepting a superior (F), exile return (P)
+[term.content_ambitious]
+title = "content and ambitious"
+text = "Whether a character presses claims, joins coups or bears a superior."
+
+# affects: captives (F), rebels (F), popularity (F)
+[term.harsh_merciful]
+title = "harsh and merciful"
+text = "How a character treats captives and rebels, and how commoners take it."
+
+# ===== Standing =====
+
+# affects: opinion (D), marriage (D), claim (P), pop satisfaction (P) | from: deed log, charity (P)
+[term.popularity]
+title = "popularity"
+text = "How well liked a character is. A popular ruler's {pop|pops} are more {satisfaction|satisfied}, and it adds a little to their claims."
+
+# affects: opinion (D), marriage (D), claim (P), courtiers (P) | from: deed log
+[term.fame]
+title = "fame"
+text = "How widely a character is known. Fame draws people to their court and makes them a better match."
+
+# affects: opinion (D), marriage (D), claim (P), treaty trust (P) | from: deed log, charity (P), deceit caught (F)
+[term.honour]
+title = "honour"
+text = "How far a character's word is trusted. Other rulers trust an honourable ruler's treaties; breaking one costs honour."
+
+# ===== Derived =====
+
+# affects: stress performance (D), mental breaks (F) | from: events, humours, temperance, wrath (P), relationships, passions, vices
+[term.stress]
+title = "stress"
+text = "Strain from 0 to 100. Above a character's {stress_threshold|threshold}, it hurts how well they act."
+
+# affects: stress performance (D), mental breaks (F) | from: humours (D)
+[term.stress_threshold]
+title = "stress threshold"
+text = "The {stress} a character can carry before it hurts how well they act. {phlegm|Phlegm} raises it most and {black_bile|black bile} lowers it most; for some it lies past 100."
+
+# affects: claim (D), civil war (D) | from: birth, marriage of the mother, reigning (P), unjust actions (D)
+[term.legitimacy]
+title = "legitimacy"
+text = "How rightful a character's place in a tag's succession is: birth order, the mother's marriage, and more for a reigning king. Unjust acts by the ruler lower it."
+
+# affects: succession (D), civil war (D) | from: succession law, leadership, martial prowess, age, blemish, legitimacy, standing (P), favour (D)
+[term.claim]
+title = "claim"
+text = "A character's strength in the succession to a tag. The highest claim is the {heir}."
+
+# affects: succession (D) | from: claim
+[term.heir]
+title = "heir"
+text = "Whoever has the highest {claim} to a tag. A ruler with the Named heir law can favour a claimant, who becomes heir if the favour lifts him past the others."
+
+# affects: reactions (F), recognition (F), marriage (D) | from: temperament, manner, passions, relationships, standing, modifiers
+[term.opinion]
+title = "opinion"
+text = "What one character thinks of another, worked out from their tempers, {passion|passions}, {relationship|relationship} and {standing}."
+
+# affects: opinion (D), stress recovery (D), reactions (F) | from: events and moments only, never at birth (r184)
+[term.passion]
+title = "passion"
+text = "A one-way feeling toward a thing: loyalty, love, hatred or fear of a tag, title, house, {culture}, {religion} or place, with a strength from 1 to 10. No one is born with one: passions come from what happens in a life, and many people have none."
+
+# affects: opinion (D), stress (D), reactions (F)
+[term.relationship]
+title = "relationship"
+text = "What lies between two people: shared bonds (friend, rival, lover) and each one's own feelings (love, hatred, fear, respect, envy), each with a strength. They can be held all at once."

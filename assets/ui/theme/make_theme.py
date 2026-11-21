@@ -85,6 +85,24 @@ ICONS = {
             "..##.##..",
         ),
     ),
+    # The ledger's third tab and the third button of its closed bar (CK-375): a head and shoulders, monochrome like the other two (owner r88-r89:
+    # main-screen icons stay monochrome). Drawn from plain shapes (a round head, a neck's gap, a pair of shoulders); copied from no other icon.
+    "characters": (
+        9,
+        (
+            ".........",
+            "...###...",
+            "..#####..",
+            "..#####..",
+            "..#####..",
+            "...###...",
+            ".........",
+            "..#####..",
+            ".#######.",
+            "#########",
+            "#########",
+        ),
+    ),
     # CK-259's list-look selector: two stacked cards, and three text rows.
     "cards": (
         9,

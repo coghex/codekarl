@@ -483,6 +483,102 @@ fn a_top_up_generates_candidates_of_marriageable_age_in_new_minor_houses_with_di
     assert_whole(&store, &env, &pops);
 }
 
+/// The store after a save and a reload.
+fn reloaded(store: &CharacterStore) -> CharacterStore {
+    <CharacterStore as ck_sim::Canonical>::from_bytes(
+        &ck_sim::Canonical::to_bytes(store).expect("encodes"),
+    )
+    .expect("decodes")
+}
+
+/// A store with a boy of 14 and one man's name in the Irish pool, whose top-up makes `made`: the new minor houses (CK-375 §1).
+fn minor_houses(genitive: &str) -> (CharacterStore, Vec<u64>, LifeCycle, Env, Pops) {
+    let pops = Pops::new().pop("tara", 0, "noble", "ulaid", 1_000_000);
+    let mut env = Env::new("house_names");
+    let mut data: LifeCycle = shipped().clone();
+    data.pools.get_mut("irish").expect("pool").men = vec![("Áed".into(), genitive.into())];
+    let mut store = store_of(vec![
+        aged(1, Sex::Male, 14, "tara", 0, "uí_néill"),
+        aged(2, Sex::Male, 26, "tara", 0, ""),
+    ]);
+    let made = store
+        .top_up_pool(&mut world(&data, &mut env, &pops, 3), 1, today())
+        .expect("generated")
+        .made;
+    (store, made, data, env, pops)
+}
+
+#[test]
+fn a_new_minor_house_is_named_once_from_its_founder_and_keeps_the_name() {
+    let (mut store, made, data, mut env, pops) = minor_houses("Áeda");
+    assert!(made.len() >= 3);
+    let houses: Vec<String> = made
+        .iter()
+        .map(|id| store.get(*id).expect("live").life.house.clone())
+        .collect();
+    // A Gaelic culture: "Clann <the founder's genitive>", also for the key that took a suffix; a house of the data has no saved name.
+    assert!(houses.contains(&"Áed_tara".to_owned()) && houses.contains(&"Áed_tara_3".to_owned()));
+    for house in &houses {
+        assert_eq!(store.house_name(house), Some("Clann Áeda"), "{house}");
+    }
+    assert_eq!(store.house_name("uí_néill"), None);
+    // The names are saved: a reload keeps them, and a store with none encodes differently from one with some.
+    let loaded = reloaded(&store);
+    assert_eq!(loaded, store);
+    assert_eq!(loaded.house_name("Áed_tara_2"), Some("Clann Áeda"));
+    // A member who married in keeps the house's name: the man with no house takes his wife's house on marriage.
+    let wife = *made.first().expect("a made woman");
+    let house = store.get(wife).expect("live").life.house.clone();
+    store
+        .arrange_marriage(&mut world(&data, &mut env, &pops, 3), 2, wife, today())
+        .expect("married");
+    assert_eq!(store.get(2).expect("live").life.house, house);
+    assert_eq!(store.house_name(&house), Some("Clann Áeda"));
+    // The founder (the wife's father) is archived: the house keeps its name, which was never read from him.
+    let founder = store.get(wife).expect("live").father;
+    store
+        .die_with_events(
+            &mut world(&data, &mut env, &pops, 3),
+            founder,
+            today(),
+            "natural",
+        )
+        .expect("died");
+    assert!(store.get(founder).is_none(), "the founder is archived");
+    assert_eq!(store.house_name(&house), Some("Clann Áeda"));
+    let again = reloaded(&store);
+    assert_eq!(again.house_name(&house), Some("Clann Áeda"));
+}
+
+#[test]
+fn a_name_the_pool_has_no_genitive_for_makes_a_house_of_that_name() {
+    let (store, made, ..) = minor_houses("");
+    let house = store.get(made[0]).expect("live").life.house.clone();
+    assert_eq!(store.house_name(&house), Some("house of Áed"));
+}
+
+#[test]
+fn a_house_of_another_culture_is_the_house_of_its_founder() {
+    let pops = Pops::new().pop("york", 0, "noble", "northumbrian", 1_000_000);
+    let mut env = Env::new("house_names_english");
+    let mut store = store_of(vec![aged(1, Sex::Male, 14, "york", 0, "x")]);
+    let made = store
+        .top_up_pool(&mut world(shipped(), &mut env, &pops, 3), 1, today())
+        .expect("generated")
+        .made;
+    assert!(!made.is_empty());
+    for id in &made {
+        let c = store.get(*id).expect("live");
+        let founder = record(&store, &env, c.father);
+        assert_eq!(
+            store.house_name(&c.life.house),
+            Some(format!("house of {}", founder.name).as_str()),
+            "{}",
+            c.life.house
+        );
+    }
+}
+
 #[test]
 fn a_commoner_seeker_gets_commoners_without_a_house_and_a_pop_with_no_head_to_spare_yields_none() {
     let pops = Pops::new().pop("farm", 0, "peasant", "ulaid", 1_000_000);

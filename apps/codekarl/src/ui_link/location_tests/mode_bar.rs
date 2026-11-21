@@ -184,20 +184,24 @@ fn the_mode_bar_is_centred_at_the_bottom_of_the_window_and_follows_a_resize() {
 }
 
 #[test]
-fn the_closed_ledger_bar_has_two_icons_at_top_right_and_follows_a_resize() {
+fn the_closed_ledger_bar_has_three_icons_at_top_right_and_follows_a_resize() {
     let mut rig = rig(&["time(1, 1) announce_bars()", "announce_bars()"]);
     rig.opened();
-    // The two 13 by 15 buttons sit 3 pixels apart inside the 39 by 19 bar, which is 8 points from the top and right edges.
+    // The three 13 by 15 buttons sit 3 pixels apart inside the 55 by 19 bar, which is 8 points from the top and right edges.
     let check = |rig: &Rig, width: i64| {
         let locations = bar_button(rig, "location");
         let pops = bar_button(rig, "pops");
+        let characters = bar_button(rig, "characters");
         assert_eq!(locations[1], 8 + 2 * 2, "the top of the locations button");
         assert_eq!([locations[2], locations[3]], [13 * 2, 15 * 2]);
         assert_eq!(pops[0], locations[0] + (13 + 3) * 2, "the 3-pixel gap");
         assert_eq!([pops[2], pops[3]], [13 * 2, 15 * 2]);
+        assert_eq!(characters[0], pops[0] + (13 + 3) * 2, "the 3-pixel gap");
+        assert_eq!([characters[2], characters[3]], [13 * 2, 15 * 2]);
+        assert_eq!(characters[1], locations[1], "one row");
         assert!(
-            (pops[0] + pops[2] + 5 * 2 + 8 - width).abs() <= 2,
-            "the right edge of the ledger bar: {pops:?} in {width}"
+            (characters[0] + characters[2] + 5 * 2 + 8 - width).abs() <= 2,
+            "the right edge of the ledger bar: {characters:?} in {width}"
         );
         assert!(
             bar_button(rig, "stockpile")[1] > locations[1] + locations[3],

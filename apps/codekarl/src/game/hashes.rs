@@ -76,14 +76,14 @@ pub(crate) fn scenario_hash(directory: &Path) -> Result<String, String> {
 /// The scenarios that start with real figures (CK-370): by id, so that a scenario moved or renamed is still found.
 const FIGURE_SCENARIOS: [&str; 1] = ["ireland_768"];
 
-/// The two files of the real figures a supported scenario ships (CK-370), the research file and the load file, named by the scenario's **own id**
-/// (`ireland_768` is `ireland-768.toml` and `ireland-768-load.toml`) wherever its directory is, so that loading and hashing find the same files
-/// of a scenario that is moved or renamed. A scenario that is not one of [`FIGURE_SCENARIOS`] is outside the 768 start (`None`); a supported one
+/// The three files of the real figures a supported scenario ships, the research file and the load file (CK-370), named by the scenario's **own id**
+/// (`ireland_768` is `ireland-768.toml` and `ireland-768-load.toml`) wherever its directory is, and the house names `houses.toml` (CK-375), so that
+/// loading and hashing find the same files of a scenario that is moved or renamed. A scenario that is not one of [`FIGURE_SCENARIOS`] is outside the 768 start (`None`); a supported one
 /// without either file is refused, never started without its characters.
 ///
 /// # Errors
-/// An unreadable `scenario.toml`, or a supported scenario missing either of its two files.
-pub(crate) fn figure_files(directory: &Path) -> Result<Option<[PathBuf; 2]>, String> {
+/// An unreadable `scenario.toml`, or a supported scenario missing any of its three files.
+pub(crate) fn figure_files(directory: &Path) -> Result<Option<[PathBuf; 3]>, String> {
     let (_, scenario) = read(directory, "scenario.toml")?;
     let Some(id) = scenario_keys(&scenario)?.id else {
         return Ok(None);
@@ -96,6 +96,7 @@ pub(crate) fn figure_files(directory: &Path) -> Result<Option<[PathBuf; 2]>, Str
     let files = [
         directory.join(format!("{base}.toml")),
         directory.join(format!("{base}-load.toml")),
+        directory.join("houses.toml"),
     ];
     let missing: Vec<String> = files
         .iter()
@@ -110,7 +111,7 @@ pub(crate) fn figure_files(directory: &Path) -> Result<Option<[PathBuf; 2]>, Str
         Ok(Some(files))
     } else {
         Err(format!(
-            "scenario `{id}` starts with its real figures and needs both its figure files ({base}.toml, {base}-load.toml): missing {}",
+            "scenario `{id}` starts with its real figures and needs its figure files ({base}.toml, {base}-load.toml, houses.toml): missing {}",
             missing.join(", ")
         ))
     }

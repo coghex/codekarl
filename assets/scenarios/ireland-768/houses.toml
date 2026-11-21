@@ -1,0 +1,52 @@
+# House display names (r1). Drafted by Claude (ck-designer-1), 2026-11-21, for characters slice 9 (the character UI).
+# Every house and subhouse key in ireland-768-load.toml, with the name shown and the dynasty shown before the dot where there is one
+# ("Uí Néill · Cenél nEógain"). Forms are the standard Old Irish spellings historians use (Byrne, Irish Kings and High-Kings;
+# Charles-Edwards, Early Christian Ireland). Dynasty groupings are the usual ones; a house with no dynasty shows its name alone.
+# Subhouses are L7 data: their names are here for later, the card does not show them yet.
+#
+# Generated minor houses (key <father>_<place>) are not listed: the name is made from the founder, the father whose name the key
+# carries. Gaelic cultures: "Clann <founder's genitive>" (names.toml genitive; no lenition, TUNE); other cultures: "house of <name>".
+
+[house]
+cenel_neogain = { name = "Cenél nEógain", dynasty = "Uí Néill" }
+cenel_conaill = { name = "Cenél Conaill", dynasty = "Uí Néill" }
+clann_cholmain = { name = "Clann Cholmáin", dynasty = "Uí Néill" }
+ui_chernaig = { name = "Uí Chernaig", dynasty = "Uí Néill" }          # Síl nÁedo Sláine, south Brega (Lagore)
+ui_chonaing = { name = "Uí Chonaing", dynasty = "Uí Néill" }          # Síl nÁedo Sláine, north Brega (Knowth)
+cenel_loegairi = { name = "Cenél Lóegairi", dynasty = "Uí Néill" }
+cenel_coirpri = { name = "Cenél Coirpri", dynasty = "Uí Néill" }
+cenel_cairpri_tethbae = { name = "Cenél Coirpri Tethbae", dynasty = "Uí Néill" }
+tethbae = { name = "Tethbae", dynasty = "Uí Néill" }
+ui_briuin = { name = "Uí Briúin", dynasty = "Connachta" }
+ui_fhiachrach_aidne = { name = "Uí Fhiachrach Aidni", dynasty = "Connachta" }
+ui_fiachrach_muaidhe = { name = "Uí Fhiachrach Muaide", dynasty = "Connachta" }
+ui_maine = { name = "Uí Maine" }
+ui_cheinnselaig = { name = "Uí Chennselaig", dynasty = "Laigin" }
+ui_dunchada = { name = "Uí Dúnchada", dynasty = "Laigin" }            # Uí Dúnlainge
+ui_faelain = { name = "Uí Fáeláin", dynasty = "Laigin" }              # Uí Dúnlainge
+ui_muiredaig = { name = "Uí Muiredaig", dynasty = "Laigin" }          # Uí Dúnlainge
+ui_failge = { name = "Uí Failgi", dynasty = "Laigin" }
+osraige = { name = "Osraige" }
+eoganacht_chaisil = { name = "Eóganacht Chaisil", dynasty = "Eóganachta" }
+eoganacht_glendamnach = { name = "Eóganacht Glendamnach", dynasty = "Eóganachta" }
+eoganacht_locha_lein = { name = "Eóganacht Locha Léin", dynasty = "Eóganachta" }
+eoganacht_aine = { name = "Eóganacht Áine", dynasty = "Eóganachta" }
+ui_fidgeinte = { name = "Uí Fidgeinti" }
+ui_liathain = { name = "Uí Liatháin" }
+ciarraige_luachra = { name = "Ciarraige Luachra" }
+corcu_modruad = { name = "Corco Modruad" }
+dal_fiatach = { name = "Dál Fiatach", dynasty = "Ulaid" }
+dal_naraidi = { name = "Dál nAraidi", dynasty = "Cruithni" }
+ui_echach_cobo = { name = "Uí Echach Cobo", dynasty = "Cruithni" }
+ui_chremthainn = { name = "Uí Chremthainn", dynasty = "Airgialla" }
+airthir = { name = "Airthir", dynasty = "Airgialla" }
+mugdorna = { name = "Mugdorna", dynasty = "Airgialla" }
+ciannachta = { name = "Ciannachta" }
+cenel_ngabrain = { name = "Cenél nGabráin", dynasty = "Dál Riata" }
+
+[subhouse]
+sil_muiredaig = { name = "Síl Muiredaig", house = "ui_briuin" }
+sil_cathail = { name = "Síl Cathail", house = "ui_briuin" }
+sil_cellaig = { name = "Síl Cellaig", house = "ui_briuin" }
+sil_chormaic = { name = "Síl Chormaic", house = "ui_cheinnselaig" }
+sil_maeluidir = { name = "Síl Máeluidir", house = "ui_cheinnselaig" }

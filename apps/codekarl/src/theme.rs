@@ -443,6 +443,7 @@ mod tests {
             "ui/theme/make_theme.py",
             "ui/font/make_font.py",
             "ui/goods/make_goods.py",
+            "ui/characters/make_characters.py",
         ] {
             let output = std::process::Command::new("python3")
                 .arg("-I")
@@ -583,7 +584,7 @@ mod tests {
     }
 
     /// The application's icons: name, width in pixels and the seven shape rows after the two blank ones.
-    const ICONS: [(&str, usize, &[&str]); 16] = [
+    const ICONS: [(&str, usize, &[&str]); 17] = [
         (
             "rewind",
             9,
@@ -665,6 +666,23 @@ mod tests {
                 "..##.##..",
                 "..##.##..",
                 "..##.##..",
+            ],
+        ),
+        (
+            "characters",
+            9,
+            &[
+                ".........",
+                "...###...",
+                "..#####..",
+                "..#####..",
+                "..#####..",
+                "...###...",
+                ".........",
+                "..#####..",
+                ".#######.",
+                "#########",
+                "#########",
             ],
         ),
         (

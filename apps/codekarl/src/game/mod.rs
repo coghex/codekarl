@@ -14,10 +14,12 @@
 //! - [`slot`]: the latest-wins snapshot the owner publishes, and the terminal failure.
 //! - [`setup`]: starting a new game or loading one, before anything runs.
 //! - [`view`]: the immutable economy view the snapshot carries to the UI (milestone 9).
+//! - [`character_view`]: the characters of the same view (slice 9, CK-375).
 
 use ck_sim::{Canonical, CanonicalError, Reader};
 
 mod character_storage;
+pub(crate) mod character_view;
 pub(crate) mod controls;
 pub(crate) mod core;
 pub(crate) mod economy;

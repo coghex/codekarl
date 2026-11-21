@@ -559,6 +559,86 @@ fn a_figure_is_made_in_its_pop_with_its_house_office_name_byname_and_languages()
 }
 
 #[test]
+fn a_real_figure_and_a_dead_parent_record_their_authored_key_and_no_generated_character_does() {
+    let s = go("figure_key");
+    let data = data();
+    for figure in &data.figures {
+        assert_eq!(named(&s, &figure.name).life.figure, figure.key);
+    }
+    for parent in &data.dead_parents {
+        assert_eq!(named(&s, &parent.name).life.figure, parent.key);
+    }
+    // Every live character with a key is one of the figures, each once: the people the generator made have none.
+    let keyed: Vec<&str> = s
+        .store
+        .iter()
+        .map(|c| c.life.figure.as_str())
+        .filter(|key| !key.is_empty())
+        .collect();
+    let mut distinct = keyed.clone();
+    distinct.sort_unstable();
+    distinct.dedup();
+    assert_eq!(distinct.len(), keyed.len(), "a key names one character");
+    assert!(keyed.len() >= 5 && keyed.len() < s.store.iter().count());
+    assert!(
+        keyed
+            .iter()
+            .all(|key| data.figures.iter().any(|figure| figure.key == *key)),
+        "{keyed:?}"
+    );
+}
+
+#[test]
+fn a_figure_with_no_authored_genitive_patronymic_or_byname_is_still_the_real_figure_beside_a_generated_namesake()
+ {
+    // One man's name in the Irish pool, which a figure called the same has no authored mark to tell from: only its key does.
+    let mut lifecycle = shipped().clone();
+    lifecycle.pools.get_mut("irish").expect("pool").men = vec![("Aed".into(), "Aeda".into())];
+    let lifecycle: &'static ck_economy::LifeCycle = Box::leak(Box::new(lifecycle));
+    let mut all = figures();
+    all.push(Fig {
+        name: "Aed",
+        ..fig("aed", "court", "noble", "m", 740)
+    });
+    let data = data_with(EXCLUDED, &all);
+    let s = started_with(
+        "namesake",
+        1,
+        400,
+        false,
+        &data,
+        (lifecycle, &support::rules().events),
+    )
+    .expect("the start");
+    let namesakes: Vec<_> = s.store.iter().filter(|c| c.name == "Aed").collect();
+    assert!(
+        namesakes.len() >= 2,
+        "a generated namesake exists: {}",
+        namesakes.len()
+    );
+    let real = |store: &CharacterStore| {
+        store
+            .iter()
+            .filter(|c| c.life.figure == "aed")
+            .map(|c| c.id)
+            .collect::<Vec<_>>()
+    };
+    let before = real(&s.store);
+    assert_eq!(before.len(), 1, "exactly one of them is the figure");
+    assert!(
+        namesakes
+            .iter()
+            .filter(|c| c.life.figure.is_empty())
+            .count()
+            >= 1
+    );
+    // After a save and a reload, the same one.
+    let loaded =
+        CharacterStore::from_bytes(&s.store.to_bytes().expect("encodes")).expect("decodes");
+    assert_eq!(real(&loaded), before);
+}
+
+#[test]
 fn an_excluded_trait_is_never_given_to_a_real_figure_and_a_forced_one_is() {
     let names = [
         "Zzking", "Zzqueen", "Zzprince", "Zzabbot", "Zzking2", "isle1", "isle2", "isle3", "isle4",
