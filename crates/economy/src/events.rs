@@ -16,7 +16,9 @@ use std::{
 };
 
 mod connections;
+mod generator;
 pub use connections::*;
+pub use generator::*;
 
 /// The grade names by level: level 0 is "none", then C, B, A, S, SS and SSS.
 pub const GRADE_NAMES: [&str; 7] = ["none", "C", "B", "A", "S", "SS", "SSS"];

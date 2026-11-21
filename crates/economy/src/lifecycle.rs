@@ -320,9 +320,11 @@ pub struct LifeCycle {
     pub epithets: Vec<Epithet>,
     /// `connections.toml`: contact, strands, orientation, passions, opinion terms and log lines (CK-368).
     pub connections: events::Connections,
+    /// `generator.toml`: the recipe order, the generated past, the reference rates, languages and slots (CK-369).
+    pub generator: events::Generator,
 }
 
-/// The text of the four files, each with the name errors report it by.
+/// The text of the five files, each with the name errors report it by.
 pub struct Files<'a> {
     /// `life-cycle.toml`: `(file name, text)`.
     pub life: (&'a str, &'a str),
@@ -332,6 +334,8 @@ pub struct Files<'a> {
     pub epithets: (&'a str, &'a str),
     /// `connections.toml` (CK-368).
     pub connections: (&'a str, &'a str),
+    /// `generator.toml` (CK-369).
+    pub generator: (&'a str, &'a str),
 }
 
 /// What the life-cycle data is validated against.
@@ -1012,7 +1016,7 @@ fn parse_namesakes(source: &Source<'_>, node: &Node) -> Result<Namesakes, DataEr
 }
 
 impl LifeCycle {
-    /// Load `life-cycle.toml`, `names.toml`, `epithets.toml` and `connections.toml` from `directory` and validate them against the registry.
+    /// Load `life-cycle.toml`, `names.toml`, `epithets.toml`, `connections.toml` and `generator.toml` from `directory` and validate them against the registry.
     ///
     /// # Errors
     /// Returns a source-qualified error for unreadable or invalid data.
@@ -1032,18 +1036,20 @@ impl LifeCycle {
         let (names_file, names) = read("names.toml")?;
         let (epithets_file, epithets) = read("epithets.toml")?;
         let (connections_file, connections) = read("connections.toml")?;
+        let (generator_file, generator) = read("generator.toml")?;
         Self::parse(
             &Files {
                 life: (&life_file, &life),
                 names: (&names_file, &names),
                 epithets: (&epithets_file, &epithets),
                 connections: (&connections_file, &connections),
+                generator: (&generator_file, &generator),
             },
             registry,
         )
     }
 
-    /// Parse and validate the four files' text; the file names appear in errors.
+    /// Parse and validate the five files' text; the file names appear in errors.
     ///
     /// # Errors
     /// Returns a source-qualified error for the first invalid entry.
@@ -1052,6 +1058,7 @@ impl LifeCycle {
         let (names_file, names) = files.names;
         let (epithets_file, epithets) = files.epithets;
         let (connections_file, connections) = files.connections;
+        let (generator_file, generator) = files.generator;
         let source = Source { file: life_file };
         let root = source.document(life)?;
         for key in root.keys() {
@@ -1105,6 +1112,15 @@ impl LifeCycle {
         rules.connections = registry.events.parse_connections(
             connections_file,
             connections,
+            &events::Registry {
+                peoples: registry.peoples,
+                genetics: registry.genetics,
+                pop_types: registry.pop_types,
+            },
+        )?;
+        rules.generator = registry.events.parse_generator(
+            generator_file,
+            generator,
             &events::Registry {
                 peoples: registry.peoples,
                 genetics: registry.genetics,

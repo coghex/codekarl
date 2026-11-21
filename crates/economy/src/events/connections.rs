@@ -69,6 +69,8 @@ pub struct Orientation {
     pub weights: [u32; 4],
     /// The factor on gay and bisexual for a child of a gay or bisexual parent, in ppb.
     pub parent_boost_ppb: u64,
+    /// The factor on each of [`ORIENTATIONS`] for a character generated in a monk pop (CK-369), in ppb: 1 for a key the file does not name.
+    pub clergy_ppb: [u64; 4],
 }
 
 /// A rule that makes strands from a happening.
@@ -606,12 +608,13 @@ fn parse_orientation(source: &Source<'_>, table: &Table) -> Result<Orientation, 
         ));
     }
     let clergy = source.table(&table["clergy"], "orientation.clergy")?;
+    out.clergy_ppb = [u64::from(PPB); 4];
     for (key, node) in clergy {
         let entry = format!("orientation.clergy.{key}");
-        if !ORIENTATIONS.contains(&key.as_str()) {
+        let Some(slot) = ORIENTATIONS.iter().position(|name| *name == key.as_str()) else {
             return Err(source.error(entry, "unknown key"));
-        }
-        factor(source, node, &entry)?;
+        };
+        out.clergy_ppb[slot] = factor(source, node, &entry)?;
     }
     Ok(out)
 }

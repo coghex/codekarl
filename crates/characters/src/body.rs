@@ -19,7 +19,6 @@ use crate::{
     events::{EventError, FirstError, LogSink, World, age_years, keep},
     genetics::normal_z,
     personality::{product, sum},
-    skills::Snapshot,
 };
 use ck_economy::{
     Genetics,
@@ -319,14 +318,14 @@ impl CharacterStore {
         id: u64,
         today: GameTime,
         age: u32,
-        snapshot: &Snapshot,
+        household: &[([i64; 7], [i64; 9])],
+        to_age: u32,
     ) -> Result<(), Error> {
         let rules: &UpbringingRules = &world.lifecycle.upbringing;
-        if age >= rules.to_age {
+        if age >= to_age {
             return Ok(());
         }
         let c = self.live.get(&id).ok_or(Error::MissingCharacter)?;
-        let household = snapshot.household(c);
         let mut moved = c.personality;
         let pairs = VICE_PAIRS.iter().chain(&MANNER_PAIRS).copied();
         for (index, name) in pairs.enumerate() {

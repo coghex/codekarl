@@ -500,6 +500,10 @@ impl CharacterStore {
         )? {
             return Ok(());
         }
+        // A pool with fewer than `min_candidates` is topped up with generated candidates, checked against the pool rules (CK-369 §6).
+        if let Some(error) = self.top_up_pool(world, id, today)?.output {
+            keep(first, error);
+        }
         let Some((candidate, score)) = self.marriage_proposal(world, id, today)? else {
             return Ok(());
         };

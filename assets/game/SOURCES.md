@@ -148,3 +148,33 @@ The design it implements:
 count, a zero divisor (`skills_divisor`, `envy_divisor`, `age_gap_years`), a grade table that is not seven values, orientation weights that
 do not sum above 0, a live moment's `when` key outside slice 4's vocabulary plus `ruler_years_min`, `years_in_pop_min`, `in_ruling_house` and
 `standing_min`, and a live moment's target that is not one of the five the engine resolves.
+
+## The generator (CK-369, characters slice 7)
+
+`lifecycle/generator.toml` is the designer's data (ck-designer-1), copied **byte for byte** from `codekarl-content/lifecycle/generator.toml`
+(change `RBD5D3G5`, 2026-11-20). It holds the recipe (the eleven steps in order), the generated past (the concocted happenings, battles,
+raids, duels and the yearly strain of a life lived before the start), the reference rates the tests hold, the second-language ranges, and
+the slot rules (ages, reach and weights). Every number marked TUNE is a placeholder; the model is not. The loader reads each decimal from
+its text (a probability in parts per billion, a skill level, a stress amount, a weight and a language strength in thousandths) and never
+through a binary float. The prose `from` fields of the slots and the `[marriage_candidates]` and `[real_households]` sections are
+descriptions: the behaviour they describe is code.
+
+| File | Revision | Pijul change | SHA-256 |
+|---|---|---|---|
+| `lifecycle/generator.toml` | r1 | `RBD5D3G5` | `651837c64acaa588ac25633bfe81deade1d1aed878f6a3b5023d796eb017bb9c` |
+
+Source of the copy: `codekarl-content/lifecycle/generator.toml` (2026-11-20).
+
+The design it implements:
+
+- `history-scratch/generator-data-r1.md` (SHA-256 `81136f43…`) and the owner-approved `history-scratch/characters-spec-r1.md` (SHA-256 `1d3f8a56…`).
+- The approved specification: CK-369 r4, SHA-256 `78b87ea39174bbcc50cf24d8d447e942c5e4ceef32a10f8b4d63f17a0ed9af90`.
+
+`generator.toml` joins the save's `rules_hash` (a changed table refuses an existing save) and the `economy.core` check paths
+(`assets/game/lifecycle/`, which also holds the `ck-characters` tests' data). The loader refuses a recipe order that is not exactly the
+eleven shipped steps, a probability or band outside 0..1, a reference key the tests cannot build, a language range outside 0..1 or whose low
+is above its high, a role of `latin_by_office` that is not in the **role vocabulary** (a fixed list in the code, `ck_economy::events::ROLES`,
+not derived from any data file), a slot kind other than `fosterling`, `hostage` and `student`, a negative `reach_km` or weight, a past that
+kills, and a skill, pop type or key the engine does not have. It also reads the mother tongue of every culture from the registry (CK-356)
+and requires the `latin` language. `connections.toml`'s `[orientation] clergy` factors, which slice 6 validated and did not keep, are kept
+now: they weight the orientation of a character generated in a monk pop.

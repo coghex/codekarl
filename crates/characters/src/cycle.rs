@@ -78,7 +78,7 @@ pub struct Delivery {
 }
 
 /// The first of the month `months` after `day`'s month, at hour 0.
-fn first_after(day: GameTime, months: u32) -> Result<GameTime, Error> {
+pub(crate) fn first_after(day: GameTime, months: u32) -> Result<GameTime, Error> {
     let d = day.date().map_err(|_| Error::Overflow)?;
     let index = u32::from(d.year) * 12 + u32::from(d.month) - 1 + months;
     GameTime::from_date(Date {
@@ -501,7 +501,7 @@ impl CharacterStore {
     /// The number of children of a delivery: one roll `u` on purpose `delivery` gives triplets when `u < t`, twins when `u < t + w` and
     /// one child otherwise, with `t = triplets x b` and `w = twins x b` (`b = twin_bearer` when the mother shows it, else 1) and
     /// `t + w` capped at 1.
-    fn child_count<P: Populations, A: ArchiveSink, L: LogSink>(
+    pub(crate) fn child_count<P: Populations, A: ArchiveSink, L: LogSink>(
         world: &World<'_, P, A, L>,
         mother: &Character,
         today: GameTime,

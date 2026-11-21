@@ -1,0 +1,99 @@
+# The character generator (draft r1). Drafted by Claude (ck-designer-1), 2026-11-20, for characters slice 7. The recipe of char-gen-r6
+# (tools/char_gen.py, untracked, the reference), as data. Notes and approvals: .pipeline/coordination/history-scratch/generator-data-r1.md.
+# Every rule below uses the data of slices 2-6 (genetics, personality, events, life cycle, connections); this file says the order,
+# the generated-past specifics, the reference rates the tests hold, slot filling and generated families.
+
+[recipe]
+# A generated character is made in this order:
+order = [
+  "parents",        # always two (r184): existing characters when the role names them, else generated (made first, the same way);
+                    # their own parents are the unknown character
+  "sex_and_birth",  # given by the request (a slot, a spouse, a candidate) or drawn
+  "lineage",        # haplogroups and genetic baseline from the parents (genetics, slice 2)
+  "body",           # stats and humours rolled (slice 2); rolled height and weight kept apart from shown
+  "inherited_traits",  # graded and Mendelian (genetics/traits.toml)
+  "personality",    # at birth from parents and culture (slice 3)
+  "orientation",    # rolled once (connections.toml), clergy weights for a monk pop
+  "languages",      # mother tongue and second languages, fixed for life (below)
+  "focus",          # education focus by pop type and sex (attributes-skills.toml [skills.focus.odds])
+  "name",           # the culture pool and namesakes (names.toml)
+  "past",           # the generated life to today (below)
+]
+
+[past]
+# The generated life: years from birth to today, run with the in-play rules and these differences.
+upbringing_to = 14          # personality pulled to the household (life-cycle.toml [upbringing]); a generated household is two typical
+                            # members of the culture (culture means + the spread) when the real one is not known
+skills_from = 7             # skills grow by use from fosterage age (attributes-skills.toml)
+yearly_check_from = 15      # the yearly check (character-events.toml "yearly" events) from 15
+# A generated past has no simulated world around it, so happenings are concocted each year at these chances (char_gen HAPPEN):
+happenings = { death_in_family = 0.04, insulted = 0.05, feast = 0.15, captured = 0.006, exiled = 0.003 }
+new_friend = 0.08           # counts as a feast-like comfort for the mind-trait lifts (no strand is made; strands come from the burn-in)
+battles = { noble_m = 0.10, peasant_m = 0.02, labourer_m = 0.02 }   # a year, ages 16-55, x2 with a martial focus
+battle_defeat = 0.35        # share of battles that were defeats
+battle_won_in_command = { leadership_min = 14, chance = 0.3 }
+raids_led = { noble_m = 0.05, martial_focus = 0.15, ages = [16, 50] }
+duels_won = { martial_prowess_min = 14, chance = 0.03 }
+yearly_strain = { mean = 15, sd = 8 }   # stress added each year of a generated past (in play, stress comes from events only)
+no_deaths = true            # a generated past never kills: deaths (despair, the death curve) apply only in play
+
+# Reference rates the tests should hold (char-gen-r6 results after r138 tuning; 1,000 characters each, men at 45).
+# Tolerance: within the stated band (absolute percentage points), with a fixed seed.
+[reference]
+veteran_noble_men_45 = { rate = 0.69, band = 0.08 }        # r138: 69%; C 46%, B 20%, A 1%
+scribe_clergy_men_45 = { rate = 0.51, band = 0.10 }        # r138: "about half the clergy"
+latinist_clergy_men_45 = { rate = 0.25, band = 0.08 }
+melancholy_noble_men_45 = { rate = 0.11, band = 0.04 }     # r138: mind-trait rates right
+melancholy_clergy_men_45 = { rate = 0.06, band = 0.03 }
+rage_fits_noble_men_45 = { rate = 0.06, band = 0.03 }
+recluse_clergy_men_45 = { rate = 0.06, band = 0.03 }
+drunkard_peasant_men_45 = { rate = 0.06, band = 0.03 }
+madness_any_men_45 = { rate = 0.004, band = 0.004 }
+orientation = { straight = 0.92, gay = 0.04, bisexual = 0.03, asexual = 0.01, band = 0.015 }   # lay characters
+
+# ======== Languages at the making (languages-r5, r184): fixed for life ========
+[languages]
+mother_tongue = "culture"   # the culture's language (CK-356 data), in its dialect
+# second languages, each a strength 0..1 drawn uniformly in the range:
+latin_by_office = { bishop = [0.60, 0.95], abbot = [0.60, 0.95], abbess = [0.60, 0.95], scribe = [0.60, 0.95], lector = [0.60, 0.95], anchorite = [0.60, 0.95], prior = [0.40, 0.80], monk = [0.20, 0.60], nun = [0.20, 0.60], student = [0.0, 0.20], steward = [0.0, 0.30] }
+latinist = [0.80, 0.95]     # the craft attribute, when gained in the past
+fostered_among = [0.40, 0.80]   # the fostering family's mother tongue, if different
+hostage_raised = [0.40, 0.80]   # the captor's mother tongue
+foreign_mother = [0.50, 0.90]   # the mother's mother tongue, if different
+exile = [0.30, 0.70]            # the host's language
+# lay nobles and commoners otherwise have none
+
+# ======== Slot filling (r146, approved r147; char-gen-r6) ========
+[slots]
+# Fill each slot member from people who exist before generating anyone; anyone generated gets a real family.
+fosterling = { age = { m = [7, 17], f = [7, 14] }, from = "a noble child of the same culture group within reach", fostered_out = true }
+hostage = { age = [7, 30], from = "a son or kinsman of a house whose head is a subject or neighbour of this court's ruler" }
+student = { age = [10, 20], from = "a child of any noble or church family within reach; else of the place's peasants" }
+reach_km = 60               # TUNE: "within reach" for fosterlings and students; hostages from any distance
+# weights among candidates (TUNE): kin of the court's house x3; a house of a different (subject) kingdom x2 for hostages;
+# fostered_out: a ruler's own children are fostered OUT, to a lower house, never into a court of equal or higher rank
+weights = { kin = 3.0, subject_house = 2.0 }
+# the chosen child MOVES to the court's pop (fosterage, hostageship, school) and keeps parents, house and lines (r146)
+# none found: generate the child into a real noble family of the right house (a child of an existing couple, else of a generated
+# couple placed in that house), never parentless
+order = "after every real figure and household exists"   # the 768 start: slots are filled last, so fosterlings come from real houses
+
+# Other members of a slot (retainers, monks, women of the household ...) are generated into the slot's pop with families of the
+# same culture: parents generated (dead or living by age), a spouse if married at their age (life-cycle wish curve at birth), children
+# by the conception rules over their past.
+
+# ======== Generated marriage candidates (life-cycle.toml [marriage.pool], when fewer than 3) ========
+[marriage_candidates]
+noble_seeker = "a minor noble of the seeker's culture, generated into a generated family of a minor house (a new house key: the father's name + the place)"
+other_seeker = "a commoner of the seeker's culture and pop type at the seeker's place"
+age = "drawn in the seeker's age window (the scoring's free gap)"
+
+# ======== Households for real figures (slice 8) ========
+[real_households]
+# Every real figure has parents (r184): a named parent in ireland-768-load.toml is used (alive or a dead_parent); a missing one is
+# generated, dead or alive by the life-cycle death curve at the figure's age, into the figure's house; grandparents are the unknown
+# character.
+# A real king or noble with no named spouse and of the marriage-wish age gets one at the chance he would be married (the wish curve
+# integrated to his age); the court slot names "the king's wife (unnamed)" where the research found one, and that slot member is she.
+# Children: a real figure's named children are used; more are generated by the conception rules over the couple's married years, so
+# that a king of 50 has the children he would have had (the real ones among them).

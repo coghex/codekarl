@@ -366,28 +366,7 @@ fn apply_effects(
                 out.grade = grade_name(after);
             }
             Effect::Count { counter, add } => {
-                let total = out
-                    .copy
-                    .life
-                    .counters
-                    .get(counter)
-                    .copied()
-                    .unwrap_or(0)
-                    .checked_add(*add)
-                    .ok_or(Error::Event)?;
-                out.copy.life.counters.insert(counter.clone(), total);
-                for deed in rules.deeds.iter().filter(|deed| &deed.counter == counter) {
-                    let reached = deed
-                        .thresholds
-                        .iter()
-                        .filter(|need| **need <= total)
-                        .count();
-                    let level = u8::try_from(reached).map_err(|_| Error::Event)?;
-                    if level > out.copy.grade(&deed.key) {
-                        out.copy.set_grade(&deed.key, level);
-                    }
-                }
-                out.count = total;
+                out.count = count_up(&mut out.copy, rules, counter, *add)?;
                 out.always_logs = true;
             }
             Effect::Stress(amount) => {
@@ -415,6 +394,45 @@ fn apply_effects(
         }
     }
     Ok(out)
+}
+
+/// Whether an event's effects include a death.
+pub(crate) fn is_fatal(event: &Event) -> bool {
+    event
+        .effects
+        .iter()
+        .any(|effect| matches!(effect, Effect::Die(_)))
+}
+
+/// Add `add` to a deed counter of `c` and raise the grade of each deed that counts it to the level its thresholds give (CK-363 §3): the
+/// effect of a `count` effect, kept in one place. Returns the counter's new total.
+pub(crate) fn count_up(
+    c: &mut Character,
+    rules: &EventRules,
+    counter: &str,
+    add: u64,
+) -> Result<u64, Error> {
+    let total = c
+        .life
+        .counters
+        .get(counter)
+        .copied()
+        .unwrap_or(0)
+        .checked_add(add)
+        .ok_or(Error::Event)?;
+    c.life.counters.insert(counter.to_owned(), total);
+    for deed in rules.deeds.iter().filter(|deed| deed.counter == counter) {
+        let reached = deed
+            .thresholds
+            .iter()
+            .filter(|need| **need <= total)
+            .count();
+        let level = u8::try_from(reached).map_err(|_| Error::Event)?;
+        if level > c.grade(&deed.key) {
+            c.set_grade(&deed.key, level);
+        }
+    }
+    Ok(total)
 }
 
 /// A trait key as it reads in a line: underscores become spaces.
@@ -612,9 +630,24 @@ impl CharacterStore {
         date: GameTime,
         first: &mut FirstError,
     ) -> Result<(), EventError> {
+        self.dispatch_with(world, id, happening, date, first, false)
+    }
+
+    /// [`dispatch`](Self::dispatch), skipping every event whose effects include a death when `skip_fatal` (CK-369 §3: a generated past never
+    /// kills, so such an event is skipped entirely: no roll, no effects, no line).
+    pub(crate) fn dispatch_with<P: Populations, A: ArchiveSink, L: LogSink>(
+        &mut self,
+        world: &mut World<'_, P, A, L>,
+        id: u64,
+        happening: &str,
+        date: GameTime,
+        first: &mut FirstError,
+        skip_fatal: bool,
+    ) -> Result<(), EventError> {
         let rules = world.rules;
         for event in &rules.events {
             if matches!(&event.trigger, Trigger::Happening(name) if name == happening)
+                && !(skip_fatal && is_fatal(event))
                 && self.run_event(world, event, id, date, first)? == Step::Died
             {
                 return Ok(());
