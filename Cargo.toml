@@ -31,3 +31,22 @@ todo = "deny"
 [profile.profiling]
 inherits = "release"
 debug = "line-tables-only"
+
+# Character generation spends much of a debug start in its arithmetic and simulation.
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.dev.package.ck-characters]
+opt-level = 3
+
+[profile.dev.package.ck-economy]
+opt-level = 3
+
+[profile.dev.package.ck-sim]
+opt-level = 3
+
+[profile.dev.package.ck-map]
+opt-level = 3
+
+[profile.dev.package.codekarl]
+opt-level = 3
