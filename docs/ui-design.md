@@ -3821,6 +3821,49 @@ tooltip and prompt of the UI, and it goes on working while the UI script is busy
       15:52Z).
     - **Still to see:** a rate above the display's with vsync off (CK-344, §3.17).
 
+### 3.25 The Characters tab and the character screen (accepted, CK-375)
+
+Characters slice 9a (`history-scratch/characters-ui-r12.md`, owner r63-r89). The ledger gains a third tab, **characters**, and clicking a card
+opens the **character screen** over the left slot.
+
+- **The data path.** The UI never reads the live characters. The simulation builds an immutable **character view** (`game/character_view.rs`)
+  at the moments it builds the economy view (the start, after a load, after each day's systems) and carries it in that view, so it has the same
+  revision. `game.characters(revision)` returns the cards of the live characters in id order; `game.character(id, revision)` returns one
+  character's first-tab record, built from the view. Both read the same cache as `game.place` and refuse a missing or retired revision, and an id
+  not live at that revision, by name.
+- **The world number.** The `game_time` table carries `world`: 0 for the session's first world, one more each time a load replaces the simulation
+  (a named load, a guarded load, a quickload), never falling and never saved. The screen keeps the world it was opened in and closes when a later
+  snapshot has another, even when the snapshot the load itself published was replaced before the UI read it and even when the new world has a live
+  character with the same id. (A new game is a new process, so a session starts at world 0.)
+- **The card** is a square portrait cell (the unknown portrait, a plain grey head and shoulders), and three lines: the name with its byname or
+  epithet; the house line in the term colour ("no house", dim, for a commoner); "age N" and the role line. The card list is the card stack
+  (`lib/cards.lua`) with its scroll bar and the list bar below it. Importance orders the rows until tags exist: rulers; high clergy; rulers'
+  spouses; rulers' children; other real figures (a live character with a saved figure key); slot members; everyone else, older first, then id.
+  Filters: rulers, clergy (a monk pop or the `high_cleric` office), women, men, children (under 14). Sorts: importance, name, age (descending
+  first), house.
+- **The house line** is `<dynasty> · <name>` from `assets/scenarios/ireland-768/houses.toml` (a house with no dynasty shows its name), or the name
+  saved with a generated minor house when the generator made it, from its founder: "Clann <genitive>" in a Gaelic culture, otherwise "house of
+  <name>". **The role line** is the first rule that matches, in the order of the spec (§4): office, the slot's kind, a spouse place, a slot role, a
+  ruler's spouse, a ruler's child, the pop's kind.
+- **The screen** has a header (the larger unknown portrait, the name, the house line, "age N", the role line), a strip of four tabs below it
+  (`lib/tabs.lua` gained a `body` placement for this; the title-bar use is unchanged) and the tab's content in a scrolling stack. In 9a only
+  "character" has content, in eight sections, each headed by its word in the term colour: body (nine icon tiles), health (a row for each injury,
+  "none" until injuries are simulated), skills (bars out of 20), virtue (two-sided bars from -7 to +7, pink toward the virtue and purple toward the
+  sin), temper (four pip meters in each humour's colour, then the stress bar with a tick at its threshold), manner (two-sided bars drawn clamped to
+  -20..+20, the true value shown), standing, and traits (chips of words: dark for traits, light for attributes, with the class letter of a graded
+  key). Every icon's tooltip explains its quantity through the glossary. A value beyond a bar's range is drawn at its end and shown true.
+- **Across revisions** the screen holds no revision of its own: each delivered snapshot reads the character again under that snapshot's revision,
+  keeping the tab and the scroll; a character no longer live, or a new world, closes it; a read the cache refuses changes nothing. Opening another
+  character replaces the screen, so one close (its x, or Escape when it is the top window) returns to the panel underneath as it was.
+- **The numbers** are the ones the game already shows, with no new scoring: the body through `Character::shown_stat`, the humours through
+  `GeneticRecord::shown`, skills, vice/virtue, manner, stress and standing from the record. A value stored in thousandths is shown in whole units
+  to the nearest, a tie away from zero.
+- **The glossary** is now two files loaded as one: `assets/ui/glossary.toml` and the designer's `assets/ui/glossary_characters.toml` (a byte copy,
+  cited in `assets/ui/SOURCES.md`). A link may name a term of either, a key in both is a load error, and the reader lists both.
+- **Not in 9a:** orientation (its icons are not drawn), the relations tab (9b), the pop tab and the life-log button (9c), layered portraits, heirs,
+  titles and kingdoms (L1), captives (L4), the actions tab (L2) and archived characters in the list. A generated character whose father is
+  archived shows its base name without the patronymic, because the view does not read the archive.
+
 ## 4. Packages and ownership
 
 | Package | Change |

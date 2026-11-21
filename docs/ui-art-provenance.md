@@ -138,6 +138,21 @@ author's record, moved here from the design round's notes; the files, hashes and
 - **The round's record:** `.pipeline/coordination/ui-polish-design/glossary-reader-provenance-r2.md` (sha256 `3d51af8a…`), which
   this section carries.
 
+## The character screen's art (CK-375)
+
+- **The colour icons** (`assets/ui/characters/*.png`, 46 of them): the owner-approved 9x9 set for the character window (owner r85-r87), frozen
+  from the designer's `char_icons.py` (SHA-256 `86dc5a31bce827c29f656889a42de47fea41dbad39974040ff614cc0eeec485c`) into
+  `assets/ui/characters/make_characters.py`, which writes the images. Each drawing is composed pixel by pixel from a plain object shape; none is
+  copied or traced from another game or icon set. `make_characters.py --check` fails when a committed image differs from what the script writes,
+  or is missing or extra.
+- **The unknown portrait** (`unknown_card.png`, 32 pixels, and `unknown_header.png`, 48): a plain head and shoulders in white on a transparent
+  cell, drawn in `make_characters.py` from rows of pixels (a head of rounded rows, a neck, shoulders that widen a pixel a row); the UI tints it with
+  the theme's `dim` over a dark cell. It is the owner's placeholder (r64) until layered portraits exist.
+- **The ledger's bust** (`assets/ui/theme/icon_characters.png`): a monochrome head and shoulders for the third tab and the third button of the
+  closed bar (main-screen icons stay monochrome, owner r88-r89), drawn in `assets/ui/theme/make_theme.py` from plain shapes.
+- **The colours** are theme entries (`assets/ui/theme.toml`): virtue pink and sin purple (r67), the four humours' own colours (r67, r68), the dark
+  of a portrait cell and an icon tile, and the light chip. They are identity colours, not good and bad.
+
 ## Elsewhere
 
 - **The goods icons** (CK-267): `.pipeline/coordination/ui-polish-design/goods-icons-provenance-r1.md`; `docs/ui-design.md` describes
