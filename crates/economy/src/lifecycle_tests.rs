@@ -32,6 +32,10 @@ fn connections_text() -> &'static str {
     static TEXT: OnceLock<String> = OnceLock::new();
     TEXT.get_or_init(|| asset("connections.toml"))
 }
+fn generator_text() -> &'static str {
+    static TEXT: OnceLock<String> = OnceLock::new();
+    TEXT.get_or_init(|| asset("generator.toml"))
+}
 fn shipped_rules() -> &'static Rules {
     static RULES: OnceLock<Rules> = OnceLock::new();
     RULES.get_or_init(|| {
@@ -51,6 +55,7 @@ fn parse_all(life: &str, names: &str, epithets: &str) -> Result<LifeCycle, DataE
             names: ("names.toml", names),
             epithets: ("epithets.toml", epithets),
             connections: ("connections.toml", connections_text()),
+            generator: ("generator.toml", generator_text()),
         },
         &Registry {
             events: &rules.events,
@@ -829,6 +834,7 @@ fn an_epithet_scope_that_is_both_a_subgroup_and_a_religion_is_refused() {
             names: ("names.toml", names_text()),
             epithets: ("epithets.toml", epithets_text()),
             connections: ("connections.toml", connections_text()),
+            generator: ("generator.toml", generator_text()),
         },
         &Registry {
             events: &rules.events,
@@ -1220,6 +1226,7 @@ fn parse_connections(text: &str) -> Result<LifeCycle, DataError> {
             names: ("names.toml", names_text()),
             epithets: ("epithets.toml", epithets_text()),
             connections: ("connections.toml", text),
+            generator: ("generator.toml", generator_text()),
         },
         &Registry {
             events: &rules.events,
@@ -1417,5 +1424,260 @@ fn a_live_moment_is_checked_against_the_vocabulary_and_the_targets_the_engine_re
         "chance = 2.0\nlive = false",
         "defeat.chance",
         "probability",
+    );
+}
+
+// --- generator.toml (CK-369) -------------------------------------------------------------------------------------------------
+
+fn parse_generator(text: &str) -> Result<LifeCycle, DataError> {
+    let rules = shipped_rules();
+    let pop_types: Vec<&str> = rules.pop_types.iter().map(|p| p.id.as_str()).collect();
+    LifeCycle::parse(
+        &Files {
+            life: ("life-cycle.toml", life_text()),
+            names: ("names.toml", names_text()),
+            epithets: ("epithets.toml", epithets_text()),
+            connections: ("connections.toml", connections_text()),
+            generator: ("generator.toml", text),
+        },
+        &Registry {
+            events: &rules.events,
+            genetics: &rules.genetics,
+            peoples: &rules.peoples,
+            pop_types: &pop_types,
+            religions: &rules.religions,
+        },
+    )
+}
+fn refused_generator(from: &str, to: &str, entry: &str, problem: &str) {
+    let error = parse_generator(&edit(generator_text(), from, to)).unwrap_err();
+    assert!(
+        error.entry.contains(entry) && error.problem.contains(problem),
+        "expected `{entry}` / `{problem}`, got {error:?}"
+    );
+    assert_eq!(error.file, "generator.toml");
+}
+
+#[test]
+fn the_shipped_generator_data_loads_and_states_what_the_file_says() {
+    let data = &shipped_rules().lifecycle.generator;
+    assert!(data.loaded);
+    let past = &data.past;
+    assert_eq!(
+        (past.upbringing_to, past.skills_from, past.yearly_check_from),
+        (14, 7, 15)
+    );
+    assert_eq!(past.happenings["death_in_family"], 40_000_000);
+    assert_eq!(past.happenings["feast"], 150_000_000);
+    assert_eq!(past.happenings["captured"], 6_000_000);
+    assert_eq!(past.new_friend_ppb, 80_000_000);
+    assert_eq!(past.battles["noble_m"], 100_000_000);
+    assert_eq!(past.battles["labourer_m"], 20_000_000);
+    assert_eq!(past.battle_defeat_ppb, 350_000_000);
+    assert_eq!(
+        (past.command_leadership_min, past.command_chance_ppb),
+        (14_000, 300_000_000)
+    );
+    assert_eq!(
+        (
+            past.raids_noble_m_ppb,
+            past.raids_martial_focus_ppb,
+            past.raids_ages
+        ),
+        (50_000_000, 150_000_000, [16, 50])
+    );
+    assert_eq!(
+        (past.duel_prowess_min, past.duel_chance_ppb),
+        (14_000, 30_000_000)
+    );
+    assert_eq!((past.strain_mean, past.strain_sd), (15_000, 8_000));
+    assert_eq!(data.reference["veteran_noble_men_45"].rate_ppb, 690_000_000);
+    assert_eq!(data.reference["veteran_noble_men_45"].band_ppb, 80_000_000);
+    assert_eq!(
+        data.orientation.rates_ppb,
+        [920_000_000, 40_000_000, 30_000_000, 10_000_000]
+    );
+    assert_eq!(data.orientation.band_ppb, 15_000_000);
+    let latin = &data.languages.latin_by_office;
+    assert_eq!((latin["bishop"].low, latin["bishop"].high), (600, 950));
+    assert_eq!((latin["student"].low, latin["student"].high), (0, 200));
+    assert_eq!(latin.len(), 11);
+    assert_eq!(data.languages.latinist.low, 800);
+    assert_eq!(data.languages.fostered_among.high, 800);
+    let slots = &data.slots;
+    assert_eq!(slots.reach_km, 60);
+    assert_eq!((slots.kin_milli, slots.subject_house_milli), (3000, 2000));
+    let fosterling = slots.kinds["fosterling"];
+    assert_eq!((fosterling.age_m, fosterling.age_f), ([7, 17], [7, 14]));
+    assert!(fosterling.fostered_out);
+    assert_eq!(slots.kinds["hostage"].age_m, [7, 30]);
+    assert_eq!(slots.kinds["student"].age_f, [10, 20]);
+}
+
+#[test]
+fn the_role_vocabulary_is_the_fixed_list_and_every_shipped_latin_role_is_in_it() {
+    assert_eq!(crate::events::ROLES.len(), 27);
+    assert!(
+        crate::events::ROLES
+            .windows(2)
+            .all(|pair| pair[0] < pair[1])
+    );
+    for role in shipped_rules()
+        .lifecycle
+        .generator
+        .languages
+        .latin_by_office
+        .keys()
+    {
+        assert!(crate::events::ROLES.contains(&role.as_str()), "{role}");
+    }
+}
+
+#[test]
+fn a_recipe_order_that_is_not_exactly_the_eleven_steps_is_refused() {
+    refused_generator(
+        "\"focus\",          #",
+        "#",
+        "recipe.order",
+        "exactly the shipped steps",
+    );
+    refused_generator(
+        "\"lineage\",        # haplogroups and genetic baseline from the parents (genetics, slice 2)\n  \"body\",",
+        "\"body\",\n  \"lineage\",",
+        "recipe.order",
+        "exactly the shipped steps",
+    );
+    refused_generator(
+        "  \"past\",           # the generated life to today (below)\n",
+        "  \"past\",\n  \"retire\",\n",
+        "recipe.order",
+        "exactly the shipped steps",
+    );
+}
+
+#[test]
+fn a_probability_or_band_outside_zero_to_one_is_refused() {
+    refused_generator(
+        "new_friend = 0.08",
+        "new_friend = 1.5",
+        "past.new_friend",
+        "0..1",
+    );
+    refused_generator(
+        "battle_defeat = 0.35",
+        "battle_defeat = -0.1",
+        "past.battle_defeat",
+        "0..1",
+    );
+    refused_generator(
+        "veteran_noble_men_45 = { rate = 0.69, band = 0.08 }",
+        "veteran_noble_men_45 = { rate = 0.69, band = 1.08 }",
+        "reference.veteran_noble_men_45.band",
+        "0..1",
+    );
+    refused_generator(
+        "happenings = { death_in_family = 0.04,",
+        "happenings = { death_in_family = 4.0,",
+        "past.happenings.death_in_family",
+        "0..1",
+    );
+}
+
+#[test]
+fn a_reference_key_the_tests_cannot_build_is_refused() {
+    refused_generator(
+        "madness_any_men_45 = { rate = 0.004, band = 0.004 }",
+        "madness_any_men_45 = { rate = 0.004, band = 0.004 }\nsaint_any_men_45 = { rate = 0.1, band = 0.1 }",
+        "reference.saint_any_men_45",
+        "cannot build",
+    );
+}
+
+#[test]
+fn a_language_range_outside_zero_to_one_or_with_low_above_high_is_refused() {
+    refused_generator(
+        "latinist = [0.80, 0.95]",
+        "latinist = [0.80, 1.20]",
+        "languages.latinist",
+        "0..1",
+    );
+    refused_generator(
+        "latinist = [0.80, 0.95]",
+        "latinist = [0.95, 0.80]",
+        "languages.latinist",
+        "low strength exceeds",
+    );
+    refused_generator(
+        "exile = [0.30, 0.70]",
+        "exile = [-0.30, 0.70]",
+        "languages.exile",
+        "0..1",
+    );
+}
+
+#[test]
+fn a_role_of_latin_by_office_outside_the_fixed_role_vocabulary_is_refused() {
+    refused_generator(
+        "monk = [0.20, 0.60],",
+        "monk = [0.20, 0.60], cardinal = [0.9, 0.95],",
+        "languages.latin_by_office.cardinal",
+        "role vocabulary",
+    );
+    // `latinist` is a craft attribute, not a role.
+    refused_generator(
+        "monk = [0.20, 0.60],",
+        "monk = [0.20, 0.60], latinist = [0.9, 0.95],",
+        "languages.latin_by_office.latinist",
+        "role vocabulary",
+    );
+}
+
+#[test]
+fn a_slot_kind_other_than_the_three_or_a_negative_reach_or_weight_is_refused() {
+    refused_generator(
+        "reach_km = 60 ",
+        "reach_km = 60\nsquire = { age = [10, 20], from = \"x\" }\n#",
+        "slots.squire",
+        "slot kind",
+    );
+    refused_generator(
+        "reach_km = 60 ",
+        "reach_km = -1 ",
+        "slots.reach_km",
+        "negative",
+    );
+    refused_generator(
+        "weights = { kin = 3.0,",
+        "weights = { kin = -3.0,",
+        "slots.weights.kin",
+        "negative",
+    );
+    refused_generator(
+        "subject_house = 2.0 }",
+        "subject_house = -2.0 }",
+        "slots.weights.subject_house",
+        "negative",
+    );
+}
+
+#[test]
+fn a_past_that_kills_or_names_a_skill_or_pop_type_that_does_not_exist_is_refused() {
+    refused_generator(
+        "no_deaths = true",
+        "no_deaths = false",
+        "past.no_deaths",
+        "never kills",
+    );
+    refused_generator(
+        "battles = { noble_m",
+        "battles = { knight_m = 0.1, noble_m",
+        "past.battles.knight_m",
+        "pop type",
+    );
+    refused_generator(
+        "battle_won_in_command = { leadership_min = 14, chance = 0.3 }",
+        "battle_won_in_command = { leadership_min = 14, chance = 0.3, extra = 1 }",
+        "past.battle_won_in_command.extra",
+        "unknown key",
     );
 }

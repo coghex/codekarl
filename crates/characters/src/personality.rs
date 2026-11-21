@@ -328,6 +328,25 @@ pub(crate) fn stress_after(
 }
 
 /// The personality of `c` after its humour drift and then its standing fade (the first two stages of a birthday).
+/// The stress of `c` after one month's recovery (§4): `stress - stress * monthly_recovery * f_blood * f_black * f_melancholy`, rounded down,
+/// held to 0..=100. The character is not changed.
+///
+/// # Errors
+/// Refuses arithmetic that does not fit.
+pub(crate) fn recovered_stress(rules: &Personality, c: &Character) -> Result<i64, Error> {
+    let s = &rules.stress;
+    // Every factor is non-negative, so the product may saturate: the result is held to 0..=100 below.
+    let numerator = saturating_product(&[
+        wide(c.personality.stress),
+        wide(s.monthly_recovery),
+        humour_factor(s.recovery_per_blood, humour(c, BLOOD))?,
+        humour_factor(s.recovery_per_black, humour(c, BLACK_BILE))?,
+        grade_factor(s.recovery_per_melancholy_grade, c.personality.melancholy)?,
+    ]);
+    let deduction = numerator.div_euclid(1000 * MILLION * MILLION * 1000);
+    narrow((wide(c.personality.stress) - deduction).clamp(0, wide(STRESS_MAX)))
+}
+
 pub(crate) fn drift_and_fade(
     rules: &Personality,
     c: &Character,
@@ -627,22 +646,9 @@ impl CharacterStore {
     /// # Errors
     /// Refuses arithmetic that does not fit.
     pub fn monthly_recovery(&mut self, rules: &Personality) -> Result<(), Error> {
-        let s = &rules.stress;
         let mut next = Vec::new();
         for (id, c) in &self.live {
-            // Every factor is non-negative, so the product may saturate: the result is held to 0..=100 below.
-            let numerator = saturating_product(&[
-                wide(c.personality.stress),
-                wide(s.monthly_recovery),
-                humour_factor(s.recovery_per_blood, humour(c, BLOOD))?,
-                humour_factor(s.recovery_per_black, humour(c, BLACK_BILE))?,
-                grade_factor(s.recovery_per_melancholy_grade, c.personality.melancholy)?,
-            ]);
-            let deduction = numerator.div_euclid(1000 * MILLION * MILLION * 1000);
-            next.push((
-                *id,
-                narrow((wide(c.personality.stress) - deduction).clamp(0, wide(STRESS_MAX)))?,
-            ));
+            next.push((*id, recovered_stress(rules, c)?));
         }
         for (id, stress) in next {
             if let Some(c) = self.live.get_mut(&id) {

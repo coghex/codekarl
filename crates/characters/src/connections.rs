@@ -189,25 +189,26 @@ fn kind_index(name: &str) -> Option<usize> {
         .position(|known| *known == name)
 }
 
-/// The orientation, the dates and the empty strands of a character created by `ctx`, whose parents are `parents`.
-pub(crate) fn make_ties(
+/// How the clergy weights of the data apply to a drawn orientation (CK-369 §2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Clergy {
+    /// A character of any other pop: the weights of the data alone.
+    No,
+    /// A character generated in a monk pop: gay, bisexual and asexual weighted by the data's clergy factors.
+    Monk,
+    /// A cleric who has children: only straight and bisexual are drawn (the clergy factors apply to bisexual).
+    MonkWithChildren,
+}
+
+/// The orientation of a character created by `ctx` with the id `id`, drawn once on its stream (purpose `orientation`): the data's weights,
+/// the boost for a child of a gay or bisexual parent and, for a generated cleric, the clergy factors (CK-369).
+pub(crate) fn draw_orientation(
     ctx: &Context<'_>,
     id: u64,
-    sex: Sex,
     parents: [Option<&Character>; 2],
-) -> Result<Ties, Error> {
-    let _ = sex;
-    let rules = &ctx.lifecycle.connections;
-    let mut ties = Ties {
-        location_since: ctx.tick,
-        in_pop_since: ctx.tick,
-        last_full: ctx.tick.date().map_or(0, |date| date.year),
-        ..Ties::default()
-    };
-    if !rules.loaded {
-        return Ok(ties);
-    }
-    let orientation = &rules.orientation;
+    clergy: Clergy,
+) -> Result<Orientation, Error> {
+    let orientation = &ctx.lifecycle.connections.orientation;
     let boosted = parents.iter().flatten().any(|parent| {
         matches!(
             parent.ties.orientation,
@@ -218,24 +219,57 @@ pub(crate) fn make_ties(
         .weights
         .iter()
         .zip(ORIENTATIONS)
-        .map(|(weight, name)| {
+        .zip(Orientation::ALL)
+        .zip(orientation.clergy_ppb)
+        .map(|(((weight, name), which), clergy_ppb)| {
             let factor = if boosted && (name == "gay" || name == "bisexual") {
                 orientation.parent_boost_ppb
             } else {
                 u64::from(PPB)
             };
-            u64::from(*weight).saturating_mul(factor)
+            let base = u64::from(*weight).saturating_mul(factor);
+            if clergy == Clergy::No {
+                return base;
+            }
+            if clergy == Clergy::MonkWithChildren
+                && matches!(which, Orientation::Gay | Orientation::Asexual)
+            {
+                return 0;
+            }
+            // A clergy factor scales the weight; a sum of four such weights still fits 64 bits.
+            let scaled = u128::from(base) * u128::from(clergy_ppb) / u128::from(PPB);
+            u64::try_from(scaled.min(u128::from(u64::MAX / 8))).unwrap_or(u64::MAX / 8)
         })
         .collect();
     let total: u64 = weights.iter().sum();
     let mut pick = genetics::below(&mut genetics::site(ctx, id, "", "orientation"), total)?;
     for (weight, which) in weights.iter().zip(Orientation::ALL) {
         if pick < *weight {
-            ties.orientation = which;
-            break;
+            return Ok(which);
         }
         pick -= *weight;
     }
+    Ok(Orientation::default())
+}
+
+/// The orientation, the dates and the empty strands of a character created by `ctx`, whose parents are `parents`.
+pub(crate) fn make_ties(
+    ctx: &Context<'_>,
+    id: u64,
+    sex: Sex,
+    parents: [Option<&Character>; 2],
+) -> Result<Ties, Error> {
+    let _ = sex;
+    let mut ties = Ties {
+        location_since: ctx.tick,
+        in_pop_since: ctx.tick,
+        last_full: ctx.tick.date().map_or(0, |date| date.year),
+        ..Ties::default()
+    };
+    if !ctx.lifecycle.connections.loaded {
+        return Ok(ties);
+    }
+    ties.orientation = draw_orientation(ctx, id, parents, Clergy::No)?;
     Ok(ties)
 }
 

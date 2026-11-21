@@ -79,7 +79,12 @@ fn sex_key(c: &Character) -> char {
 
 /// A skill's level after a year's growth by use and decay (§6), in thousandths, evaluated exactly and rounded once:
 /// `gain = gain_rate x use x aptitude x diligence / (1 + (level / 12)^2)`, `loss = level x (decay_used x use + decay_unused x (1 - use))`.
-fn grown(rules: &SkillRules, c: &Character, skill: &str, pop: &PopFacts) -> Result<i64, Error> {
+pub(crate) fn grown(
+    rules: &SkillRules,
+    c: &Character,
+    skill: &str,
+    pop: &PopFacts,
+) -> Result<i64, Error> {
     grown_fast(rules, c, skill, pop).or_else(|_| grown_exact(rules, c, skill, pop))
 }
 
@@ -403,7 +408,15 @@ impl CharacterStore {
             c.life.skills.extend(levels);
         }
         // Stage 6a (CK-367 §1): upbringing, from the snapshot's household.
-        self.upbringing(world, id, today, age, snapshot)?;
+        let household = snapshot.household(self.live.get(&id).ok_or(Error::MissingCharacter)?);
+        self.upbringing(
+            world,
+            id,
+            today,
+            age,
+            &household,
+            world.lifecycle.upbringing.to_age,
+        )?;
         // Stage 6b (CK-367 §2): the height sample and offset.
         self.height_sample(world, id, age)?;
         // Stage 7: precedence (so a vice that upbringing changed and that invalidates a calling removes it the same day).
@@ -433,7 +446,7 @@ impl CharacterStore {
     }
 
     /// One craft's yearly rise: `rise x skill / 15` of one grade up, at most SSS, with a line.
-    fn rise<P: Populations, A: ArchiveSink, L: LogSink>(
+    pub(crate) fn rise<P: Populations, A: ArchiveSink, L: LogSink>(
         &mut self,
         world: &mut World<'_, P, A, L>,
         id: u64,

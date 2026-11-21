@@ -60,6 +60,22 @@ pub struct LifeRecord {
     /// The shown weight, in thousandths of a kilogram: it starts at the base weight and moves a twelfth of the way to its target each
     /// month.
     pub weight: i64,
+    /// The role a generated character was made for (CK-369 §2), a key of [`ck_economy::events::ROLES`]; empty for none. It is separate from
+    /// the office markers of slice 1.
+    pub role: String,
+    /// The key of the slot the character fills (CK-369 §4); empty for none. A character with a slot is never chosen for another.
+    pub slot_key: String,
+    /// The kind of that slot (`fosterling`, `hostage` or `student`); empty for none.
+    pub slot_kind: String,
+    /// The language key of the character's mother tongue (the language of its culture when it was made, CK-369 §5); empty when none was made.
+    pub tongue: String,
+    /// The dialect key of the mother tongue; empty for a language with none.
+    pub dialect: String,
+    /// The second languages, by language key, each a strength in thousandths (CK-369 §5): fixed when the character is made and updated once
+    /// by a fosterling's or a hostage's move.
+    pub languages: BTreeMap<String, u32>,
+    /// Whether the household the character belongs to as a spouse has been completed (CK-369 §7); set on both spouses.
+    pub household_complete: bool,
 }
 
 impl Canonical for LifeRecord {
@@ -82,7 +98,14 @@ impl Canonical for LifeRecord {
         self.food_sum.encode(out)?;
         self.food_age.encode(out)?;
         self.height_offset.encode(out)?;
-        self.weight.encode(out)
+        self.weight.encode(out)?;
+        self.role.encode(out)?;
+        self.slot_key.encode(out)?;
+        self.slot_kind.encode(out)?;
+        self.tongue.encode(out)?;
+        self.dialect.encode(out)?;
+        self.languages.encode(out)?;
+        self.household_complete.encode(out)
     }
     fn decode(r: &mut Reader<'_>) -> Result<Self, CanonicalError> {
         Ok(Self {
@@ -105,6 +128,13 @@ impl Canonical for LifeRecord {
             food_age: u32::decode(r)?,
             height_offset: i64::decode(r)?,
             weight: i64::decode(r)?,
+            role: String::decode(r)?,
+            slot_key: String::decode(r)?,
+            slot_kind: String::decode(r)?,
+            tongue: String::decode(r)?,
+            dialect: String::decode(r)?,
+            languages: BTreeMap::decode(r)?,
+            household_complete: bool::decode(r)?,
         })
     }
 }

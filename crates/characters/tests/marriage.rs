@@ -85,11 +85,13 @@ fn irish() -> PopGenetics {
     rules().genetics.seed_pop("ulaid").expect("Irish start set")
 }
 /// The shipped life-cycle data with every wish certain (a single point at 1), so that a birthday decides nothing by chance until the
-/// candidate's side answers.
+/// candidate's side answers, and **no generated candidates**: these cases are about the pool of 5c as the characters make it (the top-up
+/// of a short pool, CK-369 §6, is tested with the generator).
 fn eager() -> LifeCycle {
     let mut data = rules().lifecycle.clone();
     data.marriage.wish.men = vec![(12, u64::from(PPB))];
     data.marriage.wish.women = vec![(12, u64::from(PPB))];
+    data.marriage.pool.min_candidates = 0;
     data
 }
 

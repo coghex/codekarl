@@ -14,6 +14,7 @@ pub mod cycle;
 pub mod epithets;
 pub mod events;
 mod fixtures;
+pub mod generator;
 pub mod genetics;
 pub mod life;
 pub mod marriage;
@@ -551,6 +552,12 @@ pub enum Error {
     /// Life-cycle arithmetic that does not fit, a pregnancy that cannot be delivered, or a pop whose religion or necessities the
     /// passes cannot resolve (CK-364).
     Lifecycle,
+    /// The generator's data did not load, or a request that cannot be generated (a birth after today, a window that is empty) (CK-369).
+    Generator,
+    /// A role outside the role vocabulary (CK-369 §2).
+    Role,
+    /// A slot kind that is not one of the data's, or a slot that cannot be filled as asked (CK-369 §4).
+    Slot,
 }
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1135,6 +1142,111 @@ pub trait ArchiveSink {
     /// # Errors
     /// Returns an I/O error.
     fn children_of(&self, parent: u64) -> std::io::Result<Vec<u64>>;
+    /// Whether any archived record held `house` or was born into it (CK-369 §6: a new minor house takes a key no family, living or dead,
+    /// has). A sink that cannot read holds none. A sink that wraps an archive must forward the query.
+    ///
+    /// # Errors
+    /// Returns an I/O error if the archive cannot be read.
+    fn house_in_use(&self, house: &str) -> std::io::Result<bool> {
+        let _ = house;
+        Ok(false)
+    }
+    /// Append several records **as one step** (CK-369 §8): all of them are readable afterwards, or none of them is and the archive is as it
+    /// was, whatever fails. The default accepts none, one record being an ordinary [`append`](Self::append) and more refused with
+    /// `Unsupported` before anything is written; a sink that wraps an archive must forward the batch.
+    ///
+    /// # Errors
+    /// Returns an I/O error if the records could not be published together.
+    fn append_all(&mut self, records: &[Character]) -> std::io::Result<()> {
+        match records {
+            [] => Ok(()),
+            [one] => self.append(one),
+            _ => Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "this archive cannot publish several records as one step",
+            )),
+        }
+    }
+}
+/// Read the archive's records from `start` (the start of a record or a frame) to `size`, calling `visit` with each record and its offset, and
+/// return where the last whole record or frame ends. What follows is either nothing or an unfinished write (CK-369 §8): a frame whose header
+/// is whole and whose body is short, or the start of a frame marker (one to three bytes that begin it). A record with a short body, a
+/// truncated length that is not the start of the marker, a corrupt frame and anything that does not decode are refused.
+fn scan_archive(
+    file: &mut std::fs::File,
+    start: u64,
+    size: u64,
+    mut visit: impl FnMut(&Character, u64) -> std::io::Result<()>,
+) -> std::io::Result<u64> {
+    use std::io::{Read, Seek, SeekFrom};
+    let invalid =
+        |reason: &'static str| std::io::Error::new(std::io::ErrorKind::InvalidData, reason);
+    let mut position = start;
+    while position < size {
+        let left = size - position;
+        file.seek(SeekFrom::Start(position))?;
+        if left < 4 {
+            // A length that was cut short is an error, unless it is as far as a frame marker got.
+            let mut head = [0; 4];
+            let seen = usize::try_from(left).map_err(std::io::Error::other)?;
+            file.read_exact(&mut head[..seen])?;
+            if head[..seen] == FRAME.to_le_bytes()[..seen] {
+                break;
+            }
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "truncated record",
+            ));
+        }
+        let mut word = [0; 4];
+        file.read_exact(&mut word)?;
+        let first = u32::from_le_bytes(word);
+        if first != FRAME {
+            let bytes = read_record(file, first)?;
+            let record = Character::from_bytes(&bytes).map_err(std::io::Error::other)?;
+            visit(&record, position)?;
+            position += 4 + u64::from(first);
+            continue;
+        }
+        if left < FRAME_HEADER {
+            break;
+        }
+        let mut header = [0; 12];
+        file.read_exact(&mut header)?;
+        let field = |at: usize| {
+            u32::from_le_bytes([header[at], header[at + 1], header[at + 2], header[at + 3]])
+        };
+        let (count, total, check) = (field(0), field(4), field(8));
+        if check != frame_check(count, total) {
+            return Err(invalid("corrupt archive frame header"));
+        }
+        // A whole header with a short body is a frame that was never published.
+        if left - FRAME_HEADER < u64::from(total) {
+            break;
+        }
+        let end = position + FRAME_HEADER + u64::from(total);
+        let mut at = position + FRAME_HEADER;
+        for _ in 0..count {
+            if end - at < 4 {
+                return Err(invalid("corrupt archive frame"));
+            }
+            file.seek(SeekFrom::Start(at))?;
+            file.read_exact(&mut word)?;
+            let length = u32::from_le_bytes(word);
+            if u64::from(length) > end - at - 4 {
+                return Err(invalid("corrupt archive frame"));
+            }
+            let bytes = read_record(file, length)?;
+            let record = Character::from_bytes(&bytes).map_err(std::io::Error::other)?;
+            visit(&record, at)?;
+            at += 4 + u64::from(length);
+        }
+        if at != end {
+            return Err(invalid("corrupt archive frame"));
+        }
+        position = end;
+    }
+    Ok(position)
 }
 // Grow only with bytes actually read, never directly from an on-disk length.
 fn read_record(input: &mut impl std::io::Read, length: u32) -> std::io::Result<Vec<u8>> {
@@ -1163,6 +1275,51 @@ pub struct Archive {
     index: BTreeMap<u64, u64>,
     /// The archived identifiers by recorded parent (a known father or mother), rebuilt when the archive opens.
     by_parent: BTreeMap<u64, BTreeSet<u64>>,
+    /// The archived identifiers by house key (the house a record held or was born into), rebuilt when the archive opens (CK-369: a new
+    /// minor house never takes a key a dead family kept).
+    by_house: BTreeMap<String, BTreeSet<u64>>,
+    /// The length of the published bytes: whatever follows is a write that was refused or torn, which no one reads and the next publication
+    /// overwrites.
+    published: u64,
+}
+/// The marker that opens a frame (several records published as one step); no record is this long. A frame is the marker, the count of
+/// its records, the length of its body and a checksum of those two, then the records, each a length and its bytes as ever. A frame whose
+/// header is whole and whose body is short is a torn write: it was never published.
+const FRAME: u32 = 0xFFFF_FFF0;
+/// The bytes of a frame's header.
+const FRAME_HEADER: u64 = 16;
+/// The checksum of a frame's count and body length.
+fn frame_check(count: u32, total: u32) -> u32 {
+    let mut bytes = Vec::with_capacity(8);
+    bytes.extend_from_slice(&count.to_le_bytes());
+    bytes.extend_from_slice(&total.to_le_bytes());
+    u32::try_from(ck_sim::fnv1a(&bytes) & u64::from(u32::MAX)).unwrap_or(0)
+}
+/// Record `record`, found at `offset`, in the three indexes, refusing an invalid or a repeated identifier.
+fn index_record(
+    index: &mut BTreeMap<u64, u64>,
+    by_parent: &mut BTreeMap<u64, BTreeSet<u64>>,
+    by_house: &mut BTreeMap<String, BTreeSet<u64>>,
+    record: &Character,
+    offset: u64,
+) -> std::io::Result<()> {
+    if record.id == UNKNOWN || record.death.is_none() || index.insert(record.id, offset).is_some() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "invalid or duplicate archive id",
+        ));
+    }
+    index_parents(by_parent, record);
+    index_houses(by_house, record);
+    Ok(())
+}
+/// Record `record` under each house key it names.
+fn index_houses(by_house: &mut BTreeMap<String, BTreeSet<u64>>, record: &Character) {
+    for house in [&record.life.house, &record.life.house_of_birth] {
+        if !house.is_empty() {
+            by_house.entry(house.clone()).or_default().insert(record.id);
+        }
+    }
 }
 /// Record `record` under each of its known parents.
 fn index_parents(by_parent: &mut BTreeMap<u64, BTreeSet<u64>>, record: &Character) {
@@ -1177,7 +1334,6 @@ impl Archive {
     /// # Errors
     /// Refuses malformed, truncated or duplicate records and I/O errors.
     pub fn open(path: impl AsRef<std::path::Path>) -> std::io::Result<Self> {
-        use std::io::{Read, Seek};
         let path = path.as_ref().to_owned();
         let mut file = std::fs::OpenOptions::new()
             .read(true)
@@ -1187,29 +1343,53 @@ impl Archive {
             .open(&path)?;
         let mut index = BTreeMap::new();
         let mut by_parent: BTreeMap<u64, BTreeSet<u64>> = BTreeMap::new();
+        let mut by_house: BTreeMap<String, BTreeSet<u64>> = BTreeMap::new();
         let size = file.metadata()?.len();
-        while file.stream_position()? < size {
-            let offset = file.stream_position()?;
-            let mut length = [0; 4];
-            file.read_exact(&mut length)?;
-            let bytes = read_record(&mut file, u32::from_le_bytes(length))?;
-            let record = Character::from_bytes(&bytes).map_err(std::io::Error::other)?;
-            if record.id == UNKNOWN
-                || record.death.is_none()
-                || index.insert(record.id, offset).is_some()
-            {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "invalid or duplicate archive id",
-                ));
-            }
-            index_parents(&mut by_parent, &record);
-        }
+        let published = scan_archive(&mut file, 0, size, |record, offset| {
+            index_record(&mut index, &mut by_parent, &mut by_house, record, offset)
+        })?;
         Ok(Self {
             path,
             index,
             by_parent,
+            by_house,
+            published,
         })
+    }
+    /// Write `bytes` at the end of the published bytes and make them published. A refused or torn write is never published, whatever else
+    /// fails: the file is cut back when it can be, and when it cannot, what stays after the published bytes is not read (see [`FRAME`]) and
+    /// the next publication cuts it back before it writes. What follows the published bytes is cut back only when it is known to be an
+    /// incomplete write: records another handle published since this one read the file are not this handle's to remove, and a writer that
+    /// finds them is refused.
+    fn publish(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        use std::io::{Seek, SeekFrom, Write};
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&self.path)?;
+        let size = file.metadata()?.len();
+        let stale = || {
+            std::io::Error::other(
+                "the archive was changed since this handle read it: open it again",
+            )
+        };
+        if size < self.published {
+            return Err(stale());
+        }
+        if size > self.published {
+            // After the published bytes: either a write that was refused or torn, or what another handle has published since.
+            if scan_archive(&mut file, self.published, size, |_, _| Ok(()))? != self.published {
+                return Err(stale());
+            }
+            file.set_len(self.published)?;
+        }
+        file.seek(SeekFrom::Start(self.published))?;
+        if let Err(error) = file.write_all(bytes).and_then(|()| file.flush()) {
+            let _ = file.set_len(self.published);
+            return Err(error);
+        }
+        self.published += bytes.len() as u64;
+        Ok(())
     }
     /// Retrieve one archived record, reading it from disk on demand.
     /// # Errors
@@ -1236,7 +1416,6 @@ impl Archive {
 }
 impl ArchiveSink for Archive {
     fn append(&mut self, record: &Character) -> std::io::Result<()> {
-        use std::io::{Seek, SeekFrom, Write};
         if record.id == UNKNOWN || record.death.is_none() || self.index.contains_key(&record.id) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
@@ -1245,21 +1424,56 @@ impl ArchiveSink for Archive {
         }
         let bytes = record.to_bytes().map_err(std::io::Error::other)?;
         let len = u32::try_from(bytes.len()).map_err(std::io::Error::other)?;
-        let mut file = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&self.path)?;
-        let offset = file.seek(SeekFrom::End(0))?;
-        if let Err(error) = (|| {
-            file.write_all(&len.to_le_bytes())?;
-            file.write_all(&bytes)?;
-            file.flush()
-        })() {
-            file.set_len(offset)?;
-            return Err(error);
-        }
-        self.index.insert(record.id, offset);
+        let mut out = Vec::with_capacity(bytes.len() + 4);
+        out.extend_from_slice(&len.to_le_bytes());
+        out.extend_from_slice(&bytes);
+        let offset = self.published;
+        self.publish(&out)?;
         index_parents(&mut self.by_parent, record);
+        index_houses(&mut self.by_house, record);
+        self.index.insert(record.id, offset);
+        Ok(())
+    }
+    fn append_all(&mut self, records: &[Character]) -> std::io::Result<()> {
+        // Nothing to publish is no write: a read-only archive is as good as any.
+        if records.is_empty() {
+            return Ok(());
+        }
+        let invalid =
+            |reason: &'static str| std::io::Error::new(std::io::ErrorKind::InvalidInput, reason);
+        // Everything is checked and encoded before the file is touched, then published as one frame, a step that is whole or not there.
+        let mut seen = BTreeSet::new();
+        let mut body: Vec<u8> = Vec::new();
+        let mut at: Vec<u64> = Vec::with_capacity(records.len());
+        for record in records {
+            if record.id == UNKNOWN
+                || record.death.is_none()
+                || self.index.contains_key(&record.id)
+                || !seen.insert(record.id)
+            {
+                return Err(invalid("invalid or duplicate archive id"));
+            }
+            let bytes = record.to_bytes().map_err(std::io::Error::other)?;
+            let len = u32::try_from(bytes.len()).map_err(std::io::Error::other)?;
+            at.push(FRAME_HEADER + body.len() as u64);
+            body.extend_from_slice(&len.to_le_bytes());
+            body.extend_from_slice(&bytes);
+        }
+        let count = u32::try_from(records.len()).map_err(std::io::Error::other)?;
+        let total = u32::try_from(body.len()).map_err(std::io::Error::other)?;
+        let mut out = Vec::with_capacity(body.len() + 16);
+        out.extend_from_slice(&FRAME.to_le_bytes());
+        out.extend_from_slice(&count.to_le_bytes());
+        out.extend_from_slice(&total.to_le_bytes());
+        out.extend_from_slice(&frame_check(count, total).to_le_bytes());
+        out.extend_from_slice(&body);
+        let offset = self.published;
+        self.publish(&out)?;
+        for (record, start) in records.iter().zip(at) {
+            self.index.insert(record.id, offset + start);
+            index_parents(&mut self.by_parent, record);
+            index_houses(&mut self.by_house, record);
+        }
         Ok(())
     }
     fn get(&self, id: u64) -> std::io::Result<Option<Character>> {
@@ -1271,6 +1485,9 @@ impl ArchiveSink for Archive {
             .get(&parent)
             .map(|ids| ids.iter().copied().collect())
             .unwrap_or_default())
+    }
+    fn house_in_use(&self, house: &str) -> std::io::Result<bool> {
+        Ok(self.by_house.contains_key(house))
     }
 }
 impl CharacterStore {

@@ -732,6 +732,22 @@ impl ck_characters::ArchiveSink for Archived {
             Self::Down(reason) => Err(io::Error::other(reason.clone())),
         }
     }
+    fn house_in_use(&self, house: &str) -> io::Result<bool> {
+        match self {
+            Self::Open(archive) => ck_characters::ArchiveSink::house_in_use(archive, house),
+            Self::Down(reason) => Err(io::Error::other(reason.clone())),
+        }
+    }
+    fn append_all(&mut self, records: &[ck_characters::Character]) -> io::Result<()> {
+        // Nothing to publish needs no archive.
+        if records.is_empty() {
+            return Ok(());
+        }
+        match self {
+            Self::Open(archive) => ck_characters::ArchiveSink::append_all(archive, records),
+            Self::Down(reason) => Err(io::Error::other(reason.clone())),
+        }
+    }
 }
 /// The life logs of the character storage, or the reason they cannot be opened (every line then fails).
 enum Logged {
