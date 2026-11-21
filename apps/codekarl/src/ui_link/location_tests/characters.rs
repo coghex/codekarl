@@ -559,13 +559,13 @@ pub(super) fn screen_tab_point(rig: &Rig, key: &str) -> (f64, f64) {
 }
 
 #[test]
-fn the_four_tabs_switch_and_the_three_not_built_yet_say_so() {
+fn the_four_tabs_switch_and_a_tab_with_no_data_or_nothing_to_show_says_so() {
     let mut rig = characters_rig(&[
         "ctime(1, 1, 0) announce_bars()",
         "announce_cards() announce_ledger_origin()",
         "announce_screen() announce_screen_tabs() screen_stack:set_pos(40) announce_screen() forget_drawn()",
-        "announce_screen() note('later ' .. tostring(text_drawn('in a later slice')) .. ' ' .. tostring(text_drawn('nothing yet'))) forget_drawn()",
-        "announce_screen() note('later ' .. tostring(text_drawn('in a later slice')) .. ' ' .. tostring(text_drawn('nothing yet')))",
+        "announce_screen() note('later ' .. tostring(text_drawn('not available')) .. ' ' .. tostring(text_drawn('nothing yet'))) forget_drawn()",
+        "announce_screen() note('later ' .. tostring(text_drawn('not available')) .. ' ' .. tostring(text_drawn('nothing yet')))",
         "announce_screen()",
     ]);
     open_characters(&mut rig);
@@ -590,7 +590,8 @@ fn the_four_tabs_switch_and_the_three_not_built_yet_say_so() {
         "{:?}",
         mine(&rig)
     );
-    // Pressing "pop" shows its line, with the scroll back at the top; each tab is selectable.
+    // Pressing "pop" over a stub that serves no pop shows its one line (the pop tab's own tests serve one), with the scroll back at the top; each tab
+    // is selectable.
     let (x, y) = screen_tab_point(&rig, "pop");
     click(&mut rig, x, y);
     rig.opened();

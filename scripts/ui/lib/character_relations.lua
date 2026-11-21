@@ -187,6 +187,8 @@ local function item_of(kit, height, paint)
   item.tooltip = function(x, y)
     local spot = hit_at(x, y)
     if spot == nil then return nil end
+    -- A spot may make its content when it is asked for (the pop tab's, which names the revision the tab shows).
+    if spot.tip ~= nil then return spot.tip() end
     return spot.content
   end
   item.on_click = function(x, y)
@@ -196,6 +198,12 @@ local function item_of(kit, height, paint)
   end
   return item
 end
+
+-- Shared with the pop tab, whose portraits and button are laid out the same way.
+relations.item_of = item_of
+relations.pitch_of = pitch_of
+relations.CELL = CELL
+relations.UNDER = UNDER
 
 -- Lays `people` out in rows of `columns` starting at column `first` of the first row, returning the cell of each: `{person, column, row}`.
 local function cells_of(people, columns, first)

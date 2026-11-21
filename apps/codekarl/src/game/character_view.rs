@@ -14,8 +14,8 @@
 use std::collections::BTreeMap;
 
 use ck_characters::{
-    Character, CharacterStore, Office, Populations, Sex, cycle, events::age_on, figures::Houses,
-    personality::threshold,
+    Character, CharacterStore, LogView, Office, Populations, Sex, cycle, events::age_on,
+    figures::Houses, personality::threshold,
 };
 use ck_economy::{
     EconomyState, Rules,
@@ -53,6 +53,8 @@ pub(crate) struct CharacterCard {
     pub(crate) role: String,
     /// The pop's place id.
     pub(crate) place: String,
+    /// The pop's slot in its place: with the place, the exact pop (a place can hold two pops of one kind).
+    pub(crate) slot: u32,
     /// The pop's kind.
     pub(crate) kind: String,
     /// The filter keys of §2.
@@ -101,6 +103,12 @@ pub(crate) struct CharacterView {
     /// The cards in id order.
     pub(crate) cards: Vec<CharacterCard>,
     tabs: BTreeMap<u64, FirstTab>,
+    /// The live characters of each pop, by its place and slot, most important first (the pop tab's characters row).
+    pops: BTreeMap<(String, u32), Vec<u64>>,
+    /// The calendar day of the view: the life log shows no line dated after it.
+    day: (u16, u8, u8),
+    /// The world's life log as of this publication (CK-378 §2); `None` when the log could not be read, and the log refuses.
+    pub(crate) log: Option<LogView>,
     /// What the relations tab reads (CK-377): the live characters, the archive as published and the indexes, as of this revision.
     pub(crate) relations: RelationsFacts,
 }
@@ -120,6 +128,36 @@ impl CharacterView {
     /// An id that is not live at this revision.
     pub(crate) fn relations_of(&self, id: u64) -> Result<Relations, String> {
         self.relations.record(id)
+    }
+
+    /// The live characters of the pop at `place` and `slot` in this revision, most important first.
+    pub(crate) fn pop_members(&self, place: &str, slot: u32) -> &[u64] {
+        self.pops
+            .get(&(place.to_owned(), slot))
+            .map_or(&[], Vec::as_slice)
+    }
+
+    /// The life log of the live character `id` as of this revision: its lines in date order (the order written for equal dates), the records
+    /// written before this publication only, and none dated after the view's day.
+    ///
+    /// # Errors
+    /// An id that is not live at this revision, a log this revision does not carry, or a read of it that failed.
+    pub(crate) fn log_of(&self, id: u64) -> Result<Vec<(Date, String)>, String> {
+        if self.card(id).is_none() {
+            return Err("no character".to_owned());
+        }
+        let log = self
+            .log
+            .as_ref()
+            .ok_or_else(|| "the life log is not available".to_owned())?;
+        let lines = log
+            .lines(id)
+            .map_err(|error| format!("the life log cannot be read: {error}"))?;
+        Ok(lines
+            .into_iter()
+            .filter_map(|line| Some((line.date.date().ok()?, line.text)))
+            .filter(|(date, _)| (date.year, date.month, date.day) <= self.day)
+            .collect())
     }
 
     /// The first tab's values of `id`.
@@ -170,6 +208,7 @@ pub(crate) fn build(
             house: house_line(store, inputs.houses, &c.life.house),
             role: role_line(store, inputs.places, inputs.slots, c, &kind),
             place: c.pop.place.clone(),
+            slot: c.pop.slot,
             clergy: kind == "monk" || c.office == Some(Office::HighCleric),
             ruler: c.office == Some(Office::Ruler),
             child: age < CHILD_UNDER,
@@ -187,9 +226,28 @@ pub(crate) fn build(
             cards[at].importance = u32::try_from(rank).unwrap_or(u32::MAX);
         }
     }
+    // The characters of each pop, most important first (the cards are in id order, so the rank decides).
+    let mut pops: BTreeMap<(String, u32), Vec<u64>> = BTreeMap::new();
+    for card in &cards {
+        if let Some(c) = store.get(card.id) {
+            pops.entry((c.pop.place.clone(), c.pop.slot))
+                .or_default()
+                .push(card.id);
+        }
+    }
+    for members in pops.values_mut() {
+        members.sort_by_key(|id| {
+            cards
+                .binary_search_by_key(id, |card| card.id)
+                .map_or(u32::MAX, |at| cards[at].importance)
+        });
+    }
     CharacterView {
         cards,
         tabs,
+        pops,
+        day: (date.year, date.month, date.day),
+        log: None,
         relations: RelationsFacts::default(),
     }
 }

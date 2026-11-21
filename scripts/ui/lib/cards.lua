@@ -292,6 +292,16 @@ function cards:scroll_position()
   return self.scroll_offset
 end
 
+-- Whether the stack is scrolled as far as it goes (a stack that fits is at its end).
+function cards:at_end()
+  return self.scroll_offset >= max_scroll(self)
+end
+
+-- Scrolls as far as the stack goes.
+function cards:scroll_to_end()
+  self:set_pos(max_scroll(self))
+end
+
 function cards:set_items(items, gap)
   if self.closed then return end
   if gap ~= nil then

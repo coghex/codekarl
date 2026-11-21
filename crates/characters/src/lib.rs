@@ -19,6 +19,7 @@ mod fixtures;
 pub mod generator;
 pub mod genetics;
 pub mod life;
+mod log_source;
 pub mod marriage;
 pub(crate) mod names;
 pub mod personality;
@@ -30,6 +31,7 @@ pub use connections::{PopTargets, opinion, top_up_chance_ppb};
 pub use events::{EventError, LogSink, World};
 pub use genetics::{Context, GeneticRecord, Mendel};
 pub use life::{Departure, LifeRecord};
+pub use log_source::{LogSource, LogView};
 pub use personality::{
     EventKind, LevelTrait, PersonalityRecord, Standing, StressKind, personality_opinion, threshold,
 };

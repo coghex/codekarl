@@ -68,6 +68,13 @@ function draw.text(result, group, x, y, content, colour, font_name, align)
   return line.width
 end
 
+-- The width of the filled part of a bar `width` wide that shows `numerator` of `denominator`: floor division, never over the bar. The location panel's
+-- pop cards and the character screen's pop tab both fill their bars by this rule, so a pop reads alike in both.
+function draw.bar_fill(numerator, denominator, width)
+  if denominator <= 0 then return 0 end
+  return math.min(width, math.max(0, math.floor(width * numerator / denominator)))
+end
+
 -- The width in UI pixels of `content` in the font `font_name`.
 function draw.width(content, font_name)
   return font.layout(content, font_name or "standard").width

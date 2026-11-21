@@ -11,7 +11,7 @@ use super::*;
 
 /// What the relations tests add to the characters' prelude: the records of two characters and one with sixteen others, `game.character_relations`
 /// over them, and observers of the tab's portraits.
-const RELATIONS: &str = r#"
+pub(super) const RELATIONS: &str = r#"
 local function person(id, name, sex, relation, tie, live, extra)
   local p = {id = id, name = name, epithet = "", sex = sex, live = live, age = live and 30 or 0, relation = relation, tie = tie, lines = {}}
   for key, value in pairs(extra or {}) do p[key] = value end

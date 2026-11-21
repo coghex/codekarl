@@ -1252,7 +1252,7 @@ fn character_archive_logs_and_live_state_survive_streamed_save() {
         &[*b"ARCH", *b"LOGS"],
     )
     .unwrap();
-    let staged = Storage::at(staging, None, None);
+    let staged = Storage::at(staging, None, None, None);
     Storage::validate(&staged.path, &loaded.state).unwrap();
     assert_eq!(loaded.state, state);
     let restored_archive = Archive::open(staged.path.join("ARCH")).unwrap();
