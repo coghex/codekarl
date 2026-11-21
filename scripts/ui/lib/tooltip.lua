@@ -122,8 +122,11 @@ local function normalize_line(line, title)
       if class ~= nil and type(class) ~= "string" then fail("span class must be a string", 3) end
       if fn ~= nil and type(fn) ~= "function" then fail("span tooltip must be a function", 3) end
       if term ~= nil and type(term) ~= "string" then fail("span term must be a string", 3) end
+      if value.colour ~= nil and (type(value.colour) ~= "string" or links > 0) then
+        fail("span colour must be a string and only for a span that links nothing", 3)
+      end
       spans[#spans + 1] = {text = value.text, font = font_name, term = term, class = class,
-        args = value.args, tooltip = fn, linked = links > 0, over_limit = over_limit == true}
+        args = value.args, tooltip = fn, linked = links > 0, over_limit = over_limit == true, colour = value.colour}
     else
       fail("span must be a string or a table with string text", 3)
     end

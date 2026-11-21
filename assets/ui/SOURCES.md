@@ -18,7 +18,7 @@ copy with a new hash here.
 
 ## The character screen's art
 
-`characters/make_characters.py` writes `characters/*.png`: the 46 colour icons of the first tab (the owner-approved 9x9 set, r85-r87, frozen from
+`characters/make_characters.py` writes `characters/*.png`: the 55 colour icons of the first two tabs (the owner-approved 9x9 set, r85-r87, frozen from
 the designer's `char_icons.py`, SHA-256 `86dc5a31bce827c29f656889a42de47fea41dbad39974040ff614cc0eeec485c`) and the unknown portrait at two sizes. The
 ledger's monochrome bust is `theme/icon_characters.png`, written by `theme/make_theme.py`. Each drawing is composed from plain shapes and copied
 from no other image; the provenance notes are in the two scripts, and `--check` fails when a committed image differs from what its script writes.

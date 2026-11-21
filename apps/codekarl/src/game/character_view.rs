@@ -24,6 +24,8 @@ use ck_economy::{
 };
 use ck_sim::Date;
 
+use super::character_relations::{Relations, RelationsFacts};
+
 /// A character is a child under this age (the ledger's `children` filter).
 pub(crate) const CHILD_UNDER: u32 = 14;
 
@@ -99,6 +101,8 @@ pub(crate) struct CharacterView {
     /// The cards in id order.
     pub(crate) cards: Vec<CharacterCard>,
     tabs: BTreeMap<u64, FirstTab>,
+    /// What the relations tab reads (CK-377): the live characters, the archive as published and the indexes, as of this revision.
+    pub(crate) relations: RelationsFacts,
 }
 
 impl CharacterView {
@@ -108,6 +112,14 @@ impl CharacterView {
             .binary_search_by_key(&id, |card| card.id)
             .ok()
             .map(|at| &self.cards[at])
+    }
+
+    /// The relations record of the live character `id` at this revision.
+    ///
+    /// # Errors
+    /// An id that is not live at this revision.
+    pub(crate) fn relations_of(&self, id: u64) -> Result<Relations, String> {
+        self.relations.record(id)
     }
 
     /// The first tab's values of `id`.
@@ -175,7 +187,11 @@ pub(crate) fn build(
             cards[at].importance = u32::try_from(rank).unwrap_or(u32::MAX);
         }
     }
-    CharacterView { cards, tabs }
+    CharacterView {
+        cards,
+        tabs,
+        relations: RelationsFacts::default(),
+    }
 }
 
 /// The importance band of `c` (§2): rulers, high clergy, rulers' spouses, rulers' children, other real figures, slot members, everyone else.

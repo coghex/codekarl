@@ -15,17 +15,17 @@ use crate::game::{
     economy::starting_economy,
 };
 
-fn assets() -> PathBuf {
+pub(super) fn assets() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets")
 }
 
-fn rules() -> &'static Rules {
+pub(super) fn rules() -> &'static Rules {
     static RULES: OnceLock<Rules> = OnceLock::new();
     RULES
         .get_or_init(|| Rules::load(assets().join("game/economy.toml")).expect("the shipped rules"))
 }
 
-fn houses() -> &'static Houses {
+pub(super) fn houses() -> &'static Houses {
     static HOUSES: OnceLock<Houses> = OnceLock::new();
     HOUSES.get_or_init(|| {
         let text = std::fs::read_to_string(assets().join("scenarios/ireland-768/houses.toml"))
@@ -35,7 +35,7 @@ fn houses() -> &'static Houses {
 }
 
 /// The place of each slot of the shipped load file, by the slot's key.
-fn slots() -> &'static BTreeMap<String, String> {
+pub(super) fn slots() -> &'static BTreeMap<String, String> {
     static SLOTS: OnceLock<BTreeMap<String, String>> = OnceLock::new();
     SLOTS.get_or_init(|| {
         let text =
@@ -46,7 +46,7 @@ fn slots() -> &'static BTreeMap<String, String> {
 }
 
 /// The shipped scenario's starting economy and the display names of its places.
-fn world() -> &'static (EconomyState, BTreeMap<String, String>) {
+pub(super) fn world() -> &'static (EconomyState, BTreeMap<String, String>) {
     static WORLD: OnceLock<(EconomyState, BTreeMap<String, String>)> = OnceLock::new();
     WORLD.get_or_init(|| {
         let directory = assets().join("scenarios/ireland-768");
@@ -57,7 +57,7 @@ fn world() -> &'static (EconomyState, BTreeMap<String, String>) {
 }
 
 /// The first pop of `kind` at the `nth` place that has one.
-fn pop(kind: &str, nth: usize) -> PopLocator {
+pub(super) fn pop(kind: &str, nth: usize) -> PopLocator {
     world()
         .0
         .places
@@ -73,11 +73,11 @@ fn pop(kind: &str, nth: usize) -> PopLocator {
         .unwrap_or_else(|| panic!("no {kind} pop number {nth}"))
 }
 
-fn place_name(pop: &PopLocator) -> &'static str {
+pub(super) fn place_name(pop: &PopLocator) -> &'static str {
     world().1.get(&pop.place).expect("a place name")
 }
 
-fn on(year: u16, month: u8, day: u8) -> GameTime {
+pub(super) fn on(year: u16, month: u8, day: u8) -> GameTime {
     GameTime::from_date(Date {
         year,
         month,
@@ -88,7 +88,7 @@ fn on(year: u16, month: u8, day: u8) -> GameTime {
 }
 
 /// The day the views are built for: 9 October 768.
-fn today() -> Date {
+pub(super) fn today() -> Date {
     Date {
         year: 768,
         month: 10,
@@ -97,7 +97,13 @@ fn today() -> Date {
     }
 }
 
-fn person(id: u64, name: &str, sex: Sex, birth: GameTime, pop: &PopLocator) -> Character {
+pub(super) fn person(
+    id: u64,
+    name: &str,
+    sex: Sex,
+    birth: GameTime,
+    pop: &PopLocator,
+) -> Character {
     Character {
         id,
         name: name.to_owned(),
@@ -118,16 +124,16 @@ fn person(id: u64, name: &str, sex: Sex, birth: GameTime, pop: &PopLocator) -> C
     }
 }
 
-fn man(id: u64, pop: &PopLocator) -> Character {
+pub(super) fn man(id: u64, pop: &PopLocator) -> Character {
     person(id, &format!("M{id}"), Sex::Male, on(730, 1, 1), pop)
 }
 
-fn woman(id: u64, pop: &PopLocator) -> Character {
+pub(super) fn woman(id: u64, pop: &PopLocator) -> Character {
     person(id, &format!("W{id}"), Sex::Female, on(730, 1, 1), pop)
 }
 
 /// A store of `characters` and the saved names of some minor houses, built through the canonical encoding.
-fn store_with(characters: Vec<Character>, names: &[(&str, &str)]) -> CharacterStore {
+pub(super) fn store_with(characters: Vec<Character>, names: &[(&str, &str)]) -> CharacterStore {
     let next = characters.iter().map(|c| c.id).max().unwrap_or(0) + 1;
     let live: BTreeMap<u64, Character> = characters.into_iter().map(|c| (c.id, c)).collect();
     let names: BTreeMap<String, String> = names
@@ -142,7 +148,7 @@ fn store_with(characters: Vec<Character>, names: &[(&str, &str)]) -> CharacterSt
     CharacterStore::from_bytes(&bytes).unwrap()
 }
 
-fn store_of(characters: Vec<Character>) -> CharacterStore {
+pub(super) fn store_of(characters: Vec<Character>) -> CharacterStore {
     store_with(characters, &[])
 }
 
@@ -841,7 +847,7 @@ fn game_characters_and_game_character_serve_the_cached_view_and_refuse_by_name()
 }
 
 /// A `ConfigValue` as Lua source, for handing the real Rust view to the Lua harness.
-fn lua_of(value: &ck_lua::ConfigValue) -> String {
+pub(super) fn lua_of(value: &ck_lua::ConfigValue) -> String {
     use ck_lua::ConfigValue;
     match value {
         ConfigValue::Integer(number) => number.to_string(),

@@ -6,7 +6,7 @@ python3 make_characters.py --check  fail if an image differs, is missing or extr
 The icons are the owner-approved 9x9 colour set for the character window (owner r85-r87, round 2): full colour, no outline, in the goods
 icons' style (`assets/ui/goods/make_goods.py`). '.' is transparent; each letter is one PALETTE colour (#rrggbb, opaque). Frozen from the
 designer's `history-scratch/tools/char_icons.py` (SHA-256 86dc5a31bce827c29f656889a42de47fea41dbad39974040ff614cc0eeec485c); this file is the
-source for the shipped art. Only the drawings the character screen's first tab uses are here; the rest of that set (relations, actions, pop)
+source for the shipped art. Only the drawings the character screen's first two tabs use are here; the rest of that set (actions, pop)
 joins as the later slices use them. The main screen's icons and every list's filter and sort buttons stay monochrome (owner r88, r89): the
 ledger's bust is `assets/ui/theme/icon_characters.png`, never one of these.
 
@@ -31,9 +31,11 @@ PALETTE = {
     "E": "#50463a",
     "F": "#f8c040",
     "G": "#6ea83c",
+    "L": "#a8d86a",
     "M": "#8a3a8a",
     "O": "#e07a2a",
     "P": "#e8a090",
+    "Q": "#e86a9a",
     "R": "#c83a2c",
     "S": "#b8c8d0",
     "T": "#c49a6c",
@@ -52,7 +54,7 @@ PALETTE = {
     "y": "#9a6a1e",
 }
 
-# The drawings the first tab uses, in the order of its sections. Every name is a key of ART, and each is written as `<name>.png`.
+# The drawings the first tab and the relations tab use, in the order of their sections. Every name is a key of ART, and each is written as `<name>.png`.
 ART = {
     # body
     "height": [
@@ -566,6 +568,106 @@ ART = {
         "...G.G...",
         "....Y....",
         ".........",
+    ],
+    # relations (slice 9b: the formal ties under a portrait and the kinds of strand)
+    "tree": [
+        "...GGG...",
+        ".GGGGGGG.",
+        "GGGLGGGGG",
+        "GGGGGGLGG",
+        ".GGGGGGG.",
+        "...GbG...",
+        "....b....",
+        "....b....",
+        "..bbbbb..",
+    ],
+    "bowl": [
+        ".........",
+        "...w.w...",
+        "....w....",
+        "bbbbbbbbb",
+        "BTTTTTTTB",
+        ".BTTTTTB.",
+        "..BBBBB..",
+        "...bbb...",
+        ".........",
+    ],
+    "lock": [
+        "..sssss..",
+        ".s.....s.",
+        ".s.....s.",
+        ".s.....s.",
+        "sSSSSSSSs",
+        "sSSSkSSSs",
+        "sSSSkSSSs",
+        "sSSSSSSSs",
+        ".sssssss.",
+    ],
+    "handshake": [
+        ".........",
+        ".........",
+        "UU.....RR",
+        "UUUPPPRRR",
+        "UUPPPPPRR",
+        "UU.PPP.RR",
+        ".........",
+        ".........",
+        ".........",
+    ],
+    "fist": [
+        ".PPPPPP..",
+        "PPPPPPPP.",
+        "PqPqPqPP.",
+        "PPPPPPPPP",
+        "PPPPPPPPP",
+        ".PPPPPPP.",
+        "..PPPPP..",
+        "..UUUUU..",
+        "..UUUUU..",
+    ],
+    "lovers": [
+        ".........",
+        "RR.RR....",
+        "RRRRR....",
+        ".RRR.....",
+        "..R.QQ.QQ",
+        "....QQQQQ",
+        ".....QQQ.",
+        "......Q..",
+        ".........",
+    ],
+    "ghost": [
+        "..WWWWW..",
+        ".WWWWWWW.",
+        "WWkWWWkWW",
+        "WWkWWWkWW",
+        "WWWWWWWWW",
+        "WWWkkkWWW",
+        ".WWkkkWW.",
+        ".WWWWWWW.",
+        "..W.W.W..",
+    ],
+    "angry": [
+        "..RRRRR..",
+        ".RRRRRRR.",
+        "RkRRRRRkR",
+        "RRkRRRkRR",
+        "RRRRRRRRR",
+        "RRRkkkRRR",
+        "RRkRRRkRR",
+        ".RRRRRRR.",
+        "..RRRRR..",
+    ],
+    "star_pale": [
+        "....A....",
+        "....A....",
+        "...AAA...",
+        "AAAAAAAAA",
+        ".AAAAAAA.",
+        "..AAAAA..",
+        "..AA.AA..",
+        ".AA...AA.",
+        "AA.....AA",
     ],
 }
 

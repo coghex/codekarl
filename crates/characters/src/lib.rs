@@ -8,6 +8,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
 };
 
+mod archive_source;
 pub mod body;
 pub mod connections;
 pub mod cycle;
@@ -24,6 +25,7 @@ pub mod personality;
 pub mod skills;
 pub mod start;
 pub mod ties;
+pub use archive_source::{ArchiveSource, ArchiveView};
 pub use connections::{PopTargets, opinion, top_up_chance_ppb};
 pub use events::{EventError, LogSink, World};
 pub use genetics::{Context, GeneticRecord, Mendel};
