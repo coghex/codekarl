@@ -16,7 +16,6 @@ use crate::{
     cycle::curve_ratio,
     events::{EventError, FirstError, LogSink, World, age_years, exact_ppb, keep},
     genetics::roll,
-    opinion,
 };
 use ck_economy::{bigint::Big, genetics::PPB};
 use ck_sim::GameTime;
@@ -217,7 +216,11 @@ impl CharacterStore {
     }
 
     /// The record of `id`, live or archived; `None` for the unknown character and for one nobody holds.
-    fn record<A: ArchiveSink>(&self, archive: &A, id: u64) -> Result<Option<Character>, Error> {
+    pub(crate) fn record<A: ArchiveSink>(
+        &self,
+        archive: &A,
+        id: u64,
+    ) -> Result<Option<Character>, Error> {
         if id == UNKNOWN {
             return Ok(None);
         }
@@ -229,7 +232,7 @@ impl CharacterStore {
 
     /// The ancestors of `c` by generation, live or archived: the parents, the grandparents and the great-grandparents. A generation
     /// is empty when no record of its descendants is held; the unknown character is in none.
-    fn ancestors<A: ArchiveSink>(
+    pub(crate) fn ancestors<A: ArchiveSink>(
         &self,
         archive: &A,
         c: &Character,
@@ -255,7 +258,11 @@ impl CharacterStore {
     /// The identifiers of the children of `id`, by recorded parentage alone: the live records that name it and the archived ones the
     /// archive's index of children by parent names. A parent's own list of children is not read: it can be stale after the child's
     /// parents were reassigned.
-    fn children_of<A: ArchiveSink>(&self, archive: &A, id: u64) -> Result<BTreeSet<u64>, Error> {
+    pub(crate) fn children_of<A: ArchiveSink>(
+        &self,
+        archive: &A,
+        id: u64,
+    ) -> Result<BTreeSet<u64>, Error> {
         let mut found: BTreeSet<u64> = self
             .live
             .values()
@@ -372,7 +379,13 @@ impl CharacterStore {
         let gap = i128::from(rank(s)?.abs_diff(rank(c)?));
         let difference = age(s, today)?.abs_diff(age(c, today)?);
         let excess = i128::from(difference.saturating_sub(rules.age_gap_free));
-        let opinion = i128::from(opinion(world.personality, s, c)?);
+        let opinion = i128::from(crate::connections::opinion(
+            world.personality,
+            &world.lifecycle.connections,
+            s,
+            c,
+            &crate::connections::PopTargets::of(world.populations, c),
+        )?);
         let kinship = self.kinship(world, kin, c)?;
         let terms = [
             i128::from(rules.rank_gap).checked_mul(gap * MILLION),
@@ -423,10 +436,15 @@ impl CharacterStore {
         if house.is_empty() {
             return None;
         }
-        self.live
-            .values()
-            .find(|c| c.life.house == house && c.office == Some(Office::Ruler))
-            .map(|c| c.id)
+        // Among the house's members only (the lowest identifier first), never among everyone.
+        self.by_house.get(house)?.iter().find_map(|id| {
+            #[cfg(feature = "test-fixtures")]
+            self.visited.0.set(self.visited.0.get() + 1);
+            self.live
+                .get(id)
+                .filter(|c| c.office == Some(Office::Ruler))
+                .map(|c| c.id)
+        })
     }
 
     /// Whether `house` is a ruling house: it has a living member whose office marker is `ruler`.
@@ -581,11 +599,9 @@ impl CharacterStore {
         // Everything is decided and checked: the writes below cannot fail.
         let destination = stays.pop.clone();
         for id in [husband.id, wife.id] {
-            if let Some(c) = self.live.get_mut(&id) {
-                c.life.house.clone_from(&house);
-                if id == mover.id {
-                    c.pop.clone_from(&destination);
-                }
+            self.set_house(id, &house);
+            if id == mover.id {
+                self.relocate(id, destination.clone(), today);
             }
         }
         let mut output: FirstError = None;

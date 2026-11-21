@@ -8,7 +8,7 @@
 use ck_characters::{
     Archive, ArchiveSink, Character, CharacterStore, Context, EventError, GeneticRecord, Ledger,
     LifeLog, LifeRecord, Lineage, LogSink, NewCharacter, Office, PersonalityRecord, PopLocator,
-    Populations, Sex, UNKNOWN, World, character_stream, genetics::succeeds, opinion,
+    Populations, Sex, UNKNOWN, World, character_stream, genetics::succeeds, personality_opinion,
 };
 use ck_economy::{
     CounterBuckets, EconomyState, EventRules, LifeCycle, MoveUndo, NearbyPlace, PlaceState,
@@ -303,6 +303,7 @@ fn person(id: u64, birth: GameTime, place: &str, sex: Sex) -> Character {
         genetics: Box::new(genetics),
         personality: PersonalityRecord::default(),
         life: Box::new(life),
+        ties: Box::default(),
     }
 }
 /// A man or a woman who is `age` years old on [`today`], with a birthday on the 1st of January.
@@ -336,6 +337,7 @@ fn store_of(characters: Vec<Character>) -> CharacterStore {
     let mut bytes = Vec::new();
     next.encode(&mut bytes).expect("encode");
     live.encode(&mut bytes).expect("encode");
+    0_u64.encode(&mut bytes).expect("encode");
     CharacterStore::from_bytes(&bytes).expect("a store of these records")
 }
 fn get(store: &CharacterStore, id: u64) -> &Character {
@@ -808,8 +810,9 @@ fn a_candidate_is_scored_by_rank_age_opinion_fame_and_kinship() {
     let candidate = get(&store, 2);
     // Rank 3 against 1: -15 x 2 = -30. Age: 15 years apart, 10 free: -2 x 5 = -10. Opinion: 0.5 x what the seeker thinks of her.
     // Fame: 0.2 x 10 points = 2. First cousins: -40.
-    let thought =
-        i128::from(opinion(&rules().personality, seeker_record, candidate).expect("opinion"));
+    let thought = i128::from(
+        personality_opinion(&rules().personality, seeker_record, candidate).expect("opinion"),
+    );
     let expected = (-30 - 10 - 40) * POINT + thought * 500_000 + 2 * POINT;
     assert_eq!(score(&store, &pops, &mut env, 1, 2), expected);
 }

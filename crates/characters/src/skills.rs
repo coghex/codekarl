@@ -286,6 +286,7 @@ impl CharacterStore {
         today: GameTime,
     ) -> Result<(), EventError> {
         let date = today.date().map_err(|_| Error::Event)?;
+        self.fix_seed(world.seed);
         let snapshot = self.snapshot();
         let mut due = Vec::new();
         for c in self.live.values() {
@@ -411,6 +412,11 @@ impl CharacterStore {
         self.gain_epithets(world, id, today, &ck_economy::EpithetTrigger::Yearly)?;
         // Stage 10 (CK-366 §2): the marriage wish, after the epithets; a character that died on the way does not seek one.
         self.seek_marriage(world, id, today, first)?;
+        // Stage 11 (CK-368 §4, §6): the strand rolls, the feeling fade and the passions, after the marriage wish; a character that died
+        // on the way (or married away) is not rolled.
+        if self.live.contains_key(&id) {
+            self.connection_birthday(world, id, today, first)?;
+        }
         Ok(())
     }
 

@@ -15,6 +15,9 @@ use std::{
     path::Path,
 };
 
+mod connections;
+pub use connections::*;
+
 /// The grade names by level: level 0 is "none", then C, B, A, S, SS and SSS.
 pub const GRADE_NAMES: [&str; 7] = ["none", "C", "B", "A", "S", "SS", "SSS"];
 /// The highest grade level.
@@ -113,6 +116,10 @@ pub enum SexRule {
 }
 
 /// The conditions of an event or of a `keep_while` entry; every one that is set must hold.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "one flag per condition of the vocabulary"
+)]
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Conditions {
     /// Age in whole years, low and high.
@@ -155,6 +162,14 @@ pub struct Conditions {
     pub count_min: Vec<(String, u64)>,
     /// The character is past the age of majority (epithets only).
     pub adult: bool,
+    /// Whole years since the `ruler` marker was set at the character's current location (passion moments only, CK-368).
+    pub ruler_years_min: Option<u32>,
+    /// Whole years since the character joined its current pop (passion moments only).
+    pub years_in_pop_min: Option<u32>,
+    /// The character is a member of a house with a living ruler (passion moments only).
+    pub in_ruling_house: bool,
+    /// Fame at least this, in thousandths (`standing_min = { fame = n }`, passion moments only).
+    pub fame_min: Option<i64>,
 }
 
 /// Which way stress moves a chance.
@@ -358,6 +373,8 @@ enum Vocabulary {
     Keep,
     /// An epithet's `when` (adds `grade_min`, `stat_max_by_sex`, `weight_ratio_min`, `count_min` and `adult`).
     Epithet,
+    /// A live passion moment's `when` (adds `ruler_years_min`, `years_in_pop_min`, `in_ruling_house` and `standing_min`, CK-368).
+    Moment,
 }
 
 struct Parser<'a> {
@@ -510,6 +527,12 @@ impl Parser<'_> {
                 "count_min",
                 "adult",
             ]),
+            Vocabulary::Moment => allowed.extend([
+                "ruler_years_min",
+                "years_in_pop_min",
+                "in_ruling_house",
+                "standing_min",
+            ]),
         }
         only_keys(&self.source, table, entry, &allowed)?;
         let mut out = Conditions::default();
@@ -642,6 +665,26 @@ impl Parser<'_> {
                         return Err(self.error(&at, "`lacks_land` is only ever true"));
                     }
                     out.lacks_land = true;
+                }
+                "ruler_years_min" => {
+                    out.ruler_years_min = Some(small_u32(&self.source, node, &at)?);
+                }
+                "years_in_pop_min" => {
+                    out.years_in_pop_min = Some(small_u32(&self.source, node, &at)?);
+                }
+                "in_ruling_house" => {
+                    if !self.source.boolean(node, &at)? {
+                        return Err(self.error(&at, "`in_ruling_house` is only ever true"));
+                    }
+                    out.in_ruling_house = true;
+                }
+                "standing_min" => {
+                    let table = self.source.table(node, &at)?;
+                    only_keys(&self.source, table, &at, &["fame"])?;
+                    out.fame_min = Some(self.source.milli(
+                        required(&self.source, table, &at, "fame")?,
+                        &format!("{at}.fame"),
+                    )?);
                 }
                 _ => {
                     let value = self.source.integer(node, &at)?;

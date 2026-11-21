@@ -366,7 +366,11 @@ fn grade(list: &[i64; 6], level: usize) -> i128 {
 ///
 /// # Errors
 /// Refuses arithmetic that does not fit.
-pub fn opinion(rules: &Personality, a: &Character, b: &Character) -> Result<i64, Error> {
+pub fn personality_opinion(
+    rules: &Personality,
+    a: &Character,
+    b: &Character,
+) -> Result<i64, Error> {
     let o = &rules.opinion;
     let manner: i128 = a
         .personality
@@ -612,8 +616,8 @@ impl CharacterStore {
     ///
     /// # Errors
     /// Refuses a missing character and arithmetic that does not fit.
-    pub fn opinion(&self, rules: &Personality, a: u64, b: u64) -> Result<i64, Error> {
-        opinion(rules, self.mind(a)?, self.mind(b)?)
+    pub fn personality_opinion(&self, rules: &Personality, a: u64, b: u64) -> Result<i64, Error> {
+        personality_opinion(rules, self.mind(a)?, self.mind(b)?)
     }
 
     /// The monthly recovery pass (§4), for every live character in id order: stress falls by

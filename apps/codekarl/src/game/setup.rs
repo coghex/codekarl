@@ -170,6 +170,7 @@ pub(crate) fn prepare(
         .iter()
         .any(|vm| vm.name == GAMEPLAY_VM)
         .then(|| Gameplay::new(0));
+    let place_names = place_names(&scenario);
     let characters_io = super::character_storage::Handle::default();
     let scheduler = || {
         gameplay_scheduler_with_rules(
@@ -179,6 +180,7 @@ pub(crate) fn prepare(
             shelter_by_place.clone(),
             nearby_by_place.clone(),
             reach_by_place.clone(),
+            place_names.clone(),
             Some(Arc::clone(&characters_io)),
         )
     };
@@ -317,6 +319,7 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
             .as_deref()
             .map_or(0, |rules| rules.lifecycle.marriage.pool.far_m),
     );
+    let place_names = place_names(&scenario);
     let wiring_gameplay = gameplay.clone();
     let wiring_rules = economy_rules.clone();
     let (sender, receiver) = channel();
@@ -334,6 +337,7 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
         let scheduler_shelter = shelter_by_place.clone();
         let scheduler_nearby = nearby_by_place.clone();
         let scheduler_reach = reach_by_place.clone();
+        let scheduler_names = place_names.clone();
         let scheduler_io = Arc::clone(&characters_io);
         let reset_runtime = runtime.clone();
         let build = move || {
@@ -350,6 +354,7 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
                             scheduler_shelter.clone(),
                             scheduler_nearby.clone(),
                             scheduler_reach.clone(),
+                            scheduler_names.clone(),
                             Some(Arc::clone(&scheduler_io)),
                         )
                     }),
@@ -393,6 +398,10 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the rules and each place table the daily pass reads, the place names and the storage handle"
+)]
 fn gameplay_scheduler_with_rules(
     gameplay: Option<&Arc<Gameplay>>,
     rules: Option<Arc<Rules>>,
@@ -400,6 +409,7 @@ fn gameplay_scheduler_with_rules(
     shelter_by_place: BTreeMap<String, u64>,
     nearby_by_place: BTreeMap<String, Vec<ck_economy::NearbyPlace>>,
     reach_by_place: BTreeMap<String, Vec<ck_economy::NearbyPlace>>,
+    place_names: BTreeMap<String, String>,
     characters_io: Option<super::character_storage::Handle>,
 ) -> Scheduler<GameState> {
     let mut scheduler = Scheduler::<GameState>::new();
@@ -411,6 +421,7 @@ fn gameplay_scheduler_with_rules(
             shelter_by_place,
             nearby_by_place,
             reach_by_place,
+            place_names,
             characters_io,
         );
     } else {
@@ -442,6 +453,7 @@ pub(crate) fn register_economy_callback_with_storage(
         BTreeMap::new(),
         BTreeMap::new(),
         BTreeMap::new(),
+        BTreeMap::new(),
         Some(handle),
     );
 }
@@ -455,10 +467,15 @@ pub(crate) fn register_economy_callback(scheduler: &mut Scheduler<GameState>, ru
         BTreeMap::new(),
         BTreeMap::new(),
         BTreeMap::new(),
+        BTreeMap::new(),
         None,
     );
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the rules and each place table the daily pass reads, the place names and the storage handle"
+)]
 fn register_economy_callback_with_context(
     scheduler: &mut Scheduler<GameState>,
     rules: Arc<Rules>,
@@ -466,6 +483,7 @@ fn register_economy_callback_with_context(
     shelter_by_place: BTreeMap<String, u64>,
     nearby_by_place: BTreeMap<String, Vec<ck_economy::NearbyPlace>>,
     reach_by_place: BTreeMap<String, Vec<ck_economy::NearbyPlace>>,
+    place_names: BTreeMap<String, String>,
     characters_io: Option<super::character_storage::Handle>,
 ) {
     scheduler
@@ -485,6 +503,7 @@ fn register_economy_callback_with_context(
                     tick.time(),
                     seed,
                     &shelter_by_place,
+                    &place_names,
                     characters_io.as_ref(),
                 );
                 let mut floors = BTreeMap::new();
@@ -511,6 +530,7 @@ fn register_economy_callback_with_context(
                     tick.time(),
                     seed,
                     &reach_by_place,
+                    &place_names,
                     characters_io.as_ref(),
                 );
                 before.and(after)
@@ -569,6 +589,7 @@ pub(crate) fn run_pre_economy_passes(
     tick: GameTime,
     seed: u64,
     shelter_by_place: &BTreeMap<String, u64>,
+    place_names: &BTreeMap<String, String>,
     storage: Option<&super::character_storage::Handle>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let Some(path) = storage.and_then(|cell| cell.lock().ok()?.clone()) else {
@@ -577,10 +598,11 @@ pub(crate) fn run_pre_economy_passes(
     if state.characters.iter().next().is_none() {
         return Ok(());
     }
+    state.characters.fix_seed(seed);
     let pressure = death_pressure(rules, &state.economy, &state.characters, shelter_by_place)?;
     let mut archive = open_archive(&path);
     let mut logs = open_logs(&path);
-    let ledger = ck_characters::Ledger::new(&mut state.economy);
+    let ledger = ck_characters::Ledger::new(&mut state.economy).with_place_names(place_names);
     let mut world = ck_characters::World {
         rules: &rules.events,
         personality: &rules.personality,
@@ -591,15 +613,19 @@ pub(crate) fn run_pre_economy_passes(
         archive: &mut archive,
         logs: &mut logs,
     };
+    // A character promoted to the full tier has its passions backfilled first, before the day's deaths or anything else can consume or
+    // change it (CK-368 §9); a failure keeps its saved window for the next pass and is returned after the pass has run.
+    let backfilled = state.characters.backfill_promotions(&mut world, tick);
     state
         .characters
         .run_pre_economy(&mut world, tick, &pressure)?;
+    backfilled?;
     Ok(())
 }
 
 /// The character passes of CK-362 and CK-363 and the conceptions of CK-364 (phase C of a day), run inside the economy's daily system
 /// after that day's economy work: on the 1st the monthly stress recovery, then the birthday pass (humour drift, standing fade, the yearly
-/// events, craft rise, skills, precedence and coming of age) and, on the 1st, the monthly precedence check and the conceptions. They
+/// events, craft rise, skills, precedence, coming of age, the marriage wish and the strand rolls and passions of CK-368) and, on the 1st, the monthly precedence check and the conceptions. They
 /// are not separate systems, and an economy error never reaches them. A life-log or archive failure after a committed change is
 /// returned here, as the economy's errors are.
 ///
@@ -611,9 +637,11 @@ pub(crate) fn run_character_passes(
     tick: GameTime,
     seed: u64,
     reach_by_place: &BTreeMap<String, Vec<ck_economy::NearbyPlace>>,
+    place_names: &BTreeMap<String, String>,
     storage: Option<&super::character_storage::Handle>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let first = tick.date()?.day == 1;
+    state.characters.fix_seed(seed);
     if first {
         state.characters.monthly_recovery(&rules.personality)?;
     }
@@ -629,7 +657,8 @@ pub(crate) fn run_character_passes(
     // death (an unavailable archive refuses it), and a life-log line is output (an unavailable log reports each line it cannot write).
     let mut archive = open_archive(&path);
     let mut logs = open_logs(&path);
-    let ledger = ck_characters::Ledger::with_nearby(&mut state.economy, reach_by_place);
+    let ledger = ck_characters::Ledger::with_nearby(&mut state.economy, reach_by_place)
+        .with_place_names(place_names);
     let mut world = ck_characters::World {
         rules: &rules.events,
         personality: &rules.personality,
@@ -642,6 +671,8 @@ pub(crate) fn run_character_passes(
     };
     // The birth-day samples of the day's newborns, after the economy's step (CK-367 §2), then the birthdays.
     let samples = state.characters.run_birth_samples(&mut world, tick);
+    // On 1 January the closed year's bonds are resolved, once, before the day's birthdays (CK-368 §4).
+    let new_year = state.characters.run_new_year(&mut world, tick);
     let birthdays = state.characters.run_birthdays(&mut world, tick);
     // On the 1st: the monthly precedence check, the conceptions and, after them, the monthly weights (CK-367).
     let (monthly, conceptions, weights) = if first {
@@ -655,6 +686,7 @@ pub(crate) fn run_character_passes(
     };
     // All ran whatever the first reported; the first failure is the one returned.
     samples
+        .and(new_year)
         .and(birthdays)
         .and(monthly)
         .and(conceptions)
@@ -713,6 +745,15 @@ impl ck_characters::LogSink for Logged {
             Self::Down(reason) => Err(io::Error::other(reason.clone())),
         }
     }
+}
+
+/// The display names of the scenario's places by id, which the character log lines show for a place.
+pub(crate) fn place_names(scenario: &ck_map::Scenario) -> BTreeMap<String, String> {
+    scenario
+        .locations
+        .iter()
+        .map(|location| (location.id.clone(), location.name.clone()))
+        .collect()
 }
 
 pub(crate) fn nearby_places(
@@ -865,6 +906,16 @@ mod nearby_place_tests {
     use super::{ground_distance_m, marriage_reach, nearby_places, nearby_places_for_locations};
     use ck_map::Cell;
     use std::{collections::BTreeMap, path::Path};
+
+    #[test]
+    fn the_scenarios_place_names_reach_the_character_passes_by_id() {
+        let directory =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/scenarios/ireland-768");
+        let scenario = ck_map::load_scenario(&directory).expect("Ireland scenario loads");
+        let names = super::place_names(&scenario);
+        assert_eq!(names["armagh"], "Ard Mhacha");
+        assert_eq!(names.len(), scenario.locations.len());
+    }
 
     #[test]
     fn ireland_island_monasteries_reach_their_ground_distance_neighbours() {
