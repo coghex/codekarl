@@ -946,7 +946,8 @@ impl SceneWriter {
     }
 
     /// Gives the hit key `key` a tag (or none with `None`), published with its regions and copied by the pointer router into the button
-    /// events it routes to them. The key must have rectangles and the tag follows `[a-z0-9_]{1,48}`; nothing changes on a refusal.
+    /// events it routes to them. The key must have rectangles and the tag is 1 to 128 ASCII graphic characters (0x21-0x7e, so no spaces),
+    /// the rule [`valid_tag`](crate::valid_tag) enforces; nothing changes on a refusal.
     ///
     /// # Errors
     ///
