@@ -1659,3 +1659,19 @@ fn a_year_of_wishes_is_deterministic_under_the_seed_and_every_marriage_is_whole(
     }
     assert!(marriages > 0, "no marriage in any seed");
 }
+
+#[test]
+fn indexed_ledger_reads_current_slots_after_safety_net_and_head_moves() {
+    let mut state = economy(pop(5, 2, 8000), pop(3, 1, 2000));
+    let ledger = Ledger::new(&mut state).with_start_safety_net();
+    let a = locator("a");
+    let b = locator("b");
+    assert_eq!(ledger.heads(&a), Some(4));
+    assert_eq!(ledger.heads(&b), Some(7));
+    assert!(ledger.make_room(&a).unwrap());
+    assert_eq!(ledger.heads(&a), Some(5));
+    ledger.move_head(&b, &a, false).unwrap();
+    assert_eq!(ledger.heads(&a), Some(6));
+    assert_eq!(ledger.heads(&b), Some(6));
+    assert_eq!(ledger.kind(&a).as_deref(), Some("noble"));
+}

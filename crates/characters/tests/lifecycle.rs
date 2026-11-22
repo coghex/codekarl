@@ -1545,3 +1545,39 @@ fn a_certain_death_refused_on_the_1st_is_not_rolled_again_in_the_monthly_pass() 
     assert!(store.get(1).is_none());
     assert_eq!(archive.attempts, 2);
 }
+
+#[test]
+fn a_warm_archive_reader_does_not_publish_a_death_to_a_detached_file() {
+    let target = path("warm-archive-death");
+    let detached = path("warm-archive-detached");
+    let mut archive = Archive::open(&target).unwrap();
+    let mut old = person(2, date(690, 1, 1), "a", Sex::Male);
+    old.death = Some(date(750, 1, 1));
+    archive.append(&old).unwrap();
+    archive.begin_scope();
+    assert!(archive.get(2).unwrap().is_some());
+    std::fs::rename(&target, &detached).unwrap();
+    let bytes = std::fs::read(&detached).unwrap();
+    let mut store = store_of(vec![person(1, date(690, 1, 1), "a", Sex::Male)]);
+    let before = store.to_bytes().unwrap();
+    let pops = Pops::new();
+    let mut logs = LifeLog::open(path("warm-archive-logs")).unwrap();
+    let mut world = World {
+        rules: quiet(),
+        personality: &rules().personality,
+        genetics: &rules().genetics,
+        lifecycle: &rules().lifecycle,
+        seed: 7,
+        populations: &pops,
+        archive: &mut archive,
+        logs: &mut logs,
+    };
+    assert!(matches!(
+        store.run_certain_deaths(&mut world, date(800, 1, 1)),
+        Err(EventError::Archive(_))
+    ));
+    assert_eq!(store.to_bytes().unwrap(), before);
+    assert_eq!(pops.calls(), ["death a adult", "restored"]);
+    assert_eq!(std::fs::read(detached).unwrap(), bytes);
+    assert!(!target.exists());
+}

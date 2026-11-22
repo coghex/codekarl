@@ -11,7 +11,7 @@ use crate::{
     character_stream,
     events::{
         EventError, FirstError, LogSink, World, age_years, conclude, exact_ppb, holds, keep,
-        pop_facts,
+        pop_facts, product_ppb,
     },
     genetics::{self, Context, roll},
     ties::{Link, MAX_STRENGTH, Orientation, Passion, PassionTarget, Ties},
@@ -155,12 +155,40 @@ impl Chance {
         if self.zero || self.negative {
             return 0;
         }
-        exact_ppb(base, &self.ratios)
+        product_ppb(base, &self.ratios)
     }
 }
 
 /// The ancestors of a character that kinship reads: its parents and its grandparents.
 type Lines = [BTreeSet<u64>; 2];
+
+/// Derived ancestry used only during a pass; it never contributes to saved state or equality.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ScopedLines(pub(crate) std::cell::RefCell<Option<(u64, BTreeMap<u64, Lines>)>>);
+impl PartialEq for ScopedLines {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+impl Eq for ScopedLines {}
+impl ScopedLines {
+    fn select<'a>(
+        scope: &'a mut Option<(u64, BTreeMap<u64, Lines>)>,
+        revision: Option<u64>,
+        local: &'a mut BTreeMap<u64, Lines>,
+    ) -> &'a mut BTreeMap<u64, Lines> {
+        match (scope.as_mut(), revision) {
+            (Some((seen, cache)), Some(revision)) => {
+                if *seen != revision {
+                    cache.clear();
+                    *seen = revision;
+                }
+                cache
+            }
+            _ => local,
+        }
+    }
+}
 
 /// What a pop gives a character's passions and opinion terms that a record does not hold: its religion and culture.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -962,7 +990,9 @@ impl CharacterStore {
         let mut plan: Vec<Planned> = Vec::new();
         {
             let archive = &*world.archive;
-            let mut cache = BTreeMap::new();
+            let mut local = BTreeMap::new();
+            let mut scoped = self.ancestry.0.borrow_mut();
+            let cache = ScopedLines::select(&mut scoped, archive.revision(), &mut local);
             for (b_id, contact, elsewhere) in circle {
                 if coarse && !(elsewhere && self.tier(b_id, when) == Some(Tier::Full)) {
                     continue;
@@ -976,7 +1006,7 @@ impl CharacterStore {
                 if link.feeling_roll < year {
                     for kind in LOVE..=HATRED {
                         let chance =
-                            self.feeling_chance(rules, archive, &mut cache, kind, &a, b, contact)?;
+                            self.feeling_chance(rules, archive, cache, kind, &a, b, contact)?;
                         if chance > 0 {
                             feelings.push((kind, chance));
                         }
@@ -985,8 +1015,8 @@ impl CharacterStore {
                 let mut bonds = Vec::new();
                 if link.mutual_roll < year {
                     for kind in FRIEND..=LOVER {
-                        let chance = self
-                            .bond_chance(rules, archive, &mut cache, kind, &a, b, contact, when)?;
+                        let chance =
+                            self.bond_chance(rules, archive, cache, kind, &a, b, contact, when)?;
                         if chance > 0 {
                             bonds.push((kind, chance));
                         }
@@ -1930,5 +1960,96 @@ impl CharacterStore {
             b,
             &PopTargets::of(world.populations, b),
         )
+    }
+}
+
+#[cfg(test)]
+mod ancestry_scope_tests {
+    use super::*;
+    use crate::{Archive, ArchiveSink, GeneticRecord, LifeRecord, PersonalityRecord, PopLocator};
+
+    fn date() -> GameTime {
+        GameTime::from_date(Date {
+            year: 768,
+            month: 1,
+            day: 1,
+            hour: 0,
+        })
+        .unwrap()
+    }
+    fn person(id: u64) -> Character {
+        Character {
+            id,
+            name: format!("person{id}"),
+            sex: Sex::Male,
+            birth: date(),
+            death: None,
+            pop: PopLocator {
+                place: "a".into(),
+                slot: 0,
+            },
+            father: UNKNOWN,
+            mother: UNKNOWN,
+            spouses: Vec::new(),
+            children: Vec::new(),
+            office: None,
+            full_until: None,
+            genetics: Box::new(GeneticRecord::default()),
+            personality: PersonalityRecord::default(),
+            life: Box::new(LifeRecord::default()),
+            ties: Box::default(),
+        }
+    }
+    fn cached(store: &CharacterStore, archive: &Archive, id: u64) -> Lines {
+        let mut scope = store.ancestry.0.borrow_mut();
+        let mut local = BTreeMap::new();
+        let cache = ScopedLines::select(&mut scope, archive.revision(), &mut local);
+        store.lines(archive, cache, store.get(id).unwrap()).unwrap()
+    }
+    fn fresh(store: &CharacterStore, archive: &Archive, id: u64) -> Lines {
+        store
+            .lines(archive, &mut BTreeMap::new(), store.get(id).unwrap())
+            .unwrap()
+    }
+    #[test]
+    fn signed_chance_keeps_zero_negative_and_double_negative_rules() {
+        let mut zero = Chance::default();
+        zero.push(0, 1);
+        assert_eq!(zero.finish(1_000_000_000), 0);
+        let mut negative = Chance::default();
+        negative.push(-1, 2);
+        assert_eq!(negative.finish(1_000_000_000), 0);
+        let mut positive = Chance::default();
+        positive.push(-1, 2);
+        positive.push(-1, 2);
+        assert_eq!(positive.finish(1_000_000_000), 250_000_000);
+    }
+    #[test]
+    fn scoped_ancestry_tracks_subject_ancestor_and_archival_changes() {
+        let path = std::env::temp_dir().join(format!("ck384-ancestry-{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let mut archive = Archive::open(&path).unwrap();
+        archive.begin_scope();
+        let mut store = CharacterStore::default();
+        for id in 1..=5 {
+            store.put(person(id));
+        }
+        store.set_parents(1, 2, UNKNOWN, date()).unwrap();
+        store.begin_ancestry_scope();
+        assert_eq!(cached(&store, &archive, 1), fresh(&store, &archive, 1));
+        store.set_parents(1, 3, UNKNOWN, date()).unwrap();
+        assert_eq!(cached(&store, &archive, 1), fresh(&store, &archive, 1));
+        store.set_parents(3, 4, UNKNOWN, date()).unwrap();
+        assert_eq!(cached(&store, &archive, 1), fresh(&store, &archive, 1));
+        let mut archived = store.take(3).unwrap();
+        archived.death = Some(date());
+        archive.append(&archived).unwrap();
+        assert_eq!(cached(&store, &archive, 1), fresh(&store, &archive, 1));
+        assert!(!store.ancestry.0.borrow().as_ref().unwrap().1.is_empty());
+        store.end_ancestry_scope();
+        store.begin_ancestry_scope();
+        assert!(store.ancestry.0.borrow().as_ref().unwrap().1.is_empty());
+        assert_eq!(cached(&store, &archive, 1), fresh(&store, &archive, 1));
+        let _ = std::fs::remove_file(path);
     }
 }

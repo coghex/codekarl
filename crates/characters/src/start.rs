@@ -335,7 +335,9 @@ impl CharacterStore {
     ) -> Result<StartReport, StartError> {
         let past_until = first_of(PAST_ENDS_IN + 1)?;
         self.begin_start(past_until);
+        self.begin_ancestry_scope();
         let result = self.start_inner(world, data, start);
+        self.end_ancestry_scope();
         self.end_start();
         result
     }

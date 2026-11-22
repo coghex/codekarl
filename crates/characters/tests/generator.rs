@@ -1248,3 +1248,101 @@ fn the_generator_sources_use_no_floating_point() {
         }
     }
 }
+
+#[test]
+fn scoped_archive_reads_follow_open_file_until_the_next_scope() {
+    use ck_characters::ArchiveSink;
+    let target = path("scoped-archive");
+    let detached = path("scoped-archive-old");
+    let replacement = path("scoped-archive-new");
+    let mut old = ck_characters::Archive::open(&target).unwrap();
+    old.append(&dead(1)).unwrap();
+    old.append(&dead(2)).unwrap();
+    old.begin_scope();
+    let first = old.get(1).unwrap().unwrap();
+    let mut changed = dead(1);
+    changed.name = "Different".into();
+    let mut next = ck_characters::Archive::open(&replacement).unwrap();
+    next.append(&changed).unwrap();
+    next.append(&dead(2)).unwrap();
+    std::fs::rename(&target, &detached).unwrap();
+    std::fs::rename(&replacement, &target).unwrap();
+    assert_eq!(old.get(1).unwrap().unwrap(), first);
+    assert_eq!(old.get(2).unwrap().unwrap(), dead(2));
+    old.end_scope();
+    let fresh = ck_characters::Archive::open(&target).unwrap();
+    fresh.begin_scope();
+    assert_eq!(fresh.get(1).unwrap().unwrap(), changed);
+}
+
+#[test]
+fn scoped_log_reports_detached_output() {
+    let target = path("scoped-log");
+    let detached = path("scoped-log-old");
+    let mut log = ck_characters::LifeLog::open(&target).unwrap();
+    log.begin_scope();
+    log.append(1, date(760, 1, 1), "first").unwrap();
+    std::fs::rename(&target, &detached).unwrap();
+    std::fs::write(&target, []).unwrap();
+    log.append(1, date(760, 1, 2), "second").unwrap();
+    assert!(log.finish_scope().is_err());
+    assert!(std::fs::read(&target).unwrap().is_empty());
+    assert_eq!(
+        ck_characters::LifeLog::open(&detached)
+            .unwrap()
+            .read(1)
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn scoped_log_accepts_revoked_write_access_to_the_same_file() {
+    use std::os::unix::fs::PermissionsExt;
+    let target = path("scoped-log-mode");
+    let mut log = ck_characters::LifeLog::open(&target).unwrap();
+    log.begin_scope();
+    log.append(1, date(760, 1, 1), "first").unwrap();
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o400)).unwrap();
+    log.append(1, date(760, 1, 2), "second").unwrap();
+    log.finish_scope().unwrap();
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(log.read(1).unwrap().len(), 2);
+}
+
+#[test]
+fn a_scoped_reader_survives_a_torn_tail_cut_back_and_republication() {
+    use ck_characters::ArchiveSink;
+    use std::io::Write;
+
+    let source = path("scoped-torn-source");
+    let mut source_archive = ck_characters::Archive::open(&source).unwrap();
+    source_archive.append_all(&[dead(2), dead(3)]).unwrap();
+    let frame = std::fs::read(&source).unwrap();
+
+    let target = path("scoped-torn-target");
+    let mut archive = ck_characters::Archive::open(&target).unwrap();
+    let original = dead(1);
+    let added = [dead(4), dead(5)];
+    archive.append(&original).unwrap();
+    archive.begin_scope();
+    assert_eq!(archive.get(1).unwrap(), Some(original.clone()));
+    let published_len = std::fs::metadata(&target).unwrap().len();
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&target)
+        .unwrap()
+        .write_all(&frame[..frame.len() - 1])
+        .unwrap();
+    assert!(std::fs::metadata(&target).unwrap().len() > published_len);
+
+    archive.append_all(&added).unwrap();
+    let fresh = ck_characters::Archive::open(&target).unwrap();
+    for record in std::iter::once(&original).chain(added.iter()) {
+        assert_eq!(archive.get(record.id).unwrap().as_ref(), Some(record));
+        assert_eq!(fresh.get(record.id).unwrap().as_ref(), Some(record));
+    }
+    assert_eq!(fresh.ids().collect::<Vec<_>>(), [1, 4, 5]);
+}

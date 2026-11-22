@@ -754,11 +754,15 @@ pub(crate) fn run_pre_economy_passes(
     };
     // A character promoted to the full tier has its passions backfilled first, before the day's deaths or anything else can consume or
     // change it (CK-368 §9); a failure keeps its saved window for the next pass and is returned after the pass has run.
+    state.characters.begin_ancestry_scope();
     let backfilled = state.characters.backfill_promotions(&mut world, tick);
-    state
+    let passes = state
         .characters
-        .run_pre_economy(&mut world, tick, &pressure)?;
+        .run_pre_economy(&mut world, tick, &pressure);
+    state.characters.end_ancestry_scope();
+    passes?;
     backfilled?;
+    logs.finish_scope()?;
     Ok(())
 }
 
@@ -809,6 +813,7 @@ pub(crate) fn run_character_passes(
         logs: &mut logs,
     };
     // The birth-day samples of the day's newborns, after the economy's step (CK-367 §2), then the birthdays.
+    state.characters.begin_ancestry_scope();
     let samples = state.characters.run_birth_samples(&mut world, tick);
     // On 1 January the closed year's bonds are resolved, once, before the day's birthdays (CK-368 §4).
     let new_year = state.characters.run_new_year(&mut world, tick);
@@ -823,6 +828,7 @@ pub(crate) fn run_character_passes(
     } else {
         (Ok(()), Ok(()), Ok(()))
     };
+    state.characters.end_ancestry_scope();
     // All ran whatever the first reported; the first failure is the one returned.
     samples
         .and(new_year)
@@ -830,19 +836,26 @@ pub(crate) fn run_character_passes(
         .and(monthly)
         .and(conceptions)
         .and(weights)?;
+    logs.finish_scope()?;
     Ok(())
 }
 
 fn open_archive(path: &Path) -> Archived {
     match ck_characters::Archive::open(path.join("ARCH")) {
-        Ok(archive) => Archived::Open(archive),
+        Ok(archive) => {
+            archive.begin_scope();
+            Archived::Open(archive)
+        }
         Err(error) => Archived::Down(error.to_string()),
     }
 }
 
 fn open_logs(path: &Path) -> Logged {
     match ck_characters::LifeLog::open(path.join("LOGS")) {
-        Ok(logs) => Logged::Open(logs),
+        Ok(mut logs) => {
+            logs.begin_scope();
+            Logged::Open(logs)
+        }
         Err(error) => Logged::Down(error.to_string()),
     }
 }
@@ -853,6 +866,12 @@ enum Archived {
     Down(String),
 }
 impl ck_characters::ArchiveSink for Archived {
+    fn revision(&self) -> Option<u64> {
+        match self {
+            Self::Open(archive) => ck_characters::ArchiveSink::revision(archive),
+            Self::Down(_) => None,
+        }
+    }
     fn append(&mut self, record: &ck_characters::Character) -> io::Result<()> {
         match self {
             Self::Open(archive) => archive.append(record),
@@ -892,6 +911,14 @@ impl ck_characters::ArchiveSink for Archived {
 enum Logged {
     Open(ck_characters::LifeLog),
     Down(String),
+}
+impl Logged {
+    fn finish_scope(&mut self) -> Result<(), ck_characters::EventError> {
+        match self {
+            Self::Open(logs) => logs.finish_scope().map_err(ck_characters::EventError::Log),
+            Self::Down(_) => Ok(()),
+        }
+    }
 }
 impl ck_characters::LogSink for Logged {
     fn append(&mut self, id: u64, date: GameTime, text: &str) -> io::Result<()> {
@@ -961,6 +988,8 @@ fn new_game_characters(
     let mut characters = ck_characters::CharacterStore::default();
     let report = characters
         .start_768(&mut world, &data, start)
+        .map_err(|error| format!("[game] scenario `{}`: {error}", scenario.id))?;
+    logs.finish_scope()
         .map_err(|error| format!("[game] scenario `{}`: {error}", scenario.id))?;
     for line in report.lines() {
         log(Level::Info, line);
