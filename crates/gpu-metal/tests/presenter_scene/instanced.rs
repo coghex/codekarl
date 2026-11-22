@@ -970,6 +970,7 @@ pub(crate) fn scene_keeps_the_legacy_quad_below() {
 /// control: not forwarding the filter (always nearest), or sampling the checker with the frame's filter, fails.
 pub(crate) fn scene_filter_reaches_the_frame() {
     let mut rig = Rig::open();
+    let generations = Arc::new(Mutex::new(Vec::new()));
     let scene = Scene::new();
     // Black / white on the first row, white / black on the second.
     scene.driver().offers.push_back((1, 1, 2, 2));
@@ -977,7 +978,10 @@ pub(crate) fn scene_filter_reaches_the_frame() {
         .driver()
         .pictures
         .push((1, 1, 2, 2, [BLACK, WHITE, WHITE, BLACK].concat()));
-    let mut presenter = scene.start(&rig, limits(), None, capturing);
+    let mut presenter = scene.start(&rig, limits(), None, |hooks| {
+        capturing(hooks);
+        hooks.generation_log = Some(Arc::clone(&generations));
+    });
     presenter.texture_wake()();
     until(&mut rig, "the texture adopted", || {
         scene.driver().adopted.iter().map(Vec::len).sum::<usize>() >= 1
@@ -999,6 +1003,9 @@ pub(crate) fn scene_filter_reaches_the_frame() {
     until(&mut rig, "the nearest frame", || {
         presenter.drawn_generation() == Some(1)
     });
+    until(&mut rig, "generation 1 frame hook", || {
+        generations.lock().expect("generation log").contains(&1)
+    });
     let nearest = captured(
         &mut rig,
         &scene,
@@ -1007,6 +1014,9 @@ pub(crate) fn scene_filter_reaches_the_frame() {
     send(2, MetalFilter::Linear);
     until(&mut rig, "the linear frame", || {
         presenter.drawn_generation() == Some(2)
+    });
+    until(&mut rig, "generation 2 frame hook", || {
+        generations.lock().expect("generation log").contains(&2)
     });
     let linear = captured(
         &mut rig,
@@ -1300,11 +1310,15 @@ fn bindless_scene(slots: u32, textures: u32, extra: u32) -> Scene {
 /// one that wrote another instance's slot would show another colour.
 pub(crate) fn scene_bindless_draws_one_run_and_pins_no_revision() {
     let mut rig = Rig::open();
+    let generations = Arc::new(Mutex::new(Vec::new()));
     let scene = bindless_scene(32, 8, 8);
     offer(&scene, 1, 1, RED);
     offer(&scene, 2, 1, GREEN);
     offer(&scene, 3, 1, BLUE);
-    let mut presenter = scene.start(&rig, limits(), None, capturing);
+    let mut presenter = scene.start(&rig, limits(), None, |hooks| {
+        capturing(hooks);
+        hooks.generation_log = Some(Arc::clone(&generations));
+    });
     presenter.texture_wake()();
     until(&mut rig, "all three adopted", || {
         scene.driver().adopted.iter().map(Vec::len).sum::<usize>() >= 3
@@ -1321,6 +1335,9 @@ pub(crate) fn scene_bindless_draws_one_run_and_pins_no_revision() {
     );
     until(&mut rig, "the frame", || {
         presenter.drawn_generation() == Some(10)
+    });
+    until(&mut rig, "generation 10 frame hook", || {
+        generations.lock().expect("generation log").contains(&10)
     });
     let stats = presenter.stats();
     assert_eq!(
@@ -1375,6 +1392,7 @@ pub(crate) fn scene_bindless_draws_one_run_and_pins_no_revision() {
 )]
 pub(crate) fn scene_bindless_epoch_pin_alone_keeps_replaced_textures_until_the_frame_completes() {
     let mut rig = Rig::open();
+    let generations = Arc::new(Mutex::new(Vec::new()));
     let scene = bindless_scene(32, 8, 8);
     offer(&scene, 1, 1, RED);
     offer(&scene, 2, 1, GREEN);
@@ -1383,8 +1401,10 @@ pub(crate) fn scene_bindless_epoch_pin_alone_keeps_replaced_textures_until_the_f
     let gate = Arc::new(AtomicI32::new(1));
     let mut presenter = {
         let gate = Arc::clone(&gate);
+        let generations_for_hooks = Arc::clone(&generations);
         scene.start(&rig, limits(), None, move |hooks| {
             hooks.frame_completion_gate = Some(gate);
+            hooks.generation_log = Some(Arc::clone(&generations_for_hooks));
             hooks.capture_frames = true;
         })
     };
@@ -1399,6 +1419,9 @@ pub(crate) fn scene_bindless_epoch_pin_alone_keeps_replaced_textures_until_the_f
     publish(&scene, 10, None, cells.clone());
     until(&mut rig, "the first scene frame", || {
         presenter.drawn_generation() == Some(10)
+    });
+    until(&mut rig, "generation 10 frame hook", || {
+        generations.lock().expect("generation log").contains(&10)
     });
     // Its completion arrived (the gate was open): nothing is in flight now.
     let drawn = scene.probes.frames();
@@ -1426,6 +1449,9 @@ pub(crate) fn scene_bindless_epoch_pin_alone_keeps_replaced_textures_until_the_f
     publish(&scene, 11, None, cells.clone());
     until(&mut rig, "the held frame", || {
         presenter.drawn_generation() == Some(11)
+    });
+    until(&mut rig, "generation 11 frame hook", || {
+        generations.lock().expect("generation log").contains(&11)
     });
     let held = scene.probes.frames();
     assert_eq!(

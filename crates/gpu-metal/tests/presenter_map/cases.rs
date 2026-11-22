@@ -1318,6 +1318,7 @@ pub(crate) fn map_in_the_first_frame() {
         "the first frame has the map"
     );
     let observer = &probes.observer;
+    assert!(rig.pump_until(BOUND, || probes.frames() >= 1));
     assert_eq!(probes.frames(), 1, "it was the first and only frame");
     assert_eq!(observer.map_passes(), 1);
     assert_eq!(observer.map_grids_created(), 1);
@@ -1708,7 +1709,9 @@ pub(crate) fn map_a_withdrawn_map_ends_the_retry() {
     let probes = Probes::new();
     let slot = MetalQuadSlot::new();
     let told = Arc::new(Told::default());
+    let generations = Arc::new(Mutex::new(Vec::new()));
     let hooks = TestHooks {
+        generation_log: Some(Arc::clone(&generations)),
         // Every attempt is refused for the whole case.
         fail_map_allocations: u32::MAX,
         ..hooks_with(&probes, &slot)
@@ -1730,6 +1733,9 @@ pub(crate) fn map_a_withdrawn_map_ends_the_retry() {
     // The map is withdrawn: a frame without it is drawn, and then nothing more is drawn.
     slot.publish(MetalScene::new(2, None));
     assert!(rig.pump_until(BOUND, || presenter.drawn_generation() == Some(2)));
+    assert!(rig.pump_until(BOUND, || {
+        generations.lock().expect("generation log").contains(&2)
+    }));
     rig.pump_for(Duration::from_millis(100));
     let drawn = probes.frames();
     rig.pump_for(Duration::from_millis(250));

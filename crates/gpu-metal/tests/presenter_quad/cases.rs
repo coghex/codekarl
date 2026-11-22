@@ -384,6 +384,7 @@ pub(crate) fn quad_in_the_first_frame() {
         "the first frame has the quad: {:?}",
         presenter.drawn_generation()
     );
+    assert!(rig.pump_until(BOUND, || probes.frames() >= 1));
     assert_eq!(probes.frames(), 1, "it was the first and only frame");
     assert_eq!(probes.observer.quad_draws(), 1);
     assert_eq!(probes.observer.quad_textures_created(), 1);
