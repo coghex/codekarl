@@ -74,6 +74,45 @@ pub struct RiverStretch {
     pub drawn_last: i64,
 }
 
+impl RiverNetwork {
+    /// The index of the river whose stable id is `id`.
+    #[must_use]
+    pub fn river_index(&self, id: &str) -> Option<usize> {
+        self.rivers.iter().position(|river| river.id == id)
+    }
+
+    /// The mouth of the river at `river`: the final point of its exit stretch, chosen by one rule over the network as shipped. An exit
+    /// stretch is one of the river's stretches whose `ends` is the sea or a stretch of another river. The sea is preferred; among the
+    /// remaining candidates the stretch whose id is last in ascending order wins. A tributary's mouth is where it joins (its own exit
+    /// stretch's final point), never followed on through the receiving river. `None` for an index that names no river, or a river
+    /// with no exit stretch (the loader guarantees every named river has one).
+    #[must_use]
+    pub fn mouth(&self, river: usize) -> Option<FixedPoint> {
+        let exits: Vec<&RiverStretch> = self
+            .stretches
+            .iter()
+            .filter(|stretch| {
+                stretch.river == river
+                    && stretch.ends.is_none_or(|next| {
+                        self.stretches
+                            .get(next)
+                            .is_some_and(|next| next.river != river)
+                    })
+            })
+            .collect();
+        let to_sea: Vec<&RiverStretch> = exits
+            .iter()
+            .copied()
+            .filter(|stretch| stretch.ends.is_none())
+            .collect();
+        let candidates = if to_sea.is_empty() { exits } else { to_sea };
+        candidates
+            .into_iter()
+            .max_by(|first, second| first.id.cmp(&second.id))
+            .and_then(|stretch| stretch.points.last().copied())
+    }
+}
+
 /// Line and dark-water pixels prepared for one network tile.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RiverCoverageParts {

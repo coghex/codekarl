@@ -41,6 +41,9 @@ pub(crate) struct PointerViewEvent {
     pub(crate) button: Option<&'static str>,
     pub(crate) amount: Option<i32>,
     pub(crate) unit: Option<&'static str>,
+    /// The tag of the region the key was found in (`render.set_hit_tag`), in the regions the router used at the tick that routed the event:
+    /// which drawing of the key the event was aimed at. Only button events carry it.
+    pub(crate) tag: Option<String>,
 }
 
 /// One action's share of the stash.
@@ -374,6 +377,7 @@ mod tests {
             button: None,
             amount: None,
             unit: None,
+            tag: None,
         };
         let mut moves = (0..2).map(move_event);
         stash.absorb_pointer(None, moves.by_ref(), false);
@@ -387,6 +391,7 @@ mod tests {
                 button: Some("middle"),
                 amount: None,
                 unit: None,
+                tag: None,
             }],
             false,
         );
@@ -404,6 +409,7 @@ mod tests {
             button: None,
             amount: None,
             unit: None,
+            tag: None,
         };
         stash.absorb_pointer(None, (0..70).map(event), false);
         assert_eq!(stash.pointer_events.len(), POINTER_EVENT_CAPACITY);
@@ -430,6 +436,7 @@ mod tests {
                 button: None,
                 amount: None,
                 unit: None,
+                tag: None,
             }],
             true,
         );

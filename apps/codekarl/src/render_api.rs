@@ -15,7 +15,7 @@
 //! - the group calls of milestone 8, slice 4 (`docs/ui-design.md` §3.4): `render.create_group()` → a group token,
 //!   `render.create_quad{..., group=}`, `render.raise_group(g)`, `render.lower_group(g)`, `render.raise_groups{g1, ..., gn}`,
 //!   `render.set_group_visible(g, bool)`, `render.set_group_offset(g, x, y)`, `render.set_group_clip(g, {x, y, width, height} | nil)`,
-//!   `render.destroy_group(g)` and `render.set_hit(key, rects | nil, g?)`. Each validates before it changes anything;
+//!   `render.destroy_group(g)`, `render.set_hit(key, rects | nil, g?)` and `render.set_hit_tag(key, tag | nil)` (CK-381: a label published with the key's regions and copied into the button events routed to them). Each validates before it changes anything;
 //! - the scene API of the design (§8.2): `render.create_quad{texture=, x=, y=, width=, height=}` → a quad token,
 //!   `render.set_position(quad, x, y)`, `render.set_rect(quad, x, y, width, height)` and `render.destroy_quad(quad)`. Each
 //!   validates every argument before it changes anything, and reports a refusal as an ordinary Lua error starting with the
@@ -556,6 +556,34 @@ impl Shared {
         Ok(Vec::new())
     }
 
+    /// `render.set_hit_tag(key, tag | nil)`: gives the hit key `key` (set with `render.set_hit`) a tag, an opaque label of
+    /// 1 to 128 printable ASCII characters, published with the key's regions, or takes it away with `nil`. The pointer router copies the tag of the region
+    /// it hit-tested a button event against into the event (`tag`), so the UI can tell which drawing of a key the event was aimed at.
+    fn set_hit_tag(&self, arguments: &[Option<ConfigValue>]) -> Result<Vec<ConfigValue>, String> {
+        const F: &str = "render.set_hit_tag";
+        if arguments.len() != 2 {
+            return Err(format!("{F}: expected (key, tag | nil)"));
+        }
+        let Some(Some(ConfigValue::String(key))) = arguments.first() else {
+            return Err(format!("{F}: `key` must be a string"));
+        };
+        let tag = match arguments.get(1) {
+            Some(None) => None,
+            Some(Some(ConfigValue::String(tag))) => Some(tag.as_str()),
+            _ => return Err(format!("{F}: `tag` must be a string or nil")),
+        };
+        let mut writer = self.writer();
+        let Some(writer) = writer.as_mut() else {
+            return Err(format!("{F}: {}", AdmitError::Ended));
+        };
+        self.check_service_open(F)?;
+        writer
+            .set_hit_tag(key, tag)
+            .map_err(|error| format!("{F}: {error}"))?;
+        self.note_accepted();
+        Ok(Vec::new())
+    }
+
     /// Runs one group edit on the writer, after the cheap argument checks and the ended check, and counts it as accepted.
     fn edit_groups(
         &self,
@@ -886,6 +914,7 @@ fn host_calls(shared: &Arc<Shared>) -> Vec<(&'static str, HostFunction)> {
         ("set_rect", function(Shared::set_rect)),
         ("destroy_quad", function(Shared::destroy_quad)),
         ("set_hit", function(Shared::set_hit)),
+        ("set_hit_tag", function(Shared::set_hit_tag)),
         ("create_group", function(Shared::create_group)),
         ("raise_group", function(Shared::raise_group)),
         ("lower_group", function(Shared::lower_group)),
@@ -1029,6 +1058,66 @@ mod tests {
 
         fn generation(&self) -> u64 {
             self.seen.last().generation
+        }
+    }
+
+    #[test]
+    fn set_hit_tag_publishes_a_label_with_the_keys_regions_and_refuses_what_it_cannot_tag() {
+        let bridge = SceneBridge::new(Filter::Nearest);
+        let shared = Shared {
+            assets: None,
+            writer: Mutex::new(Some(bridge.take_writer().expect("writer"))),
+            headless: None,
+            service: None,
+            lane: None,
+            upgraded: false,
+            after_decode: None,
+            lock_threads: Mutex::new(Vec::new()),
+            lane_seam: Mutex::new(None),
+        };
+        let text = |value: &str| Some(ConfigValue::String(value.to_owned()));
+        let rectangle = ConfigValue::Array(vec![ConfigValue::Table(BTreeMap::from([
+            ("x".to_owned(), ConfigValue::Float(0.0)),
+            ("y".to_owned(), ConfigValue::Float(0.0)),
+            ("width".to_owned(), ConfigValue::Float(10.0)),
+            ("height".to_owned(), ConfigValue::Float(10.0)),
+        ]))]);
+        shared
+            .set_hit(&[text("row"), Some(rectangle)])
+            .expect("valid hit update");
+        shared
+            .set_hit_tag(&[text("row"), text("g4")])
+            .expect("a key with regions takes a tag");
+        shared.writer().as_mut().unwrap().publish();
+        let at = ck_window::PointerPosition { x: 256, y: 256 };
+        let regions = bridge.hit_regions().expect("published regions");
+        assert_eq!(
+            (regions.key_at(at), regions.tag_at(at)),
+            (Some("row"), Some("g4"))
+        );
+        shared
+            .set_hit_tag(&[text("row"), None])
+            .expect("nil takes the tag away");
+        shared.writer().as_mut().unwrap().publish();
+        assert_eq!(bridge.hit_regions().unwrap().tag_at(at), None);
+        for (arguments, expected) in [
+            (vec![text("row")], "expected (key, tag | nil)"),
+            (
+                vec![Some(ConfigValue::Integer(1)), text("g1")],
+                "`key` must be a string",
+            ),
+            (
+                vec![text("row"), Some(ConfigValue::Integer(1))],
+                "`tag` must be a string or nil",
+            ),
+            (vec![text("row"), text("Bad Tag")], "tag must be 1 to 128"),
+            (vec![text("nothing"), text("g1")], "no hit rectangles"),
+        ] {
+            let refusal = shared.set_hit_tag(&arguments).expect_err("refused");
+            assert!(
+                refusal.starts_with("render.set_hit_tag: ") && refusal.contains(expected),
+                "{refusal}"
+            );
         }
     }
 

@@ -125,6 +125,13 @@ game = {
     return view[id]
   end,
 }
+-- `game.go_to` (CK-381) records its calls as `{kind, id, zoom, revision}` and fails with `go_to_refusal` when that is set.
+go_to_calls = {}
+go_to_refusal = nil
+game.go_to = function(kind, id, zoom, revision)
+  go_to_calls[#go_to_calls + 1] = {kind = kind, id = id, zoom = zoom, revision = revision}
+  if go_to_refusal ~= nil then error("game.go_to: " .. go_to_refusal) end
+end
 -- The map-mode buttons (milestone 9, slice 8): `game.set_map_mode` records its calls, and fails when `fail_mode` is set.
 set_mode_calls = {}
 fail_mode = false
@@ -144,6 +151,7 @@ local buttons_library = require("lib.button")
 local real_button_new = buttons_library.new
 mode_buttons = {}
 bar_buttons = {}
+go_buttons = {}
 look_buttons = {}
 time_buttons = {}
 places_text_buttons = 0
@@ -152,7 +160,9 @@ local bar_visible = true
 buttons_library.new = function(spec)
   local created = real_button_new(spec)
   if spec.text == "places" then places_text_buttons = places_text_buttons + 1 end
-  if spec.icon == "location" or spec.icon == "pops" or spec.icon == "characters" then
+  if spec.style == "title" and spec.icon == "location" then
+    go_buttons[#go_buttons + 1] = created
+  elseif spec.icon == "location" or spec.icon == "pops" or spec.icon == "characters" then
     bar_buttons[spec.icon] = created
   end
   if spec.icon == "cards" or spec.icon == "rows" then look_buttons[spec.icon] = created end
@@ -1157,6 +1167,7 @@ mod cards;
 pub(crate) mod character_pop;
 pub(crate) mod character_relations;
 pub(crate) mod characters;
+mod go_to;
 mod ledger;
 mod market_table;
 mod mode_bar;

@@ -89,6 +89,7 @@ mod frame_api;
 mod game;
 mod game_api;
 mod glossary;
+mod go_to;
 mod input_stash;
 mod lifecycle;
 mod map_app;
@@ -756,6 +757,9 @@ fn supervise_with_owner_factory(
         .map(|prepared| game_api::places_of(&prepared.scenario))
         .unwrap_or_default();
     let scenario_id = game.as_ref().map(|prepared| prepared.scenario.id.clone());
+    let go_to_targets = game
+        .as_ref()
+        .map(|prepared| Arc::new(go_to::Targets::from_scenario(&prepared.scenario)));
     let connected = game.map(|prepared| game::setup::connect(prepared, Arc::clone(&wake)));
     // The UI VM's `frame.on_update` registration, published by the setter's observer and read by the input tick.
     let frame_registration = frame_api::FrameRegistration::default();
@@ -825,6 +829,14 @@ fn supervise_with_owner_factory(
                 .function(
                     "character_log",
                     game_api::character_log_function(Arc::clone(&view_cache)),
+                )
+                .function(
+                    "go_to",
+                    go_to::go_to_function(
+                        Arc::clone(&view_cache),
+                        map_controller.clone(),
+                        go_to_targets.expect("a connected game has a scenario"),
+                    ),
                 )
                 .function("place", game_api::place_function(view_cache, places))
                 .function("set_map_mode", game_api::set_map_mode_function(map_modes)),
