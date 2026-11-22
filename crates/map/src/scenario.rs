@@ -152,6 +152,22 @@ pub struct Location {
     pub confidence: Confidence,
 }
 
+impl Location {
+    /// The centre of the location's cell as a fixed point: the point its marker is drawn around, taken before it is quantised to a
+    /// zoom step, so it is the same at every step (the camera's go-to centres on it).
+    #[must_use]
+    pub fn center(&self) -> FixedPoint {
+        FixedPoint {
+            x: clamp_i32(
+                i64::from(self.cell.x) * crate::FIXED_PER_CELL + crate::FIXED_PER_CELL / 2,
+            ),
+            y: clamp_i32(
+                i64::from(self.cell.y) * crate::FIXED_PER_CELL + crate::FIXED_PER_CELL / 2,
+            ),
+        }
+    }
+}
+
 /// Confidence in one authored location.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Confidence {

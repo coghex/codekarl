@@ -15,6 +15,12 @@
 -- this width and this many rows that holds `count` items, before it lays the cells out. The bar appears or goes only in `list.new` and
 -- `list:set_items`, never in a scroll.
 --
+-- **Tags** (CK-381). A list made with `tags = true` hangs each item's `tag` (a string, or none) on the hit regions of its row
+-- (`render.set_hit_tag`) when the row is drawn and whenever `list:set_items` replaces the items. The input link copies the tag of the region a
+-- button event hit into the event, so an event keeps what its row stood for when it was routed, however the rows change before it is
+-- dispatched (`pointer.observe_tagged` hands it to its observers). The list reads no tag back and keeps no history; the keys and regions
+-- of its rows are the same with or without tags.
+--
 -- Only the rows that intersect the visible rectangle have glyph quads and, with `on_select`, hit keys; at most `rows + 1`. Two
 -- highlight quads (hover and pressed), created first so that the text is above them, are moved to the row that has the look and
 -- parked at `ui.HIDDEN` otherwise, since one pointer has at most one hovered row and one pressed row.
@@ -89,6 +95,8 @@ local function checked_items(who, items)
         error(who .. ": item " .. index .. " stripe must be a colour string", 3)
       end
       checked.stripe = item.stripe
+      -- What the row stood for when it was drawn (see the header): kept as given, never read here.
+      checked.tag = item.tag
       if item.tooltip ~= nil then
         local source = item.tooltip
         if type(source) == "function" then
@@ -350,6 +358,7 @@ local function remove_row(self, index)
     render.set_hit(key, nil, self.rows_group)
     tooltip.detach(key)
     self.row_keys[index] = nil
+    self.tagged[key] = nil
     local retired = pointer.widget(key)
     self.retired[key] = true
     pointer.defer(function()
@@ -455,6 +464,24 @@ refresh_visible = function(self)
   for index in pairs(self.lines) do update_visual(self, index) end
 end
 
+-- Hangs the tag of the item shown in row `index` on the row's hit key `key` (or takes the earlier one away).
+local function publish_tag(self, key, index)
+  if not self.tags then return end
+  local item = self.items[index]
+  local tag = type(item) == "table" and item.tag or nil
+  if tag ~= nil or self.tagged[key] then
+    -- A tag the scene refuses (it should not happen: the builder only offers valid ones) costs the row its right-click, never the frame: the
+    -- earlier tag of the key goes too, or the row would keep meaning what it no longer shows.
+    if tag ~= nil and not pcall(render.set_hit_tag, key, tag) then
+      pcall(render.set_hit_tag, key, nil)
+      tag = nil
+    elseif tag == nil then
+      pcall(render.set_hit_tag, key, nil)
+    end
+    self.tagged[key] = tag ~= nil or nil
+  end
+end
+
 local function add_row(self, index)
   self.lines[index] = {lines = {}, group = self.rows_group, y = row_top(index)}
   update_visual(self, index)
@@ -462,6 +489,7 @@ local function add_row(self, index)
     local key = self.base .. "_row_" .. index
     self.row_keys[index] = key
     render.set_hit(key, {{x = 0, y = row_top(index), width = self.row_w, height = ROW}}, self.rows_group)
+    publish_tag(self, key, index)
     pointer.register(key, row_widget(self, index, key), self.window)
     if self.tooltips then
       tooltip.attach(key, function(x, y)
@@ -583,6 +611,9 @@ function list.new(spec)
   if spec.on_select ~= nil and type(spec.on_select) ~= "function" then
     error("list.new: on_select must be nil or a function", 2)
   end
+  if spec.tags ~= nil and type(spec.tags) ~= "boolean" then
+    error("list.new: tags must be a boolean", 2)
+  end
   if spec.tooltips ~= nil and type(spec.tooltips) ~= "boolean" then
     error("list.new: tooltips must be a boolean", 2)
   end
@@ -604,6 +635,8 @@ function list.new(spec)
   self.rows = math.tointeger(rows)
   self.items = items
   self.on_select = spec.on_select
+  self.tags = spec.tags == true
+  self.tagged = {} -- the hit keys whose regions carry a tag
   self.tooltips = spec.tooltips == true
   self.numbers = spec.numbers == true
   self.selected_inset = ui.snap(spec.selected_inset or 0)
@@ -715,6 +748,7 @@ function list:set_items(items)
     return
   end
   self.items = checked_items("list:set_items", items)
+  for index, key in pairs(self.row_keys) do publish_tag(self, key, index) end
   if self.selected_row ~= nil and self.selected_row > #self.items then
     self.selected_row = nil
   end

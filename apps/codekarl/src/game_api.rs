@@ -447,6 +447,10 @@ struct CacheInner {
     completed: Option<u64>,
     /// The highest revision that has left the cache: a revision at or below it that is not held is retired.
     retired_through: u64,
+    /// The world of each held revision the link has noted (CK-381); a revision with none is of world `0`.
+    worlds: BTreeMap<u64, u64>,
+    /// The highest world noted: the world a go-to may name a revision of.
+    newest_world: u64,
 }
 
 /// The economy views the UI link has handed to the UI VM (design r5 §3.11, kept in §6.2). The cache holds, by revision, the view of
@@ -478,6 +482,7 @@ impl CacheInner {
             .collect();
         for revision in gone {
             self.views.remove(&revision);
+            self.worlds.remove(&revision);
             self.retired_through = self.retired_through.max(revision);
         }
     }
@@ -505,6 +510,32 @@ impl ViewCache {
         if let Some(observer) = self.observer.get() {
             observer(revision, &told);
         }
+    }
+
+    /// Records that the view of `revision` belongs to `world` (the `game_time` snapshot's world) and that no world below it is current.
+    pub(crate) fn note_world(&self, revision: u64, world: u64) {
+        let mut inner = self.locked();
+        if inner.views.contains_key(&revision) {
+            inner.worlds.insert(revision, world);
+        }
+        inner.newest_world = inner.newest_world.max(world);
+    }
+
+    /// [`get_for`](Self::get_for), and a refusal when the revision belongs to a world a load has since replaced.
+    pub(crate) fn get_in_world(
+        &self,
+        caller: &str,
+        revision: u64,
+    ) -> Result<Arc<EconomyView>, String> {
+        let view = self.get_for(caller, revision)?;
+        let inner = self.locked();
+        let world = inner.worlds.get(&revision).copied().unwrap_or_default();
+        if world < inner.newest_world {
+            return Err(format!(
+                "{caller}: revision {revision} is of a replaced world"
+            ));
+        }
+        Ok(view)
     }
 
     /// Has `observer` told of every view posted from now on. Set once; a second call changes nothing.

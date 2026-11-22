@@ -983,6 +983,110 @@ fn a_hit_key_must_match_the_pattern_and_a_rectangle_must_have_an_extent() {
     assert!(!rig.writer.publish(), "nothing changed");
 }
 
+#[test]
+fn a_hit_tag_is_published_with_the_keys_regions_and_goes_with_the_key() {
+    let mut rig = Rig::new();
+    let all = rect(0.0, 0.0, 10.0, 10.0);
+    let tag_at = |rig: &Rig, x: f64, y: f64| {
+        rig.bridge
+            .hit_regions()
+            .expect("published regions")
+            .tag_at(position(x, y))
+            .map(str::to_owned)
+    };
+    rig.writer.set_hit("row", Some(vec![all]), None).unwrap();
+    assert!(rig.writer.publish());
+    assert_eq!(
+        tag_at(&rig, 5.0, 5.0),
+        None,
+        "a key has no tag until it is given one"
+    );
+    rig.writer.set_hit_tag("row", Some("g1")).unwrap();
+    assert!(rig.writer.publish(), "a new tag is a change to publish");
+    assert_eq!(tag_at(&rig, 5.0, 5.0).as_deref(), Some("g1"));
+    assert_eq!(hit_keys_at(&rig, 5.0, 5.0).as_deref(), Some("row"));
+    // The same tag again changes nothing; another tag does, and the key and its rectangles are as they were.
+    rig.writer.set_hit_tag("row", Some("g1")).unwrap();
+    assert!(!rig.writer.publish(), "the same tag is no change");
+    rig.writer.set_hit_tag("row", Some("g2")).unwrap();
+    assert!(rig.writer.publish());
+    assert_eq!(tag_at(&rig, 5.0, 5.0).as_deref(), Some("g2"));
+    // The topmost region's tag is the one found, and an untagged key over it has none.
+    rig.writer.set_hit("top", Some(vec![all]), None).unwrap();
+    assert!(rig.writer.publish());
+    assert_eq!(hit_keys_at(&rig, 5.0, 5.0).as_deref(), Some("top"));
+    assert_eq!(tag_at(&rig, 5.0, 5.0), None);
+    // Taking the tag away, or the key, takes it from the regions; a key set again starts untagged.
+    rig.writer.set_hit_tag("row", None).unwrap();
+    rig.writer.set_hit("top", None, None).unwrap();
+    assert!(rig.writer.publish());
+    assert_eq!(tag_at(&rig, 5.0, 5.0), None);
+    rig.writer.set_hit_tag("row", Some("g3")).unwrap();
+    rig.writer.set_hit("row", None, None).unwrap();
+    rig.writer.set_hit("row", Some(vec![all]), None).unwrap();
+    assert!(rig.writer.publish());
+    assert_eq!(
+        tag_at(&rig, 5.0, 5.0),
+        None,
+        "a removed key's tag does not come back"
+    );
+}
+
+#[test]
+fn a_hit_tag_must_match_the_pattern_and_belong_to_a_key_that_has_regions() {
+    let mut rig = Rig::new();
+    rig.writer
+        .set_hit("row", Some(vec![rect(0.0, 0.0, 10.0, 10.0)]), None)
+        .unwrap();
+    assert!(rig.writer.publish());
+    for bad in ["", "a b", "caf\u{e9}", &"t".repeat(129)] {
+        assert_eq!(
+            rig.writer.set_hit_tag("row", Some(bad)),
+            Err(HitError::BadTag),
+            "{bad:?}"
+        );
+    }
+    // A tag may name a thing by its id: capitals, punctuation and up to 128 characters are fine.
+    rig.writer
+        .set_hit_tag("row", Some(&format!("go:pop:Fada#1:{}:0", "7".repeat(100))))
+        .unwrap();
+    assert!(rig.writer.publish());
+    assert_eq!(
+        rig.writer.set_hit_tag("nothing", Some("g1")),
+        Err(HitError::UnknownKey)
+    );
+    assert!(!rig.writer.publish(), "nothing changed");
+}
+
+#[test]
+fn destroying_a_group_takes_its_keys_tags_with_it() {
+    let mut rig = Rig::new();
+    let group = rig.writer.create_group().unwrap();
+    rig.writer
+        .set_hit("row", Some(vec![rect(0.0, 0.0, 10.0, 10.0)]), Some(group))
+        .unwrap();
+    rig.writer.set_hit_tag("row", Some("g1")).unwrap();
+    rig.writer.destroy_group(group).unwrap();
+    assert!(rig.writer.publish());
+    assert_eq!(
+        rig.writer.set_hit_tag("row", Some("g2")),
+        Err(HitError::UnknownKey),
+        "the key is gone with its group"
+    );
+    // A new key of the same name does not inherit the old tag.
+    rig.writer
+        .set_hit("row", Some(vec![rect(0.0, 0.0, 10.0, 10.0)]), None)
+        .unwrap();
+    assert!(rig.writer.publish());
+    assert_eq!(
+        rig.bridge
+            .hit_regions()
+            .expect("published regions")
+            .tag_at(position(5.0, 5.0)),
+        None
+    );
+}
+
 // ---------------------------------------------------------------------------------------------------------------------
 // The point domain
 // ---------------------------------------------------------------------------------------------------------------------

@@ -123,6 +123,9 @@ fn pointer_event_table(event: &crate::input_stash::PointerViewEvent) -> ConfigVa
     if let Some(button) = event.button {
         table.insert("button".to_owned(), ConfigValue::String(button.to_owned()));
     }
+    if let Some(tag) = &event.tag {
+        table.insert("tag".to_owned(), ConfigValue::String(tag.clone()));
+    }
     ConfigValue::Table(table)
 }
 
@@ -403,6 +406,7 @@ fn view_event(
         button: None,
         amount: None,
         unit: None,
+        tag: None,
     }
 }
 
@@ -506,7 +510,9 @@ fn route_pointer_with(
             }
             PointerEvent::ButtonDown { button, position } => {
                 let key = key_at(regions, ui(position), viewport).map(str::to_owned);
+                let tag = tag_at(regions, ui(position), viewport).map(str::to_owned);
                 let mut event = view_event("button_down", ui(position), key);
+                event.tag = tag;
                 event.button = Some(match button {
                     ck_window::PointerButton::Middle => "middle",
                     ck_window::PointerButton::Right => "right",
@@ -515,7 +521,9 @@ fn route_pointer_with(
             }
             PointerEvent::ButtonUp { button, position } => {
                 let key = key_at(regions, ui(position), viewport).map(str::to_owned);
+                let tag = tag_at(regions, ui(position), viewport).map(str::to_owned);
                 let mut event = view_event("button_up", ui(position), key);
+                event.tag = tag;
                 event.button = Some(match button {
                     ck_window::PointerButton::Middle => "middle",
                     ck_window::PointerButton::Right => "right",
@@ -630,6 +638,18 @@ fn key_at(
         return None;
     }
     regions.and_then(|regions| regions.key_at(position))
+}
+
+/// The tag of the region [`key_at`] finds (see `render.set_hit_tag`): which drawing of the key a button event was aimed at.
+fn tag_at(
+    regions: Option<&ck_render_2d::HitRegions>,
+    position: PointerPosition,
+    viewport: Option<PointerPosition>,
+) -> Option<&str> {
+    if viewport.is_some_and(|view| !in_view(position, view)) {
+        return None;
+    }
+    regions.and_then(|regions| regions.tag_at(position))
 }
 
 fn in_view(position: PointerPosition, viewport: PointerPosition) -> bool {
@@ -979,6 +999,8 @@ impl CodekarlUi {
         // until a later call completes.
         let pinned = snapshot.economy.as_ref().map(|view| {
             sim.views.post(snapshot.economy_revision, Arc::clone(view));
+            sim.views
+                .note_world(snapshot.economy_revision, snapshot.world);
             snapshot.economy_revision
         });
         let posted = vm.borrow_mut().post(
@@ -2453,6 +2475,79 @@ mod tests {
     }
 
     #[test]
+    fn a_button_event_carries_the_tag_of_the_region_it_was_hit_tested_against() {
+        let bridge = ck_render_2d::SceneBridge::new(ck_render_2d::Filter::Nearest);
+        let mut writer = bridge.take_writer().expect("writer");
+        for (key, tag) in [("under", Some("g1")), ("over", Some("g2")), ("plain", None)] {
+            let x = match key {
+                "plain" => 60.0,
+                _ => 0.0,
+            };
+            writer
+                .set_hit(
+                    key,
+                    Some(vec![ck_render_2d::PointRect::new(x, 0.0, 20.0, 20.0)]),
+                    None,
+                )
+                .expect("valid hit key");
+            writer.set_hit_tag(key, tag).expect("the key has regions");
+        }
+        assert!(writer.publish());
+        let regions = bridge.hit_regions().expect("published regions");
+        let over_both = PointerPosition {
+            x: 10 * 256,
+            y: 10 * 256,
+        };
+        let on_plain = PointerPosition {
+            x: 70 * 256,
+            y: 10 * 256,
+        };
+        let nowhere = PointerPosition {
+            x: 40 * 256,
+            y: 40 * 256,
+        };
+        let mut owner = GestureOwner::Idle;
+        let routed = route_pointer(
+            &mut owner,
+            &pointer_input(
+                vec![
+                    PointerEvent::ButtonDown {
+                        button: ck_window::PointerButton::Right,
+                        position: over_both,
+                    },
+                    PointerEvent::ButtonUp {
+                        button: ck_window::PointerButton::Right,
+                        position: on_plain,
+                    },
+                    PointerEvent::ButtonDown {
+                        button: ck_window::PointerButton::Right,
+                        position: nowhere,
+                    },
+                    PointerEvent::Down(over_both),
+                ],
+                Some(over_both),
+                false,
+            ),
+            Some(&regions),
+        );
+        let seen: Vec<(&str, Option<&str>, Option<&str>)> = routed
+            .ui
+            .iter()
+            .map(|event| (event.kind, event.key.as_deref(), event.tag.as_deref()))
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                ("button_down", Some("over"), Some("g2")),
+                ("button_up", Some("plain"), None),
+                ("button_down", None, None),
+                ("down", Some("over"), None),
+            ],
+            "the topmost region's tag; an untagged region or an empty spot gives none; only button events carry one"
+        );
+    }
+
+    #[test]
     fn pointer_routing_captures_clicks_and_drags_and_keeps_map_drags_outside() {
         let regions = hit_regions(&[("panel", 0.0, 0.0, 20.0, 20.0)]);
         let inside = PointerPosition {
@@ -2602,6 +2697,7 @@ mod tests {
                     button: Some("middle"),
                     amount: None,
                     unit: None,
+                    tag: None,
                 },
                 crate::input_stash::PointerViewEvent {
                     kind: "button_up",
@@ -2611,6 +2707,7 @@ mod tests {
                     button: Some("middle"),
                     amount: None,
                     unit: None,
+                    tag: None,
                 },
                 crate::input_stash::PointerViewEvent {
                     kind: "button_down",
@@ -2620,6 +2717,7 @@ mod tests {
                     button: Some("right"),
                     amount: None,
                     unit: None,
+                    tag: None,
                 },
                 crate::input_stash::PointerViewEvent {
                     kind: "button_up",
@@ -2629,6 +2727,7 @@ mod tests {
                     button: Some("right"),
                     amount: None,
                     unit: None,
+                    tag: None,
                 },
             ]
         );
@@ -3823,6 +3922,7 @@ mod tests {
                     button: None,
                     amount: None,
                     unit: None,
+                    tag: None,
                 },
                 crate::input_stash::PointerViewEvent {
                     kind: "scroll",
@@ -3832,6 +3932,7 @@ mod tests {
                     button: None,
                     amount: Some(-128),
                     unit: Some("lines"),
+                    tag: None,
                 },
                 crate::input_stash::PointerViewEvent {
                     kind: "button_up",
@@ -3841,6 +3942,7 @@ mod tests {
                     button: Some("right"),
                     amount: None,
                     unit: None,
+                    tag: None,
                 },
             ],
             true,

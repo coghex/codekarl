@@ -10,6 +10,7 @@ local pressed_keys = {} -- key -> true, the widgets whose gesture is pressed
 local last_over = false
 local deferred = {} -- functions to run when the next dispatch ends
 local press_observers = {} -- functions told of each left press, in the packet's order, before any widget hears it
+local tagged_observers = {} -- functions told of each button press that carries a tag (CK-381)
 local gate = nil -- while set, `gate(key, event)` is asked before a keyed event reaches its widget; true swallows it (CK-305)
 
 -- Sets the gate (or clears it with nil): a function `gate(key, event)` asked, in the packet's order, for every keyed event before its widget
@@ -25,6 +26,16 @@ end
 -- lands elsewhere (a number field applying what was typed) reads `event.key`. It routes nothing and cannot stop the press.
 function pointer.observe_press(fn)
   press_observers[#press_observers + 1] = fn
+end
+
+-- Registers `fn(event, eligible)`, called for each `button_down` event that carries a `tag` (the tag of the hit region it was routed
+-- against, see `render.set_hit_tag`), in the packet's order, before any widget hears it, behind the gate (`pointer.set_gate`) like a widget
+-- and whether or not a widget is registered for its key.
+-- The event is all the observer is given: a thing the tag names is found from the tag, not from the row or widget that was under the pointer
+-- (the rows may have changed or gone since the event was routed). `eligible` is false for every event of an overflow packet. It routes
+-- nothing and cannot stop the event.
+function pointer.observe_tagged(fn)
+  tagged_observers[#tagged_observers + 1] = fn
 end
 
 function pointer.register(key, widget, owner)
@@ -132,6 +143,12 @@ function pointer.dispatch(p)
       event.functional = pointer.functional(key, event)
     end
     if key and not (gate ~= nil and gate(key, event)) then
+      -- A tagged button press is given to the observers behind the same gate as the widgets, and whether or not a widget is registered.
+      if event.kind == "button_down" and type(event.tag) == "string" then
+        for _, observe in ipairs(tagged_observers) do
+          observe(event, eligible)
+        end
+      end
       local widget = widgets[key]
       if widget ~= nil then
         local owner = owners[key]

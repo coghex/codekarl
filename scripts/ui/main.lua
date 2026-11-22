@@ -28,6 +28,7 @@ local fullscreen_key = require("lib.fullscreen_key")
 local cards = require("lib.cards")
 local character_cards = require("lib.character_cards")
 local character_screen = require("lib.character_screen")
+local go_to = require("lib.go_to")
 
 local P = ui.P
 local MARGIN = 8 -- UI units from the window's edges
@@ -382,6 +383,8 @@ if game ~= nil then
   -- carries (`game.place`), never from live state.
   local location_panel = location.new{
     view = view,
+    -- The title bar's go-to button: the camera goes to the place and zooms in (the window is the place's own and stays).
+    on_go = function(id, revision) go_to.to("location", id, revision) end,
     top = function()
       if time_panel ~= nil then
         return time_panel.y + time_panel.height + MARGIN
@@ -522,6 +525,41 @@ if game ~= nil then
     character_panel:open(id, revision, current_world)
   end
 
+  -- What `go_to.to` opens for a thing, in the revision it was given (CK-381): a place's window, a pop's place on the pops tab, a character's
+  -- screen. A river has none.
+  local function place_named(id)
+    for _, place in ipairs(game.places()) do
+      if place.id == id then return place end
+    end
+    return nil
+  end
+  go_to.set_openers{
+    location = function(id, revision)
+      local place = place_named(id)
+      if place ~= nil then
+        location_panel:show(place, nil, revision)
+        if character_panel ~= nil then character_panel:raise() end
+      end
+    end,
+    pop = function(id, revision)
+      local place = place_named(id.place)
+      if place ~= nil then
+        location_panel:show(place, "pops", revision)
+        if character_panel ~= nil then character_panel:raise() end
+      end
+    end,
+    character = function(id, revision)
+      if revision ~= nil and revision ~= 0 then character_panel:open(id, revision, current_world) end
+    end,
+  }
+
+  -- A right-click on a ledger row or card (CK-381): the camera goes to the thing the tag of the region it was routed against names, without
+  -- zooming, and nothing opens. The tag holds the thing, the revision the row was drawn from and the world, so the click keeps them however
+  -- the ledger changed before it was dispatched; a tag of a world a load has replaced does nothing. (A right button press only.)
+  pointer.observe_tagged(function(event, eligible)
+    if eligible and event.button == "right" then go_to.camera_from_tag(event.tag, current_world) end
+  end)
+
   -- The places tab's header row and its data rows, or the pops tab's rows (no header). Each data row carries what the list bar reads
   -- (`sort`, `filter`) and the place a click on it opens (`place`); the list is given only the cells and the rest. The cells are not
   -- laid out here: a row's `lay(width)` lays them out against the width of a row in UI pixels, once the rows that show are settled
@@ -547,7 +585,8 @@ if game ~= nil then
       end
       for _, place in ipairs(places) do
         local place_view = revision ~= nil and game.place(place.id, revision) or nil
-        local row = {place = place, sort = {name = place.name}, filter = {kind = place.kind}}
+        local row = {place = place, sort = {name = place.name}, filter = {kind = place.kind},
+          tag = go_to.tag("location", place.id, revision, current_world)}
         row.lay = function(width)
           local label = place.name
           if place.state == "abandoned" then label = label .. " (" .. place.kind:gsub("_", " ") .. ")" end
@@ -587,6 +626,7 @@ if game ~= nil then
               filter = {type = pop.kind, religion = pop.religion, culture = pop.culture},
               stripe = pop_colour(pop.kind),
               icon = {name = "pops", colour = pop_colour(pop.kind)},
+              tag = go_to.tag("pop", go_to.pop_id(place.id, pop_index - 1), revision, current_world),
             }
             row.lay = function(width)
               row.cells = {
@@ -638,7 +678,8 @@ if game ~= nil then
       local ok, answer = pcall(game.characters, revision)
       if ok then list = answer end
     end
-    local items = character_cards.items(ledger_bar:view(character_cards.rows(list)), open_character, current_world)
+    local items = character_cards.items(ledger_bar:view(character_cards.rows(list)), open_character, current_world,
+      function(id) return go_to.tag("character", id, revision, current_world) end)
     local height = math.max(P, places_window.content_height - listbar.HEIGHT)
     if ledger_cards ~= nil and not ledger_cards.closed then
       ledger_cards:set_items(items)
@@ -684,6 +725,7 @@ if game ~= nil then
         items = rows,
         tooltips = true,
         numbers = true,
+        tags = true,
         on_select = function(index)
           local selection = ledger_selections[index]
           if selection ~= nil then

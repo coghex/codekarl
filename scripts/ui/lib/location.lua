@@ -31,6 +31,9 @@ local TABS = {
   {key = "buildings", label = "buildings", short = "bld", tiny = "b"},
 }
 
+-- The icon of the title bar's go-to button: the ledger's location icon (CK-381).
+local GO_TO_ICON = "location"
+
 local function location_tab_labels(name)
   local count = utf8.len(name) or #name
   local short = name
@@ -1122,13 +1125,15 @@ end
 
 -- A panel over the windows of `spec.view` (a table with the window's current `width` and `height` in points, kept up to date by the
 -- caller) that sits `spec.top()` points from the top of the screen (below the time bar, say). `spec.on_close` is called when the
--- window closes.
+-- window closes. `spec.on_go(id, revision)` is called when the title bar's go-to button is clicked, with the place showing and the revision
+-- the panel holds.
 local render
 
 function location.new(spec)
   local self = setmetatable({}, location)
   self.view = spec.view
   self.on_close = spec.on_close
+  self.on_go = spec.on_go
   self.top = spec.top or function() return 0 end
   self.window = nil
   self.list = nil
@@ -1161,7 +1166,7 @@ function location.min_width()
   -- Also what holds the market's columns beside the scroll bar of its list: they end 48 pixels from the row's right edge (the balance
   -- bar is 46 wide from there), and the bar takes 5 pixels of the content's width (CK-299).
   local columns = (48 + scrollbar.RESERVE // P) * P + 6 * P
-  return math.max(windows.min_outer_width(tabs.reserved(TABS), false), columns)
+  return math.max(windows.min_outer_width(tabs.reserved(TABS), false, windows.title_button_room(GO_TO_ICON)), columns)
 end
 
 -- The outer size of the panel and where it sits: the left third of the screen, from `top` to the bottom edge. Where the third is
@@ -1463,8 +1468,10 @@ local function fit(self)
 end
 
 -- Opens the panel for `selection` (a `game_select` table or a places-list entry: `id`, `name`, ...) or, when it is open, shows that
--- place in it, on the tab that is showing.
-function location:show(selection, tab)
+-- place in it, on the tab that is showing. With a `revision` the panel reads the place under it, the revision the caller named (a go-to
+-- opens the window for the revision it went under); the next revision `game_time` carries refreshes the panel as it always does.
+function location:show(selection, tab, revision)
+  if revision ~= nil and revision ~= 0 then self:set_revision(revision) end
   if tab ~= nil then
     if FORMATTERS[tab] == nil then error("location:show: `" .. tostring(tab) .. "` is not a tab", 2) end
     self.key = tab
@@ -1510,6 +1517,14 @@ function location:show(selection, tab)
       on_select = function(key)
         self.key = key
         render(self, false)
+      end,
+    }
+    -- The title bar's go-to button: the camera goes to this place and zooms in; the window stays open, it is the place's own.
+    created:add_title_button{
+      icon = GO_TO_ICON,
+      tooltip = "go to",
+      on_click = function()
+        if self.on_go ~= nil and self.id ~= nil then self.on_go(self.id, self.revision) end
       end,
     }
     update_location_tab(self, selection)

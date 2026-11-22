@@ -142,12 +142,18 @@ pub enum HitError {
     /// The group is not usable, or a rectangle's numbers or edges are not valid (finite, a positive size, inside the point domain as
     /// set and as translated by the group's offset).
     Group(GroupError),
+    /// A tag is not 1 to 128 printable ASCII characters.
+    BadTag,
+    /// A tag was set for a key that has no hit rectangles.
+    UnknownKey,
 }
 
 impl fmt::Display for HitError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::BadKey => formatter.write_str("key must match [a-z0-9_]{1,48}"),
+            Self::BadTag => formatter.write_str("tag must be 1 to 128 printable ASCII characters"),
+            Self::UnknownKey => formatter.write_str("the key has no hit rectangles to tag"),
             Self::BadRectCount { count } => write!(
                 formatter,
                 "rectangles has {count} entries; expected 1 to {HIT_RECTS_PER_KEY}"
@@ -178,6 +184,7 @@ impl std::error::Error for HitError {}
 pub struct HitRegion {
     key: String,
     rect: HitRect,
+    tag: Option<String>,
 }
 
 impl HitRegion {
@@ -191,6 +198,12 @@ impl HitRegion {
     #[must_use]
     pub fn rect(&self) -> HitRect {
         self.rect
+    }
+
+    /// The tag the UI gave the key when this scene was published, if any (an opaque label the router copies into the events it routes here).
+    #[must_use]
+    pub fn tag(&self) -> Option<&str> {
+        self.tag.as_deref()
     }
 }
 
@@ -217,6 +230,16 @@ impl HitRegions {
             .map(HitRegion::key)
     }
 
+    /// The tag of the region [`key_at`](Self::key_at) finds at `position`.
+    #[must_use]
+    pub fn tag_at(&self, position: PointerPosition) -> Option<&str> {
+        self.regions
+            .iter()
+            .rev()
+            .find(|region| region.rect.contains(position))
+            .and_then(HitRegion::tag)
+    }
+
     /// Whether the ordered region list still contains `key`.
     #[must_use]
     pub fn contains_key(&self, key: &str) -> bool {
@@ -228,6 +251,13 @@ impl HitRegions {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct GroupHits {
     keys: Vec<(String, Vec<PointRect>)>,
+}
+
+/// Whether `tag` is 1 to 128 printable ASCII characters (no space): a tag is a label the UI hangs on a key's regions (it may name a thing
+/// by its id), not a key, so it has a wider alphabet than [`valid_key`].
+#[must_use]
+pub fn valid_tag(tag: &str) -> bool {
+    !tag.is_empty() && tag.len() <= 128 && tag.bytes().all(|byte| byte.is_ascii_graphic())
 }
 
 /// Whether `key` follows `[a-z0-9_]{1,48}`.
@@ -299,6 +329,7 @@ impl GroupHits {
     pub(crate) fn publish_into(
         &self,
         regions: &mut Vec<HitRegion>,
+        tags: &std::collections::HashMap<String, String>,
         dx: f64,
         dy: f64,
         clip: Option<PointRect>,
@@ -327,6 +358,7 @@ impl GroupHits {
                 regions.push(HitRegion {
                     key: key.clone(),
                     rect: placed,
+                    tag: tags.get(key).cloned(),
                 });
             }
         }

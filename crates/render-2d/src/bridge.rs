@@ -945,6 +945,19 @@ impl SceneWriter {
         Ok(())
     }
 
+    /// Gives the hit key `key` a tag (or none with `None`), published with its regions and copied by the pointer router into the button
+    /// events it routes to them. The key must have rectangles and the tag follows `[a-z0-9_]{1,48}`; nothing changes on a refusal.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`HitError`] if the tag is invalid or the key has no rectangles.
+    pub fn set_hit_tag(&mut self, key: &str, tag: Option<&str>) -> Result<(), HitError> {
+        if self.edits.set_hit_tag(key, tag)? {
+            self.dirty.set(true);
+        }
+        Ok(())
+    }
+
     /// Sets the one quad, replacing any earlier one.
     pub fn set_quad(&self, quad: Quad) {
         self.bridge.write(Some(quad));

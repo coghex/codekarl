@@ -98,6 +98,10 @@ impl RiverViewSelector for PreparedRivers {
     }
 }
 
+/// The zoom step a go-to with zoom sets (CK-381): the map pixel is about a third of a cell, so a place, its icon and the places around it
+/// (the view spans on the order of eighty kilometres) are clearly seen. A camera already closer than this stays where it is.
+pub(crate) const GO_TO_STEP: u8 = 45;
+
 /// A map, its packed GPU input, and the one camera controlled by the application.
 pub(crate) struct MapController<R: RiverViewSelector = PreparedRivers> {
     bridge: Arc<SceneBridge>,
@@ -566,6 +570,28 @@ impl<R: RiverViewSelector> MapController<R> {
             return Ok(true);
         }
         Ok(false)
+    }
+
+    /// Moves the camera so that `point` is the centre of the view, in one step (no animation), and publishes it. The centre is clamped
+    /// to the crop as panning is. With `zoom` the step becomes [`GO_TO_STEP`] unless the camera is already closer than that (going to a
+    /// thing never zooms out); without it the step is kept. A map that is not open is an error and nothing changes.
+    pub(crate) fn go_to(&mut self, point: FixedPoint, zoom: bool) -> Result<(), String> {
+        let current = self
+            .camera
+            .ok_or_else(|| "the map is not open".to_owned())?;
+        let step = if zoom {
+            current.step.max(GO_TO_STEP)
+        } else {
+            current.step
+        };
+        let camera = Camera::new(step, point, current.view, self.crop)
+            .ok_or_else(|| "map camera refused the go-to".to_owned())?;
+        #[cfg(feature = "test-support")]
+        if camera != current {
+            Self::observe_test_camera(camera)?;
+        }
+        self.camera = Some(camera);
+        self.publish_for_generation(camera, self.bridge.metrics_generation())
     }
 
     /// Ends a map-owned gesture without applying any movement to the next pointer position.
@@ -3226,5 +3252,108 @@ assert(scroll_reset == 1, "reset scroll used " .. tostring(scroll_reset))
         );
         // Nothing changed since: nothing is published again.
         assert_eq!(controller.update(&tick), Ok(false));
+    }
+    /// The point `cells` columns and `rows` rows from the expanded fixture's top-left cell, at the middle of that cell.
+    fn expanded_point(cells: i32, rows: i32) -> FixedPoint {
+        FixedPoint {
+            x: (23_882 + cells) * 32_768 + 16_384,
+            y: (23_882 + rows) * 32_768 + 16_384,
+        }
+    }
+
+    #[test]
+    fn a_go_to_centres_the_camera_on_the_point_in_one_step_and_keeps_the_zoom_without_the_flag() {
+        let mut controller = expanded_controller();
+        let before = controller.camera().expect("opened camera");
+        assert!(before.step < 15, "the map starts below the markers' step");
+        let point = expanded_point(30, 40);
+        controller
+            .go_to(point, false)
+            .expect("the point is on the map");
+        let after = controller.camera().expect("camera");
+        assert_eq!(after.center, point, "the point is the centre of the view");
+        assert_eq!(after.step, before.step, "no zoom flag keeps the step");
+        assert_eq!(after.view, before.view);
+    }
+
+    #[test]
+    fn a_go_to_with_zoom_sets_the_go_to_step_and_never_zooms_out_from_a_closer_one() {
+        let mut controller = expanded_controller();
+        controller
+            .go_to(expanded_point(30, 40), true)
+            .expect("the point is on the map");
+        assert_eq!(controller.camera().expect("camera").step, GO_TO_STEP);
+        // A camera closer than the go-to step stays where it is.
+        let closer = controller.camera().expect("camera");
+        controller.camera = Some(
+            Camera::new(GO_TO_STEP + 10, closer.center, closer.view, controller.crop)
+                .expect("camera"),
+        );
+        controller
+            .go_to(expanded_point(60, 20), true)
+            .expect("the point is on the map");
+        let after = controller.camera().expect("camera");
+        assert_eq!(
+            after.step,
+            GO_TO_STEP + 10,
+            "going to a thing never zooms out"
+        );
+        assert_eq!(after.center, expanded_point(60, 20));
+    }
+
+    #[test]
+    fn the_go_to_centre_is_clamped_to_the_crop_as_panning_is() {
+        let mut controller = expanded_controller();
+        let crop = controller.crop;
+        // Far beyond the bottom-right corner, and beyond the top-left one.
+        controller
+            .go_to(
+                FixedPoint {
+                    x: i32::MAX,
+                    y: i32::MAX,
+                },
+                false,
+            )
+            .expect("a point beyond the crop clamps");
+        let right = (i64::from(crop.origin.x) + i64::from(crop.width)) * ck_map::FIXED_PER_CELL;
+        let bottom = (i64::from(crop.origin.y) + i64::from(crop.height)) * ck_map::FIXED_PER_CELL;
+        let center = controller.camera().expect("camera").center;
+        assert_eq!((i64::from(center.x), i64::from(center.y)), (right, bottom));
+        controller
+            .go_to(FixedPoint { x: 0, y: 0 }, false)
+            .expect("a point before the crop clamps");
+        let center = controller.camera().expect("camera").center;
+        assert_eq!(
+            (i64::from(center.x), i64::from(center.y)),
+            (
+                i64::from(crop.origin.x) * ck_map::FIXED_PER_CELL,
+                i64::from(crop.origin.y) * ck_map::FIXED_PER_CELL
+            )
+        );
+    }
+
+    #[test]
+    fn a_go_to_publishes_the_camera_to_the_lane_and_an_unopened_map_refuses_it() {
+        let mut controller = expanded_controller();
+        let point = expanded_point(70, 10);
+        controller
+            .go_to(point, true)
+            .expect("the point is on the map");
+        let camera = controller.camera().expect("camera");
+        assert_eq!((camera.center, camera.step), (point, GO_TO_STEP));
+        assert_eq!(
+            controller.published_generation,
+            controller.bridge.metrics_generation(),
+            "the camera was published for the current metrics"
+        );
+        let loaded = expanded_map();
+        let bridge = SceneBridge::new(ck_render_2d::Filter::Nearest);
+        let mut unopened =
+            MapController::new(&loaded, bridge, 4, 20, 24).expect("map lane accepts fixture");
+        assert_eq!(
+            unopened.go_to(point, true),
+            Err("the map is not open".to_owned())
+        );
+        assert_eq!(unopened.camera(), None);
     }
 }

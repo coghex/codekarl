@@ -303,6 +303,7 @@ impl StrictScene {
             "raise_groups",
             "create_quad",
             "set_hit",
+            "set_hit_tag",
             "set_position",
             "set_rect",
             "set_tint",

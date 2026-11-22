@@ -17,6 +17,7 @@ use crate::Tint;
 use crate::group::{GroupError, GroupKey, PointRect, in_domain};
 use crate::hit::{
     GroupHits, HIT_RECTS_PER_KEY, HIT_RECTS_PER_SCENE, HitError, HitRect, HitRegions, valid_key,
+    valid_tag,
 };
 use crate::quad::{Metrics, PixelRect, QuadError, SourceRect, edges_at, trimmed, validate_rect};
 
@@ -390,6 +391,8 @@ pub(crate) struct EditScene {
     hit_owner: HashMap<String, u32>,
     /// Hit rectangles in the scene, as set.
     hit_count: usize,
+    /// The tag of each hit key that has one (`set_hit_tag`): published with the key's regions.
+    hit_tags: HashMap<String, String>,
 }
 
 #[derive(Debug)]
@@ -498,6 +501,7 @@ impl EditScene {
             live_groups: 0,
             hit_owner: HashMap::new(),
             hit_count: 0,
+            hit_tags: HashMap::new(),
         }
     }
 
@@ -810,6 +814,7 @@ impl EditScene {
         self.hit_count -= self.groups[index].hits.rect_count();
         for name in self.groups[index].hits.names() {
             self.hit_owner.remove(name);
+            self.hit_tags.remove(name);
         }
         let generation = self.groups[index].generation;
         self.groups[index] = GroupSlot::fresh(generation);
@@ -853,6 +858,7 @@ impl EditScene {
             }
             self.hit_count -= self.groups[owner].hits.remove(key);
             self.hit_owner.remove(key);
+            self.hit_tags.remove(key);
             return Ok(true);
         };
         let target = named.unwrap_or(0);
@@ -885,15 +891,42 @@ impl EditScene {
         Ok(true)
     }
 
+    /// Gives the hit key `key` a tag, or takes its tag away with `None`: an opaque label published with the key's regions, which the pointer
+    /// router copies into the button events it routes to them. The key must have rectangles. `Ok(true)` when something changed.
+    pub(crate) fn set_hit_tag(&mut self, key: &str, tag: Option<&str>) -> Result<bool, HitError> {
+        if let Some(tag) = tag
+            && !valid_tag(tag)
+        {
+            return Err(HitError::BadTag);
+        }
+        if !self.hit_owner.contains_key(key) {
+            return Err(HitError::UnknownKey);
+        }
+        let changed = match tag {
+            Some(tag) => {
+                self.hit_tags
+                    .insert(key.to_owned(), tag.to_owned())
+                    .as_deref()
+                    != Some(tag)
+            }
+            None => self.hit_tags.remove(key).is_some(),
+        };
+        Ok(changed)
+    }
+
     /// The hit regions to publish: group by group in painter order, a hidden group publishing none.
     pub(crate) fn publish_hits(&self) -> HitRegions {
         let mut regions = Vec::with_capacity(self.hit_count);
         for &index in &self.order {
             let group = &self.groups[usize::try_from(index).unwrap_or(usize::MAX)];
             if group.visible {
-                group
-                    .hits
-                    .publish_into(&mut regions, group.offset.0, group.offset.1, group.clip);
+                group.hits.publish_into(
+                    &mut regions,
+                    &self.hit_tags,
+                    group.offset.0,
+                    group.offset.1,
+                    group.clip,
+                );
             }
         }
         HitRegions::from_regions(regions)

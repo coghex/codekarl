@@ -89,13 +89,16 @@ end
 
 -- The items of the card stack for `rows` (as `rows` made them, in the order the bar passed them). `on_open(id, world)` is what a click does: it is
 -- given the world the cards were made in, so that a click that outlives a load cannot open whoever has that number in the new world.
-function character_cards.items(rows, on_open, world)
+-- `tag_of(id)` gives the tag a card's region carries for a right-click (see `lib/go_to.lua`).
+function character_cards.items(rows, on_open, world, tag_of)
   local items = {}
   for _, row in ipairs(rows) do
     local character = row.character
     items[#items + 1] = {
       height = character_cards.HEIGHT,
       on_click = function() on_open(character.id, world) end,
+      -- What a right-click on the card means (CK-381): `tag_of(id)` is hung on the card's hit region (`render.set_hit_tag`).
+      tag = tag_of ~= nil and tag_of(character.id) or nil,
       tooltip = function()
         return {title = title_of(character), character.house ~= "" and character.house or "no house", character.role}
       end,

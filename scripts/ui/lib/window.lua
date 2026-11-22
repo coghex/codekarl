@@ -110,6 +110,7 @@ local function clipped_title(self)
   if self.close_width > 0 then
     room = room - self.close_width - P
   end
+  room = room - self.title_button_room
   if font.layout(self.title).width * P <= room then
     return self.title
   end
@@ -176,6 +177,10 @@ local function publish_chrome(self)
   if self.close_button ~= nil then
     self.close_button:move(self.outer_width - self.close_width - P, 0)
   end
+  if self.title_button ~= nil then
+    local width = self.title_button:size()
+    self.title_button:move(self.outer_width - self.close_width - P - P - width, 0)
+  end
   for _, item in ipairs(self.title_items) do
     item:place_in_title(self)
   end
@@ -240,6 +245,8 @@ function window.new(spec)
     closed = false,
     attached = {},
     title_items = {},
+    title_button = nil,
+    title_button_room = 0,
     _pointer_children = {},
   }, Window)
   dimensions(self)
@@ -427,7 +434,41 @@ function Window:title_bounds()
   if self.close_button ~= nil then
     right = self.outer_width - self.close_width - 2 * P
   end
-  return TITLE_X + self.title_text_width + 3 * P, right
+  return TITLE_X + self.title_text_width + 3 * P, right - self.title_button_room
+end
+
+-- The room, in points, a title bar gives an icon button of its own (CK-381): the button and a gap before it. It sits at the right, next
+-- to the close button, and the room is taken from what `title_bounds` gives the title's items.
+function window.title_button_room(icon)
+  return (button.measure_icon(icon)) + P
+end
+
+-- Adds an icon button at the right of the title bar, before the close button: `spec.icon` (an icon `lib.button` knows), `spec.tooltip` and
+-- `spec.on_click`. A window has at most one; it takes its room from the title's items (tabs, the clipped title) and never from the
+-- close button, and `window.min_outer_width` counts it when it is given its room.
+function Window:add_title_button(spec)
+  if self.closed then
+    error("window:add_title_button: the window is closed", 2)
+  end
+  if self.title_button ~= nil then
+    error("window:add_title_button: the window has one already", 2)
+  end
+  self.title_button = button.new{
+    x = 0,
+    y = 0,
+    icons = {spec.icon},
+    icon = spec.icon,
+    kind = self.kind,
+    style = "title",
+    group = self.chrome,
+    owner = self,
+    tooltip = spec.tooltip,
+    on_click = spec.on_click,
+  }
+  self.title_button_room = window.title_button_room(spec.icon)
+  dimensions(self)
+  publish_chrome(self)
+  set_position(self, self.x, self.y)
 end
 
 -- Adds an item to the title bar: `place_in_title(window)` is called now and whenever the title bar changes, and the item's quads
@@ -491,13 +532,13 @@ function Window:close()
 end
 
 -- The least outer width, in points, of a window whose title bar holds `reserved` points of items of its own (tabs) beside its close
--- button (unless `fixed`): the title start, the items, the close button and a gap each side, and at least the frame's 17 UI pixels.
-function window.min_outer_width(reserved, fixed)
+-- button (unless `fixed`) and the `button_room` of a title button (`window.title_button_room`), when it has one: the title start, the items, the close button and a gap each side, and at least the frame's 17 UI pixels.
+function window.min_outer_width(reserved, fixed, button_room)
   local close = 0
   if not fixed then
     close = (button.measure("x")) + P
   end
-  return math.max(17 * P, TITLE_X + reserved + close + 2 * P)
+  return math.max(17 * P, TITLE_X + reserved + (button_room or 0) + close + 2 * P)
 end
 
 function window.top()

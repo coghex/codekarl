@@ -62,6 +62,7 @@ pub use filter::{Filter, UnknownFilter};
 pub use group::{GroupError, GroupKey, POINT_DOMAIN, PointRect};
 pub use hit::{
     HIT_RECTS_PER_KEY, HIT_RECTS_PER_SCENE, HitError, HitRect, HitRegion, HitRegions, valid_key,
+    valid_tag,
 };
 pub use legacy::{Admission, LegacyError, LegacyLane};
 pub use map::{

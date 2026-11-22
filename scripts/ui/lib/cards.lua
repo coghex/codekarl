@@ -187,6 +187,10 @@ local function sync(self, redraw)
       local key = self.base .. "_item_" .. self.generation .. "_" .. index
       self.item_keys[key] = true
       render.set_hit(key, {{x = 0, y = top_of(self, index), width = self.row_w, height = self.items[index].height * P}}, self.group)
+      -- What the item stood for when it was drawn (CK-381): hung on its region, so a button event routed against it keeps it.
+      if self.items[index].tag ~= nil and not pcall(render.set_hit_tag, key, self.items[index].tag) then
+        pcall(render.set_hit_tag, key, nil)
+      end
       pointer.register(key, item_widget(self, index, key), self.window)
       -- An item's view may hold widgets drawn over the item (`raise_hits`, CK-305): their regions go above the item's own.
       local view = self.views[index]

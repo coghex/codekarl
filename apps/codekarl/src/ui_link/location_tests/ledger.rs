@@ -11,7 +11,7 @@ fn scroll_lines(x: f64, y: f64, amount: i32) -> PointerEvent {
     }
 }
 
-fn ledger_content_width(rig: &Rig) -> f64 {
+pub(super) fn ledger_content_width(rig: &Rig) -> f64 {
     let line = notes(rig)
         .into_iter()
         .rev()

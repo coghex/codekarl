@@ -323,9 +323,10 @@ end)
     );
 }
 
-/// CK-299: the location panel's floor is 5 UI pixels (10 points) wider, 118 points where it was 108, so that the market's columns
-/// (the balance bar is 46 wide from 48 pixels before the row's right edge) fit beside the list's scroll bar. At the floor the
-/// overflowing market's bar starts at 0, whole, and nothing is refused.
+/// CK-299: the location panel's floor was 5 UI pixels (10 points) wider, 118 points where it was 108, so that the market's columns
+/// (the balance bar is 46 wide from 48 pixels before the row's right edge) fit beside the list's scroll bar. CK-381 puts the go-to
+/// button in the title bar beside the three tabs and the close button, and the title bar's room is now the floor: 136 points. At the
+/// floor the overflowing market's bar is whole beside the scroll bar, and nothing is refused.
 #[test]
 fn at_the_new_floor_an_overflowing_market_has_its_balance_bar_whole_beside_the_scroll_bar() {
     let mut rig = rig_with_prelude_at(
@@ -338,17 +339,17 @@ local goods = {}
 for i = 1, 60 do goods[i] = price('good' .. i, 1000 + i * 10, 5, 10, 20) end
 VIEWS[1].rowan.prices = goods
 time(1, 1); select_place('rowan', 'Rowan')
-eq_that(require('lib.location').min_width(), 118, 'the floor was 108 points')
+eq_that(require('lib.location').min_width(), 136, 'the floor is the title bar: three tabs, the go-to button and the close button')
 local window = panel_bar.window
-eq_that(window.outer_width, 118, 'the panel is the floor wide')
-eq_that(window.content_width, 106)
+eq_that(window.outer_width, 136, 'the panel is the floor wide')
+eq_that(window.content_width, 124)
 local px = window.content_width // 2
-eq_that(px, 53, 'the content is 53 pixels: the 48 of the market and the 5 of the bar')
+eq_that(px, 62, 'the content is 62 pixels: the 48 of the market, the 5 of the bar and 9 to spare')
 local overflowing = #list_object.items * 26 > list_object.view_height
 eq_that(overflowing, true, 'the goods overflow the list')
 for _, item in ipairs(list_object.items) do
   if item.bar ~= nil then
-    eq_that(item.bar.x, 0, 'the balance bar starts at the row width less 48, which is 0 here')
+    eq_that(item.bar.x, 9, 'the balance bar starts at the row width less 48, which is 9 here')
     eq_that(item.bar.width, 46, 'and is whole')
     eq_that(item.bar.x + item.bar.width <= px - 5, true, 'clear of the gap and the track')
   end

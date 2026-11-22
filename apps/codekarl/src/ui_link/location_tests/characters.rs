@@ -117,10 +117,10 @@ do
   end
   local character_cards = require("lib.character_cards")
   local real_items = character_cards.items
-  character_cards.items = function(rows, on_open, world)
+  character_cards.items = function(rows, on_open, world, on_camera)
     shown_names = {}
     for index, row in ipairs(rows) do shown_names[index] = row.character.name end
-    return real_items(rows, on_open, world)
+    return real_items(rows, on_open, world, on_camera)
   end
 end
 do

@@ -2478,3 +2478,98 @@ fn great_circle_distance_is_the_haversine_on_the_projections_sphere_in_whole_met
     // About 463 km on this sphere (the radius of the projection, not the Earth's mean).
     assert!((462_000..=465_000).contains(&there), "{there}");
 }
+
+fn stretch(id: &str, river: usize, ends: Option<usize>, last: (i32, i32)) -> RiverStretch {
+    RiverStretch {
+        id: id.to_owned(),
+        river,
+        kind: RiverStretchKind::River,
+        points: vec![
+            FixedPoint { x: 0, y: 0 },
+            FixedPoint {
+                x: last.0,
+                y: last.1,
+            },
+        ],
+        width_first: 0,
+        width_last: 0,
+        ends,
+        drawn_first: 0,
+        drawn_last: 0,
+    }
+}
+
+fn network_of(stretches: Vec<RiverStretch>) -> RiverNetwork {
+    let rivers = ["a", "b", "c"]
+        .into_iter()
+        .map(|id| RiverRiver {
+            id: id.to_owned(),
+            name: id.to_owned(),
+            tier: 1,
+        })
+        .collect();
+    RiverNetwork {
+        show_from_step: [0, 0, 0],
+        rivers,
+        stretches,
+    }
+}
+
+#[test]
+fn a_rivers_mouth_prefers_the_sea_then_the_last_stretch_id_and_stops_at_its_own_join() {
+    // River `a` has three exits: `a-1` and `a-3` reach the sea, `a-9` joins river `b` (its id is the last of the three, so the sea
+    // preference, not the id order, keeps it from being chosen). `a-2` runs on into `a-3` and is no exit at all. River `b` has one
+    // stretch joining river `c`, whose own stretch reaches the sea somewhere else.
+    let network = network_of(vec![
+        stretch("a-1", 0, None, (10, 10)),
+        stretch("a-2", 0, Some(2), (20, 20)),
+        stretch("a-3", 0, None, (30, 30)),
+        stretch("a-9", 0, Some(4), (90, 90)),
+        stretch("b-1", 1, Some(5), (40, 40)),
+        stretch("c-1", 2, None, (50, 50)),
+    ]);
+    // The sea exits are `a-1` and `a-3`: the last of them wins.
+    assert_eq!(network.mouth(0), Some(FixedPoint { x: 30, y: 30 }));
+    // A tributary's mouth is where it joins: its own last point, never `c-1`'s.
+    assert_eq!(network.mouth(1), Some(FixedPoint { x: 40, y: 40 }));
+    assert_eq!(network.mouth(2), Some(FixedPoint { x: 50, y: 50 }));
+    assert_eq!(network.mouth(3), None);
+    assert_eq!(network.river_index("b"), Some(1));
+    assert_eq!(network.river_index("nile"), None);
+}
+
+#[test]
+fn with_no_sea_exit_the_last_joining_stretch_id_gives_the_mouth() {
+    // River `a` has two joins and no sea exit: `a-1` joins river `b`, `a-2` joins river `c`; the last id wins whatever the order of
+    // the file.
+    let network = network_of(vec![
+        stretch("a-2", 0, Some(2), (22, 22)),
+        stretch("a-1", 0, Some(2), (11, 11)),
+        stretch("c-1", 2, None, (50, 50)),
+    ]);
+    assert_eq!(network.mouth(0), Some(FixedPoint { x: 22, y: 22 }));
+}
+
+#[test]
+fn a_locations_centre_is_the_middle_of_its_cell_as_a_fixed_point() {
+    let location = Location {
+        id: "x".to_owned(),
+        name: "X".to_owned(),
+        cell: Cell { x: -3, y: 7 },
+        position: FixedPoint { x: 0, y: 0 },
+        kind_index: 0,
+        size: 1,
+        building_indices: Vec::new(),
+        abandoned: false,
+        catchment_m: None,
+        source: String::new(),
+        confidence: Confidence::High,
+    };
+    assert_eq!(
+        location.center(),
+        FixedPoint {
+            x: -3 * 32_768 + 16_384,
+            y: 7 * 32_768 + 16_384
+        }
+    );
+}
