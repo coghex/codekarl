@@ -445,13 +445,107 @@ pub(crate) fn readback_map_river_network_overlays() {
             x: top_left[0],
             y: top_left[1],
         };
-        let location_pixels = location_cache
+        let mut location_pixels = location_cache
             .select_view(step, world_top, view_size)
             .expect("locations select for both steps")
             .into_iter()
             .map(|([x, y], index)| [x, y, u32::from(index)])
             .collect::<Vec<_>>();
-        let draw = prepared
+        let parts = prepared
+            .select_view(step, world_top, view_size)
+            .expect("network tile cache remains selectable");
+        // At step 15 the fixture has no dark water; exercise the line there and water at step 53.
+        let overlaps = if step == 15 {
+            assert!(parts.water.is_empty(), "far step has no dark water");
+            vec![(true, &parts.line)]
+        } else {
+            assert!(!parts.water.is_empty(), "close step includes dark water");
+            assert!(!parts.banks.is_empty(), "close step includes banks");
+            vec![(false, &parts.water), (true, &parts.line)]
+        };
+        let mut added = Vec::<[u32; 3]>::new();
+        for (abandoned, river_pixels) in overlaps {
+            let mut found = None;
+            'cells: for dy in 0..crop.height {
+                for dx in 0..crop.width {
+                    let mut location = scenario.locations[1].clone();
+                    location.cell.x = crop.origin.x + i32::try_from(dx).expect("crop x");
+                    location.cell.y = crop.origin.y + i32::try_from(dy).expect("crop y");
+                    location.building_indices.clear();
+                    location.abandoned = abandoned;
+                    let pixels = PreparedLocations::new(
+                        vec![location],
+                        scenario.location_kinds.clone(),
+                        crop,
+                    )
+                    .select_view(step, world_top, view_size)
+                    .expect("marker selection");
+                    if pixels.iter().any(|(xy, _)| {
+                        let p = WorldPixel {
+                            x: i32::try_from(xy[0]).expect("x"),
+                            y: i32::try_from(xy[1]).expect("y"),
+                        };
+                        river_pixels.contains(&p)
+                    }) && pixels
+                        .iter()
+                        .all(|(xy, _)| !added.iter().any(|v| v[..2] == xy[..]))
+                    {
+                        found = Some(pixels);
+                        break 'cells;
+                    }
+                }
+            }
+            let pixels = found.expect("prepared marker footprint overlaps river");
+            for (xy, index) in pixels {
+                location_pixels.retain(|v| v[..2] != xy[..]);
+                added.push([xy[0], xy[1], u32::from(index)]);
+            }
+        }
+        location_pixels.extend(added);
+        if step == 53 {
+            let house_start = scenario.location_kinds.kinds.len() * 2
+                + scenario.location_kinds.buildings.len() * 2;
+            let mut house_pixels = None;
+            'house_cells: for dy in 0..crop.height {
+                for dx in 0..crop.width {
+                    let mut town = scenario.locations[0].clone();
+                    town.cell.x = crop.origin.x + i32::try_from(dx).expect("crop x");
+                    town.cell.y = crop.origin.y + i32::try_from(dy).expect("crop y");
+                    let pixels =
+                        PreparedLocations::new(vec![town], scenario.location_kinds.clone(), crop)
+                            .select_view(step, world_top, view_size)
+                            .expect("house selection")
+                            .into_iter()
+                            .filter(|(_, index)| {
+                                (house_start..house_start + 3).contains(&usize::from(*index))
+                            })
+                            .collect::<Vec<_>>();
+                    if pixels.iter().any(|(xy, _)| {
+                        let p = WorldPixel {
+                            x: i32::try_from(xy[0]).expect("x"),
+                            y: i32::try_from(xy[1]).expect("y"),
+                        };
+                        parts.water.contains(&p)
+                            && !location_pixels.iter().any(|v| v[..2] == xy[..])
+                    }) {
+                        house_pixels = Some(pixels);
+                        break 'house_cells;
+                    }
+                }
+            }
+            for (xy, index) in house_pixels.expect("prepared house overlaps water") {
+                if !location_pixels.iter().any(|v| v[..2] == xy[..]) {
+                    location_pixels.push([xy[0], xy[1], u32::from(index)]);
+                }
+            }
+        }
+        let grey = u32::try_from(
+            scenario.location_kinds.kinds.len() * 2
+                + scenario.location_kinds.buildings.len() * 2
+                + 3,
+        )
+        .expect("grey palette index");
+        let mut draw = prepared
             .select_map_view(
                 step,
                 world_top,
@@ -460,13 +554,7 @@ pub(crate) fn readback_map_river_network_overlays() {
                 location_palette.len(),
             )
             .expect("network draw lists");
-        let parts = prepared
-            .select_view(step, world_top, view_size)
-            .expect("network tile cache remains selectable");
-        if step == 53 {
-            assert!(!parts.water.is_empty(), "step 53 readback includes water");
-            assert!(!parts.banks.is_empty(), "step 53 readback includes a bank");
-        }
+        draw.lift_markers(&location_pixels, &scenario.location_kinds);
         let halo_top_left = WorldPixel {
             x: world_top.x - 1,
             y: world_top.y - 1,
@@ -530,6 +618,16 @@ pub(crate) fn readback_map_river_network_overlays() {
                     x: top_left[0] + signed(x),
                     y: top_left[1] + signed(y),
                 };
+                if let Some(&colour) = location_colours.get(&world) {
+                    let index = location_pixels
+                        .iter()
+                        .find(|p| p[0] == x && p[1] == y)
+                        .expect("location pixel")[2] as usize;
+                    let count = scenario.location_kinds.kinds.len() * 2;
+                    if index < count || (grey as usize..grey as usize + count).contains(&index) {
+                        return colour.0;
+                    }
+                }
                 reference_colour_with_river_network(
                     &loaded.data,
                     step,

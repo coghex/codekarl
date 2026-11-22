@@ -93,6 +93,34 @@ pub struct RiverNetworkView {
     /// Indexed bank, location and river-water pixels in view coordinates.
     pub indexed: Vec<[u32; 3]>,
 }
+
+impl RiverNetworkView {
+    /// Keep location markers visible over river water and line pixels.
+    pub fn lift_markers(&mut self, locations: &[[u32; 3]], kinds: &LocationKinds) {
+        let marker_count = kinds.kinds.len() * 2;
+        let grey_start = marker_count + kinds.buildings.len() * 2 + 3;
+        let markers: BTreeMap<_, _> = locations
+            .iter()
+            .filter_map(|&[x, y, index]| {
+                let i = index as usize;
+                (i < marker_count || (grey_start..grey_start + marker_count).contains(&i))
+                    .then_some(((x, y), index))
+            })
+            .collect();
+        self.rivers
+            .retain(|[x, y]| !markers.contains_key(&(*x, *y)));
+        let mut indexed: BTreeMap<_, _> = self
+            .indexed
+            .iter()
+            .map(|&[x, y, index]| ((x, y), index))
+            .collect();
+        indexed.extend(markers);
+        self.indexed = indexed
+            .into_iter()
+            .map(|((x, y), index)| [x, y, index])
+            .collect();
+    }
+}
 pub use mode::{
     ELEVATION_TOP_METRES, MODE_UNCOLOURED, MODE_UNOWNED, MODE_VALUE_MAX, ModeInputs,
     elevation_grey, fertility_colour, mode_colour, mode_value_at_cell, stockpile_value,
