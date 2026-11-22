@@ -112,6 +112,7 @@ pub(crate) struct MapController<R: RiverViewSelector = PreparedRivers> {
     hover: Option<Hover>,
     overlay_palette: Vec<ck_map::Rgba8>,
     location_palette_len: usize,
+    location_kinds: LocationKinds,
     pan_pixels_per_frame: i32,
     zoom_steps_per_second: u32,
     scroll_points_per_step: u32,
@@ -258,7 +259,7 @@ impl<R: RiverViewSelector> MapController<R> {
                 )
             })
             .collect();
-        let location_cache = PreparedLocations::new(locations, kinds, crop);
+        let location_cache = PreparedLocations::new(locations, kinds.clone(), crop);
         let rules = rules(loaded, &overlay_palette);
         let input = MapInput::new(
             MAP_INPUT_GENERATION,
@@ -304,6 +305,7 @@ impl<R: RiverViewSelector> MapController<R> {
             hover: None,
             overlay_palette,
             location_palette_len,
+            location_kinds: kinds,
             pan_pixels_per_frame: i32::try_from(controls.pan_pixels_per_frame)
                 .map_err(|_| "map pan_pixels_per_frame does not fit i32".to_owned())?,
             zoom_steps_per_second: controls.zoom_steps_per_second,
@@ -638,7 +640,7 @@ impl<R: RiverViewSelector> MapController<R> {
             .into_iter()
             .map(|(xy, index)| [xy[0], xy[1], u32::from(index)])
             .collect::<Vec<_>>();
-        let overlays = self
+        let mut overlays = self
             .rivers
             .select_map_view(
                 camera.step,
@@ -648,6 +650,7 @@ impl<R: RiverViewSelector> MapController<R> {
                 self.location_palette_len,
             )
             .ok_or_else(|| format!("map river coverage is invalid for step {}", camera.step))?;
+        overlays.lift_markers(&locations, &self.location_kinds);
         MapCamera::new_with_locations(
             camera.step,
             [top_left.x, top_left.y],
@@ -1609,7 +1612,7 @@ pub(crate) mod tests {
             .into_iter()
             .map(|(xy, index)| [xy[0], xy[1], u32::from(index)])
             .collect::<Vec<_>>();
-            let expected = expected_rivers
+            let mut expected = expected_rivers
                 .select_map_view(
                     camera.step,
                     camera.top_left(),
@@ -1618,6 +1621,7 @@ pub(crate) mod tests {
                     scenario.location_kinds.overlay_palette().len(),
                 )
                 .expect("expected format-2 view");
+            expected.lift_markers(&expected_locations, &scenario.location_kinds);
             assert_eq!(snapshot.rivers().as_ref(), expected.rivers.as_slice());
             assert_eq!(snapshot.locations().as_ref(), expected.indexed.as_slice());
             expected
