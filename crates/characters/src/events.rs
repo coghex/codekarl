@@ -114,16 +114,7 @@ pub(crate) fn pop_facts<P: Populations>(
     populations: &P,
     pop: &PopLocator,
 ) -> Result<PopFacts, Error> {
-    let culture = populations.culture(pop).ok_or(Error::Pop)?;
-    Ok(PopFacts {
-        kind: populations.kind(pop).ok_or(Error::Pop)?,
-        group: rules
-            .culture_group
-            .get(&culture)
-            .ok_or(Error::Culture)?
-            .clone(),
-        luxuries_pm: i64::from(populations.luxuries_pm(pop).ok_or(Error::Pop)?),
-    })
+    populations.event_facts(rules, pop)
 }
 
 /// A character's age in whole years on `today`.
@@ -280,9 +271,14 @@ pub fn chance_ppb(event: &Event, c: &Character, pop: &PopFacts) -> Result<u32, E
     for factor in &event.factors {
         ratios.push(factor_ratio(factor, c, pop)?);
     }
-    let (mut numerator, mut denominator) = (u128::from(event.chance_ppb), u128::from(PPB));
+    Ok(product_ppb(event.chance_ppb, &ratios))
+}
+
+/// Evaluate the exact capped product using checked arithmetic when possible.
+pub(crate) fn product_ppb(base: u32, ratios: &[(u128, u128)]) -> u32 {
+    let (mut numerator, mut denominator) = (u128::from(base), u128::from(PPB));
     let mut fits = true;
-    for (n, d) in &ratios {
+    for (n, d) in ratios {
         if let (Some(n), Some(d)) = (numerator.checked_mul(*n), denominator.checked_mul(*d)) {
             let common = gcd(n, d).max(1);
             (numerator, denominator) = (n / common, d / common);
@@ -292,14 +288,14 @@ pub fn chance_ppb(event: &Event, c: &Character, pop: &PopFacts) -> Result<u32, E
         }
     }
     if !fits {
-        return Ok(exact_ppb(event.chance_ppb, &ratios));
+        return exact_ppb(base, ratios);
     }
     if numerator >= denominator {
-        return Ok(PPB);
+        return PPB;
     }
     match numerator.checked_mul(u128::from(PPB)) {
-        Some(scaled) => u32::try_from(scaled / denominator).map_err(|_| Error::Event),
-        None => Ok(exact_ppb(event.chance_ppb, &ratios)),
+        Some(scaled) => u32::try_from(scaled / denominator).expect("capped chance fits u32"),
+        None => exact_ppb(base, ratios),
     }
 }
 
@@ -899,5 +895,39 @@ impl CharacterStore {
     ) -> Result<(), EventError> {
         self.set_trait_level(id, which, level)?;
         self.apply_precedence(world, id, day)
+    }
+}
+
+#[cfg(test)]
+mod product_tests {
+    use super::{PPB, exact_ppb, product_ppb};
+
+    #[test]
+    fn checked_product_matches_unbounded_product() {
+        let cases = [
+            (0, vec![(1, 1)]),
+            (PPB - 1, vec![(1, 1)]),
+            (PPB, vec![(1, 1)]),
+            (PPB, vec![(u128::MAX, u128::MAX)]),
+            (PPB, vec![(1, u128::MAX)]),
+        ];
+        for (base, ratios) in cases {
+            assert_eq!(product_ppb(base, &ratios), exact_ppb(base, &ratios));
+        }
+        let mut state = 7_u64;
+        for _ in 0..10_000 {
+            let mut ratios = Vec::new();
+            for _ in 0..4 {
+                state = state
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1);
+                let n = u128::from(state % 100_000);
+                state = state
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1);
+                ratios.push((n, u128::from(state % 100_000 + 1)));
+            }
+            assert_eq!(product_ppb(PPB / 3, &ratios), exact_ppb(PPB / 3, &ratios));
+        }
     }
 }

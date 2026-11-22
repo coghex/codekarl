@@ -165,6 +165,7 @@ impl CharacterStore {
         let ids = [allocate(want[0], self)?, allocate(want[1], self)?];
         let made = self.make_ancestors(world, txn, &identity, ids, person, c.birth)?;
         txn.touch(self, person);
+        self.invalidate_ancestry();
         if let Some(live) = self.live.get_mut(&person) {
             if let Some(father) = &made[0] {
                 live.father = father.id;

@@ -68,6 +68,25 @@ pub trait Populations {
     fn luxuries_pm(&self, _locator: &PopLocator) -> Option<u16> {
         None
     }
+    /// Read event facts, allowing an indexed source to avoid cloning the culture key.
+    /// # Errors
+    /// Returns an error for an unknown pop or culture.
+    fn event_facts(
+        &self,
+        rules: &ck_economy::events::EventRules,
+        locator: &PopLocator,
+    ) -> Result<events::PopFacts, Error> {
+        let culture = self.culture(locator).ok_or(Error::Pop)?;
+        Ok(events::PopFacts {
+            kind: self.kind(locator).ok_or(Error::Pop)?,
+            group: rules
+                .culture_group
+                .get(&culture)
+                .ok_or(Error::Culture)?
+                .clone(),
+            luxuries_pm: i64::from(self.luxuries_pm(locator).ok_or(Error::Pop)?),
+        })
+    }
     /// Return the display name of a passion's target (CK-368 §8: the `{target}` of a log line): `kind` is `place`, `religion`, `house` or
     /// `culture` and `key` the canonical key that state and opinion keep. `None` shows the key itself. The economy holds no display names,
     /// so a source with names (the UI's) overrides this; a source that wraps another should forward it.
@@ -227,6 +246,7 @@ impl Populations for ck_economy::EconomyState {
 #[derive(Debug)]
 pub struct Ledger<'a> {
     economy: RefCell<&'a mut ck_economy::EconomyState>,
+    places: BTreeMap<String, usize>,
     /// The places within reach of each place, nearest first, for the marriage pool (CK-366); none known without a map.
     nearby: Option<&'a BTreeMap<String, Vec<NearbyPlace>>>,
     /// The display names of places by id, for the log lines that name a place (CK-368); none known without a map.
@@ -239,10 +259,28 @@ pub struct Ledger<'a> {
     moved: RefCell<Vec<(PopLocator, PopLocator)>>,
 }
 impl<'a> Ledger<'a> {
+    fn place_index(economy: &ck_economy::EconomyState) -> BTreeMap<String, usize> {
+        let mut places = BTreeMap::new();
+        for (index, place) in economy.places.iter().enumerate() {
+            places.entry(place.id.clone()).or_insert(index);
+        }
+        places
+    }
+    fn with_pop<T>(
+        &self,
+        locator: &PopLocator,
+        f: impl FnOnce(&ck_economy::PopState) -> T,
+    ) -> Option<T> {
+        let economy = self.economy.borrow();
+        let place = economy.places.get(*self.places.get(&locator.place)?)?;
+        Some(f(place.pops.get(locator.slot as usize)?))
+    }
     /// Lend the economy to a pass. Without a map, only pops of one place are a known distance apart.
     pub fn new(economy: &'a mut ck_economy::EconomyState) -> Self {
+        let places = Self::place_index(economy);
         Self {
             economy: RefCell::new(economy),
+            places,
             nearby: None,
             place_names: None,
             raised: RefCell::new(None),
@@ -254,8 +292,10 @@ impl<'a> Ledger<'a> {
         economy: &'a mut ck_economy::EconomyState,
         nearby: &'a BTreeMap<String, Vec<NearbyPlace>>,
     ) -> Self {
+        let places = Self::place_index(economy);
         Self {
             economy: RefCell::new(economy),
+            places,
             nearby: Some(nearby),
             place_names: None,
             raised: RefCell::new(None),
@@ -300,25 +340,44 @@ impl Populations for Ledger<'_> {
         Populations::target_name(&**self.economy.borrow(), kind, key)
     }
     fn heads(&self, locator: &PopLocator) -> Option<u64> {
-        Populations::heads(&**self.economy.borrow(), locator)
+        self.with_pop(locator, |p| p.workers.checked_add(p.dependents))
+            .flatten()
     }
     fn culture(&self, locator: &PopLocator) -> Option<String> {
-        Populations::culture(&**self.economy.borrow(), locator)
+        self.with_pop(locator, |p| p.culture.clone())
     }
     fn kind(&self, locator: &PopLocator) -> Option<String> {
-        Populations::kind(&**self.economy.borrow(), locator)
+        self.with_pop(locator, |p| p.kind.clone())
     }
     fn luxuries_pm(&self, locator: &PopLocator) -> Option<u16> {
-        Populations::luxuries_pm(&**self.economy.borrow(), locator)
+        self.with_pop(locator, |p| p.consumption.luxuries_pm)
     }
     fn religion(&self, locator: &PopLocator) -> Option<String> {
-        Populations::religion(&**self.economy.borrow(), locator)
+        self.with_pop(locator, |p| p.religion.clone())
     }
     fn necessities_pm(&self, locator: &PopLocator) -> Option<u16> {
-        Populations::necessities_pm(&**self.economy.borrow(), locator)
+        self.with_pop(locator, |p| p.consumption.necessities_pm)
     }
     fn genetics(&self, locator: &PopLocator) -> Option<PopGenetics> {
-        Populations::genetics(&**self.economy.borrow(), locator)
+        self.with_pop(locator, |p| p.genetics.clone())
+    }
+    fn event_facts(
+        &self,
+        rules: &ck_economy::events::EventRules,
+        locator: &PopLocator,
+    ) -> Result<events::PopFacts, Error> {
+        self.with_pop(locator, |p| {
+            Ok(events::PopFacts {
+                kind: p.kind.clone(),
+                group: rules
+                    .culture_group
+                    .get(&p.culture)
+                    .ok_or(Error::Culture)?
+                    .clone(),
+                luxuries_pm: i64::from(p.consumption.luxuries_pm),
+            })
+        })
+        .ok_or(Error::Pop)?
     }
     fn all_pops(&self) -> Vec<(PopLocator, String, String)> {
         Populations::all_pops(&**self.economy.borrow())
@@ -355,9 +414,9 @@ impl Populations for Ledger<'_> {
     }
     fn distance_m(&self, a: &PopLocator, b: &PopLocator) -> Option<u64> {
         if a.place == b.place {
-            return Populations::distance_m(&**self.economy.borrow(), a, b);
+            return (self.heads(a).is_some() && self.heads(b).is_some()).then_some(0);
         }
-        let heads = |locator: &PopLocator| Populations::heads(&**self.economy.borrow(), locator);
+        let heads = |locator: &PopLocator| self.heads(locator);
         heads(a)?;
         heads(b)?;
         self.nearby?
@@ -722,6 +781,7 @@ pub struct CharacterStore {
     by_house: BTreeMap<String, BTreeSet<u64>>,
     /// The settings of the 768 start, off outside it: derived, never saved.
     pub(crate) start: StartMode,
+    ancestry: connections::ScopedLines,
     /// How many characters candidate discovery has visited (a test-only count of the work done).
     #[cfg(feature = "test-fixtures")]
     visited: Visits,
@@ -749,6 +809,7 @@ impl Default for CharacterStore {
             by_pop: BTreeMap::new(),
             by_house: BTreeMap::new(),
             start: StartMode::default(),
+            ancestry: connections::ScopedLines::default(),
             #[cfg(feature = "test-fixtures")]
             visited: Visits::default(),
         }
@@ -913,9 +974,29 @@ fn child_record(
 }
 
 impl CharacterStore {
+    /// Begin a pass-local ancestry cache.
+    pub fn begin_ancestry_scope(&self) {
+        *self.ancestry.0.borrow_mut() = Some((0, BTreeMap::new()));
+    }
+    /// Discard pass-local ancestry.
+    pub fn end_ancestry_scope(&self) {
+        *self.ancestry.0.borrow_mut() = None;
+    }
+    fn invalidate_ancestry(&self) {
+        if let Some((_, cache)) = self.ancestry.0.borrow_mut().as_mut() {
+            cache.clear();
+        }
+    }
     /// Insert or replace the live record of `id`, keeping the indexes by place, pop and house current.
     pub(crate) fn put(&mut self, record: Character) {
         let id = record.id;
+        if self
+            .live
+            .get(&id)
+            .is_none_or(|old| old.father != record.father || old.mother != record.mother)
+        {
+            self.invalidate_ancestry();
+        }
         let (pop, house) = (record.pop.clone(), record.life.house.clone());
         if let Some(old) = self.live.insert(id, record) {
             self.unindex(id, &old.pop, &old.life.house);
@@ -953,6 +1034,7 @@ impl CharacterStore {
     /// Remove the live record of `id`, keeping the indexes current.
     pub(crate) fn take(&mut self, id: u64) -> Option<Character> {
         let old = self.live.remove(&id)?;
+        self.invalidate_ancestry();
         self.unindex(id, &old.pop, &old.life.house);
         Some(old)
     }
@@ -1283,6 +1365,7 @@ impl CharacterStore {
         if father == child || mother == child {
             return Err(Error::InvalidRelationship);
         }
+        self.invalidate_ancestry();
         self.change(day, |s| {
             for c in s.live.values_mut() {
                 c.children.retain(|id| *id != child);
@@ -1304,6 +1387,11 @@ impl CharacterStore {
 
 /// An append-only destination for an archived record. Failure must leave the destination unchanged.
 pub trait ArchiveSink {
+    /// A revision that changes when a record is published, or None when caching cannot be validated.
+    fn revision(&self) -> Option<u64> {
+        None
+    }
+
     /// Append a record or roll back a failed append.
     /// # Errors
     /// Returns an I/O error if the record could not be persisted.
@@ -1451,6 +1539,8 @@ fn read_record(input: &mut impl std::io::Read, length: u32) -> std::io::Result<V
 #[derive(Debug)]
 pub struct Archive {
     path: std::path::PathBuf,
+    read_scope: RefCell<Option<ArchiveReadScope>>,
+    revision: u64,
     index: BTreeMap<u64, u64>,
     /// The archived identifiers by recorded parent (a known father or mother), rebuilt when the archive opens.
     by_parent: BTreeMap<u64, BTreeSet<u64>>,
@@ -1460,6 +1550,11 @@ pub struct Archive {
     /// The length of the published bytes: whatever follows is a write that was refused or torn, which no one reads and the next publication
     /// overwrites.
     published: u64,
+}
+#[derive(Debug, Default)]
+struct ArchiveReadScope {
+    file: Option<std::fs::File>,
+    records: BTreeMap<u64, Character>,
 }
 /// The marker that opens a frame (several records published as one step); no record is this long. A frame is the marker, the count of
 /// its records, the length of its body and a checksum of those two, then the records, each a length and its bytes as ever. A frame whose
@@ -1529,11 +1624,21 @@ impl Archive {
         })?;
         Ok(Self {
             path,
+            read_scope: RefCell::new(None),
+            revision: 0,
             index,
             by_parent,
             by_house,
             published,
         })
+    }
+    /// Start a read scope; cached records and the descriptor are discarded at its end.
+    pub fn begin_scope(&self) {
+        *self.read_scope.borrow_mut() = Some(ArchiveReadScope::default());
+    }
+    /// Discard the scoped reader and its decoded records.
+    pub fn end_scope(&self) {
+        *self.read_scope.borrow_mut() = None;
     }
     /// Write `bytes` at the end of the published bytes and make them published. A refused or torn write is never published, whatever else
     /// fails: the file is cut back when it can be, and when it cannot, what stays after the published bytes is not read (see [`FRAME`]) and
@@ -1568,6 +1673,7 @@ impl Archive {
             return Err(error);
         }
         self.published += bytes.len() as u64;
+        self.revision = self.revision.wrapping_add(1);
         Ok(())
     }
     /// Retrieve one archived record, reading it from disk on demand.
@@ -1578,6 +1684,26 @@ impl Archive {
         let Some(offset) = self.index.get(&id) else {
             return Ok(None);
         };
+        let mut scope = self.read_scope.borrow_mut();
+        if let Some(scope) = scope.as_mut() {
+            if let Some(record) = scope.records.get(&id) {
+                return Ok(Some(record.clone()));
+            }
+            if scope.file.is_none() {
+                scope.file = Some(std::fs::File::open(&self.path)?);
+            }
+            let file = scope
+                .file
+                .as_mut()
+                .ok_or_else(|| std::io::Error::other("reader unavailable"))?;
+            file.seek(SeekFrom::Start(*offset))?;
+            let mut len = [0; 4];
+            file.read_exact(&mut len)?;
+            let bytes = read_record(file, u32::from_le_bytes(len))?;
+            let record = Character::from_bytes(&bytes).map_err(std::io::Error::other)?;
+            scope.records.insert(id, record.clone());
+            return Ok(Some(record));
+        }
         let mut file = std::fs::File::open(&self.path)?;
         file.seek(SeekFrom::Start(*offset))?;
         let mut len = [0; 4];
@@ -1594,6 +1720,9 @@ impl Archive {
     }
 }
 impl ArchiveSink for Archive {
+    fn revision(&self) -> Option<u64> {
+        Some(self.revision)
+    }
     fn append(&mut self, record: &Character) -> std::io::Result<()> {
         if record.id == UNKNOWN || !record.archivable() || self.index.contains_key(&record.id) {
             return Err(std::io::Error::new(
@@ -1790,6 +1919,8 @@ impl Canonical for LogLine {
 #[derive(Debug)]
 pub struct LifeLog {
     path: std::path::PathBuf,
+    scoped: bool,
+    writer: Option<std::fs::File>,
 }
 impl LifeLog {
     /// Open or create the log file.
@@ -1801,7 +1932,31 @@ impl LifeLog {
             .append(true)
             .create(true)
             .open(&path)?;
-        Ok(Self { path })
+        Ok(Self {
+            path,
+            scoped: false,
+            writer: None,
+        })
+    }
+    /// Reuse a writer until the scope is finished.
+    pub fn begin_scope(&mut self) {
+        self.writer = None;
+        self.scoped = true;
+    }
+    /// Verify that scoped output still belongs to the current path and release the writer.
+    /// # Errors
+    /// Returns an I/O error when the path no longer identifies the written file.
+    pub fn finish_scope(&mut self) -> std::io::Result<()> {
+        self.scoped = false;
+        if let Some(file) = self.writer.take() {
+            use std::os::unix::fs::MetadataExt;
+            let written = file.metadata()?;
+            let current = std::fs::metadata(&self.path)?;
+            if written.dev() != current.dev() || written.ino() != current.ino() {
+                return Err(std::io::Error::other("life log path changed during scope"));
+            }
+        }
+        Ok(())
     }
     /// Append a line; the caller must first verify the id is live or archived.
     /// # Errors
@@ -1816,7 +1971,18 @@ impl LifeLog {
         .to_bytes()
         .map_err(std::io::Error::other)?;
         let len = u32::try_from(bytes.len()).map_err(std::io::Error::other)?;
-        let mut file = std::fs::OpenOptions::new().write(true).open(&self.path)?;
+        let mut temporary;
+        let file = if self.scoped {
+            if self.writer.is_none() {
+                self.writer = Some(std::fs::OpenOptions::new().write(true).open(&self.path)?);
+            }
+            self.writer
+                .as_mut()
+                .ok_or_else(|| std::io::Error::other("writer unavailable"))?
+        } else {
+            temporary = std::fs::OpenOptions::new().write(true).open(&self.path)?;
+            &mut temporary
+        };
         let offset = file.seek(SeekFrom::End(0))?;
         if let Err(error) = (|| {
             file.write_all(&len.to_le_bytes())?;
