@@ -3945,6 +3945,43 @@ r120; spec r2). The "pop" tab shows the pop the character belongs to; a button o
 - **Not in 9c:** pop wealth, politics (desired laws), the actions tab (L2), heirs (L1), dead characters' screens and logs, the family tree, layered
   portraits, orientation.
 
+### 3.28 Going to things on the map (CK-381)
+
+The camera go-to, the function that goes and opens, the ledger's right-click and the location window's go-to button
+(`runtime-m55/ck381-spec-r2.md`, from the owner's find-and-notes direction r1 and r2). The `f` find popup follows in its own issue and uses what is here.
+
+- **`game.go_to(kind, id, zoom, revision)`** (`apps/codekarl/src/go_to.rs`) moves the map camera so that the thing's **point** is the centre of the view,
+  in one step. The thing is resolved under the **revision the UI holds** (the `economy_revision` of the `game_time` it last received, or the one a ledger
+  row was drawn from), never the newest view the link has pinned, so the camera and the window the UI opens for it read one revision. The revision is
+  world-bound: the view cache notes each view's world when the link posts it, and a revision of an earlier world than the newest posted, a retired one or a
+  missing one is an error. The kinds:
+  - `"location"` (a place id): the **centre of its cell** as a fixed point (`Location::center`, the point `prepare_markers` draws the marker around before
+    it quantises), so it is the same at every zoom and works below the step at which markers show (15);
+  - `"pop"` (a table `{place, slot}`): the pop's place, when the revision's view of that place holds the zero-based slot;
+  - `"character"` (an id): the place of the character's pop in that revision, when the character is live there;
+  - `"river"` (a river id): its **mouth** (`RiverNetwork::mouth`): of the river's exit stretches (those whose `ends` is the sea or a stretch of another river)
+    the sea ones are preferred, then the stretch whose id is last in ascending order is taken, and the point is that stretch's final point. A tributary's
+    mouth is where it joins, never followed on through the receiving river. On the shipped data: Erne `erne-46`, Laune `laune-03`, Swilly `swilly-09`, Main
+    `main-06` (joining `bann-09`).
+  A new kind is one more arm of `Targets::resolve` (and one entry of `KINDS` in `scripts/ui/lib/go_to.lua`).
+- **Zoom.** `zoom = false` keeps the step. `zoom = true` sets the **go-to step** (`map_app::GO_TO_STEP`, 45: a map pixel about a third of a cell, the view some
+  eighty kilometres across at 1280 by 800) unless the camera is already closer, so going to a thing never zooms out. The centre is clamped to the crop as
+  panning is (`Camera::new`). An unknown kind or id, a pop slot the place does not hold, a character not live in the revision, a revision that is retired,
+  missing or of a replaced world, and a game with no map are errors, and the camera is not moved.
+- **Going and opening** (`scripts/ui/lib/go_to.lua`). `go_to.to(kind, id, revision)` goes with zoom and, only when that succeeded, calls the opener of the
+  kind with the same id and revision: a location opens its location window, a pop that window on its pops tab, a character the character screen
+  (`character_panel:open(id, revision, world)`, so it reads the revision it was named in), a river nothing. `main.lua` registers the openers with
+  `go_to.set_openers`. `go_to.camera(kind, id, revision)` is the camera alone, without zoom.
+- **Right-click in the ledger.** A right `button_down` on a row of the locations or pops list, or on a character card, goes to that row's thing without zoom and
+  opens, selects and raises nothing. The target is what the row was drawn with: a list row carries `target = {kind, id, revision, world}` (`lib/list.lua`
+  keeps it through its copy and hands the item to `on_secondary(index, item)`), a card widget keeps its item (`on_secondary` of `lib/cards.lua`); a row of a world a
+  load has replaced does nothing. The pops rows carry their slot. The header, the scroll bar and empty space do nothing; an overflow packet's events click
+  nothing. The left click is unchanged.
+- **The location window's go-to button.** The title bar has an icon button at its right, before the close button: the ledger's location icon, the tooltip
+  "go to". A click is `go_to.to("location", id, revision)` for the place showing; the window stays open. `Window:add_title_button` places it and takes its
+  room (`window.title_button_room`) from the title's items; `location.min_width` counts it with the three tabs and the close button, so the panel's
+  floor is 136 points (it was 118, the market's columns), and the name in the first tab clips first.
+
 ## 4. Packages and ownership
 
 | Package | Change |
