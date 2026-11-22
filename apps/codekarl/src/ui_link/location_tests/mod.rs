@@ -157,11 +157,11 @@ buttons_library.new = function(spec)
   end
   if spec.icon == "cards" or spec.icon == "rows" then look_buttons[spec.icon] = created end
   if spec.icon == "rewind" or spec.icon == "pause" or spec.icon == "fast_forward" then time_buttons[spec.icon] = created end
-  if spec.icon == "stockpile" or spec.icon == "yield" or spec.icon == "elevation" then mode_buttons[spec.icon] = created end
+  if spec.icon == "stockpile" or spec.icon == "yield" or spec.icon == "elevation" or spec.icon == "fertility" then mode_buttons[spec.icon] = created end
   return created
 end
 function announce_modes()
-  for _, key in ipairs({"stockpile", "yield", "elevation"}) do
+  for _, key in ipairs({"stockpile", "yield", "elevation", "fertility"}) do
     local button = mode_buttons[key]
     local width, height = button:size()
     note(string.format("mode %s %d %d %s", key, button.x + width / 2, button.y + height / 2, tostring(button.selected == true)))
@@ -171,7 +171,7 @@ end
 -- Each mode button's and ledger icon's left edge, top edge, width and height, in window points.
 function announce_bars()
   note("places_text_buttons " .. places_text_buttons)
-  for _, key in ipairs({"stockpile", "yield", "elevation"}) do
+  for _, key in ipairs({"stockpile", "yield", "elevation", "fertility"}) do
     local button = mode_buttons[key]
     local width, height = button:size()
     note(string.format("bar %s %g %g %g %g", key, button.x, button.y, width, height))
@@ -1077,8 +1077,8 @@ fn point_value(value: i64) -> f64 {
 /// at the bar's `x + 5 P`, the three a button and 3 pixels apart, all at the bar's `y + 2 P`.
 fn assert_mode_bar_at(rig: &Rig, bar: [i64; 2]) {
     const P: i64 = 2;
-    let [stockpile, yields, elevation] =
-        ["stockpile", "yield", "elevation"].map(|key| bar_button(rig, key));
+    let [stockpile, yields, elevation, fertility] =
+        ["stockpile", "yield", "elevation", "fertility"].map(|key| bar_button(rig, key));
     assert_eq!(
         stockpile,
         [bar[0] + 5 * P, bar[1] + 2 * P, 13 * P, 15 * P],
@@ -1098,6 +1098,16 @@ fn assert_mode_bar_at(rig: &Rig, bar: [i64; 2]) {
             15 * P
         ],
         "the elevation button"
+    );
+    assert_eq!(
+        fertility,
+        [
+            bar[0] + (5 + 3 * (13 + 3)) * P,
+            stockpile[1],
+            13 * P,
+            15 * P
+        ],
+        "the fertility button"
     );
 }
 

@@ -731,6 +731,41 @@ impl Fixture {
 }
 
 impl Fixture {
+    /// The fertility reference image, without overlays.
+    ///
+    /// # Panics
+    ///
+    /// As [`Fixture::reference`].
+    #[must_use]
+    pub fn reference_image_with_fertility(
+        &self,
+        step: u8,
+        top_left: [i32; 2],
+        view: [u32; 2],
+    ) -> Vec<u8> {
+        let mut image = Vec::new();
+        for y in 0..view[1] {
+            for x in 0..view[0] {
+                let pixel = WorldPixel {
+                    x: top_left[0] + i32::try_from(x).expect("x"),
+                    y: top_left[1] + i32::try_from(y).expect("y"),
+                };
+                image.extend_from_slice(
+                    &crate::reference_colour_with_fertility(
+                        &self.data,
+                        step,
+                        pixel,
+                        &BTreeSet::new(),
+                        &BTreeMap::new(),
+                    )
+                    .expect("sample")
+                    .0,
+                );
+            }
+        }
+        image
+    }
+
     /// The reference image of a view in the elevation mode (milestone 9, slice 10b): row-major RGBA8, `view[0] x view[1]` map pixels
     /// from the world pixel `top_left`, with no rivers and no locations.
     ///

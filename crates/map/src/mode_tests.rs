@@ -466,3 +466,61 @@ fn rivers_and_locations_draw_over_the_elevation_and_the_outside_stays_sea() {
         Some(map.sea)
     );
 }
+
+#[test]
+fn fertility_ramp_is_linear_and_glacier_uses_elevation() {
+    assert_eq!(fertility_colour(0, 8000), Rgba8::opaque(0, 0, 0));
+    assert_eq!(fertility_colour(125, 8000), Rgba8::opaque(0, 127, 0));
+    assert_eq!(fertility_colour(250, 8000), Rgba8::opaque(0, 255, 0));
+    assert_eq!(fertility_colour(255, 8000), elevation_grey(8000));
+}
+
+#[test]
+fn fertility_reference_preserves_water_coast_and_overlays() {
+    let mut map = elevation_map();
+    for (i, value) in map.fertility.iter_mut().enumerate() {
+        *value = u16::try_from((i % 251) * 4).unwrap();
+    }
+    let (rivers, locations) = (BTreeSet::new(), BTreeMap::new());
+    let mut land = 0;
+    let mut unchanged = 0;
+    for (pixel, x, y) in sampled(&map) {
+        let index = (y * 21 + x) as usize;
+        let fert = reference_colour_with_fertility(&map, STEP, pixel, &rivers, &locations).unwrap();
+        let elevation =
+            reference_colour_with_elevation(&map, STEP, pixel, &rivers, &locations).unwrap();
+        if fert == elevation {
+            unchanged += 1;
+        }
+        if fert
+            == fertility_colour(
+                if map.glacier[index] {
+                    255
+                } else {
+                    u8::try_from(map.fertility[index] / 4).unwrap()
+                },
+                i32::from(map.elevations[index]) - ELEVATION_OFFSET,
+            )
+        {
+            land += 1;
+        }
+    }
+    assert!(land > 0 && unchanged > 0);
+    let pixel = sampled(&map)[40].0;
+    let river = BTreeSet::from([pixel]);
+    assert_eq!(
+        reference_colour_with_fertility(&map, STEP, pixel, &river, &locations),
+        Some(map.river)
+    );
+    let icon = Rgba8::opaque(11, 12, 13);
+    assert_eq!(
+        reference_colour_with_fertility(
+            &map,
+            STEP,
+            pixel,
+            &rivers,
+            &BTreeMap::from([(pixel, icon)])
+        ),
+        Some(icon)
+    );
+}

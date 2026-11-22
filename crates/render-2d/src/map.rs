@@ -882,6 +882,7 @@ pub struct MapMode {
     values: Option<Arc<[u16]>>,
     /// The elevation mode: black to white by height, with no table and no owner grid (milestone 9, slice 10b).
     elevation: bool,
+    fertility: bool,
 }
 
 impl MapMode {
@@ -903,6 +904,7 @@ impl MapMode {
             revision,
             values: Some(values.into()),
             elevation: false,
+            fertility: false,
         })
     }
 
@@ -913,6 +915,7 @@ impl MapMode {
             revision,
             values: None,
             elevation: false,
+            fertility: false,
         }
     }
 
@@ -924,7 +927,25 @@ impl MapMode {
             revision,
             values: None,
             elevation: true,
+            fertility: false,
         }
+    }
+
+    /// The fertility mode reads the map's own fertility without a table.
+    #[must_use]
+    pub fn fertility(revision: u64) -> Self {
+        Self {
+            revision,
+            values: None,
+            elevation: false,
+            fertility: true,
+        }
+    }
+
+    /// Whether this is the fertility mode.
+    #[must_use]
+    pub fn is_fertility(&self) -> bool {
+        self.fertility
     }
 
     /// Whether this is the elevation mode.

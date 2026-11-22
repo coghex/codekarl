@@ -52,6 +52,11 @@ ICONS = {
         9,
         ("...##...", "..####..", "..####..", ".######.", ".######.", "########", "########"),
     ),
+    # Original sprout, drawn from plain geometric shapes for CK-382; copied from no other icon.
+    "fertility": (
+        9,
+        ("#......#", "##....##", ".##..##.", "..####..", "...##...", "...##...", "...##..."),
+    ),
     # The owner-approved ledger tab icons are the exact 9x11 mock-up rows.
     "location": (
         9,

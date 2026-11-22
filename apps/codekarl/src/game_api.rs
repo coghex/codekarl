@@ -411,8 +411,8 @@ pub(crate) fn scenario_function(id: String) -> HostFunction {
     })
 }
 
-/// `game.set_map_mode(name)`: shows the map mode `"stockpile"`, `"yield"` or `"elevation"`, or the plain map for `"off"`. The values of the first two come
-/// from the newest view the UI has been given; the elevation mode needs none. An unknown name, or a map the lane refuses a table for, is an error.
+/// `game.set_map_mode(name)`: shows the map mode `"stockpile"`, `"yield"`, `"elevation"` or `"fertility"`, or the plain map for `"off"`. The values of the first two come
+/// from the newest view the UI has been given; the elevation and fertility modes need none. An unknown name, or a map the lane refuses a table for, is an error.
 pub(crate) fn set_map_mode_function(modes: Arc<crate::map_modes::MapModes>) -> HostFunction {
     Arc::new(move |arguments| {
         let [Some(ConfigValue::String(name))] = arguments else {
@@ -420,7 +420,7 @@ pub(crate) fn set_map_mode_function(modes: Arc<crate::map_modes::MapModes>) -> H
         };
         let Some(mode) = crate::map_modes::Mode::parse(name) else {
             return Err(format!(
-                "game.set_map_mode: unknown mode `{name}` (expected off, stockpile, yield or elevation)"
+                "game.set_map_mode: unknown mode `{name}` (expected off, stockpile, yield, elevation or fertility)"
             ));
         };
         if let Err(message) = modes.set(mode) {

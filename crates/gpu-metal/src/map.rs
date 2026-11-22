@@ -461,12 +461,16 @@ enum MetalMapMode {
     Values(u64, Arc<[u16]>),
     /// The elevation mode (milestone 9, slice 10b) at its revision: no table, the pass reads the map's own elevations.
     Elevation(u64),
+    /// The fertility mode at its revision, with no table.
+    Fertility(u64),
 }
 
 impl MetalMapMode {
     fn revision(&self) -> u64 {
         match self {
-            Self::Values(revision, _) | Self::Elevation(revision) => *revision,
+            Self::Values(revision, _) | Self::Elevation(revision) | Self::Fertility(revision) => {
+                *revision
+            }
         }
     }
 }
@@ -672,9 +676,14 @@ impl MetalMap {
         Ok(self)
     }
 
-    /// This map showing the elevation mode at `revision` (milestone 9, slice 10b): every land pixel off the coast outline is the grey
-    /// of its cell's height by the rule of `ck-map`'s `elevation_grey`; sea, lake, the coast outline, rivers and locations are as
-    /// without a mode. It reads the map's own elevations, so it needs no owner grid and no table.
+    /// Show per-cell fertility as a black-to-green ramp, with no owner grid or table.
+    #[must_use]
+    pub fn with_fertility(mut self, revision: u64) -> Self {
+        self.mode = Some(MetalMapMode::Fertility(revision));
+        self
+    }
+
+    /// Show the elevation mode.
     #[must_use]
     pub fn with_elevation(mut self, revision: u64) -> Self {
         self.mode = Some(MetalMapMode::Elevation(revision));
@@ -826,6 +835,7 @@ impl NativeMap {
                 None => 0,
                 Some(MetalMapMode::Values(..)) => 1,
                 Some(MetalMapMode::Elevation(_)) => 2,
+                Some(MetalMapMode::Fertility(_)) => 3,
             },
             mode_revision: map.mode.as_ref().map_or(0, MetalMapMode::revision),
             mode_values: match &map.mode {
