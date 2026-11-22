@@ -95,7 +95,8 @@ pub struct RiverNetworkView {
 }
 pub use mode::{
     ELEVATION_TOP_METRES, MODE_UNCOLOURED, MODE_UNOWNED, MODE_VALUE_MAX, ModeInputs,
-    elevation_grey, mode_colour, mode_value_at_cell, stockpile_value, yield_values,
+    elevation_grey, fertility_colour, mode_colour, mode_value_at_cell, stockpile_value,
+    yield_values,
 };
 pub use scenario::{
     BuildingKind, Confidence, HouseStyle, Location, LocationKind, LocationKinds, LocationPixel,
@@ -720,6 +721,18 @@ pub fn reference_colour_with_elevation(
     reference_colour_with_look(map, step, pixel, rivers, locations, Look::Elevation)
 }
 
+/// Reference colour for the fertility mode, preserving water and overlays.
+#[must_use]
+pub fn reference_colour_with_fertility(
+    map: &MapData,
+    step: u8,
+    pixel: WorldPixel,
+    rivers: &BTreeSet<WorldPixel>,
+    locations: &BTreeMap<WorldPixel, Rgba8>,
+) -> Option<Rgba8> {
+    reference_colour_with_look(map, step, pixel, rivers, locations, Look::Fertility)
+}
+
 /// How a land pixel is coloured.
 #[derive(Clone, Copy)]
 enum Look<'a> {
@@ -729,6 +742,7 @@ enum Look<'a> {
     Values(&'a ModeInputs<'a>),
     /// The elevation mode: black to white by the square root of the height.
     Elevation,
+    Fertility,
 }
 
 fn reference_colour_with_look(
@@ -786,6 +800,14 @@ fn reference_colour_with_look(
             if matches!(look, Look::Elevation) {
                 let metres = i32::from(*map.elevations.get(index)?) - ELEVATION_OFFSET;
                 elevation_grey(metres)
+            } else if matches!(look, Look::Fertility) {
+                let metres = i32::from(*map.elevations.get(index)?) - ELEVATION_OFFSET;
+                let fertility = if *map.glacier.get(index)? {
+                    255
+                } else {
+                    u8::try_from(*map.fertility.get(index)? / 4).ok()?
+                };
+                fertility_colour(fertility, metres)
             } else {
                 look::land_colour(
                     style,

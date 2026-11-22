@@ -385,7 +385,7 @@ static BOOL ck_encode_map_pass(id<MTLCommandBuffer> command, CKPrQuadKit *kit, c
                                 {(int32_t)draw->map->crop[0], (int32_t)draw->map->crop[1]},
                                 {draw->map->top_left[0], draw->map->top_left[1]},
                                 draw->map->step,
-                                draw->map->mode == 2 ? 2 : (draw->map->mode != 0 ? 1 : 0)};
+                                draw->map->mode == 3 ? 3 : (draw->map->mode == 2 ? 2 : (draw->map->mode != 0 ? 1 : 0))};
     [encoder setRenderPipelineState:kit.map];
     [encoder setFragmentBytes:&uniforms length:sizeof(uniforms) atIndex:0];
     [encoder setFragmentTexture:draw->grid_a atIndex:0];

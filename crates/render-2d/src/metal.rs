@@ -299,6 +299,7 @@ pub(crate) fn metal_map_cached(
     // plain map).
     let map = match frame.mode.as_ref() {
         Some(mode) if mode.is_elevation() => map.with_elevation(mode.revision()),
+        Some(mode) if mode.is_fertility() => map.with_fertility(mode.revision()),
         Some(mode) => match mode.values() {
             Some(values) => map
                 .with_mode(mode.revision(), Arc::clone(values))

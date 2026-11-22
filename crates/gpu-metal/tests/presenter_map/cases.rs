@@ -743,6 +743,43 @@ pub(crate) fn readback_map_location_overlays() {
             .expect("the overlay readback works");
         let target = drawn.target.expect("map target");
         assert_eq!(target, expected, "location/rivers reference at step {step}");
+        let fertility_map = MetalMap::new_with_overlays(
+            Arc::clone(&input),
+            step,
+            top_left,
+            view,
+            rect(0, 0, signed(view[0] * 4), signed(view[1] * 4)),
+            source(0.0, 0.0, float(view[0]), float(view[1])),
+            rivers.clone(),
+            locations.clone(),
+        )
+        .expect("valid overlay map")
+        .with_fertility(1);
+        let fertility_expected = (0..view[1])
+            .flat_map(|y| (0..view[0]).map(move |x| (x, y)))
+            .flat_map(|(x, y)| {
+                ck_map::reference_colour_with_fertility(
+                    &fixture.data,
+                    step,
+                    WorldPixel {
+                        x: top_left[0] + signed(x),
+                        y: top_left[1] + signed(y),
+                    },
+                    &river_pixels,
+                    &colour_by_pixel,
+                )
+                .expect("fertility reference")
+                .0
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            readback_map(view[0] * 4, view[1] * 4, CLEAR, Some(&fertility_map), None)
+                .expect("fertility overlay readback")
+                .target
+                .expect("target"),
+            fertility_expected
+        );
+
         let far = MetalMap::new_with_rivers(
             Arc::clone(&input),
             step,
@@ -2388,7 +2425,33 @@ pub(crate) fn readback_map_elevation_mode() {
     }
 }
 
-pub(crate) const CASES: [(&str, fn()); 25] = [
+fn readback_map_fertility_mode() {
+    let with_owners = moded_input(1);
+    let without = input_with(2);
+    for scenario in &mode_scenarios() {
+        let want = the_fixture().reference_image_with_fertility(
+            scenario.step,
+            scenario.top_left,
+            scenario.view,
+        );
+        assert_ne!(
+            want,
+            the_fixture().reference_image(scenario.step, scenario.top_left, scenario.view)
+        );
+        for input in [&with_owners, &without] {
+            assert_eq!(
+                drawn_target(
+                    scenario,
+                    &moded_map(input, scenario, None).with_fertility(1)
+                ),
+                want
+            );
+        }
+    }
+}
+
+pub(crate) const CASES: [(&str, fn()); 26] = [
+    ("readback_map_fertility_mode", readback_map_fertility_mode),
     ("readback_map_full_rules", readback_map_full_rules),
     ("readback_map_rivers_overlay", readback_map_rivers_overlay),
     (

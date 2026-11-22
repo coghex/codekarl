@@ -223,6 +223,10 @@ text = "A {map_mode|map mode}: each {location} is coloured from red to green by 
 title = "elevation map"
 text = "A {map_mode|map mode}: the land is shaded from black to white by its height."
 
+[term.fertility_map]
+title = "fertility"
+text = "A {map_mode|map mode}: the land is shaded from black to green by its fertility."
+
 [term.date]
 title = "date"
 text = "The day and hour in the game. Time runs while the game is not paused, as fast as its {speed} sets."

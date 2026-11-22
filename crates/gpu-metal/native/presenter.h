@@ -112,7 +112,7 @@ typedef struct {
      * `mode` 1 means a map mode shows: `mode_values` (`mode_count` uint16, one per place, 0 to 1000 or 0xFFFF for a place with nothing
      * to show) is its table at `mode_revision`; the presenter makes a table when the revision is not the resident one's. `mode` 2 is
      * the elevation mode (slice 10b): it has no table (`mode_values` NULL, `mode_count` 0, so the presenter binds an empty one) and the
-     * map pass reads the map's own elevations. */
+     * map pass reads the map's own elevations. `mode` 3 reads fertility from the map, also without a table. */
     const uint8_t *owners;
     int32_t mode;
     uint64_t mode_revision;

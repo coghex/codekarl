@@ -70,19 +70,19 @@ fn a_change_of_the_ui_scale_is_seen_as_a_resize_and_the_script_relays_out_in_uni
         "announce_bars()",
         "announce_bars()",
     ]));
-    // 640x400 points at 2 pixels a point: a drawable of 1280x800 and scale 1: a view of 1280x800 units. The bar is 110x38 units, centred
-    // (585, snapped to 586) and 8 above the bottom edge (800 - 38 - 8 = 754).
+    // 640x400 points at 2 pixels a point: a drawable of 1280x800 and scale 1: a view of 1280x800 units. The bar is 142x38 units, centred
+    // (569, snapped to 570) and 8 above the bottom edge (800 - 38 - 8 = 754).
     rig.deliver_fixture_frame_at(640, 400, 2);
     rig.opened();
-    assert_mode_bar_at(&rig, [586, 754]);
+    assert_mode_bar_at(&rig, [570, 754]);
     // 960x600 points: 1920x1200 pixels, the scale 1.5 and the same 1280x800 view: the layout is unchanged.
     rig.deliver_fixture_frame_at(960, 600, 2);
     rig.opened();
-    assert_mode_bar_at(&rig, [586, 754]);
-    // 1728x1116 points: 3456x2232 pixels, the scale 2 and a 1728x1116 view: (1728 - 110) / 2 = 809 snaps to 810; 1116 - 38 - 8 = 1070.
+    assert_mode_bar_at(&rig, [570, 754]);
+    // 1728x1116 points: 3456x2232 pixels, the scale 2 and a 1728x1116 view: (1728 - 142) / 2 = 793 snaps to 794; 1116 - 38 - 8 = 1070.
     rig.deliver_fixture_frame_at(1728, 1116, 2);
     rig.opened();
-    assert_mode_bar_at(&rig, [810, 1070]);
+    assert_mode_bar_at(&rig, [794, 1070]);
 }
 
 /// At 3456 by 2232 pixels on a 2x display the scale is 2 and a UI unit is a point: every quad of the shipped start is where the build with

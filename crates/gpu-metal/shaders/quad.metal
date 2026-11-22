@@ -189,7 +189,7 @@ struct MapUniforms {
     int2 crop;     /* the crop's size in cells */
     int2 top_left; /* the camera's top-left world pixel (I_left, J_top) */
     int step;      /* the zoom step s, 0 to 75 */
-    int mode;      /* 1 when a value-table map mode shows (milestone 9, slice 8), 2 for the elevation mode (slice 10b), else 0 */
+    int mode;      /* 1 when a value-table map mode shows (milestone 9, slice 8), 2 for elevation, 3 for fertility, else 0 */
 };
 
 vertex float4 ck_map_vertex(uint vertex_id [[vertex_id]]) {
@@ -462,6 +462,14 @@ fragment float4 ck_map_fragment(float4 position [[position]], constant MapUnifor
     }
     if (uniforms.mode == 2) {
         return map_elevation_colour(grid_b, uint2((surface.moved - (uniforms.origin << FIXED_PER_CELL_SHIFT)) >> FIXED_PER_CELL_SHIFT));
+    }
+    if (uniforms.mode == 3) {
+        if (surface.fertility == 255u) {
+            return map_elevation_colour(grid_b, uint2((surface.moved - (uniforms.origin << FIXED_PER_CELL_SHIFT)) >> FIXED_PER_CELL_SHIFT));
+        }
+        const uint MODE_FULL_GREEN = 255u; /* value modes share this endpoint */
+        uint green = min(surface.fertility, 250u) * MODE_FULL_GREEN / 250u;
+        return float4(0.0, float(green) / 255.0, 0.0, 1.0);
     }
     return map_land_colour(rules, row, surface.fertility, surface.strength, pixel);
 }

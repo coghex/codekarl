@@ -24,16 +24,19 @@ pub(crate) enum Mode {
     Yield,
     /// The land's height, black to white by its square root (milestone 9, slice 10b). It reads the map's own elevations: no values.
     Elevation,
+    /// Per-cell fertility, black to green.
+    Fertility,
 }
 
 impl Mode {
-    /// The mode a UI name stands for: `"off"`, `"stockpile"`, `"yield"` or `"elevation"`.
+    /// The mode a UI name stands for: `"off"`, `"stockpile"`, `"yield"`, `"elevation"` or `"fertility"`.
     pub(crate) fn parse(name: &str) -> Option<Self> {
         match name {
             "off" => Some(Self::Off),
             "stockpile" => Some(Self::Stockpile),
             "yield" => Some(Self::Yield),
             "elevation" => Some(Self::Elevation),
+            "fertility" => Some(Self::Fertility),
             _ => None,
         }
     }
@@ -82,7 +85,7 @@ impl MapModes {
     /// The table of the mode for the newest view: one value per place. Before any view every place is uncoloured.
     fn values(&self, state: &State) -> Vec<u16> {
         let from = |view: &EconomyView| match state.mode {
-            Mode::Off | Mode::Elevation => Vec::new(),
+            Mode::Off | Mode::Elevation | Mode::Fertility => Vec::new(),
             Mode::Stockpile => view.stockpile_values(),
             Mode::Yield => view.yield_values(),
         };
@@ -100,6 +103,8 @@ impl MapModes {
             MapMode::off(revision)
         } else if state.mode == Mode::Elevation {
             MapMode::elevation(revision)
+        } else if state.mode == Mode::Fertility {
+            MapMode::fertility(revision)
         } else {
             MapMode::new(revision, self.values(state))
                 .map_err(|error| format!("the map mode was refused: {error}"))?
@@ -148,7 +153,7 @@ impl MapModes {
         }
         state.latest = Some((revision, Arc::clone(view)));
         // The elevation mode has no values, so a new view changes nothing it shows.
-        if matches!(state.mode, Mode::Off | Mode::Elevation) {
+        if matches!(state.mode, Mode::Off | Mode::Elevation | Mode::Fertility) {
             return;
         }
         if let Err(message) = self.publish(&mut state) {
@@ -325,6 +330,32 @@ mod tests {
         assert_eq!(values[0], 0);
         modes.set(Mode::Off).expect("accepted");
         assert_eq!(sink.mode(), None, "off is the plain map");
+        assert_eq!(modes.mode(), Mode::Off);
+    }
+
+    #[test]
+    fn fertility_parses_publishes_and_turns_off_without_values() {
+        let (modes, sink, _) = rig();
+        assert_eq!(Mode::parse("fertility"), Some(Mode::Fertility));
+        modes.set(Mode::Fertility).expect("accepted");
+        {
+            let latest = sink.latest.lock().unwrap();
+            let mode = latest
+                .as_ref()
+                .unwrap()
+                .map
+                .as_ref()
+                .unwrap()
+                .mode
+                .as_ref()
+                .unwrap();
+            assert!(mode.is_fertility());
+            assert!(mode.values().is_none());
+        }
+        let published = sink.published();
+        modes.observe(1, &view(0));
+        assert_eq!(sink.published(), published);
+        modes.set(Mode::Off).expect("off");
         assert_eq!(modes.mode(), Mode::Off);
     }
 

@@ -200,7 +200,7 @@ if game ~= nil then
   -- from black to white by its height. The button of the mode that shows is selected; pressing it turns the mode off, pressing another
   -- changes the mode.
   local MODE_BUTTON_WIDTH = 13 -- UI pixels: the 9-pixel icon and the button's padding
-  local MODES_WIDTH = 5 + MODE_BUTTON_WIDTH + 3 + MODE_BUTTON_WIDTH + 3 + MODE_BUTTON_WIDTH + 5
+  local MODES_WIDTH = 5 + MODE_BUTTON_WIDTH + 3 + MODE_BUTTON_WIDTH + 3 + MODE_BUTTON_WIDTH + 3 + MODE_BUTTON_WIDTH + 5
 
   -- Centred at the bottom of the window, its bottom edge a margin above the window's: it does not depend on any other panel.
   local function modes_origin()
@@ -215,6 +215,7 @@ if game ~= nil then
     mode_buttons.stockpile:move(x + 5 * P, y + 2 * P)
     mode_buttons.yield:move(x + (5 + MODE_BUTTON_WIDTH + 3) * P, y + 2 * P)
     mode_buttons.elevation:move(x + (5 + 2 * (MODE_BUTTON_WIDTH + 3)) * P, y + 2 * P)
+    mode_buttons.fertility:move(x + (5 + 3 * (MODE_BUTTON_WIDTH + 3)) * P, y + 2 * P)
   end
 
   local function select_mode(name)
@@ -252,9 +253,14 @@ if game ~= nil then
       group = modes_group,
       on_click = function() select_mode("elevation") end,
     }
+    mode_buttons.fertility = button.new{
+      x = x + (5 + 3 * (MODE_BUTTON_WIDTH + 3)) * P, y = y + 2 * P, icons = {"fertility"}, icon = "fertility", tooltip = "fertility", kind = "places_bar",
+      group = modes_group, on_click = function() select_mode("fertility") end,
+    }
     tooltip.attach(mode_buttons.stockpile.key, function() return tooltip.explanation("stockpile_map") end)
     tooltip.attach(mode_buttons.yield.key, function() return tooltip.explanation("yield_map") end)
     tooltip.attach(mode_buttons.elevation.key, function() return tooltip.explanation("elevation_map") end)
+    tooltip.attach(mode_buttons.fertility.key, function() return tooltip.explanation("fertility_map") end)
   end
 
   local function update_speed_box(box)

@@ -2133,7 +2133,7 @@ end)
     let mut rig = Rig::new(&script);
     rig.opened();
     let regions = rig.harness.bridge.hit_regions().expect("published hits");
-    // The buttons in creation order: the three transports, Help (`?`), the three ledger tabs, and the three map modes'.
+    // The buttons in creation order: the three transports, Help (`?`), the three ledger tabs, and the four map modes'.
     let buttons: Vec<String> = regions
         .regions()
         .iter()
@@ -2144,7 +2144,7 @@ end)
     let help_key = buttons
         .iter()
         .rev()
-        .nth(6)
+        .nth(7)
         .cloned()
         .expect("the production time bar has a Help button");
     let point = (0..400)

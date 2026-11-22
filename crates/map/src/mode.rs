@@ -18,6 +18,8 @@ pub const ELEVATION_TOP_METRES: u32 = 8_848;
 
 /// The largest value on the ramp: green.
 pub const MODE_VALUE_MAX: u16 = 1000;
+/// The green endpoint shared by the value and fertility modes.
+const MODE_FULL_GREEN: u8 = 255;
 /// A value-table entry for a place that is not coloured.
 pub const MODE_UNCOLOURED: u16 = 0xFFFF;
 /// An index-grid entry for a cell no place owns.
@@ -46,7 +48,7 @@ pub fn mode_colour(value: u16) -> Rgba8 {
         Rgba8::opaque(255, green, 0)
     } else {
         let red = u8::try_from((u32::from(MODE_VALUE_MAX) - value) * 255 / 500).unwrap_or(u8::MAX);
-        Rgba8::opaque(red, 255, 0)
+        Rgba8::opaque(red, MODE_FULL_GREEN, 0)
     }
 }
 
@@ -142,4 +144,15 @@ pub fn elevation_grey(metres: i32) -> Rgba8 {
     let scaled = 255_u64 * 255 * height / u64::from(ELEVATION_TOP_METRES);
     let grey = u8::try_from(scaled.isqrt().min(255)).unwrap_or(u8::MAX);
     Rgba8::opaque(grey, grey, grey)
+}
+
+/// The fertility mode's linear black-to-green ramp, with glaciers in elevation grey.
+#[must_use]
+pub fn fertility_colour(fertility: u8, metres: i32) -> Rgba8 {
+    if fertility == 255 {
+        return elevation_grey(metres);
+    }
+    let green = u8::try_from(u32::from(fertility.min(250)) * u32::from(MODE_FULL_GREEN) / 250)
+        .unwrap_or(255);
+    Rgba8::opaque(0, green, 0)
 }

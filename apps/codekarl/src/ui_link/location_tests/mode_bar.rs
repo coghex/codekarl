@@ -160,27 +160,27 @@ fn a_mode_the_lane_refuses_leaves_the_buttons_and_the_mode_as_they_were() {
 fn the_mode_bar_is_centred_at_the_bottom_of_the_window_and_follows_a_resize() {
     let mut rig = rig(&["time(1, 1) announce_bars()", "announce_bars()"]);
     rig.opened();
-    // 1800 by 900 points. The bar is 110 by 38: centred it starts at (1800 - 110) / 2 = 845, which snaps to the 2-point grid as 846, and its
+    // 1800 by 900 points. The bar is 142 by 38: centred it starts at (1800 - 142) / 2 = 829, which snaps to the 2-point grid as 830, and its
     // bottom edge is a margin of 8 above the window's: y = 900 - 38 - 8 = 854.
-    assert_mode_bar_at(&rig, [846, 854]);
+    assert_mode_bar_at(&rig, [830, 854]);
     let stockpile = bar_button(&rig, "stockpile");
-    assert_eq!(stockpile[0], 846 + 5 * 2, "the first button's left edge");
+    assert_eq!(stockpile[0], 830 + 5 * 2, "the first button's left edge");
     assert_eq!(
         stockpile[1] + stockpile[3] / 2,
         854 + 19,
         "the row's vertical centre"
     );
-    let elevation = bar_button(&rig, "elevation");
+    let elevation = bar_button(&rig, "fertility");
     let left_gap = stockpile[0] - 5 * 2;
     let right_gap = 1800 - (elevation[0] + elevation[2] + 5 * 2);
     assert!(
         (left_gap - right_gap).abs() <= 2,
         "centred: {left_gap} points on the left, {right_gap} on the right"
     );
-    // 1200 by 700: (1200 - 110) / 2 = 545, snapped 546; y = 700 - 38 - 8 = 654. The buttons moved with the bar.
+    // 1200 by 700: (1200 - 142) / 2 = 529, snapped 530; y = 700 - 38 - 8 = 654. The buttons moved with the bar.
     rig.deliver_fixture_frame_at(1200, 700, 2);
     rig.opened();
-    assert_mode_bar_at(&rig, [546, 654]);
+    assert_mode_bar_at(&rig, [530, 654]);
 }
 
 #[test]
@@ -218,4 +218,27 @@ fn the_closed_ledger_bar_has_three_icons_at_top_right_and_follows_a_resize() {
     rig.deliver_fixture_frame_at(1200, 700, 2);
     rig.opened();
     check(&rig, 1200);
+}
+
+#[test]
+fn fertility_button_selects_and_toggles_off() {
+    let mut rig = rig(&[
+        "time(1, 1)",
+        "announce_modes()",
+        "announce_modes()",
+        "announce_modes()",
+        "announce_modes()",
+    ]);
+    rig.opened();
+    rig.opened();
+    press_mode(&mut rig, "yield");
+    press_mode(&mut rig, "fertility");
+    rig.opened();
+    assert_eq!(modes_called(&rig), ["yield", "fertility"]);
+    assert!(mode_button(&rig, "fertility").2);
+    assert!(!mode_button(&rig, "yield").2);
+    press_mode(&mut rig, "fertility");
+    rig.opened();
+    assert_eq!(modes_called(&rig), ["yield", "fertility", "off"]);
+    assert!(!mode_button(&rig, "fertility").2);
 }

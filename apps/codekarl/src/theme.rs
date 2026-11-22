@@ -584,7 +584,7 @@ mod tests {
     }
 
     /// The application's icons: name, width in pixels and the seven shape rows after the two blank ones.
-    const ICONS: [(&str, usize, &[&str]); 17] = [
+    const ICONS: [(&str, usize, &[&str]); 18] = [
         (
             "rewind",
             9,
@@ -632,6 +632,14 @@ mod tests {
             9,
             &[
                 "...##...", "..####..", "..####..", ".######.", ".######.", "########", "########",
+            ],
+        ),
+        // Original sprout icon, drawn from plain geometric shapes for CK-382.
+        (
+            "fertility",
+            9,
+            &[
+                "#......#", "##....##", ".##..##.", "..####..", "...##...", "...##...", "...##...",
             ],
         ),
         (
