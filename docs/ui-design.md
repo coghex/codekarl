@@ -798,7 +798,7 @@ The main thread must decide **synchronously** who gets each pointer event. It ca
   - `events` lists the UI's routed events in order: `down`, `move`, `up`, `scroll` and `cancel`. Each event has its position in points
     and the **`group`** it was routed to: the owner group for a captured gesture, the hit group otherwise.
   - **`button_down` and `button_up`** (CK-269) are in the same list, in order: a press or release of the middle or right button,
-    with `button = "middle"` or `"right"`, its position, the hit key under it (`false` over none, such as the map) and `inside`.
+    with `button = "middle"` or `"right"`, its position, the hit key under it (`false` over none, such as the map) and `inside`. A `button_down` or `button_up` also carries `tag`, the tag (`render.set_hit_tag`) of the region it was hit-tested against, when that region has one (CK-381, §3.28).
     - They always go to the UI and never to the map, wherever the pointer is.
     - They are apart from the left button's gesture: they start, end and cancel no capture and no map drag, and `held` stays the
       left button's. There is no held flag and no `cancel` for them, so a consumer must accept a press with no release (focus lost,
@@ -3973,11 +3973,20 @@ The camera go-to, the function that goes and opens, the ledger's right-click and
   for its read; the next `game_time` refreshes it as always), a pop that window on its pops tab, a character the character screen
   (`character_panel:open(id, revision, world)`), a river nothing. Each reads the revision it was named in, never the panel's current one. `main.lua` registers the openers with
   `go_to.set_openers`. `go_to.camera(kind, id, revision)` is the camera alone, without zoom.
-- **Right-click in the ledger.** A right `button_down` on a row of the locations or pops list, or on a character card, goes to that row's thing without zoom and
-  opens, selects and raises nothing. The target is what the row was drawn with: a list row carries `target = {kind, id, revision, world}` (`lib/list.lua`
-  keeps it through its copy and hands the item to `on_secondary(index, item)`), a card widget keeps its item (`on_secondary` of `lib/cards.lua`); a row of a world a
-  load has replaced does nothing. In a list with `on_secondary` the rows take new hit keys (`_g<generation>_row_<index>`) whenever the items are replaced, and the widget of a key stands for the item the row showed when the key was made, so a right-click routed against the frame before a refresh still reaches the row it meant, with the revision and world it was drawn with, and never the row that moved into its place. A replaced row's old key is retired (`retire_row`) until the next pointer dispatch ends: if its left press has been given to the UI it keeps its real hit region (the rest of the click lands) and ignores right-clicks; otherwise it keeps a *ghost* region one point across, so that the input link, which owns the key of a press it routed before the refresh, does not cancel it, while a fresh pointer finds nothing there (a fresh right-click on a removed row does nothing); a press given to the UI after the refresh makes the ghost real again until it ends. The pops rows carry their slot. The header, the scroll bar and empty space do nothing; an overflow packet's events click
-  nothing. The left click is unchanged.
+- **Right-click in the ledger** (design note `.pipeline/coordination/find/ck381-gesture-model-ck-worker-2-r2.md`). A right `button_down` on a row of the
+  locations or pops list, or on a character card, goes to that row's thing without zoom and opens, selects and raises nothing. The list rows' and cards'
+  hit keys and regions are as before CK-381 (so fresh hit tests see only the rows drawn and a left gesture is owned by its key as always); the right-click
+  target rides on the region instead. Each drawn row or card hangs a **tag** on its hit key (`render.set_hit_tag(key, tag | nil)`; `lib/list.lua` with
+  `tags = true` and `lib/cards.lua` read the item's `tag`): `go:<kind>:<id>:<revision>:<world>`, a pop's id `<place>#<slot>`, built by `go_to.tag`, which
+  returns nil (the row has no right-click) unless the id uses only `[A-Za-z0-9_#.-]`, a pop slot and a character id are non-negative, the revision is
+  positive and the whole tag is at most 128 characters. A tag is 1 to 128 printable ASCII characters (`ck_render_2d::valid_tag`, its own grammar; a hit
+  *key* stays `[a-z0-9_]{1,48}`); the scene refuses anything else with a Lua error like `render.set_hit`, the list and card code call it under `pcall`, and
+  a refusal clears the key's earlier tag. The input link copies the tag of the region a **button** event was hit-tested against into the event (`tag`,
+  §3.5), so the event keeps the whole target (thing, revision of the drawing, world) however the rows, widgets or generations change before it is
+  dispatched. `pointer.observe_tagged(fn)` gives each tagged `button_down` to its observers behind the pointer gate and with no widget needed;
+  `main.lua`'s one observer takes a right press of the current world and calls `go_to.camera(kind, id, revision)` (a tag of a replaced world, an overflow
+  packet, another button or a malformed tag does nothing; the engine still refuses a retired revision, an unknown id or slot, or a character not live).
+  The pops rows carry their slot. The header, the scroll bar and empty space have no tag, so they do nothing. The left click is unchanged.
 - **The location window's go-to button.** The title bar has an icon button at its right, before the close button: the ledger's location icon, the tooltip
   "go to". A click is `go_to.to("location", id, revision)` for the place showing; the window stays open. `Window:add_title_button` places it and takes its
   room (`window.title_button_room`) from the title's items; `location.min_width` counts it with the three tabs and the close button, so the panel's
