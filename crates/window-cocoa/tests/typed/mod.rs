@@ -1,5 +1,5 @@
 //! Typed text on Cocoa (CK-314): the content view as the system's text input client, through the real backend: a posted key-down
-//! carrying characters, the five edit commands, a repeat, composition committed as one precomposed character, Escape, and text input off.
+//! carrying characters, the edit commands, a repeat, composition committed as one precomposed character, Escape, and text input off.
 //! All use **marked** synthetic events through the real dispatch, with the owner's input ignored as in the rest of this group, and leave
 //! the system's keyboard layout alone: the key codes are the ANSI positions, and the characters the events carry are what the layout the
 //! machine has would give (the cases use the plain ASCII ones).
@@ -64,7 +64,7 @@ pub(crate) fn a_key_down_with_characters_gives_one_character_entry() {
     assert_eq!(typed(&fixture.drain()), [TypedEntry::Char('A')]);
 }
 
-/// Backspace, Enter, Tab, Shift+Tab, Left and Right give their commands in order, with Shift+Tab's direction fixed at its key event.
+/// Backspace, Enter, Tab, Shift+Tab and the arrows give their commands in order, with Shift+Tab's direction fixed at its key event.
 pub(crate) fn the_six_edit_commands_and_several_keys_keep_their_order() {
     let mut fixture = open_with_text_input();
     type_key(Key::KeyA, 0, "a");
@@ -74,6 +74,9 @@ pub(crate) fn the_six_edit_commands_and_several_keys_keep_their_order() {
     type_key(Key::Tab, SHIFT, "\t");
     type_key(Key::ArrowLeft, 0, "\u{f702}");
     type_key(Key::ArrowRight, 0, "\u{f703}");
+    type_key(Key::ArrowUp, 0, "\u{f700}");
+    type_key(Key::ArrowDown, 0, "\u{f701}");
+    type_key(Key::Delete, 0, "\u{f728}");
     type_key(Key::KeyB, 0, "b");
     assert_eq!(
         typed(&fixture.drain()),
@@ -85,6 +88,9 @@ pub(crate) fn the_six_edit_commands_and_several_keys_keep_their_order() {
             TypedEntry::Backtab,
             TypedEntry::Left,
             TypedEntry::Right,
+            TypedEntry::Up,
+            TypedEntry::Down,
+            TypedEntry::Delete,
             TypedEntry::Char('b'),
         ]
     );

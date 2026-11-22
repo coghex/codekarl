@@ -288,6 +288,12 @@ function textfield:on_typed(entry)
       scroll(self)
       draw(self)
     end
+  elseif kind == "delete" then
+    if self.position < #self.chars then
+      table.remove(self.chars, self.position + 1)
+      scroll(self)
+      draw(self)
+    end
   elseif kind == "left" then
     if self.position > 0 then
       self.position = self.position - 1

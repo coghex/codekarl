@@ -451,3 +451,69 @@ fn while_the_block_is_on_no_press_reaches_the_simulation_and_when_it_is_off_all_
         "the ten simulation controls act again (the map keys and `close` are not controls)"
     );
 }
+
+#[test]
+fn popup_blocks_quicksave_and_quickload_from_changing_real_save_files_or_game() {
+    use crate::ui_link::group_tests::Rig;
+    let mut game = CoreHarness::new(42);
+    game.control(Control::Quicksave);
+    let path = game.saves.join("quicksave.cksave");
+    let saved = std::fs::read(&path).expect("baseline quicksave exists");
+    let saved_digest = game.digest();
+    game.run_until(1, &[1000], super::after(3, 0));
+    let advanced = game.digest();
+    assert_ne!(advanced, saved_digest, "quickload would change the game");
+    let script = r"
+local find = require('lib.find_popup')
+game.find_entries = function() return {} end
+local opened = false
+window.on_opened(function()
+  if not opened then find.open({width=800,height=600}, 1, 0); assert(find.current()); opened=true
+  else find.close(); assert(find.current()==nil) end
+end)
+";
+    let mut rig = Rig::new_fixture_body(script);
+    rig.opened();
+    let dispatch = |rig: &mut Rig, game: &mut CoreHarness, names: &[&str]| {
+        rig.link
+            .input(&tick(snapshot(
+                names.iter().map(|name| press(name)).collect(),
+                false,
+            )))
+            .unwrap();
+        for message in rig.control_receiver.try_iter() {
+            game.core.dispatch(message, game.now);
+        }
+    };
+    dispatch(&mut rig, &mut game, &["game_quicksave", "game_quickload"]);
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        saved,
+        "the existing save bytes are untouched"
+    );
+    assert_eq!(
+        std::fs::read_dir(&game.saves).unwrap().count(),
+        1,
+        "no new save file"
+    );
+    assert_eq!(
+        game.digest(),
+        advanced,
+        "quickload did not restore the saved state"
+    );
+    rig.opened();
+    dispatch(&mut rig, &mut game, &[]); // drain the dismissal boundary
+    dispatch(&mut rig, &mut game, &["game_quickload"]);
+    assert_eq!(
+        game.digest(),
+        saved_digest,
+        "a fresh quickload acts after dismissal"
+    );
+    game.run_until(1, &[1000], super::after(3, 0));
+    dispatch(&mut rig, &mut game, &["game_quicksave"]);
+    assert_ne!(
+        std::fs::read(&path).unwrap(),
+        saved,
+        "a fresh quicksave replaces the file"
+    );
+}

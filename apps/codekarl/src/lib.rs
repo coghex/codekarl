@@ -757,6 +757,17 @@ fn supervise_with_owner_factory(
         .map(|prepared| game_api::places_of(&prepared.scenario))
         .unwrap_or_default();
     let scenario_id = game.as_ref().map(|prepared| prepared.scenario.id.clone());
+    let find_rivers = game
+        .as_ref()
+        .and_then(|prepared| prepared.scenario.map.river_network.as_ref())
+        .map(|network| {
+            network
+                .rivers
+                .iter()
+                .map(|river| (river.id.clone(), river.name.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
     let go_to_targets = game
         .as_ref()
         .map(|prepared| Arc::new(go_to::Targets::from_scenario(&prepared.scenario)));
@@ -810,6 +821,14 @@ fn supervise_with_owner_factory(
                     ),
                 )
                 .function("places", game_api::places_function(places.clone()))
+                .function(
+                    "find_entries",
+                    game_api::find_entries_function(
+                        Arc::clone(&view_cache),
+                        places.clone(),
+                        find_rivers,
+                    ),
+                )
                 .function(
                     "characters",
                     game_api::characters_function(Arc::clone(&view_cache)),

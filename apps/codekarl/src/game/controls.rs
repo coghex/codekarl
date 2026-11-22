@@ -1,7 +1,7 @@
 //! The controls: the input actions that pause, change the speed, save and load, and how a snapshot's presses become them.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Mutex, PoisonError};
 
@@ -145,6 +145,7 @@ pub(crate) fn without_blocked_actions(input: &InputSnapshot) -> InputSnapshot {
 pub(crate) struct SimControls {
     sender: Sender<Message>,
     block: Arc<AtomicBool>,
+    find_block: Arc<AtomicU8>,
     guarded_results: Arc<GuardedResults>,
 }
 
@@ -159,6 +160,7 @@ impl SimControls {
         Self {
             sender,
             block: Arc::new(AtomicBool::new(false)),
+            find_block: Arc::new(AtomicU8::new(0)),
             guarded_results: Arc::new(GuardedResults {
                 sink: GuardedResultSink {
                     sender: result_sender,
@@ -178,6 +180,22 @@ impl SimControls {
     /// Whether the game-key block is on.
     pub(crate) fn keys_blocked(&self) -> bool {
         self.block.load(Ordering::SeqCst)
+    }
+
+    /// The find popup owns keys until one input tick has drained its dismissal pump.
+    pub(crate) fn set_find_keyboard_block(&self, blocked: bool) {
+        if blocked {
+            self.find_block.store(1, Ordering::SeqCst);
+        } else {
+            let _ = self
+                .find_block
+                .compare_exchange(1, 2, Ordering::SeqCst, Ordering::SeqCst);
+        }
+    }
+
+    /// Sample and drain the dismissal latch at the input boundary.
+    pub(crate) fn take_find_keyboard_block(&self) -> bool {
+        self.find_block.fetch_and(1, Ordering::SeqCst) != 0
     }
 
     /// Sends every press of `input` to the simulation owner, in order, and says whether the input layer discarded earlier

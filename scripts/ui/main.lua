@@ -25,6 +25,7 @@ local classes = require("lib.classes")
 local menu = require("lib.menu")
 local typing = require("lib.typing")
 local fullscreen_key = require("lib.fullscreen_key")
+local find_popup = require("lib.find_popup")
 local cards = require("lib.cards")
 local character_cards = require("lib.character_cards")
 local character_screen = require("lib.character_screen")
@@ -396,6 +397,7 @@ if game ~= nil then
   game.on_time(function(time)
     require("lib.save_screen").set_time(time)
     current_world = time.world or 0
+    find_popup.set_revision(time.economy_revision, current_world)
     location_panel:set_revision(time.economy_revision)
     classes.set_revision(time.economy_revision)
     -- The character screen reads the character again under this snapshot's revision, or closes (a new world, a character no longer live).
@@ -834,6 +836,7 @@ frame.on_update(function(update)
   pointer.dispatch(update.pointer)
   require("lib.settings_window").update(update)
   listbar.update(update)
+  find_popup.update(update, view)
   fullscreen_key.update(update)
   if update.width ~= view.width or update.height ~= view.height then
     view.width = update.width
@@ -843,6 +846,7 @@ frame.on_update(function(update)
       relayout()
     end
     menu.relayout()
+    find_popup.relayout()
   end
   tooltip.update(update)
 end)
@@ -858,6 +862,7 @@ end)
 window.on_close_request(function(source)
   log.info("close requested by " .. source)
   -- Escape closes what is open and, with nothing left, opens the pause menu; the close button ends the run.
+  if source == "key" and find_popup.current() then find_popup.close(); return false end
   return menu.close_request(source, view)
 end)
 

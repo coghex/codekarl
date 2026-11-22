@@ -1120,3 +1120,51 @@ fn a_tag_the_scene_refuses_takes_the_rows_earlier_tag_with_it() {
         "a valid tag works again"
     );
 }
+
+#[test]
+fn find_closes_first_over_an_open_picker_with_default_and_rebound_close() {
+    use ck_input::{Bindings, Key};
+    for (binding, key) in [("Escape", Key::Escape), ("F10", Key::F10)] {
+        let prelude = r"
+game.find_entries = function() return {} end
+game.set_find_keyboard_block = host_game.set_find_keyboard_block
+";
+        let steps = [
+            r"
+local windows = require('lib.window')
+local listbar = require('lib.listbar')
+under = windows.new{title='under', content_width=240, content_height=150}
+bar = listbar.new{window=under, sorts={{key='name',label='name',first='ascending'}},
+ groups={{key='kind',label='kind'}}, on_change=function() end}
+bar:view({{name='a',sort={name='a'},filter={kind='one'}}, {name='b',sort={name='b'},filter={kind='two'}}})
+bar.filter_button.on_click()
+assert(bar.picker ~= nil)
+find = require('lib.find_popup')
+find.open({width=1800,height=900}, 1, 0)
+assert(find.current() and bar.picker ~= nil)
+",
+            "assert(find.current()==nil and bar.picker~=nil and not under.closed)",
+        ];
+        let mut rig = rig_with_prelude_at(prelude, &steps, 1800, 900, 2);
+        rig.mapper.replace_bindings(
+            Bindings::from_entries([("close".into(), vec![binding.into()])]).unwrap(),
+        );
+        rig.opened();
+        if key != Key::Escape {
+            rig.mapper.key(Key::Escape, true, false);
+            assert_eq!(rig.mapper.take_close_presses(), 0);
+            rig.mapper.key(Key::Escape, false, false);
+        }
+        rig.mapper.key(key, true, false);
+        assert_eq!(
+            rig.mapper.take_close_presses(),
+            1,
+            "the configured key generates a close request"
+        );
+        assert!(
+            rig.escape(),
+            "the production handler declines after closing find"
+        );
+        rig.opened();
+    }
+}

@@ -26,7 +26,7 @@ local INPUT_GROUPS = {
   {"time", {{"time_pause", "pause"}, {"time_speed_1", "speed 1"}, {"time_speed_2", "speed 2"},
     {"time_speed_3", "speed 3"}, {"time_speed_4", "speed 4"}, {"time_speed_5", "speed 5"},
     {"time_faster", "faster"}, {"time_slower", "slower"}}},
-  {"game", {{"game_quicksave", "quicksave"}, {"game_quickload", "quickload"}, {"window_fullscreen", "fullscreen"},
+  {"game", {{"game_quicksave", "quicksave"}, {"game_quickload", "quickload"}, {"game_find", "find"}, {"window_fullscreen", "fullscreen"},
     {"debug_layer", "debug layer"}, {"close", "menu"}}},
   {"map", {{"map_pan_left", "pan left"}, {"map_pan_right", "pan right"}, {"map_pan_up", "pan up"},
     {"map_pan_down", "pan down"}, {"map_zoom_in", "zoom in"}, {"map_zoom_out", "zoom out"}}},
@@ -586,7 +586,7 @@ end
 local ACTION_LABEL = {
   close = "the menu", time_pause = "pause", time_speed_1 = "speed 1", time_speed_2 = "speed 2",
   time_speed_3 = "speed 3", time_speed_4 = "speed 4", time_speed_5 = "speed 5", time_faster = "faster",
-  time_slower = "slower", game_quicksave = "quicksave", game_quickload = "quickload", window_fullscreen = "fullscreen",
+  time_slower = "slower", game_quicksave = "quicksave", game_quickload = "quickload", game_find = "find", window_fullscreen = "fullscreen",
   debug_layer = "debug layer", map_pan_left = "pan left", map_pan_right = "pan right", map_pan_up = "pan up", map_pan_down = "pan down",
   map_zoom_in = "zoom in", map_zoom_out = "zoom out",
 }

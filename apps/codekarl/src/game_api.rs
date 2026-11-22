@@ -82,6 +82,10 @@ pub(crate) fn extension_with_select(
         .function("control", control_function(controls.clone()))
         .function("pause", pause_function(controls.clone()))
         .function("set_modal", set_modal_function(controls.clone()))
+        .function(
+            "set_find_keyboard_block",
+            set_find_keyboard_block_function(controls.clone()),
+        )
         .function("mark_unsaved", mark_unsaved_function(controls.clone()))
         .function("saves", saves_function(controls.clone()))
         .function("save", save_function(controls.clone(), SaveCall::New))
@@ -275,6 +279,16 @@ fn set_modal_function(controls: SimControls) -> HostFunction {
     })
 }
 
+fn set_find_keyboard_block_function(controls: SimControls) -> HostFunction {
+    Arc::new(move |arguments| {
+        let [Some(ConfigValue::Bool(on))] = arguments else {
+            return Err("game.set_find_keyboard_block: expected one boolean".to_owned());
+        };
+        controls.set_find_keyboard_block(*on);
+        Ok(Vec::new())
+    })
+}
+
 /// The callback argument for a hovered marker; `None` means Lua receives no arguments (`nil`).
 ///
 /// The positions are the map's, in window points; in a window opened in pixels `units` converts them to the UI's units at 1/256 precision.
@@ -398,6 +412,55 @@ pub(crate) fn places_function(places: Vec<Place>) -> HostFunction {
             return Err("game.places: takes no arguments".to_owned());
         }
         Ok(vec![table.clone()])
+    })
+}
+
+/// Searchable scenario names and live characters at the UI's world-bound revision.
+pub(crate) fn find_entries_function(
+    cache: Arc<ViewCache>,
+    places: Vec<Place>,
+    rivers: Vec<(String, String)>,
+) -> HostFunction {
+    Arc::new(move |arguments| {
+        let [Some(ConfigValue::Integer(revision))] = arguments else {
+            return Err("game.find_entries: expected a revision".to_owned());
+        };
+        let revision = u64::try_from(*revision)
+            .map_err(|_| format!("game.find_entries: revision {revision} is missing"))?;
+        let view = cache.get_in_world("game.find_entries", revision)?;
+        let mut rows = Vec::new();
+        for place in &places {
+            rows.push(table([
+                ("kind", text("location")),
+                ("id", text(&place.id)),
+                ("name", text(&place.name)),
+            ]));
+        }
+        for card in &view.characters.cards {
+            let name = if card.epithet.is_empty() {
+                card.name.clone()
+            } else {
+                format!("{} {}", card.name, card.epithet)
+            };
+            let place = places
+                .iter()
+                .find(|p| p.id == card.place)
+                .map_or("", |p| p.name.as_str());
+            rows.push(table([
+                ("kind", text("character")),
+                ("id", integer(card.id)),
+                ("name", text(&name)),
+                ("place", text(place)),
+            ]));
+        }
+        for (id, name) in &rivers {
+            rows.push(table([
+                ("kind", text("river")),
+                ("id", text(id)),
+                ("name", text(name)),
+            ]));
+        }
+        Ok(vec![ConfigValue::Array(rows)])
     })
 }
 
@@ -1379,6 +1442,52 @@ mod tests {
                 error_value("unsaved".to_owned()),
             ]
         );
+    }
+
+    #[test]
+    fn find_entries_uses_the_requested_world_revision_and_composed_names() {
+        let cache = Arc::new(ViewCache::default());
+        let mut view = EconomyView::default();
+        view.characters.cards.push(CharacterCard {
+            id: 7,
+            name: "Máel".to_owned(),
+            epithet: "Frossach".to_owned(),
+            place: "ailech".to_owned(),
+            ..CharacterCard::default()
+        });
+        cache.post(1, Arc::new(view));
+        cache.note_world(1, 0);
+        let places = vec![Place {
+            id: "ailech".into(),
+            name: "Grianán Ailigh".into(),
+            kind: "town".into(),
+            size: 1,
+            abandoned: false,
+        }];
+        let find = find_entries_function(
+            Arc::clone(&cache),
+            places,
+            vec![("erne".into(), "Erne".into())],
+        );
+        let entries = find(&[Some(ConfigValue::Integer(1))]).unwrap();
+        let ConfigValue::Array(rows) = &entries[0] else {
+            panic!("entries array")
+        };
+        assert_eq!(rows.len(), 3);
+        let ConfigValue::Table(character) = &rows[1] else {
+            panic!("character row")
+        };
+        assert_eq!(
+            character.get("name"),
+            Some(&ConfigValue::String("Máel Frossach".into()))
+        );
+        assert_eq!(
+            character.get("place"),
+            Some(&ConfigValue::String("Grianán Ailigh".into()))
+        );
+        cache.post(2, view_with(1));
+        cache.note_world(2, 1);
+        assert!(find(&[Some(ConfigValue::Integer(1))]).is_err());
     }
 
     fn view_with(workers: u64) -> Arc<EconomyView> {

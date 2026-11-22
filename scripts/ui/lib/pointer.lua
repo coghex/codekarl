@@ -144,7 +144,7 @@ function pointer.dispatch(p)
     end
     if key and not (gate ~= nil and gate(key, event)) then
       -- A tagged button press is given to the observers behind the same gate as the widgets, and whether or not a widget is registered.
-      if event.kind == "button_down" and type(event.tag) == "string" then
+      if (event.kind == "down" or event.kind == "button_down") and type(event.tag) == "string" then
         for _, observe in ipairs(tagged_observers) do
           observe(event, eligible)
         end

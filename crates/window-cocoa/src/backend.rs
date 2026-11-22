@@ -425,6 +425,9 @@ fn typed_event(entry: ffi::RawTyped) -> Option<NativeEvent> {
         ffi::TYPED_BACKTAB => TypedEntry::Backtab,
         ffi::TYPED_LEFT => TypedEntry::Left,
         ffi::TYPED_RIGHT => TypedEntry::Right,
+        ffi::TYPED_UP => TypedEntry::Up,
+        ffi::TYPED_DOWN => TypedEntry::Down,
+        ffi::TYPED_DELETE => TypedEntry::Delete,
         _ => return None,
     };
     Some(NativeEvent::Typed(typed))

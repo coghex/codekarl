@@ -214,7 +214,7 @@ fn update_table_in(
         ("overflow".to_owned(), boolean(stash.overflow())),
         ("reset".to_owned(), boolean(stash.reset())),
         // The typed entries (CK-314), one ordered list: `{kind = "char", text = "á"}` for a committed character, and `{kind = name}` for
-        // an edit command (`"backspace"`, `"enter"`, `"tab"`, `"backtab"`, `"left"`, `"right"`). `typed_lost` says that entries were dropped at the
+        // an edit command (`"backspace"`, `"enter"`, `"tab"`, `"backtab"`, `"left"`, `"right"`, `"up"`, `"down"`). `typed_lost` says that entries were dropped at the
         // bound; `typed_epoch` is the generation of the latest `window.set_text_input` call the main thread has applied.
         (
             "typed".to_owned(),
@@ -283,6 +283,9 @@ fn typed_entry_table(entry: ck_window::TypedEntry) -> ConfigValue {
         TypedEntry::Backtab => ("backtab", None),
         TypedEntry::Left => ("left", None),
         TypedEntry::Right => ("right", None),
+        TypedEntry::Up => ("up", None),
+        TypedEntry::Down => ("down", None),
+        TypedEntry::Delete => ("delete", None),
     };
     let mut fields = BTreeMap::from([("kind".to_owned(), ConfigValue::String(kind.to_owned()))]);
     if let Some(text) = text {
@@ -376,6 +379,9 @@ struct State {
     pointer_owner: RefCell<GestureOwner>,
     /// Whether the previous input tick saw the game-key block on, to end a captured gesture on the tick it turns on.
     keys_were_blocked: Cell<bool>,
+    /// Keys held when find owned input remain suppressed until released.
+    find_held: RefCell<std::collections::BTreeSet<String>>,
+    find_was_blocked: Cell<bool>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -497,9 +503,9 @@ fn route_pointer_with(
                 }
                 if let Some(key) = key_at(regions, ui(position), viewport) {
                     let key = key.to_owned();
-                    routed
-                        .ui
-                        .push(view_event("down", ui(position), Some(key.clone())));
+                    let mut event = view_event("down", ui(position), Some(key.clone()));
+                    event.tag = tag_at(regions, ui(position), viewport).map(str::to_owned);
+                    routed.ui.push(event);
                     *owner = GestureOwner::Ui(key);
                 } else {
                     routed.map.push(MapEvent::Pointer(*event));
@@ -1370,16 +1376,10 @@ impl UiLink for CodekarlUi {
         reason = "the scale-boundary transition must route one coherent input tick"
     )]
     fn input(&mut self, tick: &InputTick) -> Result<(), String> {
-        if tick.input.capture.is_none()
-            && tick
-                .input
-                .actions
-                .iter()
-                .any(|action| action.name == "debug_layer" && action.pressed)
-            && let Some(settings) = &self.debug_settings
-        {
-            settings.step_debug_level();
-        }
+        let find_blocked = self
+            .sim
+            .as_ref()
+            .is_some_and(|sim| sim.controls.take_find_keyboard_block());
         let regions = if let Some(scene) = &self.scene {
             scene.hit_regions()
         } else {
@@ -1394,18 +1394,6 @@ impl UiLink for CodekarlUi {
             .scene
             .as_ref()
             .and_then(|scene| scene.ui_scale(tick.metrics.pixels));
-        if let Some(settings) = &self.debug_settings {
-            let debug = settings.debug();
-            if let Some(layer) = self.state.debug_layer.borrow_mut().as_mut() {
-                layer.update(debug, tick.metrics, scale_k);
-            } else if debug.level > 0 && !self.state.warned_debug_missing.replace(true) {
-                crate::lifecycle::emit(
-                    ck_log::Level::Warn,
-                    "debug",
-                    format_args!("debug layer needs a font, resource service and native top layer"),
-                );
-            }
-        }
         let previous_scale_k = self.state.last_scale_k.replace(scale_k);
         let scale_changed = previous_scale_k.is_some_and(|old| Some(old) != scale_k);
         let awaiting_scene_layout = if scale_changed && self.scene.is_some() {
@@ -1443,7 +1431,84 @@ impl UiLink for CodekarlUi {
             .pointer_position
             .map(|position| units.map_or(position, |map| map.position(position)))
             .or(previous_ui);
-        let (block_began, game_input) = self.key_block(&input);
+        let (block_began, mut game_input) = self.key_block(&input);
+        let find_began = find_blocked && !self.state.find_was_blocked.get();
+        self.state.find_was_blocked.set(find_blocked);
+        let block_began = block_began || find_began;
+        {
+            let mut held = self.state.find_held.borrow_mut();
+            let game_key = |name: &str| {
+                ["game_find", "window_fullscreen", "debug_layer"].contains(&name)
+                    || crate::game::controls::is_blocked_action(name)
+            };
+            if find_blocked {
+                held.extend(
+                    input
+                        .actions
+                        .iter()
+                        .filter(|a| a.held && game_key(&a.name))
+                        .map(|a| a.name.clone()),
+                );
+                input = crate::game::controls::without_blocked_actions(&input);
+                input
+                    .transitions
+                    .retain(|transition| !game_key(&transition.action));
+                for action in &mut input.actions {
+                    if game_key(&action.name) {
+                        action.held = false;
+                        action.pressed = false;
+                        action.released = false;
+                    }
+                }
+            } else if !held.is_empty() {
+                input.transitions.retain(|transition| {
+                    if held.contains(&transition.action) {
+                        if transition.edge == Edge::Release {
+                            held.remove(&transition.action);
+                        }
+                        false
+                    } else {
+                        true
+                    }
+                });
+                for action in &mut input.actions {
+                    if held.contains(&action.name) {
+                        if !action.held {
+                            held.remove(&action.name);
+                        }
+                        action.held = false;
+                        action.pressed = false;
+                        action.released = false;
+                    }
+                }
+            }
+        }
+        if game_input.is_some() {
+            game_input = Some(crate::game::controls::without_blocked_actions(&input));
+        } else if find_blocked || !self.state.find_held.borrow().is_empty() {
+            game_input = Some(input.clone());
+        }
+        if input.capture.is_none()
+            && input
+                .actions
+                .iter()
+                .any(|action| action.name == "debug_layer" && action.pressed)
+            && let Some(settings) = &self.debug_settings
+        {
+            settings.step_debug_level();
+        }
+        if let Some(settings) = &self.debug_settings {
+            let debug = settings.debug();
+            if let Some(layer) = self.state.debug_layer.borrow_mut().as_mut() {
+                layer.update(debug, tick.metrics, scale_k);
+            } else if debug.level > 0 && !self.state.warned_debug_missing.replace(true) {
+                crate::lifecycle::emit(
+                    ck_log::Level::Warn,
+                    "debug",
+                    format_args!("debug layer needs a font, resource service and native top layer"),
+                );
+            }
+        }
         let mut owner = self.state.pointer_owner.borrow_mut();
         let pointer_viewport =
             (tick.mode == ck_window::WindowMode::Fullscreen).then_some(tick.metrics.points);
@@ -1560,11 +1625,13 @@ impl UiLink for CodekarlUi {
 }
 
 #[cfg(test)]
+mod find_tests;
+#[cfg(test)]
 mod fullscreen_tests;
 #[cfg(test)]
 mod glossary_reader_tests;
 #[cfg(test)]
-mod group_tests;
+pub(crate) mod group_tests;
 #[cfg(test)]
 mod input_tick_tests;
 #[cfg(test)]
@@ -2541,9 +2608,9 @@ mod tests {
                 ("button_down", Some("over"), Some("g2")),
                 ("button_up", Some("plain"), None),
                 ("button_down", None, None),
-                ("down", Some("over"), None),
+                ("down", Some("over"), Some("g2")),
             ],
-            "the topmost region's tag; an untagged region or an empty spot gives none; only button events carry one"
+            "the topmost region tag is captured for left and other button presses"
         );
     }
 
@@ -4179,6 +4246,9 @@ mod tests {
             ck_window::TypedEntry::Backtab,
             ck_window::TypedEntry::Left,
             ck_window::TypedEntry::Right,
+            ck_window::TypedEntry::Up,
+            ck_window::TypedEntry::Down,
+            ck_window::TypedEntry::Delete,
         ];
         input.typed_lost = true;
         input.typed_epoch = 5;
@@ -4190,7 +4260,8 @@ mod tests {
         assert_eq!(
             &*seen,
             &[ConfigValue::String(
-                "char:a,char:\u{e1},backspace,enter,tab,backtab,left,right|true|5".to_owned()
+                "char:a,char:\u{e1},backspace,enter,tab,backtab,left,right,up,down,delete|true|5"
+                    .to_owned()
             )]
         );
     }

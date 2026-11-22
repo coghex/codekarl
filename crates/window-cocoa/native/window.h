@@ -33,6 +33,9 @@ typedef struct CKWinWakeHandle CKWinWakeHandle;
 #define CK_WIN_TYPED_TAB 3
 #define CK_WIN_TYPED_LEFT 4
 #define CK_WIN_TYPED_RIGHT 5
+#define CK_WIN_TYPED_UP 7
+#define CK_WIN_TYPED_DOWN 8
+#define CK_WIN_TYPED_DELETE 9
 #define CK_WIN_TYPED_BACKTAB 6
 
 typedef struct {

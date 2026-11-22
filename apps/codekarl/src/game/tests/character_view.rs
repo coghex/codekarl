@@ -693,6 +693,52 @@ fn the_traits_section_lists_the_present_keys_with_a_letter_for_a_graded_one() {
     );
 }
 
+fn assert_shipped_find_entries(scenario: &ck_map::Scenario, view: &CharacterView) {
+    let cache = std::sync::Arc::new(crate::game_api::ViewCache::default());
+    cache.post(
+        1,
+        std::sync::Arc::new(crate::game::view::EconomyView {
+            characters: view.clone(),
+            ..Default::default()
+        }),
+    );
+    cache.note_world(1, 0);
+    let rivers = scenario
+        .map
+        .river_network
+        .as_ref()
+        .unwrap()
+        .rivers
+        .iter()
+        .map(|river| (river.id.clone(), river.name.clone()))
+        .collect();
+    let find =
+        crate::game_api::find_entries_function(cache, crate::game_api::places_of(scenario), rivers);
+    let result = find(&[Some(ck_lua::ConfigValue::Integer(1))]).unwrap();
+    let ck_lua::ConfigValue::Array(rows) = &result[0] else {
+        panic!("find rows")
+    };
+    let has = |kind: &str, name: &str, place: Option<&str>| {
+        rows.iter().any(|row| {
+            let ck_lua::ConfigValue::Table(fields) = row else {
+                return false;
+            };
+            fields.get("kind") == Some(&ck_lua::ConfigValue::String(kind.to_owned()))
+                && fields.get("name") == Some(&ck_lua::ConfigValue::String(name.to_owned()))
+                && place.is_none_or(|place| {
+                    fields.get("place") == Some(&ck_lua::ConfigValue::String(place.to_owned()))
+                })
+        })
+    };
+    assert!(has("location", "Grianán Ailigh", None));
+    assert!(has("river", "Erne", None));
+    assert!(has(
+        "character",
+        "Niall mac Fergaile Frossach",
+        Some("Grianán Ailigh")
+    ));
+}
+
 #[test]
 fn the_shipped_start_lists_its_live_characters_and_opens_niall_frossach() {
     let (_dir, prepared, _) = super::start_768::shipped(7);
@@ -746,6 +792,7 @@ fn the_shipped_start_lists_its_live_characters_and_opens_niall_frossach() {
         .filter(|c| !c.life.figure.is_empty())
         .count();
     assert!(figures > 200, "{figures} real figures live at the start");
+    assert_shipped_find_entries(&prepared.scenario, &view);
     // The cost grows with the characters and is paid once a day: the whole view of the start is built in well under a second.
     let started = std::time::Instant::now();
     let again = build(

@@ -1490,7 +1490,7 @@ pub(crate) struct GameConfig {
 const DEFAULT_SAVES: &str = "saves";
 
 /// The time and save actions with their default keys, added only when `[game] scenario` is set.
-const GAME_BINDINGS: [(&str, &str); 12] = [
+const GAME_BINDINGS: [(&str, &str); 13] = [
     ("time_pause", "Space"),
     ("time_speed_1", "Digit1"),
     ("time_speed_2", "Digit2"),
@@ -1501,6 +1501,7 @@ const GAME_BINDINGS: [(&str, &str); 12] = [
     ("time_slower", "BracketLeft"),
     ("game_quicksave", "F5"),
     ("game_quickload", "F9"),
+    ("game_find", "KeyF"),
     ("window_fullscreen", "F11"),
     ("debug_layer", "F3"),
 ];
@@ -2129,7 +2130,7 @@ fn load_debug_settings(path: &Path, value: &toml::Value, config: &mut Config) {
     }
 }
 
-pub(crate) const REBINDABLE_ACTIONS: [&str; 18] = [
+pub(crate) const REBINDABLE_ACTIONS: [&str; 19] = [
     "time_pause",
     "time_speed_1",
     "time_speed_2",
@@ -2140,6 +2141,7 @@ pub(crate) const REBINDABLE_ACTIONS: [&str; 18] = [
     "time_slower",
     "game_quicksave",
     "game_quickload",
+    "game_find",
     "window_fullscreen",
     "map_pan_left",
     "map_pan_right",
@@ -4615,9 +4617,9 @@ mod tests {
     }
 
     #[test]
-    fn typed_text_adds_no_bound_action_a_games_bindings_are_the_24_of_today() {
+    fn typed_text_adds_no_bound_action_a_games_bindings_include_find() {
         // CK-314: a digit, a letter or an editing key reaches a widget as a typed entry, never as an action. The game's actions are the
-        // loop's 6 (the map's pan and zoom among them), the 10 time and save actions, the fullscreen key and the debug layer key.
+        // loop's 6 (the map's pan and zoom among them), the 10 time and save actions, the fullscreen, find and debug layer keys.
         let config = parse_config("[game]\nscenario = \"s\"\n").unwrap();
         let names: Vec<_> = config
             .bindings
@@ -4625,7 +4627,7 @@ mod tests {
             .iter()
             .map(ck_window::ActionBindings::name)
             .collect();
-        assert_eq!(names.len(), 24, "{names:?}");
+        assert_eq!(names.len(), 25, "{names:?}");
         assert_eq!(
             config.bindings.action("debug_layer").unwrap().bindings()[0].key(),
             ck_input::Key::F3
@@ -4660,6 +4662,7 @@ mod tests {
             ("game_quicksave", "F5"),
             ("game_quickload", "F9"),
             ("window_fullscreen", "F11"),
+            ("game_find", "KeyF"),
         ];
         for text in ["", "[map]\ndirectory = \"m\"\n"] {
             let config = parse_config(text).unwrap();
@@ -4726,6 +4729,16 @@ mod tests {
             "the per-entry validation admits it"
         );
         assert!(REBINDABLE_ACTIONS.contains(&"debug_layer"));
+        assert!(REBINDABLE_ACTIONS.contains(&"game_find"));
+        let find =
+            parse_config("[game]\nscenario = \"s\"\n[input.bindings]\ngame_find = [\"KeyG\"]\n")
+                .unwrap();
+        assert_eq!(
+            find.bindings.action("game_find").unwrap().bindings()[0]
+                .key()
+                .name(),
+            "KeyG"
+        );
     }
 
     #[test]

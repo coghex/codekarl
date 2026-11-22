@@ -1438,3 +1438,108 @@ fn a_second_opening_ends_a_drag_captured_after_the_first_closed() {
         panned
     );
 }
+
+#[test]
+fn find_keyboard_block_survives_dismissal_until_the_next_input_tick() {
+    let held = held_ui();
+    let (mut link, map, receiver, _) = mapped_link(&held);
+    let controls = link.sim.as_ref().unwrap().controls.clone();
+    controls.set_find_keyboard_block(true);
+    let before = camera_of(&map);
+    link.input(&tick(key_down("time_speed_3"))).unwrap();
+    assert!(receiver.try_iter().next().is_none());
+    controls.set_find_keyboard_block(false);
+    link.input(&tick(key_down("time_speed_3"))).unwrap();
+    assert!(
+        receiver.try_iter().next().is_none(),
+        "dismissal tick drops the speed"
+    );
+    link.input(&tick(key_down("map_pan_left"))).unwrap();
+    assert_ne!(
+        camera_of(&map),
+        before,
+        "a fresh press after the dismissal tick acts"
+    );
+}
+
+#[test]
+fn find_block_keeps_a_held_pan_from_resuming_after_dismissal() {
+    let held = held_ui();
+    let (mut link, map, _, _) = mapped_link(&held);
+    let controls = link.sim.as_ref().unwrap().controls.clone();
+    let before = camera_of(&map);
+    controls.set_find_keyboard_block(true);
+    link.input(&tick(key_down("map_pan_left"))).unwrap();
+    controls.set_find_keyboard_block(false);
+    let held_key = with(idle(), "map_pan_left", true, false, false);
+    link.input(&tick(held_key.clone())).unwrap();
+    link.input(&tick(held_key)).unwrap();
+    assert_eq!(
+        camera_of(&map),
+        before,
+        "a key held across dismissal must be released"
+    );
+}
+
+#[test]
+fn opening_find_ends_an_existing_map_drag() {
+    let held = held_ui();
+    let (mut link, map, _, pointer) = mapped_link(&held);
+    let controls = link.sim.as_ref().unwrap().controls.clone();
+    let at = |dx: i32| PointerPosition {
+        x: pointer.x + dx * 256,
+        y: pointer.y,
+    };
+    let mut press = idle();
+    press.pointer_held = true;
+    press.pointer_position = Some(at(0));
+    press.pointer_events = vec![PointerEvent::Down(at(0))];
+    link.input(&tick(press)).unwrap();
+    let mut drag = idle();
+    drag.pointer_held = true;
+    drag.pointer_position = Some(at(30));
+    drag.pointer_events = vec![PointerEvent::Move(at(30))];
+    link.input(&tick(drag.clone())).unwrap();
+    let before = camera_of(&map);
+    controls.set_find_keyboard_block(true);
+    drag.pointer_position = Some(at(60));
+    drag.pointer_events = vec![PointerEvent::Move(at(60))];
+    link.input(&tick(drag)).unwrap();
+    assert_eq!(camera_of(&map), before);
+}
+
+#[test]
+fn find_drops_time_save_map_and_find_actions_but_keeps_typed_input_and_close() {
+    let held = held_ui();
+    let (mut link, map, receiver, _) = mapped_link(&held);
+    let controls = link.sim.as_ref().unwrap().controls.clone();
+    controls.set_find_keyboard_block(true);
+    let before = camera_of(&map);
+    for name in [
+        "time_speed_3",
+        "time_pause",
+        "game_quicksave",
+        "game_quickload",
+        "map_pan_left",
+        "game_find",
+    ] {
+        link.input(&tick(key_down(name))).unwrap();
+    }
+    assert_eq!(camera_of(&map), before);
+    assert!(receiver.try_iter().next().is_none());
+    let mut close = key_down("close");
+    close.typed = vec![ck_window::TypedEntry::Char('3')];
+    link.input(&tick(close)).unwrap();
+    let stash = link.state.stash.borrow();
+    assert!(
+        stash
+            .transitions()
+            .any(|t| t.action == "close" && t.edge == Edge::Press)
+    );
+    assert!(
+        stash
+            .typed()
+            .any(|entry| *entry == ck_window::TypedEntry::Char('3'))
+    );
+    assert!(!stash.transitions().any(|t| t.action == "game_find"));
+}

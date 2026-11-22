@@ -1277,7 +1277,7 @@ local ok, message = pcall(function() settings.set("ui.tooltips.delay", 0.25) end
 assert(not ok and string.find(tostring(message), "ui.tooltips.delay", 1, true))
 assert(settings.tooltips().delay == 0.8)
 local actions = settings.bindings()
-assert(#actions == 19)
+assert(#actions == 20)
 assert(actions[1].name == "close" and actions[1].bindings[1] == "Escape")
 local pause, quickload
 for _, action in ipairs(actions) do
@@ -1368,7 +1368,7 @@ assert(settings.map().pan_pixels_per_frame == 4)
         .expect("runtime settings");
         let rejected = r"
 local before = settings.bindings()
-assert(#before == 19)
+assert(#before == 20)
 local ok, message = pcall(function()
   settings.set_bindings({time_pause={'Control+KeyQ'}, close={'KeyQ'}})
 end)

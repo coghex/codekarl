@@ -22,3 +22,5 @@ copy with a new hash here.
 the designer's `char_icons.py`, SHA-256 `86dc5a31bce827c29f656889a42de47fea41dbad39974040ff614cc0eeec485c`) and the unknown portrait at two sizes. The
 ledger's monochrome bust is `theme/icon_characters.png`, written by `theme/make_theme.py`. Each drawing is composed from plain shapes and copied
 from no other image; the provenance notes are in the two scripts, and `--check` fails when a committed image differs from what its script writes.
+
+The find popup river icon `theme/icon_river.png` is an original drawing of wavy strokes composed from plain shapes in `theme/make_theme.py`; it is copied from no other image.
