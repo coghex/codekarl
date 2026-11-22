@@ -273,6 +273,7 @@ local function row_widget(self, index, key)
     end
     if hovered then
       self.hover_row = index
+      if self.on_hover_row ~= nil then self.on_hover_row(index) end
     elseif self.hover_row == index then
       self.hover_row = nil
     end
@@ -635,6 +636,7 @@ function list.new(spec)
   self.rows = math.tointeger(rows)
   self.items = items
   self.on_select = spec.on_select
+  self.on_hover_row = spec.on_hover_row
   self.tags = spec.tags == true
   self.tagged = {} -- the hit keys whose regions carry a tag
   self.tooltips = spec.tooltips == true

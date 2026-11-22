@@ -57,6 +57,23 @@ ICONS = {
         9,
         ("#......#", "##....##", ".##..##.", "..####..", "...##...", "...##...", "...##..."),
     ),
+    # Original river icon: three wavy strokes from plain shapes, copied from no other image.
+    "river": (
+        9,
+        (
+            ".........",
+            ".##...##.",
+            "...###...",
+            ".........",
+            ".##...##.",
+            "...###...",
+            ".........",
+            ".##...##.",
+            "...###...",
+            ".........",
+            ".........",
+        ),
+    ),
     # The owner-approved ledger tab icons are the exact 9x11 mock-up rows.
     "location": (
         9,

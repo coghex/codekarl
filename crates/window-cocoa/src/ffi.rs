@@ -16,6 +16,9 @@ pub(crate) const TYPED_ENTER: u8 = 2;
 pub(crate) const TYPED_TAB: u8 = 3;
 pub(crate) const TYPED_LEFT: u8 = 4;
 pub(crate) const TYPED_RIGHT: u8 = 5;
+pub(crate) const TYPED_UP: u8 = 7;
+pub(crate) const TYPED_DOWN: u8 = 8;
+pub(crate) const TYPED_DELETE: u8 = 9;
 pub(crate) const TYPED_BACKTAB: u8 = 6;
 
 /// One typed entry (`CKWinTyped`).

@@ -90,9 +90,9 @@ frame.on_update(function(f)
 end)
 "#;
 
-pub(super) struct Rig {
+pub(crate) struct Rig {
     pub(super) harness: Harness,
-    pub(super) link: CodekarlUi,
+    pub(crate) link: CodekarlUi,
     pub(super) map: crate::map_app::SharedController,
     select_registered: Arc<AtomicBool>,
     pub(super) mapper: Mapper,
@@ -103,7 +103,7 @@ pub(super) struct Rig {
     pub(super) simulation_slot: Arc<SimSlot>,
     /// The run's controls (a clone shares the key block) and the receiving end of the simulation's control channel.
     pub(super) controls: SimControls,
-    pub(super) control_receiver: mpsc::Receiver<crate::game::core::Message>,
+    pub(crate) control_receiver: mpsc::Receiver<crate::game::core::Message>,
     sequence: u64,
 }
 
@@ -120,7 +120,7 @@ impl Rig {
     }
 
     /// Runs a fixture's full script without replacing its own frame callback with the reporting callback.
-    pub(super) fn new_fixture_body(script: &str) -> Self {
+    pub(crate) fn new_fixture_body(script: &str) -> Self {
         Self::with_script(script, false, Vec::new(), None, None)
     }
 
@@ -396,7 +396,7 @@ impl Rig {
     }
 
     /// Runs the script's `window.on_opened` callback and waits (its edits are published by the completion hook).
-    pub(super) fn opened(&mut self) {
+    pub(crate) fn opened(&mut self) {
         self.link.post(UiEvent::Opened).expect("posted");
         let answered = answer(&mut self.link).answer;
         // Only a failure matters for `Opened`.

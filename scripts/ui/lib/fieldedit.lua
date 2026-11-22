@@ -162,7 +162,7 @@ end
 -- A left press anywhere that is not a field applies the field that edits, before the press reaches its own widget; the press itself still
 -- does what it does. A press on a field is that field's own business (`begin` applies the one that was editing).
 pointer.observe_press(function(event)
-  if editing == nil then
+  if editing == nil or editing.keep_editing then
     return
   end
   local widget = event.key and pointer.widget(event.key) or nil

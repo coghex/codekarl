@@ -281,7 +281,7 @@ static void ck_set(uint64_t *words, uint8_t key, BOOL value) {
     }
 }
 
-/* ---- NSTextInputClient: committed text and the five editing commands are typed entries; composition is not shown ---- */
+/* ---- NSTextInputClient: committed text and the editing commands are typed entries; composition is not shown ---- */
 
 - (void)insertText:(id)string replacementRange:(NSRange)replacementRange {
     NSString *text = [string isKindOfClass:[NSAttributedString class]] ? [(NSAttributedString *)string string] : string;
@@ -292,9 +292,11 @@ static void ck_set(uint64_t *words, uint8_t key, BOOL value) {
 }
 
 - (void)doCommandBySelector:(SEL)selector {
-    /* Any command but the five is passed over, without a beep: the superclass would beep for an unhandled one. */
+    /* Any other command is passed over, without a beep: the superclass would beep for an unhandled one. */
     if (selector == @selector(deleteBackward:)) {
         [self.state recordTypedKind:CK_WIN_TYPED_BACKSPACE value:0];
+    } else if (selector == @selector(deleteForward:)) {
+        [self.state recordTypedKind:CK_WIN_TYPED_DELETE value:0];
     } else if (selector == @selector(insertNewline:)) {
         [self.state recordTypedKind:CK_WIN_TYPED_ENTER value:0];
     } else if (selector == @selector(insertTab:)) {
@@ -305,6 +307,10 @@ static void ck_set(uint64_t *words, uint8_t key, BOOL value) {
         [self.state recordTypedKind:CK_WIN_TYPED_LEFT value:0];
     } else if (selector == @selector(moveRight:)) {
         [self.state recordTypedKind:CK_WIN_TYPED_RIGHT value:0];
+    } else if (selector == @selector(moveUp:)) {
+        [self.state recordTypedKind:CK_WIN_TYPED_UP value:0];
+    } else if (selector == @selector(moveDown:)) {
+        [self.state recordTypedKind:CK_WIN_TYPED_DOWN value:0];
     }
 }
 
