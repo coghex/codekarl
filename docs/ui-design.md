@@ -3969,13 +3969,16 @@ The camera go-to, the function that goes and opens, the ledger's right-click and
   panning is (`Camera::new`). An unknown kind or id, a pop slot the place does not hold, a character not live in the revision, a revision that is retired,
   missing or of a replaced world, and a game with no map are errors, and the camera is not moved.
 - **Going and opening** (`scripts/ui/lib/go_to.lua`). `go_to.to(kind, id, revision)` goes with zoom and, only when that succeeded, calls the opener of the
-  kind with the same id and revision: a location opens its location window, a pop that window on its pops tab, a character the character screen
-  (`character_panel:open(id, revision, world)`, so it reads the revision it was named in), a river nothing. `main.lua` registers the openers with
+  kind with the same id and revision: a location opens its location window (`location:show(selection, tab, revision)`, which adopts the named revision
+  for its read; the next `game_time` refreshes it as always), a pop that window on its pops tab, a character the character screen
+  (`character_panel:open(id, revision, world)`), a river nothing. Each reads the revision it was named in, never the panel's current one. `main.lua` registers the openers with
   `go_to.set_openers`. `go_to.camera(kind, id, revision)` is the camera alone, without zoom.
 - **Right-click in the ledger.** A right `button_down` on a row of the locations or pops list, or on a character card, goes to that row's thing without zoom and
   opens, selects and raises nothing. The target is what the row was drawn with: a list row carries `target = {kind, id, revision, world}` (`lib/list.lua`
   keeps it through its copy and hands the item to `on_secondary(index, item)`), a card widget keeps its item (`on_secondary` of `lib/cards.lua`); a row of a world a
-  load has replaced does nothing. The pops rows carry their slot. The header, the scroll bar and empty space do nothing; an overflow packet's events click
+  load has replaced does nothing. A list with `on_secondary` gives its rows new keys (`_g<generation>_row_<n>`) whenever its items are replaced and its row
+  widgets keep the item they were made for, so a right-click routed against the frame before a refresh still reaches the row it meant, in the revision and
+  world it was drawn with, and never the row that moved into its place (the old keys' widgets stay registered until the next pointer dispatch ends). The pops rows carry their slot. The header, the scroll bar and empty space do nothing; an overflow packet's events click
   nothing. The left click is unchanged.
 - **The location window's go-to button.** The title bar has an icon button at its right, before the close button: the ledger's location icon, the tooltip
   "go to". A click is `go_to.to("location", id, revision)` for the place showing; the window stays open. `Window:add_title_button` places it and takes its
