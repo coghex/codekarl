@@ -619,7 +619,7 @@ These are the gaps against "many windows, panels, menus":
      the UI never both act on one event.
   3. **Text layout:** `font.layout` (exists).
 - **UI state is never game state.**
-  - It is not saved and not journalled, and it never reaches the gameplay VM.
+  - It is not journalled and never reaches the gameplay VM. The rivers and roads map-layer visibility choices are saved in the save header; other UI choices, including the map mode, are not saved.
   - The UI changes the game only through controls the simulation already accepts (§3.6), so CK-192's reproducibility is unaffected.
 - **Separate from world rendering.**
   - The UI runs on its own thread and publishes immutable frames.
