@@ -1449,7 +1449,6 @@ fn pop(workers: u64, dependents: u64, mean: i64) -> PopState {
 fn place(id: &str, pop: PopState) -> PlaceState {
     PlaceState {
         id: id.to_owned(),
-        coastal: false,
         pops: vec![pop],
         buildings: Vec::new(),
         prices_milli: Vec::new(),

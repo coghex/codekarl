@@ -165,6 +165,120 @@ mod tests {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets")
     }
 
+    /// Every place of `inland` starts with no level of a sea method.
+    fn assert_no_sea_levels(rules: &Rules, state: &EconomyState, inland: &[String]) {
+        for place in state
+            .places
+            .iter()
+            .filter(|place| inland.contains(&place.id))
+        {
+            for building in &place.buildings {
+                let kind = rules
+                    .buildings
+                    .iter()
+                    .find(|item| item.id == building.kind)
+                    .unwrap();
+                for (method, levels) in kind.methods.iter().zip(&building.method_levels) {
+                    assert!(
+                        method.resource != "sea" || *levels == 0,
+                        "{}: {} starts with {levels} levels of the sea method {}",
+                        place.id,
+                        building.kind,
+                        method.id
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn shipped_places_with_no_sea_cell_open_no_sea_level_and_want_the_fish_they_lack() {
+        let assets = ireland_assets();
+        let directory = assets.join("scenarios/ireland-768");
+        let scenario = ck_map::load_scenario(&directory).expect("the scenario loads");
+        let rules = Rules::load(assets.join("game/economy.toml")).unwrap();
+        let land = land_counts(&scenario, &rules.terrain_order).unwrap();
+        let (mut state, _) = starting_economy(&assets, &directory, &scenario).unwrap();
+        let fish = rules
+            .goods
+            .iter()
+            .position(|good| good.id == "fish")
+            .unwrap();
+        let inland = scenario
+            .locations
+            .iter()
+            .zip(&land)
+            .filter(|(location, counts)| !location.abandoned && counts.sea == 0)
+            .map(|(location, _)| location.id.clone())
+            .collect::<Vec<_>>();
+        assert!(
+            !inland.is_empty(),
+            "the shipped scenario has places with no sea cell"
+        );
+        assert_no_sea_levels(&rules, &state, &inland);
+        // The expected places come from the opening state: a pop is short of fish when what it holds, in its stock and in
+        // its storehouse account, is below its 240-day target of the profile's own fish share (every shipped profile sums
+        // to 1000 permille, so the share needs no scaling).
+        let hunger = u128::from(rules.goods[fish].hunger_centi);
+        let short_of_fish = |place: &ck_economy::PlaceState| {
+            place.pops.iter().enumerate().any(|(index, pop)| {
+                let shares = &rules.diet_profiles[&pop.kind];
+                assert_eq!(
+                    shares.values().map(|share| u32::from(*share)).sum::<u32>(),
+                    1000
+                );
+                let share = u128::from(shares.get("fish").copied().unwrap_or(0));
+                let people = u128::from(pop.workers + pop.dependents);
+                let target = (share * people * 100 * 240).div_ceil(1000 * hunger);
+                let account: u128 = place
+                    .buildings
+                    .iter()
+                    .filter_map(|building| building.storehouse_accounts.as_ref())
+                    .map(|accounts| u128::from(accounts.pops[index][fish]))
+                    .sum();
+                u128::from(pop.stock[fish]) + account < target
+            })
+        };
+        let expected = state
+            .places
+            .iter()
+            .filter(|place| inland.contains(&place.id) && short_of_fish(place))
+            .map(|place| place.id.clone())
+            .collect::<Vec<_>>();
+        assert!(
+            !expected.is_empty(),
+            "some place with no sea cell starts short of fish"
+        );
+        // The orders the first noon's price step cached, on the scenario's own start date.
+        ck_economy::run_daily_economy(
+            &rules,
+            &mut state,
+            ck_sim::Date {
+                year: scenario.start.year,
+                month: scenario.start.month,
+                day: scenario.start.day,
+                hour: 12,
+            },
+        )
+        .unwrap();
+        for place in state
+            .places
+            .iter()
+            .filter(|place| inland.contains(&place.id))
+        {
+            let orders = place
+                .last_market_orders
+                .as_ref()
+                .expect("the day's orders are kept");
+            assert_eq!(
+                orders.buy_units[fish] > 0,
+                expected.contains(&place.id),
+                "{}: the first noon's fish buy order must match the opening deficit",
+                place.id
+            );
+        }
+    }
+
     #[test]
     fn land_counts_fixture_assigns_boundary_cells_once_and_ignores_water_unowned_and_glacier() {
         let owners = [Some(0), Some(0), Some(0), None, Some(1), Some(1)];

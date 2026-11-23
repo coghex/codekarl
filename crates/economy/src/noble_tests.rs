@@ -936,7 +936,6 @@ fn place_of(
     let goods = rules.goods.len();
     let mut place = PlaceState {
         id: "fixture".to_owned(),
-        coastal: false,
         pops: Vec::new(),
         buildings: buildings
             .iter()
