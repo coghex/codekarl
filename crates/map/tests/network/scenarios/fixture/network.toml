@@ -1,0 +1,74 @@
+[costs]
+terrain = { pasture = 1.0 }
+slope = 10.0
+fertile = 0.5
+crossing_base = 2.0
+crossing_per_m = 0.125
+reuse = 0.6
+
+[[road]]
+id = "named"
+name = "Named road"
+
+[[access]]
+place = "isle"
+quality = "offshore"
+[[landing]]
+place = "isle"
+cell = [6, 6]
+[[access]]
+place = "shore"
+quality = "offshore"
+[[landing]]
+place = "shore"
+cell = [8, 3]
+[[access]]
+place = "tide"
+quality = "offshore_at_high_tide"
+[[landing]]
+place = "tide"
+cell = [7, 3]
+
+[[link]]
+id = "parent"
+from = "a"
+to = "b"
+category = "road"
+level = 1
+road = "named"
+
+[[link]]
+id = "reverse"
+from = "b"
+to = "a"
+category = "road"
+level = 1
+road = "named"
+
+[[link]]
+id = "singleton"
+from = "c"
+to = { parent = "parent", cell = [3, 3] }
+category = "path"
+level = 1
+
+[[link]]
+id = "child"
+from = "d"
+to = { parent = "parent", cell = [5, 3] }
+category = "path"
+level = 1
+
+[[link]]
+id = "approach"
+from = "isle"
+to = { parent = "parent", cell = [6, 3] }
+category = "path"
+level = 1
+
+[[link]]
+id = "lake-edge"
+from = "d"
+to = "e"
+category = "path"
+level = 1

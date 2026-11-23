@@ -291,6 +291,7 @@ The numbers are placeholders for tuning.
 | seabirds | bird | low | ✓ | a little | | holdings, fishing method (Firm) |
 | beeswax | pound | none | | ✓ (small) | | holdings: ticked (§3.7 step 6) |
 | wool, hides | pound, hide | none | | | | farm, holdings: held for the later clothing need (§3.7 step 6) |
+| linen, hemp | pound of cloth, pound of fibre | none | | | | subsistence mixed farm: 10 lb each per level per year |
 
 Wheat waits (vision: too dear for ordinary pops). Hops are left out (§2).
 
@@ -310,13 +311,15 @@ then "you can add a tag for 'herd' too for the cattle, pigs, and sheep herbs and
   | Tag | Goods |
   |---|---|
   | `food` | oats, barley, peas and beans, vegetables, apples, dairy, beef, pork, mutton, fish, seabirds, ale, mead, wine, honey |
-  | `clothing` | wool, hides |
+  | `clothing` | wool, hides, linen |
+  | `fabric` | hides, linen, hemp |
   | `herd` | cattle, pigs, sheep |
   | none | herbs, beeswax |
 
   A test (`crates/economy/src/lib.rs`, `shipped_goods_have_the_owner_approved_tags`) holds the shipped file to this table.
-- **No simulation rule reads them.** A good's tags are kept in the order written and copied into the place view, where each
-  entry of `prices` has them (§3.11). The one reader is the filter of the market's list (`docs/ui-design.md` §3.14).
+- **Categories:** a good belongs to every category named in its tags. Its optional `supplies` table gives the amount supplied per unit in thousandths; the default is 1,000. A supply must be positive and name one of the good's tags. One hide supplies 8 fabric, and a pound of linen or hemp supplies 1. A whole category need rounds the required good units up; the cheapest full substitute at local prices wins, with ties in goods order. A stock-limited query considers only goods able to fill the whole need. Jobs will define partial and mixed collection separately. No economy system uses the category query yet.
+- **Presentation:** A good's tags are kept in the order written and copied into the place view, where each
+  entry of `prices` has them (§3.11). The market filter reads them (`docs/ui-design.md` §3.14).
 - **Saves:** `economy.toml` is part of `rules_hash` (§6.1), so adding the tags changed that hash. A quicksave made before CK-294
   is refused when loaded, as any save made under other rules is.
 
@@ -926,10 +929,13 @@ No random draw is used (map-design §5.1). Every number goes into the scenario's
 | wool | pound (fleece) | 0.45 kg | 3 L | – | – | – | – | 40 |
 | beeswax | pound | 0.45 kg | 0.5 L | – | – | 5 | – | 150 |
 | hides | hide (dried) | 10 kg | 30 L | – | – | – | – | 200 |
+| linen | pound of cloth | 0.45 kg | 2 L | – | – | – | – | 120 |
+| hemp | pound of fibre | 0.45 kg | 4 L | – | – | – | – | 30 |
 | cattle (live) | head | 250 kg | (herd) | – | – | – | – | 2,400 |
 | pigs (live) | head | 80 kg | (herd) | – | – | – | – | 600 |
 | sheep (live) | head | 35 kg | (herd) | – | – | – | – | 300 |
 
+- **Linen and hemp** have a per-person cap of 5 lb each. Mixed subsistence farming produces 10 lb of each per level yearly: hemp in September, linen half in October and half in November. Each has a 5‰ land-choice score share, taken from oats (690‰). These fixed outputs follow staffing, crop suitability and fertility. No pop consumes them yet.
 - **Weights and volumes** are standard approximations for research: a Winchester bushel is 35.2 L, and an ale gallon is about 4.6 L.
   Medieval measures varied.
 - **Prices are r7's ×10**, so that the meats and the cheap goods have integer prices. The relative values are unchanged.

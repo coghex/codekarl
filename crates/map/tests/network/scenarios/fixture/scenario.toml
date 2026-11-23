@@ -1,0 +1,4 @@
+id = "network_fixture"
+map = "fixture"
+locations = "locations.toml"
+start = { year = 768, month = 10, day = 9, hour = 0 }

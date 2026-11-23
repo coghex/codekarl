@@ -1,0 +1,12 @@
+[[kind]]
+id = "town"
+sizes = [1, 2]
+catchment_m = [839, 2000]
+houses = { count = [2, 3], radius_cells_x256 = [256, 512] }
+glyph = [".#.", "#d#", ".#."]
+light = "#d7c89b"
+dark = "#66583c"
+[house]
+roof = "#a9563b"
+light = "#ece3cb"
+dark = "#2a2119"

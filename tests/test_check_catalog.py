@@ -2409,6 +2409,11 @@ GUARDS: tuple[Guard, ...] = (
     Guard("crates/map/src/scenario/tests.rs", "map.core", ("assets/scenarios/ireland-768/",)),
     # CK-348: the water import tool's tests load `import_waters.py` from the map directory by its path: plain Python, no other tool.
     Guard("tests/test_map_waters.py", "unittest-waters", ("assets/map/ireland/import_waters.py",)),
+    Guard(
+        "tests/test_map_network.py",
+        "unittest-network",
+        ("assets/map/ireland/", "assets/map/ireland/network.py", "crates/map/tests/network/"),
+    ),
     # The application tests that read shipped files or hash workspace inputs belong to rust.app.
     Guard("apps/codekarl/src/font.rs", "rust.app", ("assets/ui/font/",)),
     # CK-335: the debug layer's headless rendering tests load the shipped font.
@@ -4226,3 +4231,25 @@ class UnittestGroupDescriptions(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NetworkGroupSelection(unittest.TestCase):
+    def test_network_inputs_and_scenario_only_select_network_test(self) -> None:
+        paths = (
+            "assets/map/ireland/network.py",
+            "assets/map/ireland/terrain.png",
+            "assets/scenarios/ireland-768/locations.toml",
+            "assets/scenarios/ireland-768/network.toml",
+            "assets/scenarios/ireland-768/network-seed.json",
+            "assets/scenarios/ireland-768/courses-approved.json",
+            "assets/scenarios/ireland-768/roads.toml",
+            "crates/map/tests/network/scenarios/fixture/roads.toml",
+            "tests/test_map_network.py",
+        )
+        for path in paths:
+            with self.subTest(path=path):
+                choices = {
+                    choice.step.name: choice for choice in check.plan(check.STEPS, [path]).choices
+                }
+                self.assertTrue(choices["unittest-network"].selected)
+                self.assertIn(path, choices["unittest-network"].why)
