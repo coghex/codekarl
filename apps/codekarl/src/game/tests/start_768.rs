@@ -541,6 +541,12 @@ fn two_new_games_on_one_seed_are_the_same_and_another_seed_differs_and_the_start
     )
     .unwrap();
     assert_eq!(resumed.state(), a.simulation.state());
+    // CK-390 rule 9: the canonical state and its digest survive a save and a load in this build.
+    assert_eq!(
+        resumed.digest().unwrap(),
+        a.simulation.digest().unwrap(),
+        "a load keeps the digest"
+    );
 }
 
 /// The scratch directory a prepared game's storage is in.

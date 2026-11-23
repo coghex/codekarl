@@ -1482,7 +1482,6 @@ pub fn starting_state(
                 &mut remaining_sea,
                 &production,
                 &pops,
-                location.land.sea > 0,
                 mean_fertility(&location.land)?,
             )?;
             let actual = assignment.method_levels.iter().sum();
@@ -1690,7 +1689,6 @@ pub fn starting_state(
         }
         state.places.push(PlaceState {
             id: location.id.clone(),
-            coastal: location.land.sea > 0,
             pops,
             buildings,
             prices_milli,
@@ -2009,7 +2007,6 @@ fn assign_building_levels(
     remaining_sea: &mut u32,
     prior_sell: &BTreeMap<String, u64>,
     pops: &[PopState],
-    coastal: bool,
     quality_pm: u16,
 ) -> Result<BuildingAssignment, DataError> {
     let mut assigned = vec![0_u32; building.methods.len()];
@@ -2060,7 +2057,7 @@ fn assign_building_levels(
                 let sell_before = u128::from(prior_sell.get(good_id).copied().unwrap_or(0))
                     .checked_add(u128::from(output.get(good_id).copied().unwrap_or(0)))
                     .ok_or_else(|| missing_data("projection".to_owned(), "supply overflow"))?;
-                let buy_units = projected_buy_units(rules, pops, good_id, coastal)?;
+                let buy_units = projected_buy_units(rules, pops, good_id)?;
                 let base_milli = good.base_price.checked_mul(1000).ok_or_else(|| {
                     missing_data(
                         format!("goods.{}.base_price", good.id),
@@ -2471,12 +2468,7 @@ fn method_suitability_pm(
     u16::try_from(suitability).unwrap_or(0)
 }
 
-fn projected_buy_units(
-    rules: &Rules,
-    pops: &[PopState],
-    good_id: &str,
-    coastal: bool,
-) -> Result<u128, DataError> {
+fn projected_buy_units(rules: &Rules, pops: &[PopState], good_id: &str) -> Result<u128, DataError> {
     let good = rules
         .goods
         .iter()
@@ -2490,7 +2482,7 @@ fn projected_buy_units(
         let shares = rules.diet_profiles.get(&pop.kind).ok_or_else(|| {
             missing_data(format!("diet_profiles.{}", pop.kind), "profile is missing")
         })?;
-        let normalized = normalized_diet_shares(rules, shares, coastal)?;
+        let normalized = normalized_diet_shares(rules, shares)?;
         let share = rules
             .goods
             .iter()
@@ -2533,7 +2525,6 @@ fn food_target_units(
     pop_kind: &str,
     people: u64,
     good_index: usize,
-    coastal: bool,
     days: u64,
 ) -> Result<u128, DataError> {
     let good = rules
@@ -2547,7 +2538,7 @@ fn food_target_units(
         .diet_profiles
         .get(pop_kind)
         .ok_or_else(|| missing_data(format!("diet_profiles.{pop_kind}"), "profile is missing"))?;
-    let shares = normalized_diet_shares(rules, profile, coastal)?;
+    let shares = normalized_diet_shares(rules, profile)?;
     let share = u128::from(shares[good_index]);
     if share == 0 {
         return Ok(0);
@@ -2731,8 +2722,7 @@ fn daily_market_orders(rules: &Rules, place: &PlaceState) -> Result<DailyMarketO
         pop_sizes.push(people);
         for (good_index, good) in rules.goods.iter().enumerate() {
             let holding = pop_market_holding(place, pop_index, good_index)?;
-            let target =
-                food_target_units(rules, &pop.kind, people, good_index, place.coastal, 240)?;
+            let target = food_target_units(rules, &pop.kind, people, good_index, 240)?;
             let comfort_target = tier_target_units(rules, &pop.kind, people, good_index, 1)?
                 .max(tier_target_units(rules, &pop.kind, people, good_index, 2)?);
             let target = target.max(comfort_target);
@@ -2782,8 +2772,7 @@ fn daily_market_orders(rules: &Rules, place: &PlaceState) -> Result<DailyMarketO
                     continue;
                 }
                 let pop = &place.pops[pop_index];
-                let target =
-                    food_target_units(rules, &pop.kind, people, good_index, place.coastal, 60)?;
+                let target = food_target_units(rules, &pop.kind, people, good_index, 60)?;
                 owner_reserve = owner_reserve.checked_add(target).ok_or_else(|| {
                     missing_data("market.owner_reserve".to_owned(), "owner reserve overflow")
                 })?;
@@ -2878,18 +2867,11 @@ fn update_daily_prices(rules: &Rules, state: &mut EconomyState) -> Result<(), Da
 fn normalized_diet_shares(
     rules: &Rules,
     shares: &BTreeMap<String, u16>,
-    coastal: bool,
 ) -> Result<Vec<u64>, DataError> {
     let weights = rules
         .goods
         .iter()
-        .map(|good| {
-            if !coastal && good.id == "fish" {
-                0
-            } else {
-                u64::from(shares.get(&good.id).copied().unwrap_or(0))
-            }
-        })
+        .map(|good| u64::from(shares.get(&good.id).copied().unwrap_or(0)))
         .collect::<Vec<_>>();
     largest_remainder(1000, &weights)
         .map_err(|problem| missing_data("diet profile".to_owned(), problem))
@@ -4048,8 +4030,6 @@ fn settle_overflow(
 pub struct PlaceState {
     /// Scenario-local location key.
     pub id: String,
-    /// Whether the location's catchment includes sea, which enables its authored fish diet share.
-    pub coastal: bool,
     /// Pop slots are append-only: existing indices never move or disappear.
     pub pops: Vec<PopState>,
     /// Buildings in authored order.
@@ -8327,7 +8307,7 @@ fn rent_basket_milli(
 ) -> Result<u128, DataError> {
     let mut total = 0_u128;
     for (good_index, price) in place.prices_milli.iter().copied().enumerate() {
-        let units = food_target_units(rules, kind, 1, good_index, place.coastal, days)?;
+        let units = food_target_units(rules, kind, 1, good_index, days)?;
         total = value_at_price(units, price)
             .ok()
             .and_then(|value| total.checked_add(value))
@@ -8716,7 +8696,6 @@ impl Canonical for EconomyState {
         encode_length(self.places.len(), out)?;
         for place in &self.places {
             place.id.encode(out)?;
-            place.coastal.encode(out)?;
             encode_length(place.pops.len(), out)?;
             for pop in &place.pops {
                 pop.kind.encode(out)?;
@@ -8777,7 +8756,6 @@ impl Canonical for EconomyState {
         let mut places = Vec::with_capacity(place_count);
         for _ in 0..place_count {
             let id = String::decode(input)?;
-            let coastal = bool::decode(input)?;
             let count = input.length()?;
             let mut pops = Vec::with_capacity(count);
             for _ in 0..count {
@@ -8833,7 +8811,6 @@ impl Canonical for EconomyState {
             }
             places.push(PlaceState {
                 id,
-                coastal,
                 pops,
                 buildings,
                 prices_milli: Vec::<u64>::decode(input)?,
@@ -9342,7 +9319,6 @@ mod tests {
         let state = EconomyState {
             places: vec![PlaceState {
                 id: "daily_fixture".to_owned(),
-                coastal: false,
                 pops: vec![drawer, starver],
                 buildings: vec![storehouse, farm],
                 prices_milli: vec![1000; goods],
@@ -9383,7 +9359,6 @@ mod tests {
         EconomyState {
             places: vec![PlaceState {
                 id: "fixture".to_owned(),
-                coastal: false,
                 pops: vec![
                     pop(
                         "peasant",
@@ -10029,7 +10004,6 @@ mod tests {
         };
         let place = PlaceState {
             id: "luxury_market".to_owned(),
-            coastal: true,
             pops: vec![pop],
             buildings: Vec::new(),
             prices_milli: rules
@@ -10069,24 +10043,20 @@ mod tests {
         let monk_diet = rules.diet_profiles.get_mut("monk").unwrap();
         monk_diet.insert("oats".to_owned(), 329);
         monk_diet.insert("ale".to_owned(), 21);
-        assert_eq!(
-            food_target_units(&rules, "monk", 10, ale, true, 240),
-            Ok(50)
-        );
+        assert_eq!(food_target_units(&rules, "monk", 10, ale, 240), Ok(50));
         assert_eq!(
             tier_target_units(&rules, "monk", 10, ale, 1)
                 .unwrap()
                 .max(tier_target_units(&rules, "monk", 10, ale, 2).unwrap()),
             213
         );
-        let oats_target = food_target_units(&rules, "monk", 10, oats, true, 240).unwrap();
+        let oats_target = food_target_units(&rules, "monk", 10, oats, 240).unwrap();
         let place_with = |ale_holding| {
             let mut stock = vec![0; rules.goods.len()];
             stock[ale] = ale_holding;
             stock[oats] = u64::try_from(oats_target + 7).unwrap();
             PlaceState {
                 id: "comfort_order".to_owned(),
-                coastal: true,
                 pops: vec![PopState {
                     kind: "monk".to_owned(),
                     culture: "connachta".to_owned(),
@@ -10174,7 +10144,6 @@ mod tests {
     fn reserve_test_place(pop: PopState, buildings: Vec<BuildingState>) -> PlaceState {
         PlaceState {
             id: "owner_reserve".to_owned(),
-            coastal: false,
             pops: vec![pop],
             buildings,
             prices_milli: vec![0],
@@ -10358,7 +10327,6 @@ mod tests {
         };
         let place = PlaceState {
             id: "market_fixture".to_owned(),
-            coastal: true,
             pops: vec![pop],
             buildings: vec![storehouse, farm],
             prices_milli: rules
@@ -10378,11 +10346,10 @@ mod tests {
     #[test]
     fn a_balanced_market_holds_base_price_and_drift_keeps_its_fractional_carry() {
         let rules = tiny_rules();
-        let target = food_target_units(&rules, "peasant", 1, 0, false, 240).unwrap();
+        let target = food_target_units(&rules, "peasant", 1, 0, 240).unwrap();
         assert_eq!(target, 240);
         let place = PlaceState {
             id: "balanced".to_owned(),
-            coastal: false,
             pops: vec![PopState {
                 kind: "peasant".to_owned(),
                 culture: "connachta".to_owned(),
@@ -11361,7 +11328,6 @@ mod tests {
                 price_drift_carries: vec![0],
                 last_market_orders: None,
                 counters: CounterBuckets::for_place(rules.goods.len()),
-                coastal: false,
                 pops: vec![PopState {
                     kind: "peasant".to_owned(),
                     culture: "connachta".to_owned(),
@@ -12740,7 +12706,6 @@ mod tests {
         let rules = tiny_rules();
         let mut place = PlaceState {
             id: "fixture".to_owned(),
-            coastal: false,
             pops: vec![PopState {
                 kind: "peasant".to_owned(),
                 culture: "connachta".to_owned(),
@@ -12983,7 +12948,7 @@ mod tests {
     }
 
     #[test]
-    fn inland_diet_profiles_renormalize_in_good_order_after_removing_fish() {
+    fn diet_profiles_scale_to_a_thousand_in_good_order_with_fish_kept() {
         let mut rules = tiny_rules();
         rules.goods.extend([
             Good {
@@ -13019,9 +12984,8 @@ mod tests {
             ("fish".to_owned(), 1),
         ]);
         let profile =
-            normalized_diet_shares(&rules, rules.diet_profiles.get("peasant").unwrap(), false)
-                .unwrap();
-        assert_eq!(profile, [500, 500, 0]);
+            normalized_diet_shares(&rules, rules.diet_profiles.get("peasant").unwrap()).unwrap();
+        assert_eq!(profile, [334, 333, 333]);
     }
 
     #[test]
@@ -13055,11 +13019,7 @@ mod tests {
             pending_deaths: 0,
         };
         assert_eq!(
-            projected_buy_units(&rules, std::slice::from_ref(&pop), "food", true),
-            Ok(7300)
-        );
-        assert_eq!(
-            projected_buy_units(&rules, std::slice::from_ref(&pop), "food", false),
+            projected_buy_units(&rules, std::slice::from_ref(&pop), "food"),
             Ok(7300)
         );
     }
@@ -13157,7 +13117,6 @@ mod tests {
             &mut remaining_sea,
             &BTreeMap::new(),
             &[],
-            false,
             550,
         )
         .unwrap();
@@ -13179,7 +13138,6 @@ mod tests {
             &mut remaining_sea,
             &BTreeMap::new(),
             &[],
-            false,
             550,
         )
         .unwrap();
@@ -13269,6 +13227,348 @@ mod tests {
             "fishing levels are not capped by sea/4"
         );
         assert_eq!(farm.levels, 3);
+    }
+
+    fn shipped_rules() -> Rules {
+        Rules::load(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/game/economy.toml"))
+            .unwrap()
+    }
+
+    fn good_at(rules: &Rules, id: &str) -> usize {
+        rules.goods.iter().position(|good| good.id == id).unwrap()
+    }
+
+    fn inland_pop(rules: &Rules, kind: &str, people: u64, held: &[(&str, u64)]) -> PopState {
+        let goods = rules.goods.len();
+        let mut stock = vec![0; goods];
+        for (id, units) in held {
+            stock[good_at(rules, id)] = *units;
+        }
+        PopState {
+            kind: kind.to_owned(),
+            culture: "connachta".to_owned(),
+            religion: "christianity".to_owned(),
+            literacy_pm: 0,
+            workers: people,
+            dependents: 0,
+            employment: Vec::new(),
+            stock,
+            consumption: PopConsumption {
+                pantry_hunger_centi: vec![0; goods],
+                ticking_carries: vec![0; goods],
+                ..PopConsumption::default()
+            },
+            counters: CounterBuckets::default(),
+            short_on_rent: false,
+            housed_last: false,
+            genetics: PopGenetics::default(),
+            pending_births: 0,
+            pending_deaths: 0,
+        }
+    }
+
+    fn inland_place(
+        rules: &Rules,
+        pops: Vec<PopState>,
+        buildings: Vec<BuildingState>,
+    ) -> PlaceState {
+        let goods = rules.goods.len();
+        PlaceState {
+            id: "inland".to_owned(),
+            pops,
+            buildings,
+            prices_milli: rules
+                .goods
+                .iter()
+                .map(|good| good.base_price * 1000)
+                .collect(),
+            prepared_m2: 0,
+            development_pm: 0,
+            price_drift_carries: vec![0; goods],
+            last_market_orders: None,
+            counters: CounterBuckets::default(),
+        }
+    }
+
+    #[test]
+    fn a_place_with_no_sea_posts_fish_buy_orders_and_no_fish_sell_order() {
+        let rules = shipped_rules();
+        let fish = good_at(&rules, "fish");
+        for (kind, wanted) in [
+            ("peasant", 1200),
+            ("labourer", 1200),
+            ("monk", 4000),
+            ("noble", 2000),
+        ] {
+            let place = inland_place(&rules, vec![inland_pop(&rules, kind, 100, &[])], Vec::new());
+            let orders = daily_market_orders(&rules, &place).unwrap();
+            assert_eq!(orders.buy_units[fish], wanted, "{kind} fish buy order");
+            assert_eq!(orders.sell_units[fish], 0, "{kind} fish sell order");
+        }
+    }
+
+    #[test]
+    fn inland_pops_keep_the_profile_share_of_every_other_food() {
+        let rules = shipped_rules();
+        let oats = good_at(&rules, "oats");
+        assert_eq!(
+            normalized_diet_shares(&rules, &rules.diet_profiles["peasant"]).unwrap()[oats],
+            400
+        );
+        assert_eq!(
+            normalized_diet_shares(&rules, &rules.diet_profiles["monk"]).unwrap()[oats],
+            350
+        );
+        // 100 peasants at 240 days: ceil(400 * 100 * 100 * 240 / (1000 * 1800)).
+        assert_eq!(
+            food_target_units(&rules, "peasant", 100, oats, 240),
+            Ok(534)
+        );
+    }
+
+    #[test]
+    fn owner_reserve_and_rent_basket_hold_fish_at_a_place_with_no_sea() {
+        let rules = shipped_rules();
+        let fish = good_at(&rules, "fish");
+        let mut building = reserve_test_building(1, 0);
+        building.stock = vec![0; rules.goods.len()];
+        building.stock[fish] = 1000;
+        let place = inland_place(
+            &rules,
+            vec![inland_pop(&rules, "peasant", 100, &[])],
+            vec![building],
+        );
+        // The owner reserve is the 60-day fish target of 100 peasants: 300 lb. The building offers the rest.
+        assert_eq!(
+            daily_market_orders(&rules, &place).unwrap().sell_units[fish],
+            700
+        );
+        // One peasant for 30 days: fish 2 lb at 30, among the other foods at their profile shares.
+        assert_eq!(
+            rent_basket_milli(&rules, &place, "peasant", 30),
+            Ok(734_000)
+        );
+        let mut without_fish = place.clone();
+        without_fish.prices_milli[fish] = 0;
+        assert_eq!(
+            rent_basket_milli(&rules, &without_fish, "peasant", 30),
+            Ok(734_000 - 2 * 30_000)
+        );
+    }
+
+    #[test]
+    fn two_places_that_differ_only_in_their_sea_cells_give_the_same_orders_and_basket() {
+        let mut rules = tiny_rules();
+        rules.goods.push(Good {
+            id: "fish".to_owned(),
+            tags: Vec::new(),
+            unit: "pound".to_owned(),
+            weight_g: 1,
+            volume_ml: 1,
+            hunger_centi: 100,
+            necessities_centi: 100,
+            niceties_centi: 0,
+            luxuries_centi: 0,
+            base_price: 100,
+            pop_limit_milli: 1000,
+        });
+        rules
+            .diet_profiles
+            .get_mut("peasant")
+            .unwrap()
+            .extend([("food".to_owned(), 700), ("fish".to_owned(), 300)]);
+        let mut data = tiny_start_data();
+        data.defaults
+            .get_mut("ringfort")
+            .unwrap()
+            .get_mut("1")
+            .unwrap()
+            .farm_levels = 1;
+        data.defaults
+            .get_mut("ringfort")
+            .unwrap()
+            .get_mut("1")
+            .unwrap()
+            .building_stock
+            .insert("fish".to_owned(), 1000);
+        let location = |id: &str, sea| StartLocation {
+            id: id.to_owned(),
+            kind: "ringfort".to_owned(),
+            size: 1,
+            land: LandCounts {
+                land_cells: BTreeMap::from([("pasture".to_owned(), 2)]),
+                fertility_pm: BTreeMap::from([("pasture".to_owned(), 2000)]),
+                fertile_cells: 2,
+                fertile_cells_by_terrain: BTreeMap::new(),
+                sea,
+            },
+        };
+        let (state, _) = starting_state(
+            &rules,
+            &data,
+            &[location("inland", 0), location("coast", 1)],
+            10,
+        )
+        .unwrap();
+        let (inland, coast) = (&state.places[0], &state.places[1]);
+        assert_eq!(inland.pops, coast.pops);
+        assert_eq!(inland.buildings, coast.buildings);
+        assert_eq!(inland.prices_milli, coast.prices_milli);
+        let orders = daily_market_orders(&rules, inland).unwrap();
+        assert_eq!(orders, daily_market_orders(&rules, coast).unwrap());
+        assert!(
+            orders.buy_units[1] > 0,
+            "the peasants want fish at both places"
+        );
+        let farm = inland
+            .buildings
+            .iter()
+            .find(|building| building.kind == "farm")
+            .expect("both places start the farm");
+        assert_eq!(farm.stock[1], 1000, "with fish in its store");
+        assert_eq!(
+            orders.sell_units[1], 640,
+            "the farm offers its 1000 lb of fish less its owners' 60-day reserve of 360 (300 x 20 x 100 x 60 / (1000 x 100)), at both places"
+        );
+        assert_eq!(
+            rent_basket_milli(&rules, inland, "peasant", 30),
+            rent_basket_milli(&rules, coast, "peasant", 30)
+        );
+    }
+
+    #[test]
+    fn fish_wanted_and_never_offered_climbs_to_one_and_a_half_times_base_and_stays() {
+        let rules = shipped_rules();
+        let fish = good_at(&rules, "fish");
+        let mut state = EconomyState {
+            places: vec![inland_place(
+                &rules,
+                vec![inland_pop(&rules, "peasant", 100, &[])],
+                Vec::new(),
+            )],
+        };
+        assert_eq!(state.places[0].prices_milli[fish], 30_000);
+        update_daily_prices(&rules, &mut state).unwrap();
+        assert_eq!(state.places[0].prices_milli[fish], 31_500);
+        let mut reached = None;
+        for day in 2..=120 {
+            update_daily_prices(&rules, &mut state).unwrap();
+            let price = state.places[0].prices_milli[fish];
+            assert!(price <= 45_000, "day {day}: price {price} passed the cap");
+            if price == 45_000 && reached.is_none() {
+                reached = Some(day);
+            }
+            if reached.is_some() {
+                assert_eq!(price, 45_000, "day {day}: the price left the cap");
+            }
+        }
+        assert_eq!(reached, Some(97));
+    }
+
+    #[test]
+    fn eating_does_not_depend_on_the_fish_share() {
+        let rules = shipped_rules();
+        let oats = good_at(&rules, "oats");
+        let mut state = EconomyState {
+            places: vec![inland_place(
+                &rules,
+                vec![inland_pop(&rules, "peasant", 100, &[("oats", 1000)])],
+                Vec::new(),
+            )],
+        };
+        let intake = run_daily_consumption(
+            &rules,
+            &mut state,
+            Date {
+                year: 768,
+                month: 1,
+                day: 2,
+                hour: 12,
+            },
+        )
+        .unwrap();
+        let pop = &state.places[0].pops[0];
+        assert_eq!(995, pop.stock[oats]);
+        assert_eq!(intake, [vec![900]]);
+        assert_eq!(pop.consumption.necessities_pm, 45);
+    }
+
+    #[test]
+    fn the_start_up_projection_sees_the_whole_diet_at_a_place_with_no_sea() {
+        let rules = shipped_rules();
+        let pop = inland_pop(&rules, "peasant", 100, &[]);
+        assert_eq!(
+            projected_buy_units(&rules, std::slice::from_ref(&pop), "oats"),
+            Ok(811)
+        );
+        assert_eq!(
+            projected_buy_units(&rules, std::slice::from_ref(&pop), "fish"),
+            Ok(1825)
+        );
+    }
+
+    #[test]
+    fn fish_demand_opens_no_sea_level_at_a_place_with_no_sea_cell() {
+        let mut rules = tiny_rules();
+        rules.goods.push(Good {
+            id: "fish".to_owned(),
+            tags: Vec::new(),
+            unit: "pound".to_owned(),
+            weight_g: 1,
+            volume_ml: 1,
+            hunger_centi: 100,
+            necessities_centi: 100,
+            niceties_centi: 0,
+            luxuries_centi: 0,
+            base_price: 100,
+            pop_limit_milli: 1000,
+        });
+        rules
+            .diet_profiles
+            .get_mut("peasant")
+            .unwrap()
+            .extend([("food".to_owned(), 700), ("fish".to_owned(), 300)]);
+        rules.buildings[0].methods.push(Method {
+            id: "coastal".to_owned(),
+            resource: "sea".to_owned(),
+            annual_output: BTreeMap::from([("fish".to_owned(), 1000)]),
+            suitability: "sea".to_owned(),
+            score_share_pm: BTreeMap::from([("fish".to_owned(), 1000)]),
+        });
+        let mut data = tiny_start_data();
+        data.defaults
+            .get_mut("ringfort")
+            .unwrap()
+            .get_mut("1")
+            .unwrap()
+            .farm_levels = 3;
+        let (state, _) = starting_state(
+            &rules,
+            &data,
+            &[StartLocation {
+                id: "inland".to_owned(),
+                kind: "ringfort".to_owned(),
+                size: 1,
+                land: LandCounts {
+                    land_cells: BTreeMap::from([("pasture".to_owned(), 2)]),
+                    fertility_pm: BTreeMap::from([("pasture".to_owned(), 2000)]),
+                    fertile_cells: 2,
+                    fertile_cells_by_terrain: BTreeMap::new(),
+                    sea: 0,
+                },
+            }],
+            10,
+        )
+        .unwrap();
+        let farm = &state.places[0].buildings[0];
+        assert_eq!(farm.method_levels[1], 0, "no sea cell, no sea level");
+        assert!(
+            daily_market_orders(&rules, &state.places[0])
+                .unwrap()
+                .buy_units[1]
+                > 0,
+            "the peasants still want the fish they cannot catch"
+        );
     }
 
     #[test]
@@ -13443,7 +13743,6 @@ mod tests {
                     },
                     closed: true,
                 },
-                coastal: false,
                 pops: vec![PopState {
                     kind: "peasant".to_owned(),
                     culture: "irish".to_owned(),
@@ -13919,7 +14218,6 @@ mod tests {
         let mut state = EconomyState {
             places: vec![PlaceState {
                 id: "fort".to_owned(),
-                coastal: false,
                 pops: vec![
                     pop(
                         2,
@@ -14006,7 +14304,6 @@ mod tests {
         let no_workers = EconomyState {
             places: vec![PlaceState {
                 id: "ownerless".to_owned(),
-                coastal: false,
                 pops: vec![PopState {
                     kind: "peasant".to_owned(),
                     culture: "connachta".to_owned(),
@@ -14373,7 +14670,6 @@ mod tests {
         let mut state = EconomyState {
             places: vec![PlaceState {
                 id: "empty".to_owned(),
-                coastal: false,
                 pops: vec![pop],
                 buildings: Vec::new(),
                 prices_milli: vec![1000],
@@ -14417,7 +14713,6 @@ mod tests {
         let mut state = EconomyState {
             places: vec![PlaceState {
                 id: "test".to_owned(),
-                coastal: false,
                 pops: vec![PopState {
                     kind: "peasant".to_owned(),
                     culture: "connachta".to_owned(),
@@ -14490,7 +14785,6 @@ mod tests {
         let mut state = EconomyState {
             places: vec![PlaceState {
                 id: "test".to_owned(),
-                coastal: false,
                 pops: vec![PopState {
                     kind: "peasant".to_owned(),
                     culture: "connachta".to_owned(),
@@ -14559,7 +14853,6 @@ mod tests {
         let mut state = EconomyState {
             places: vec![PlaceState {
                 id: "test".to_owned(),
-                coastal: false,
                 pops: vec![PopState {
                     kind: "peasant".to_owned(),
                     culture: "connachta".to_owned(),
@@ -14646,7 +14939,6 @@ mod tests {
         let mut state = EconomyState {
             places: vec![PlaceState {
                 id: "test".to_owned(),
-                coastal: false,
                 pops: vec![pop.clone()],
                 buildings: Vec::new(),
                 prices_milli: vec![1000, 1000],
@@ -14755,7 +15047,6 @@ mod tests {
         };
         let mut place = PlaceState {
             id: "test".to_owned(),
-            coastal: false,
             pops: vec![pop],
             buildings: vec![storehouse, farm],
             prices_milli: vec![1000],
@@ -14835,7 +15126,6 @@ mod tests {
         let mut state = EconomyState {
             places: vec![PlaceState {
                 id: "test".to_owned(),
-                coastal: false,
                 pops: vec![PopState {
                     kind: "peasant".to_owned(),
                     culture: "connachta".to_owned(),
@@ -14920,7 +15210,6 @@ mod tests {
         let mut state = EconomyState {
             places: vec![PlaceState {
                 id: "test".to_owned(),
-                coastal: false,
                 pops: vec![PopState {
                     kind: "peasant".to_owned(),
                     culture: "connachta".to_owned(),
@@ -15042,7 +15331,6 @@ mod tests {
             };
             PlaceState {
                 id: "test".to_owned(),
-                coastal: false,
                 pops: vec![pop],
                 buildings: vec![building],
                 prices_milli: vec![1000; goods],
@@ -15214,7 +15502,6 @@ mod tests {
         };
         let mut place = PlaceState {
             id: "test".to_owned(),
-            coastal: false,
             pops: vec![pop],
             buildings: vec![building],
             prices_milli: vec![1000],
@@ -15280,7 +15567,6 @@ mod tests {
         };
         let place = PlaceState {
             id: "fort".to_owned(),
-            coastal: false,
             pops: vec![pop],
             buildings: vec![farm],
             prices_milli: vec![0],
@@ -15361,7 +15647,6 @@ mod tests {
             .collect();
         PlaceState {
             id: "housing-fixture".to_owned(),
-            coastal: false,
             pops,
             buildings,
             prices_milli: vec![1000],
@@ -15749,7 +16034,6 @@ mod tests {
         let mut state = EconomyState {
             places: vec![PlaceState {
                 id: "fort".to_owned(),
-                coastal: false,
                 pops: vec![pop],
                 buildings: vec![farm],
                 prices_milli: vec![0],
@@ -15796,7 +16080,6 @@ mod tests {
         };
         let place = PlaceState {
             id: "floor".into(),
-            coastal: false,
             pops: vec![pop],
             buildings: Vec::new(),
             prices_milli: vec![1000],
@@ -15851,7 +16134,6 @@ mod tests {
         let mut state = EconomyState {
             places: vec![PlaceState {
                 id: "one-person-pool".to_owned(),
-                coastal: false,
                 pops: vec![pop],
                 buildings: Vec::new(),
                 prices_milli: vec![1000],
@@ -16401,7 +16683,6 @@ mod tests {
         let mut state = EconomyState {
             places: vec![PlaceState {
                 id: "emptying-pop".to_owned(),
-                coastal: false,
                 pops: vec![pop],
                 buildings: Vec::new(),
                 prices_milli: vec![1000],
@@ -16699,7 +16980,6 @@ mod tests {
         };
         let place = PlaceState {
             id: "holdings-fixture".to_owned(),
-            coastal: false,
             pops: vec![
                 pop("peasant", 30, Employment::default()),
                 pop(
@@ -16899,7 +17179,6 @@ mod tests {
         };
         let source = PlaceState {
             id: "source".to_owned(),
-            coastal: false,
             pops: vec![PopState {
                 kind: "peasant".to_owned(),
                 culture: "connachta".to_owned(),
@@ -17080,7 +17359,6 @@ mod tests {
         };
         let place = PlaceState {
             id: "wage-fixture".to_owned(),
-            coastal: false,
             pops: vec![
                 pop(
                     10,

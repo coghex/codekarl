@@ -531,7 +531,6 @@ fn same_build_saves_and_digests_ignore_derived_daily_market_orders() {
     let economy = ck_economy::EconomyState {
         places: vec![ck_economy::PlaceState {
             id: "fixture".to_owned(),
-            coastal: false,
             pops: Vec::new(),
             buildings: Vec::new(),
             prices_milli: vec![96_500],
@@ -1152,7 +1151,6 @@ fn character_archive_logs_and_live_state_survive_streamed_save() {
     let mut state = GameState::default();
     state.economy.places.push(ck_economy::PlaceState {
         id: "p".into(),
-        coastal: false,
         pops: vec![ck_economy::PopState {
             kind: "peasant".into(),
             culture: "c".into(),

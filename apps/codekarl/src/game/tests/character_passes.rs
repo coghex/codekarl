@@ -72,7 +72,6 @@ fn economy(broken: bool) -> EconomyState {
         places: if broken {
             vec![PlaceState {
                 id: "fixture".to_owned(),
-                coastal: false,
                 pops: Vec::new(),
                 buildings: Vec::new(),
                 prices_milli: Vec::new(),
