@@ -799,7 +799,8 @@ deaths_d = dependents × dep_death_base[type] × g_hunger(N) × g_comfort(W, L) 
   *(In the accepted code the rollover runs on the 1st **after** step 1's price update and before the month's production: it is the
   first act of step 2. Nothing showed the difference until CK-274, whose values use the prices of that moment, §3.11.)*
 
-  r14's barter step is removed (barter is deferred).
+  r14's barter step is removed (barter between pops and buildings is deferred to the merchants milestone). Step 2a is a different
+  thing: the daily swap between two pops of one place (CK-391, §3.16), which moves goods between pops and touches no building's stock.
 - **The gameplay callbacks** register as daily systems at 12:00 **after** the economy: `on_month` (it fires only on the 1st), then
   `on_day`. Lua therefore always sees the day's finished state.
 
@@ -1159,7 +1160,7 @@ pops move, the herd stays. These are counts, not individual animals, so livestoc
       `buy_g = max(0, t_g − holding_g)`. A good also in the diet buys up to the larger of its food target and `t_g`;
     - sell orders are unchanged.
 - **Sell orders (r17, C6: one basis with buying):**
-  - **a pop (Firm, owner 2026-11-09, `owner-direction-market-notes-r1.md`):** **per food**, its holding above that good's target
+  - **a pop (Firm, owner 2026-11-09, `owner-direction-market-notes-r1.md`):** **per good (CK-391; before it, per food only)**, its holding above that good's target
     `T_g = max(food target, comfort target)`, the same target its buy order uses. So a pop never buys and sells one good on the same day,
     and a pop short of food overall still offers a food it holds more of than its diet wants. **CK-391:** a pop's holding above its target is offered for every good, with a hunger value or without (wool, hides, herbs and
     beeswax included), because the exchange below swaps the same spare. (r17's "above a 240-day total, in proportion" is replaced.);
