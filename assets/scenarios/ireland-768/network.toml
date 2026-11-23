@@ -994,10 +994,11 @@ note = "path of Inis Mac Saint"
 [[link]]
 id = "path-taghmon"
 from = "taghmon"
-to = "st_mullins"
+to = { parent = "chualann-2", cell = [560, 652] }
+via = [{ lat = 52.503254344941, lon = -6.572962538501, note = "keep west of Slaney" }, { lat = 52.585757436355, lon = -6.580499403735, note = "keep west of Slaney" }, { lat = 52.636099674280, lon = -6.633257460372, note = "keep west of Slaney" }, { lat = 52.654391594995, lon = -6.655868056073, note = "keep west of Slaney" }]
 category = "path"
 level = 1
-note = "path of Teach Munna"
+note = "path of Teach Munna, moved from St Mullins to avoid the tidal Barrow crossing (owner direction r105)"
 
 [[link]]
 id = "path-ahenny"
@@ -1010,10 +1011,10 @@ note = "path of Áth Eine"
 [[link]]
 id = "path-ardmore"
 from = "ardmore"
-to = "cloyne"
+to = { parent = "munster-2", cell = [393, 767] }
 category = "path"
 level = 1
-note = "path of Aird Mhór"
+note = "path of Aird Mhór, moved from Cloyne to avoid the tidal Blackwater crossing (owner direction r105)"
 
 [[link]]
 id = "path-iniscealtra"
