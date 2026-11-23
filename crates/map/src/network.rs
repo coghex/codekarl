@@ -1,0 +1,934 @@
+//! Loading and validating the scenario's stored land network.
+
+use crate::{Cell, Crop, LoadError, Location};
+use serde::Deserialize;
+use sha2::{Digest, Sha256};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    path::Path,
+};
+
+/// A validated land network, in file order.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LandNetwork {
+    format: u32,
+    hand_list_sha256: String,
+    baseline_sha256: String,
+    next_node_id: u64,
+    next_stretch_id: u64,
+    /// Network nodes.
+    #[serde(default, rename = "node")]
+    pub nodes: Vec<LandNode>,
+    /// Network stretches.
+    #[serde(default, rename = "stretch")]
+    pub stretches: Vec<LandStretch>,
+    /// Ordered routes over stretches.
+    #[serde(default, rename = "link")]
+    pub links: Vec<LandLink>,
+    /// Connections between links.
+    #[serde(default, rename = "join")]
+    pub joins: Vec<LandJoin>,
+    /// Named roads.
+    #[serde(default, rename = "road")]
+    pub roads: Vec<LandRoad>,
+    /// Access qualities for offshore places.
+    #[serde(default)]
+    pub access: Vec<LandAccess>,
+    #[serde(skip)]
+    incident: BTreeMap<u64, Vec<usize>>,
+}
+/// A node's role in the graph.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LandNodeKind {
+    /// A scenario location.
+    Place,
+    /// A landing for an offshore location.
+    Landing,
+    /// A junction between stretches.
+    Junction,
+}
+/// A stored node; cells are crop-relative column and row.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LandNode {
+    /// Stable node ID.
+    pub id: u64,
+    /// Node role.
+    pub kind: LandNodeKind,
+    /// Crop-relative cell.
+    pub cell: [i32; 2],
+    /// Location ID for place and landing nodes.
+    pub place: Option<String>,
+}
+/// Starting category of a stretch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LandCategory {
+    /// A path.
+    Path,
+    /// A road.
+    Road,
+}
+/// A stored stretch between nodes.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LandStretch {
+    /// Stable stretch ID.
+    pub id: u64,
+    /// Starting node ID.
+    pub from: u64,
+    /// Ending node ID.
+    pub to: u64,
+    /// Crop-relative cells, in stored order.
+    pub cells: Vec<[i32; 2]>,
+    /// Stored length in metres.
+    pub length_m: u64,
+    /// Starting category.
+    pub category: LandCategory,
+    /// Starting level.
+    pub level: u8,
+    /// Whether this connects a tidal place to its landing.
+    pub tidal: bool,
+}
+/// Direction along a stored stretch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LandDirection {
+    /// From the stretch's start to its end.
+    Forward,
+    /// From the stretch's end to its start.
+    Backward,
+}
+/// An ordered link through the network.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LandLink {
+    /// Stable link ID.
+    pub id: String,
+    /// Optional road ID.
+    pub road: Option<String>,
+    /// Starting node.
+    pub from_node: u64,
+    /// Ending node.
+    pub to_node: u64,
+    /// Stretch IDs and directions in traversal order.
+    pub stretches: Vec<(u64, LandDirection)>,
+    /// Opaque tool record.
+    pub record: String,
+}
+/// Which end of a link joins a parent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LandEnd {
+    /// The first node.
+    From,
+    /// The last node.
+    To,
+}
+/// A connection at a child link's end.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LandJoin {
+    /// Child link ID.
+    pub link: String,
+    /// Child endpoint.
+    pub end: LandEnd,
+    /// Parent link ID.
+    pub parent: String,
+    /// Shared node ID.
+    pub node: u64,
+    /// Distance to the first occurrence on the parent.
+    pub along_m: u64,
+}
+/// A named road and its links.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LandRoad {
+    /// Stable ID.
+    pub id: String,
+    /// Display name.
+    pub name: String,
+    /// Ordered link IDs.
+    pub links: Vec<String>,
+}
+/// Offshore access quality.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LandAccessQuality {
+    /// Offshore at all tides.
+    Offshore,
+    /// Offshore at high tide.
+    OffshoreAtHighTide,
+}
+/// A place's access quality and landing.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LandAccess {
+    /// Scenario location ID.
+    pub place: String,
+    /// Access quality.
+    pub quality: LandAccessQuality,
+    /// Landing node ID.
+    pub landing: u64,
+}
+
+impl LandNetwork {
+    /// Stretches incident to the given node, in file order.
+    pub fn stretches_at(&self, node: u64) -> impl Iterator<Item = &LandStretch> {
+        self.incident
+            .get(&node)
+            .into_iter()
+            .flatten()
+            .map(|&index| &self.stretches[index])
+    }
+    /// The place node for a scenario location.
+    #[must_use]
+    pub fn place_node(&self, place: &str) -> Option<&LandNode> {
+        self.nodes
+            .iter()
+            .find(|n| n.kind == LandNodeKind::Place && n.place.as_deref() == Some(place))
+    }
+}
+
+fn error(entry: impl std::fmt::Display, fault: impl std::fmt::Display) -> LoadError {
+    LoadError::at("roads.toml", entry, fault)
+}
+
+pub(crate) fn load(
+    directory: &Path,
+    locations: &[Location],
+    crop: Crop,
+) -> Result<Option<LandNetwork>, LoadError> {
+    let hand = directory.join("network.toml");
+    let roads = directory.join("roads.toml");
+    if !hand.exists() && !roads.exists() {
+        return Ok(None);
+    }
+    let hand_bytes = fs::read(&hand).map_err(|e| LoadError::at("network.toml", "file", e))?;
+    let source = fs::read_to_string(&roads).map_err(|e| LoadError::at("roads.toml", "file", e))?;
+    let mut network: LandNetwork = toml::from_str(&source).map_err(|e| parse_error(&source, &e))?;
+    if network.format != 1 {
+        return Err(error("format", "must be 1"));
+    }
+    if network.hand_list_sha256 != format!("{:x}", Sha256::digest(hand_bytes)) {
+        return Err(error("hand_list_sha256", "does not match network.toml"));
+    }
+    validate(&network, locations, crop)?;
+    for (index, stretch) in network.stretches.iter().enumerate() {
+        network
+            .incident
+            .entry(stretch.from)
+            .or_default()
+            .push(index);
+        if stretch.to != stretch.from {
+            network.incident.entry(stretch.to).or_default().push(index);
+        }
+    }
+    Ok(Some(network))
+}
+
+fn parse_error(source: &str, problem: &toml::de::Error) -> LoadError {
+    let entry = problem
+        .span()
+        .and_then(|span| {
+            let prefix = source.get(..span.end)?;
+            let header = prefix.lines().rev().find(|line| {
+                matches!(
+                    *line,
+                    "[[node]]"
+                        | "[[stretch]]"
+                        | "[[link]]"
+                        | "[[join]]"
+                        | "[[road]]"
+                        | "[[access]]"
+                )
+            })?;
+            let start = prefix.rfind(header)?;
+            let table = source.get(start..)?.split("\n[[").next()?;
+            let header = table.lines().next()?;
+            let identity = table.lines().find(|line| {
+                line.starts_with("id = ")
+                    || line.starts_with("link = ")
+                    || line.starts_with("place = ")
+            });
+            Some(format!("{} {}", header, identity.unwrap_or("")))
+        })
+        .unwrap_or_else(|| "file".to_owned());
+    error(entry, problem)
+}
+
+#[expect(clippy::too_many_lines, reason = "dependent graph validation")]
+fn validate(n: &LandNetwork, locations: &[Location], crop: Crop) -> Result<(), LoadError> {
+    let mut nodes = BTreeMap::new();
+    let mut places = BTreeMap::new();
+    let mut landings = BTreeMap::new();
+    let locations: BTreeMap<_, _> = locations.iter().map(|l| (l.id.as_str(), l)).collect();
+    for node in &n.nodes {
+        let at = format!("node[{}]", node.id);
+        if nodes.insert(node.id, node).is_some() {
+            return Err(error(&at, "duplicate id"));
+        }
+        if node.id >= n.next_node_id {
+            return Err(error(&at, "id is not below next_node_id"));
+        }
+        let cell = Cell {
+            x: crop
+                .origin
+                .x
+                .checked_add(node.cell[0])
+                .ok_or_else(|| error(&at, "cell overflow"))?,
+            y: crop
+                .origin
+                .y
+                .checked_add(node.cell[1])
+                .ok_or_else(|| error(&at, "cell overflow"))?,
+        };
+        if !crop.contains(cell) {
+            return Err(error(&at, "cell outside crop"));
+        }
+        match (node.kind, node.place.as_deref()) {
+            (LandNodeKind::Junction, None) => (),
+            (LandNodeKind::Place | LandNodeKind::Landing, Some(id)) => {
+                locations
+                    .get(id)
+                    .ok_or_else(|| error(&at, "unknown place"))?;
+                let map = if node.kind == LandNodeKind::Place {
+                    &mut places
+                } else {
+                    &mut landings
+                };
+                if map.insert(id, node).is_some() {
+                    return Err(error(&at, "duplicate place or landing"));
+                }
+            }
+            _ => return Err(error(&at, "kind and place disagree")),
+        }
+    }
+    for id in locations.keys() {
+        if !places.contains_key(id) {
+            return Err(error(format!("place[{id}]"), "missing place node"));
+        }
+    }
+    let mut stretches = BTreeMap::new();
+    for s in &n.stretches {
+        let at = format!("stretch[{}]", s.id);
+        if stretches.insert(s.id, s).is_some() {
+            return Err(error(&at, "duplicate id"));
+        }
+        if s.id >= n.next_stretch_id {
+            return Err(error(&at, "id is not below next_stretch_id"));
+        }
+        let from = nodes
+            .get(&s.from)
+            .ok_or_else(|| error(&at, "unknown from node"))?;
+        let to = nodes
+            .get(&s.to)
+            .ok_or_else(|| error(&at, "unknown to node"))?;
+        if s.level > 5 {
+            return Err(error(&at, "level outside 0..=5"));
+        }
+        if s.cells.first() != Some(&from.cell) || s.cells.last() != Some(&to.cell) {
+            return Err(error(&at, "line endpoints differ from nodes"));
+        }
+        if s.cells.iter().any(|cell| {
+            cell[0] < 0
+                || cell[1] < 0
+                || u32::try_from(cell[0]).map_or(true, |x| x >= crop.width)
+                || u32::try_from(cell[1]).map_or(true, |y| y >= crop.height)
+        }) {
+            return Err(error(&at, "line cell outside crop"));
+        }
+        if s.tidal {
+            let expected = if from.cell == to.cell {
+                vec![from.cell]
+            } else {
+                vec![from.cell, to.cell]
+            };
+            if from.kind != LandNodeKind::Landing
+                || to.kind != LandNodeKind::Place
+                || from.place != to.place
+                || s.cells != expected
+                || (from.cell == to.cell && s.length_m != 0)
+            {
+                return Err(error(&at, "invalid tidal connector"));
+            }
+        } else {
+            if s.cells.len() < 2 || s.length_m == 0 {
+                return Err(error(
+                    &at,
+                    "non-tidal stretch needs at least two cells and positive length",
+                ));
+            }
+            for pair in s.cells.windows(2) {
+                let dx = (i64::from(pair[0][0]) - i64::from(pair[1][0])).abs();
+                let dy = (i64::from(pair[0][1]) - i64::from(pair[1][1])).abs();
+                if !((dx <= 1 && dy <= 1 && dx + dy > 0)
+                    || (dx == 2 && dy == 1)
+                    || (dx == 1 && dy == 2))
+                {
+                    return Err(error(&at, "invalid line step"));
+                }
+            }
+            for cell in &s.cells[1..s.cells.len() - 1] {
+                if n.nodes
+                    .iter()
+                    .any(|node| node.id != s.from && node.id != s.to && node.cell == *cell)
+                {
+                    return Err(error(&at, "line passes another node"));
+                }
+            }
+        }
+    }
+    let mut links = BTreeMap::new();
+    for link in &n.links {
+        let at = format!("link[{}]", link.id);
+        if links.insert(link.id.as_str(), link).is_some() {
+            return Err(error(&at, "duplicate id"));
+        }
+        if !nodes.contains_key(&link.from_node) || !nodes.contains_key(&link.to_node) {
+            return Err(error(&at, "unknown end node"));
+        }
+        let mut current = link.from_node;
+        for (id, direction) in &link.stretches {
+            let stretch = stretches
+                .get(id)
+                .ok_or_else(|| error(&at, "unknown stretch"))?;
+            if stretch.tidal {
+                return Err(error(&at, "link traverses tidal stretch"));
+            }
+            let (from, to) = match direction {
+                LandDirection::Forward => (stretch.from, stretch.to),
+                LandDirection::Backward => (stretch.to, stretch.from),
+            };
+            if from != current {
+                return Err(error(&at, "stretch walk is disconnected"));
+            }
+            current = to;
+        }
+        if current != link.to_node {
+            return Err(error(&at, "stretch walk ends at wrong node"));
+        }
+    }
+    let mut ends = BTreeSet::new();
+    for (index, join) in n.joins.iter().enumerate() {
+        let at = format!("join[{index}] ({}/{:?})", join.link, join.end);
+        if !ends.insert((join.link.as_str(), join.end)) {
+            return Err(error(&at, "duplicate child end"));
+        }
+        let child = links
+            .get(join.link.as_str())
+            .ok_or_else(|| error(&at, "unknown child link"))?;
+        let parent = links
+            .get(join.parent.as_str())
+            .ok_or_else(|| error(&at, "unknown parent link"))?;
+        let end = match join.end {
+            LandEnd::From => child.from_node,
+            LandEnd::To => child.to_node,
+        };
+        if join.node != end {
+            return Err(error(&at, "node differs from child end"));
+        }
+        let mut current = parent.from_node;
+        let mut distance = 0_u64;
+        let mut found = (current == join.node).then_some(distance);
+        for (id, direction) in &parent.stretches {
+            let s = stretches[id];
+            distance = distance
+                .checked_add(s.length_m)
+                .ok_or_else(|| error(&at, "parent distance overflow"))?;
+            current = match direction {
+                LandDirection::Forward => s.to,
+                LandDirection::Backward => s.from,
+            };
+            if current == join.node && found.is_none() {
+                found = Some(distance);
+            }
+        }
+        if found != Some(join.along_m) {
+            return Err(error(&at, "node or first parent distance is wrong"));
+        }
+    }
+    for (id, node) in &places {
+        let location = locations[id];
+        let cell = Cell {
+            x: crop.origin.x + node.cell[0],
+            y: crop.origin.y + node.cell[1],
+        };
+        if cell != location.cell
+            && !n.links.iter().any(|link| {
+                link.from_node == node.id
+                    && link.to_node == node.id
+                    && link.stretches.is_empty()
+                    && n.joins
+                        .iter()
+                        .any(|join| join.link == link.id && join.node == node.id)
+            })
+        {
+            return Err(error(
+                format!("node[{}]", node.id),
+                "place cell differs from location without a joined singleton link",
+            ));
+        }
+    }
+    let mut roads = BTreeSet::new();
+    for road in &n.roads {
+        let at = format!("road[{}]", road.id);
+        if !roads.insert(&road.id) {
+            return Err(error(&at, "duplicate id"));
+        }
+        if road.links.iter().any(|id| !links.contains_key(id.as_str())) {
+            return Err(error(&at, "unknown link"));
+        }
+    }
+    for link in &n.links {
+        if link.road.as_ref().is_some_and(|id| !roads.contains(id)) {
+            return Err(error(format!("link[{}]", link.id), "unknown road"));
+        }
+    }
+    let mut access = BTreeSet::new();
+    for a in &n.access {
+        let at = format!("access[{}]", a.place);
+        if !access.insert(a.place.as_str()) {
+            return Err(error(&at, "duplicate access"));
+        }
+        let landing = landings
+            .get(a.place.as_str())
+            .ok_or_else(|| error(&at, "missing landing"))?;
+        if landing.id != a.landing {
+            return Err(error(&at, "landing belongs to another place"));
+        }
+        let place = places[a.place.as_str()];
+        let connected: Vec<_> = n
+            .stretches
+            .iter()
+            .filter(|s| s.from == place.id || s.to == place.id)
+            .collect();
+        let valid = match a.quality {
+            LandAccessQuality::Offshore => connected.is_empty(),
+            LandAccessQuality::OffshoreAtHighTide => {
+                connected.len() == 1 && connected[0].tidal && connected[0].from == landing.id
+            }
+        };
+        if !valid {
+            return Err(error(&at, "place has the wrong tidal connection"));
+        }
+    }
+    for id in landings.keys() {
+        if !access.contains(id) {
+            return Err(error(format!("landing[{id}]"), "missing access entry"));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::load_scenario;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    fn fixture() -> crate::Scenario {
+        let path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/network/scenarios/fixture");
+        load_scenario(path).expect("shared fixture loads through scenario validation")
+    }
+
+    #[test]
+    fn optional_pair_and_file_format_refusals_name_the_fault() {
+        let scenario = fixture();
+        let crop = scenario.map.data.crop;
+        let source =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/network/scenarios/fixture");
+        let dir = std::env::temp_dir().join(format!(
+            "ck-network-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        assert!(load(&dir, &scenario.locations, crop).unwrap().is_none());
+        fs::copy(source.join("network.toml"), dir.join("network.toml")).unwrap();
+        assert!(
+            load(&dir, &scenario.locations, crop)
+                .unwrap_err()
+                .to_string()
+                .contains("roads.toml")
+        );
+        let roads = fs::read_to_string(source.join("roads.toml")).unwrap();
+        let record = roads
+            .lines()
+            .find(|line| line.starts_with("record = "))
+            .unwrap();
+        fs::write(dir.join("roads.toml"), &roads).unwrap();
+        assert!(load(&dir, &scenario.locations, crop).unwrap().is_some());
+        for (bad, name) in [
+            (roads.replacen("format = 1", "format = 2", 1), "format"),
+            (roads.replacen("format = 1", "format = 'one'", 1), "format"),
+            (
+                roads.replacen("format = 1", "format = 1\nunknown = 2", 1),
+                "unknown",
+            ),
+            (
+                roads.replacen("record = ", "record_missing = ", 1),
+                "record",
+            ),
+            (roads.replacen(record, "", 1), "approach"),
+            (roads.replacen(record, "record = 7", 1), "record"),
+            (
+                roads.replacen("category = \"path\"", "category = \"track\"", 1),
+                "stretch",
+            ),
+            (
+                roads.replacen("end = \"to\"", "end = \"middle\"", 1),
+                "approach",
+            ),
+            (
+                roads.replacen("quality = \"offshore\"", "quality = \"unknown\"", 1),
+                "access",
+            ),
+        ] {
+            fs::write(dir.join("roads.toml"), bad).unwrap();
+            let message = load(&dir, &scenario.locations, crop)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                message.contains("roads.toml") && message.contains(name),
+                "{message}"
+            );
+        }
+        fs::write(dir.join("roads.toml"), roads).unwrap();
+        fs::write(dir.join("network.toml"), "changed").unwrap();
+        assert!(
+            load(&dir, &scenario.locations, crop)
+                .unwrap_err()
+                .to_string()
+                .contains("hand_list_sha256")
+        );
+        fs::remove_file(dir.join("network.toml")).unwrap();
+        assert!(
+            load(&dir, &scenario.locations, crop)
+                .unwrap_err()
+                .to_string()
+                .contains("network.toml")
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn shared_fixture_keeps_links_joins_and_access() {
+        let scenario = fixture();
+        let n = scenario.network.unwrap();
+        let singleton = n.links.iter().find(|l| l.id == "singleton").unwrap();
+        assert_eq!(singleton.from_node, singleton.to_node);
+        assert!(singleton.stretches.is_empty());
+        assert_eq!(
+            n.joins
+                .iter()
+                .find(|j| j.link == "singleton")
+                .unwrap()
+                .along_m,
+            949
+        );
+        assert_eq!(
+            n.joins.iter().find(|j| j.link == "child").unwrap().along_m,
+            3798
+        );
+        assert_eq!(n.roads[0].links, ["parent", "reverse"]);
+        assert!(n.stretches.iter().any(|s| s.cells == [[1, 5], [3, 6]]));
+        let parent = n.links.iter().find(|l| l.id == "parent").unwrap();
+        let reverse = n.links.iter().find(|l| l.id == "reverse").unwrap();
+        assert_eq!(parent.stretches[0], (4, LandDirection::Forward));
+        assert_eq!(
+            reverse.stretches.last(),
+            Some(&(4, LandDirection::Backward))
+        );
+        assert!(!parent.record.is_empty());
+        assert_eq!(n.access.len(), 3);
+        let landing = |id: &str| {
+            let access = n.access.iter().find(|a| a.place == id).unwrap();
+            n.nodes
+                .iter()
+                .find(|node| node.id == access.landing)
+                .unwrap()
+        };
+        assert_eq!(n.place_node("shore").unwrap().cell, landing("shore").cell);
+        assert_ne!(n.place_node("isle").unwrap().cell, landing("isle").cell);
+        assert!(n.stretches_at(landing("isle").id).any(|s| !s.tidal));
+        assert!(
+            n.stretches_at(n.place_node("tide").unwrap().id)
+                .any(|s| s.tidal)
+        );
+    }
+
+    #[test]
+    fn rejects_broken_graph_relationships_with_entry_names() {
+        let scenario = fixture();
+        let original = scenario.network.as_ref().unwrap();
+        let check = |network: &LandNetwork, label: &str| {
+            let message = validate(network, &scenario.locations, scenario.map.data.crop)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                message.contains("roads.toml") && message.contains(label),
+                "{message}"
+            );
+        };
+        let mut n = original.clone();
+        n.nodes.push(n.nodes[0].clone());
+        check(&n, "node[");
+        let mut n = original.clone();
+        n.next_node_id = 1;
+        check(&n, "node[");
+        let mut n = original.clone();
+        n.nodes[0].place = Some("unknown".into());
+        check(&n, "node[");
+        let mut n = original.clone();
+        n.stretches.push(n.stretches[0].clone());
+        check(&n, "stretch[");
+        let mut n = original.clone();
+        n.stretches[0].from = 9999;
+        check(&n, "stretch[");
+        let mut n = original.clone();
+        n.stretches[0].cells[1] = [0, 0];
+        check(&n, "stretch[");
+        let mut n = original.clone();
+        n.stretches[0].length_m = 0;
+        check(&n, "stretch[");
+        let mut n = original.clone();
+        n.stretches[0].level = 6;
+        check(&n, "stretch[");
+        let mut n = original.clone();
+        n.links[0].to_node = n.links[0].from_node;
+        check(&n, "link[");
+        let mut n = original.clone();
+        n.links.push(n.links[0].clone());
+        check(&n, "link[");
+        let mut n = original.clone();
+        n.joins[1].node = 3;
+        n.joins[1].along_m = 949;
+        check(&n, "join[");
+        let mut n = original.clone();
+        n.joins.push(n.joins[0].clone());
+        check(&n, "join[");
+        let mut n = original.clone();
+        n.joins[0].along_m += 1;
+        check(&n, "join[");
+        let mut n = original.clone();
+        n.roads[0].links.push("missing".into());
+        check(&n, "road[");
+        let mut n = original.clone();
+        n.access[0].landing = 9;
+        check(&n, "access[");
+        let mut n = original.clone();
+        n.access.remove(0);
+        check(&n, "landing[");
+        let mut n = original.clone();
+        n.stretches.retain(|s| !s.tidal);
+        check(&n, "access[tide]");
+        let mut n = original.clone();
+        n.access
+            .iter_mut()
+            .find(|a| a.place == "tide")
+            .unwrap()
+            .quality = LandAccessQuality::Offshore;
+        check(&n, "access[tide]");
+    }
+
+    #[test]
+    fn rejects_remaining_node_stretch_link_road_and_access_faults() {
+        let scenario = fixture();
+        let original = scenario.network.as_ref().unwrap();
+        let check = |network: &LandNetwork, label: &str| {
+            let message = validate(network, &scenario.locations, scenario.map.data.crop)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                message.contains("roads.toml") && message.contains(label),
+                "{message}"
+            );
+        };
+        let mut n = original.clone();
+        n.nodes.remove(0);
+        check(&n, "place[a]");
+        let mut n = original.clone();
+        n.nodes[1].place = Some("a".into());
+        check(&n, "node[2]");
+        let mut n = original.clone();
+        n.nodes[11].place = Some("a".into());
+        check(&n, "node[12]");
+        let mut n = original.clone();
+        n.nodes[6].place = Some("missing".into());
+        check(&n, "node[7]");
+        let mut n = original.clone();
+        n.next_stretch_id = 1;
+        check(&n, "stretch[1]");
+        let mut n = original.clone();
+        n.stretches[0].to = 999;
+        check(&n, "stretch[1]");
+        let mut n = original.clone();
+        n.stretches[0].cells[0] = [0, 0];
+        check(&n, "stretch[1]");
+        let mut n = original.clone();
+        n.stretches[0].cells.truncate(1);
+        check(&n, "stretch[1]");
+        let mut n = original.clone();
+        n.nodes.push(LandNode {
+            id: 15,
+            kind: LandNodeKind::Junction,
+            cell: [2, 3],
+            place: None,
+        });
+        n.next_node_id = 16;
+        check(&n, "stretch[4]");
+        let mut n = original.clone();
+        n.stretches[11].to = 1;
+        check(&n, "stretch[12]");
+        let mut n = original.clone();
+        n.stretches[11].length_m = 1;
+        check(&n, "stretch[12]");
+        let mut n = original.clone();
+        n.links[0].stretches[0].0 = 999;
+        check(&n, "link[approach]");
+        let mut n = original.clone();
+        n.links[0].stretches[0].1 = LandDirection::Forward;
+        check(&n, "link[approach]");
+        let mut n = original.clone();
+        n.links[0].stretches[0].0 = 12;
+        check(&n, "link[approach]");
+        let mut n = original.clone();
+        n.links[5].to_node = 4;
+        check(&n, "link[singleton]");
+        let mut n = original.clone();
+        n.joins[0].parent = "missing".into();
+        check(&n, "join[");
+        let mut n = original.clone();
+        n.roads.push(n.roads[0].clone());
+        check(&n, "road[named]");
+        let mut n = original.clone();
+        n.access.push(n.access[0].clone());
+        check(&n, "access[isle]");
+        let mut n = original.clone();
+        n.access[0].place = "a".into();
+        check(&n, "access[a]");
+    }
+
+    #[test]
+    fn reports_the_specific_fault_for_join_and_short_stretches() {
+        let scenario = fixture();
+        let original = scenario.network.as_ref().unwrap();
+        let mut n = original.clone();
+        n.joins[0].link = "missing".into();
+        let message = validate(&n, &scenario.locations, scenario.map.data.crop)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            message.contains("join[0]") && message.contains("unknown child link"),
+            "{message}"
+        );
+        let mut n = original.clone();
+        n.stretches[0].to = n.stretches[0].from;
+        n.stretches[0].cells.truncate(1);
+        let message = validate(&n, &scenario.locations, scenario.map.data.crop)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            message.contains("stretch[1]") && message.contains("at least two cells"),
+            "{message}"
+        );
+        let mut n = original.clone();
+        let cell = n.stretches[11].cells[0];
+        n.stretches[11].cells.push(cell);
+        let message = validate(&n, &scenario.locations, scenario.map.data.crop)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            message.contains("stretch[12]") && message.contains("invalid tidal connector"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn ireland_reachability_and_access_match_the_committed_network() {
+        let path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets/scenarios/ireland-768");
+        let scenario = load_scenario(path).unwrap();
+        let n = scenario.network.unwrap();
+        assert_eq!(
+            n.nodes
+                .iter()
+                .filter(|node| node.kind == LandNodeKind::Place)
+                .count(),
+            125
+        );
+        assert_eq!(
+            n.access
+                .iter()
+                .filter(|a| a.quality == LandAccessQuality::Offshore)
+                .count(),
+            22
+        );
+        assert_eq!(
+            n.access
+                .iter()
+                .filter(|a| a.quality == LandAccessQuality::OffshoreAtHighTide)
+                .count(),
+            2
+        );
+        let start = n.place_node("tara").unwrap().id;
+        let walk = |include_tidal| {
+            let mut seen = BTreeSet::from([start]);
+            let mut stack = vec![start];
+            while let Some(id) = stack.pop() {
+                for s in n.stretches_at(id).filter(|s| include_tidal || !s.tidal) {
+                    let other = if s.from == id { s.to } else { s.from };
+                    if seen.insert(other) {
+                        stack.push(other);
+                    }
+                }
+            }
+            seen
+        };
+        let land = walk(false);
+        let all = walk(true);
+        for node in n
+            .nodes
+            .iter()
+            .filter(|node| node.kind == LandNodeKind::Place)
+        {
+            let quality = n
+                .access
+                .iter()
+                .find(|a| Some(a.place.as_str()) == node.place.as_deref());
+            assert_eq!(land.contains(&node.id), quality.is_none());
+            assert_eq!(
+                all.contains(&node.id),
+                quality.is_none_or(|a| a.quality == LandAccessQuality::OffshoreAtHighTide)
+            );
+        }
+        for access in &n.access {
+            assert!(land.contains(&access.landing));
+        }
+        let inish = n.place_node("inishmacsaint").unwrap();
+        assert_eq!(inish.cell, [418, 258]);
+        assert_eq!(n.stretches_at(inish.id).count(), 0);
+        let landing = n
+            .access
+            .iter()
+            .find(|a| a.place == "inishmacsaint")
+            .unwrap();
+        assert_eq!(landing.quality, LandAccessQuality::Offshore);
+        assert_eq!(
+            n.nodes
+                .iter()
+                .find(|node| node.id == landing.landing)
+                .unwrap()
+                .cell,
+            [418, 259]
+        );
+    }
+}

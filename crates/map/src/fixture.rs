@@ -545,6 +545,7 @@ pub fn location_scenario() -> LoadedScenario {
         map: loaded_map,
         location_kinds: kinds,
         locations,
+        network: None,
         catchment_owners: vec![
             None;
             usize::try_from(crop.width * crop.height)

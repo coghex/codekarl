@@ -12,7 +12,13 @@ pub mod fixture;
 mod loading;
 pub mod look;
 mod mode;
+mod network;
 mod scenario;
+
+pub use network::{
+    LandAccess, LandAccessQuality, LandCategory, LandDirection, LandEnd, LandJoin, LandLink,
+    LandNetwork, LandNode, LandNodeKind, LandRoad, LandStretch,
+};
 
 pub use loading::{
     LoadError, LoadedMap, LoadedTerrain, MAX_CROP_DIMENSION, PackedGrid, TerrainKind, load_map,

@@ -192,6 +192,8 @@ pub struct Scenario {
     pub location_kinds: LocationKinds,
     /// Locations in authored file order.
     pub locations: Vec<Location>,
+    /// Validated land network, if this scenario supplies one.
+    pub network: Option<crate::LandNetwork>,
     /// Per-crop-cell owning location index, or `None`.
     pub catchment_owners: Vec<Option<usize>>,
 }
@@ -469,12 +471,14 @@ pub fn load_scenario(directory: impl AsRef<Path>) -> Result<Scenario, LoadError>
         &location_kinds,
     )?;
     let catchment_owners = compute_catchments(&map.data, &locations, &location_kinds)?;
+    let network = crate::network::load(directory, &locations, map.data.crop)?;
     Ok(Scenario {
         id: scenario_file.id,
         start,
         map,
         location_kinds,
         locations,
+        network,
         catchment_owners,
     })
 }
