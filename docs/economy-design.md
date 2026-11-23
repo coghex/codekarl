@@ -106,7 +106,7 @@ with sources, and **Open** what is still to decide.
 - **Goods are stored in real units,** such as bushels, each with a realistic weight and cargo size.
 - **Fishing monasteries have a garden** for herbs and vegetables.
 - **A monastery switches from farming to fishing only when it is profitable to switch** (owner, 2026-11-09, replacing r9's "only when
-  that is truly all it has: no usable land"). Methods are chosen by value, never authored per place, each within its own limit (§3.4).
+  that is truly all it has: no usable land"). Methods are chosen by need and then by empty orders at the start (CK-404), never authored per place, each within its own limit (§3.4).
 - **Fishing grounds are not yet designed.** The ocean could provide a resource area with its own fishing radius, and other coastal
   buildings could have other, more profitable coastal methods later.
 - **Herds are tracked with the buildings:**
@@ -402,22 +402,31 @@ monastery's holdings, both, or neither. The kind-and-size tables of §3.12–3.1
     is a stand-in until fishing grounds exist: a sea resource area with its own fishing radius (Open). **Replaced in slice 9 (§3.23,
     owner 2026-11-09):** fishing is limited by building footprint, not fish, and needs at least one sea cell in the catchment.
 - **The land order.** The holdings take their land first; the farm takes what is left.
-- **Choosing methods per level (Firm, r13; Proposal mechanism).** At the start, each building assigns its authored levels **one at a
-  time**. Each level takes the method with the highest **estimated net value** that still has room under its limit:
-  - **the estimate is the value after labour and inputs (Firm, r14),** over **one year**:
-    `estimate(m) = (Σ_g annual_output_g(m) × projected_price(g) − annual input cost(m)) × overhead_pm / 1000`.
-    This is the value left after the workers' wage pool (§3.6). Inputs are empty in M9, so their cost is 0, but the term is in the
-    formula;
-  - **the annual outputs** at the start: crops per year at the land's suitability; herd products at the starting herd's yearly yield
-    (births at the starting size, dairy and wool for a year); fish and the garden per year;
-  - **`projected_price(g)`** comes from the pure start-up primitives of slice 2 (§3.17):
-    - `target_price(base, buy_value, sell_value)`, which §3.16 reuses daily;
-    - **buy:** the place's starting pops' **diet profiles × people × 365**, fixed for the whole choice;
-    - **sell:** the annual output of the levels **already assigned** at the place, cumulative, starting from nothing;
-    - so the second fishing level sees the first level's fish already supplied, and a lower price;
-  - **the order:** places in file order; within a place, the holdings, then the farm; levels one at a time. Each assigned level's
-    annual output joins the sell side before the next choice. No eating planner and no live orders are used, so nothing is circular;
-  - ties go in method order (farming before fishing).
+- **Choosing methods per level (CK-404, by need; replaces the value estimate of r13/r14).** At the start, each building assigns its
+  authored levels **one at a time**, and a level takes a method by what the place's people need and order, not by a value estimate.
+  Projected prices no longer choose a level's method; starting prices, stocks, herds and wage histories are worked as before from the
+  levels chosen.
+  - **Needs and orders.** The people counted are the place's authored pops, before a noble seat's nobles and labourer household are
+    added (those are sized afterwards, from the demesne levels that survived). A place has two needs for a year: **food** (each
+    person's hunger for 365 days, in hundredths of a person-day) and **fuel** (each person's fuel need for 365 days, in thousandths
+    of a fuel unit, from the pop type's `fuel_need_milli_day`; nothing until data names one, and a need of nothing is met). It also
+    has a **yearly order for every good** its people want: a food's order is the yearly diet projection, a comfort's is the live
+    market's tier rule for 365 days instead of 240, each pop orders the larger of its food and comfort amounts for a good, and the
+    place's order is the sum of its pops'.
+  - **What a level provides** is its method's whole yearly output as the start works it out for that level: each food counts towards
+    food by its hunger value, each fuel good towards fuel by what a unit supplies, each good towards its own order. One count of what
+    has been provided is kept for the place and carries from building to building.
+  - **Each method serves one need** (`serves`, `food` by default or `fuel`) and can be chosen only for that need. A fuel method is
+    never chosen for what else it makes.
+  - **A level takes the first of these that gives a method:** (1) the **unmet need**, the less covered of the two first (shares
+    compared exactly, food when equal): among the building's methods that serve it, have room and would provide some of it, the one
+    with the fewest levels in this building so far, earlier in method order when equal, so methods that provide the same thing share
+    the levels evenly; (2) the **empty orders**: among the food methods with room, the one that fills most of the still-empty orders,
+    valued at base prices, a method that fills nothing not taken, equal ones in method order; (3) **one more year**: the place's needs
+    and orders are each raised by a year's amount and steps 1 and 2 tried once more (a raise that places a level stays for the
+    place, a raise that ends in a cut is undone); (4) the **fallback**: the first food method with room; (5) **cut**: the level is
+    cut and reported, and so are the rest of the building's levels.
+  - **The order:** places in file order; within a place, the holdings, then the demesne, then the farm; levels one at a time.
 - **The result** is a count of levels per method in each building, which is saved. Each farming level of the holdings has its herd
   (§3.14), and fishing levels have none.
 - **Staffing per method (r14, exact):** there is no integer `staffed_m`. Each method's output takes its share of staffing exactly
