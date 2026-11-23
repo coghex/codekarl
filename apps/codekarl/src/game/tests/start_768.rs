@@ -801,3 +801,36 @@ fn the_safety_net_report_reconciles_each_pop_with_its_head_moves_and_the_rest_of
         );
     }
 }
+
+#[test]
+fn shipped_network_joins_the_new_paths_to_their_roads() {
+    let (_dir, prepared, _) = shipped(7);
+    let network = prepared.scenario.network.as_ref().expect("shipped network");
+    for (child, place, parent, old) in [
+        ("path-taghmon", "taghmon", "chualann-2", "st_mullins"),
+        ("path-ardmore", "ardmore", "munster-2", "cloyne"),
+    ] {
+        let link = network.links.iter().find(|l| l.id == child).unwrap();
+        let road = network.links.iter().find(|l| l.id == parent).unwrap();
+        let place_node = network
+            .nodes
+            .iter()
+            .find(|n| n.place.as_deref() == Some(place))
+            .unwrap();
+        let old_node = network
+            .nodes
+            .iter()
+            .find(|n| n.place.as_deref() == Some(old))
+            .unwrap();
+        let join = network.joins.iter().find(|j| j.link == child).unwrap();
+        assert_eq!(link.from_node, place_node.id);
+        assert_ne!(link.to_node, old_node.id);
+        assert_eq!(join.parent, parent);
+        assert_eq!(join.node, link.to_node);
+        assert!(!link.stretches.is_empty());
+        assert!(road.stretches.iter().any(|(id, _)| {
+            let s = network.stretches.iter().find(|s| s.id == *id).unwrap();
+            s.from == join.node || s.to == join.node
+        }));
+    }
+}

@@ -128,13 +128,14 @@
 - white_island: node 148; offshore, landing 149
 
 ## Pieces of land
-- 207 nodes: aghaboe, ahenny, aidne_seat, ailech, annaghdown, antrim, ardagh, ardfert, ardmore, ardstraw, armagh, bangor, birr, bruree, cairpre_seat, carndonagh, carraig_aille, cashel, church_island_currane, church_island_valentia, ciarraige_seat, clogher, clonard, clondalkin, clonenagh, clones, clonfert, clonmacnoise, cloyne, cong, connor, corco_modruad, cork, croaghan_hill, derry, devenish, downpatrick, dromiskin, dromore, drumcliff, duleek, dun_ailinne, dunleer, dunseverick, durrow, elphin, emain_macha, emly, fahan, ferns, finglas, fore, glendalough, gowran, granard, hare_island, illaunloughan, inchbofin, inchcleraun, inis_patraic, iniscealtra, inisfallen, inishbofin, inishglora, inishkea_north, inishkeel, inishmacsaint, inishmurray, kildare, killala, killeany, killeigh, kilmacduagh, knockainey, knowth, lagore, lemanaghan, lismore, locha_lein, loegaire_seat, lorrha, louth, lusk, lyons_hill, mayo, monaincha, monasterboice, movilla, moynagh, mullaghmast, mungret, naas, nendrum, old_leighlin, rahan, raphoe, rathangan, rathcroghan, rathmore, rechru, roscommon, roscrea, ross_carbery, saul, scattery, seirkieran, skellig_michael, slane, spike_island, st_mullins, swords, taghmon, tailtiu, tara, terryglass, tethbae_seat, tir_amalgaid, tory, trim, tuam, ui_echach_seat, ui_maine_seat, uisneach, uliathain_seat, white_island
+- 209 nodes: aghaboe, ahenny, aidne_seat, ailech, annaghdown, antrim, ardagh, ardfert, ardmore, ardstraw, armagh, bangor, birr, bruree, cairpre_seat, carndonagh, carraig_aille, cashel, church_island_currane, church_island_valentia, ciarraige_seat, clogher, clonard, clondalkin, clonenagh, clones, clonfert, clonmacnoise, cloyne, cong, connor, corco_modruad, cork, croaghan_hill, derry, devenish, downpatrick, dromiskin, dromore, drumcliff, duleek, dun_ailinne, dunleer, dunseverick, durrow, elphin, emain_macha, emly, fahan, ferns, finglas, fore, glendalough, gowran, granard, hare_island, illaunloughan, inchbofin, inchcleraun, inis_patraic, iniscealtra, inisfallen, inishbofin, inishglora, inishkea_north, inishkeel, inishmacsaint, inishmurray, kildare, killala, killeany, killeigh, kilmacduagh, knockainey, knowth, lagore, lemanaghan, lismore, locha_lein, loegaire_seat, lorrha, louth, lusk, lyons_hill, mayo, monaincha, monasterboice, movilla, moynagh, mullaghmast, mungret, naas, nendrum, old_leighlin, rahan, raphoe, rathangan, rathcroghan, rathmore, rechru, roscommon, roscrea, ross_carbery, saul, scattery, seirkieran, skellig_michael, slane, spike_island, st_mullins, swords, taghmon, tailtiu, tara, terryglass, tethbae_seat, tir_amalgaid, tory, trim, tuam, ui_echach_seat, ui_maine_seat, uisneach, uliathain_seat, white_island
 
 ## Joins
 - path-ahenny to on munster-2: node 179, 6882 m
 - path-annaghdown to on path-tuam: node 160, 7835 m
 - path-antrim to on midluachra-2: node 6, 58008 m
 - path-ardagh to on assail: node 186, 81399 m
+- path-ardmore to on munster-2: node 232, 44888 m
 - path-carndonagh to on path-fahan: node 196, 9820 m
 - path-carraig_aille to on path-knockainey: node 170, 1143 m
 - path-church_island_currane to on path-illaunloughan: node 150, 3991 m
@@ -188,6 +189,7 @@
 - path-ross_carbery to on munster-2: node 166, 99566 m
 - path-seirkieran to on dala-1: node 181, 114062 m
 - path-swords to on chualann-1: node 224, 26271 m
+- path-taghmon to on chualann-2: node 233, 90072 m
 - path-tailtiu to on midluachra-1: node 212, 5096 m
 - path-tir_amalgaid to on west-1: node 155, 88905 m
 - path-trim to on assail: node 206, 12545 m
@@ -213,11 +215,11 @@
 - path-white_island: [479, 223] to [480, 224]
 
 ## Totals
-- 123 links, 219 stretches, 231 nodes
+- 123 links, 221 stretches, 233 nodes
 - path level 0: 163.443 km
-- path level 1: 1645.659 km
+- path level 1: 1665.902 km
 - path level 3: 579.130 km
-- road level 1: 878.182 km
+- road level 1: 878.181 km
 - Starting-state disagreements: 19, 20, 23, 25, 28, 29, 31, 42, 43, 45, 47, 60, 61
 
 ## Lines crossing without a shared cell
@@ -228,7 +230,6 @@
 - stretch 7, 12877 m: shannon, 68.1 m
 - stretch 12, 684 m: liffey, 36.9 m
 - stretch 17, 3611 m: liffey, 25.1 m
-- stretch 21, 30543 m: slaney, 33.7 m
 - stretch 24, 7670 m: clare, 36.1 m
 - stretch 27, 8495 m: shannon, 114.2 m
 - stretch 30, 17363 m: brosna, 22.5 m
@@ -246,8 +247,6 @@
 - stretch 68, 35317 m: liffey, 33.5 m
 - stretch 72, 6469 m: brosna, 27.4 m
 - stretch 75, 3080 m: shannon, 100.7 m
-- stretch 81, 940 m: blackwater-munster, 51.5 m
-- stretch 81, 27009 m: suir, 44.3 m
 - stretch 84, 120 m: lee, 38.0 m
 - stretch 86, 29415 m: suir, 30.2 m
 - stretch 91, 11275 m: blackwater-ulster, 28.0 m
@@ -256,7 +255,6 @@
 - stretch 95, 35 m: finn-donegal, 25.5 m
 - stretch 95, 10715 m: mourne, 45.2 m
 - stretch 99, 3857 m: bann, 20.7 m
-- stretch 107, 22643 m: blackwater-munster, 58.4 m
 - stretch 115, 45098 m: laune, 31.2 m
 - stretch 116, 19510 m: feale, 30.4 m
 - stretch 116, 62897 m: deel-limerick, 23.5 m
@@ -266,7 +264,6 @@
 - stretch 160, 46084 m: corrib, 54.4 m
 - stretch 171, 13363 m: little-brosna, 22.5 m
 - stretch 189, 25120 m: bandon, 21.1 m
-- stretch 197, 164 m: barrow, 67.4 m
 - stretch 198, 6576 m: blackwater-kells, 29.9 m
 - stretch 198, 7319 m: boyne, 43.5 m
 - stretch 203, 344 m: boyne, 35.7 m
@@ -276,3 +273,6 @@
 - stretch 217, 6987 m: garavogue, 23.6 m
 - stretch 217, 17642 m: owenmore-sligo, 24.4 m
 - stretch 217, 17727 m: owenmore-sligo, 24.4 m
+- stretch 221, 37 m: slaney, 33.7 m
+- stretch 222, 25858 m: suir, 44.3 m
+- stretch 223, 211 m: blackwater-munster, 51.5 m

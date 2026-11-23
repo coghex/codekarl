@@ -1101,7 +1101,7 @@ class AcceptanceTests(unittest.TestCase):
 
 
 class IrelandPreviewTests(unittest.TestCase):
-    def test_first_preview_has_four_candidates_and_connected_land(self) -> None:
+    def test_first_preview_has_six_candidates_and_connected_land(self) -> None:
         import json  # noqa: PLC0415  # This witness reads the committed approved seed.
 
         root = Path(__file__).resolve().parents[1]
@@ -1114,7 +1114,14 @@ class IrelandPreviewTests(unittest.TestCase):
         self.assertTrue(preview["complete"])
         self.assertEqual(
             set(preview["candidates"]),
-            {"dala-2", "path-iniscealtra", "path-ciarraige_seat", "path-tory"},
+            {
+                "dala-2",
+                "path-iniscealtra",
+                "path-ciarraige_seat",
+                "path-tory",
+                "path-taghmon",
+                "path-ardmore",
+            },
         )
         self.assertEqual(len(baseline["completions"]), 12)
         self.assertEqual(baseline["place_overrides"]["monaincha"]["to"], [419, 593])
@@ -1982,9 +1989,80 @@ class IrelandStoredTests(unittest.TestCase):
             if entry["course"] != [list(cell) for cell in seed["links"][name]["course"]]
         }
         self.assertEqual(
-            changed, {"dala-2", "path-iniscealtra", "path-ciarraige_seat", "path-tory"}
+            changed,
+            {
+                "dala-2",
+                "path-iniscealtra",
+                "path-ciarraige_seat",
+                "path-tory",
+                "path-taghmon",
+                "path-ardmore",
+            },
         )
         self.assertEqual(len(seed["completions"]), 12)
+
+    def test_new_paths_and_connectivity_without_shannon_crossings(self) -> None:
+        import hashlib  # noqa: PLC0415  # Compare the unchanged stored courses.
+        import json  # noqa: PLC0415  # Canonicalize their cells for the digest.
+        from itertools import pairwise  # noqa: PLC0415  # Traverse stored cell edges.
+
+        other = {
+            name: entry["course"]
+            for name, entry in self.baseline["links"].items()
+            if name not in {"path-taghmon", "path-ardmore"}
+        }
+        digest = hashlib.sha256(
+            json.dumps(other, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        self.assertEqual(digest, "d83b24c6a833bd94f9ca80d9ae917d860bf8c9ac41ba18e696a2f46db2da6028")
+        wide_metres = 20
+        context = network.load_context(self.map_dir, self.scenario)
+        places = {node["place"]: node for node in self.nodes.values() if node["kind"] == "place"}
+        for child, place, parent, old in (
+            ("path-taghmon", "taghmon", "chualann-2", "st_mullins"),
+            ("path-ardmore", "ardmore", "munster-2", "cloyne"),
+        ):
+            link = self.links[child]
+            join = next(j for j in self.graph["join"] if j["link"] == child)
+            self.assertEqual(link["from_node"], places[place]["id"])
+            self.assertEqual(join["parent"], parent)
+            self.assertEqual(link["to_node"], join["node"])
+            self.assertNotEqual(link["to_node"], places[old]["id"])
+            self.assertIn(self.nodes[join["node"]]["cell"], self.reconstructed(self.links[parent]))
+            course = list(map(tuple, self.reconstructed(link)))
+            self.assertFalse(
+                [
+                    (a, b)
+                    for a, b in pairwise(course)
+                    if any(width >= wide_metres for _, _, width in context["index"].crossings(a, b))
+                ]
+            )
+        cuts = set()
+        for name in ("mor-4", "cut-clonfert-lorrha"):
+            for a, b in pairwise(map(tuple, self.reconstructed(self.links[name]))):
+                if any(
+                    river == "shannon" and width >= wide_metres
+                    for river, _, width in context["index"].crossings(a, b)
+                ):
+                    cuts.add(frozenset((a, b)))
+        self.assertEqual(len(cuts), 2)
+        adjacent: dict[tuple[int, ...], set[tuple[int, ...]]] = defaultdict(set)
+        for stretch in self.stretches.values():
+            if not stretch["tidal"]:
+                for a, b in pairwise(map(tuple, stretch["cells"])):
+                    if frozenset((a, b)) not in cuts:
+                        adjacent[a].add(b)
+                        adjacent[b].add(a)
+        seen = {tuple(places["tara"]["cell"])}
+        stack = list(seen)
+        while stack:
+            new = adjacent[stack.pop()] - seen
+            seen.update(new)
+            stack.extend(new)
+        access = {entry["place"] for entry in self.graph["access"]}
+        for name, node in places.items():
+            if name not in access:
+                self.assertIn(tuple(node["cell"]), seen, name)
 
     def test_places_and_landings_share_one_land_network(self) -> None:
         place_nodes = {
