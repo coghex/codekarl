@@ -312,6 +312,14 @@ text = "Wax from the hive, made into candles."
 title = "hides"
 text = "The skins of animals, tanned into leather."
 
+[term.linen]
+title = "linen"
+text = "Cloth made from flax, produced by subsistence farms."
+
+[term.hemp]
+title = "hemp"
+text = "Plant fibre made into rope and cloth, produced by subsistence farms."
+
 [term.cattle]
 title = "cattle"
 text = "Live cattle, kept for milk, meat and hides."
