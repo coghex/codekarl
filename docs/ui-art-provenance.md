@@ -7,6 +7,12 @@ shape of the thing drawn, never from another game's or font's art, and each piec
 This page holds the record for art that is in the tree and whose files point here. The statements about how a piece was made are its
 author's record, moved here from the design round's notes; the files, hashes and checks named are in the accepted tree.
 
+## Map layers icon (CK-387)
+
+- **What it is:** the map layers button's 9×9 grid in `assets/ui/theme/make_theme.py`, rendered into `icon_layers.png`.
+- **How it was made:** ck-worker-1 (Codex) drew two short horizontal bars and an upward chevron from plain shapes for this feature. No other game's icon or reference image was consulted.
+- **Verification:** `make_theme.py --check` checks the generated image. The owner judges its appearance in the running game.
+
 ## The small and tiny fonts (CK-268)
 
 - **What they are:** the fonts `small` (the round's "font B", a 9-row box) and `tiny` ("font C", an 8-row box), in
