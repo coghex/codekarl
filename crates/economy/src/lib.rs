@@ -57,9 +57,12 @@ impl Error for DataError {}
 pub struct Good {
     /// Stable lower-case key.
     pub id: String,
-    /// Open-vocabulary category keys for data-driven presentation.
+    /// Open-vocabulary category keys shared by presentation and category queries.
     #[serde(default)]
     pub tags: Vec<String>,
+    /// Category units supplied per unit of this good, in thousandths.
+    #[serde(default)]
+    pub supplies: BTreeMap<String, u64>,
     /// Human-readable unit.
     pub unit: String,
     /// Weight in grams per unit.
@@ -78,6 +81,21 @@ pub struct Good {
     pub base_price: u64,
     /// Per-person storage cap in thousandths of a good unit.
     pub pop_limit_milli: u64,
+}
+
+impl Good {
+    /// Whole units of this good needed for a category amount, if it belongs to it.
+    #[must_use]
+    pub fn units_for_category(&self, category: &str, amount: u64) -> Option<u128> {
+        if !self.tags.iter().any(|tag| tag == category) {
+            return None;
+        }
+        let supply = u128::from(*self.supplies.get(category).unwrap_or(&1000));
+        if supply == 0 {
+            return None;
+        }
+        Some((u128::from(amount) * 1000).div_ceil(supply))
+    }
 }
 
 /// A population type's startup and employment rules.
@@ -224,6 +242,35 @@ pub struct Rules {
 }
 
 impl Rules {
+    /// Cheapest single good able to meet the whole need; ties follow goods order.
+    /// Missing prices exclude a good; missing stock is zero when stock is supplied.
+    #[must_use]
+    pub fn choose_category<'a>(
+        &'a self,
+        category: &str,
+        amount: u64,
+        prices: &BTreeMap<String, u64>,
+        stock: Option<&BTreeMap<String, u64>>,
+    ) -> Option<(&'a Good, u128)> {
+        self.goods
+            .iter()
+            .filter_map(|good| {
+                let units = good.units_for_category(category, amount)?;
+                let price = *prices.get(&good.id)?;
+                if stock.is_some_and(|stock| u128::from(*stock.get(&good.id).unwrap_or(&0)) < units)
+                {
+                    return None;
+                }
+                let low =
+                    |value: u128| u64::try_from(value & u128::from(u64::MAX)).unwrap_or_default();
+                let low_product = u128::from(low(units)) * u128::from(price);
+                let high_product = (units >> 64) * u128::from(price) + (low_product >> 64);
+                Some((good, units, (high_product, low(low_product))))
+            })
+            .min_by_key(|(_, _, worth)| *worth)
+            .map(|(good, units, _)| (good, units))
+    }
+
     /// Parse and validate a strict TOML economy rules file.
     ///
     /// # Errors
@@ -318,6 +365,20 @@ impl Rules {
                 }
                 if !found.insert(tag) {
                     return Err(refuse(entry, format!("tag \"{tag}\" is listed twice")));
+                }
+            }
+        }
+        for good in &self.goods {
+            for (category, supply) in &good.supplies {
+                let entry = format!("goods.{}.supplies.{category}", good.id);
+                if !good.tags.contains(category) {
+                    return Err(refuse(
+                        entry,
+                        "category is not among the good's tags".to_owned(),
+                    ));
+                }
+                if *supply == 0 {
+                    return Err(refuse(entry, "supply must be positive".to_owned()));
                 }
             }
         }
@@ -9045,6 +9106,7 @@ mod tests {
             goods: vec![Good {
                 id: "food".to_owned(),
                 tags: Vec::new(),
+                supplies: BTreeMap::new(),
                 unit: "unit".to_owned(),
                 weight_g: 1,
                 volume_ml: 1,
@@ -9204,6 +9266,7 @@ mod tests {
             rules.goods.push(Good {
                 id: id.to_owned(),
                 tags: Vec::new(),
+                supplies: BTreeMap::new(),
                 unit: "unit".to_owned(),
                 weight_g: 1,
                 volume_ml: 1,
@@ -10451,7 +10514,7 @@ mod tests {
                 && place.religion.as_deref() == Some("christianity")
                 && place.monk_religion.as_deref() == Some("christianity")
         }));
-        assert_eq!(rules.goods.len(), 22);
+        assert_eq!(rules.goods.len(), 24);
         assert_eq!(rules.pop_types.len(), 4);
         assert_eq!(
             rules.curves.keys().map(String::as_str).collect::<Vec<_>>(),
@@ -10588,6 +10651,203 @@ mod tests {
     }
 
     #[test]
+    fn fabric_categories_choose_a_whole_affordable_substitute() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/game/economy.toml");
+        let rules = Rules::load(path).unwrap();
+        let hide = rules.goods.iter().find(|g| g.id == "hides").unwrap();
+        assert_eq!(hide.units_for_category("fabric", 10), Some(2));
+        assert_eq!(hide.units_for_category("food", 10), None);
+        assert_eq!(hide.units_for_category("clothing", 10), Some(10));
+        let hemp = rules.goods.iter().find(|g| g.id == "hemp").unwrap();
+        assert_eq!(hemp.units_for_category("fabric", 10), Some(10));
+        let herbs = rules.goods.iter().find(|g| g.id == "herbs").unwrap();
+        assert_eq!(herbs.units_for_category("fabric", 10), None);
+        let prices = BTreeMap::from([
+            ("linen".to_owned(), 120),
+            ("hemp".to_owned(), 30),
+            ("hides".to_owned(), 200),
+        ]);
+        assert_eq!(
+            rules
+                .choose_category("fabric", 10, &prices, None)
+                .unwrap()
+                .0
+                .id,
+            "hemp"
+        );
+        let mut prices = prices;
+        prices.insert("hemp".to_owned(), 40);
+        assert_eq!(
+            rules
+                .choose_category("fabric", 10, &prices, None)
+                .unwrap()
+                .0
+                .id,
+            "hides"
+        );
+        let stock = BTreeMap::from([("hemp".to_owned(), 4), ("hides".to_owned(), 2)]);
+        assert_eq!(
+            rules
+                .choose_category("fabric", 10, &prices, Some(&stock))
+                .unwrap()
+                .0
+                .id,
+            "hides"
+        );
+        let stock = BTreeMap::from([("hemp".to_owned(), 4), ("hides".to_owned(), 1)]);
+        assert!(
+            rules
+                .choose_category("fabric", 10, &prices, Some(&stock))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn supplies_must_be_positive_and_belong_to_a_tag() {
+        let mut rules = tiny_rules();
+        rules.goods[0].supplies.insert("fabric".to_owned(), 0);
+        let error = rules.validate("fixture").unwrap_err();
+        assert_eq!(error.entry, "goods.food.supplies.fabric");
+        assert!(error.problem.contains("not among"));
+        rules.goods[0].tags.push("fabric".to_owned());
+        let error = rules.validate("fixture").unwrap_err();
+        assert_eq!(error.entry, "goods.food.supplies.fabric");
+        assert!(error.problem.contains("positive"));
+    }
+
+    #[test]
+    fn linen_and_hemp_are_fixed_seasonal_farm_outputs() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/game/economy.toml");
+        let rules = Rules::load(path).unwrap();
+        let index = |id: &str| rules.goods.iter().position(|g| g.id == id).unwrap();
+        for (id, volume, price, unit) in [
+            ("linen", 2000, 120, "pound of cloth"),
+            ("hemp", 4000, 30, "pound of fibre"),
+        ] {
+            let good = &rules.goods[index(id)];
+            assert_eq!(
+                (
+                    good.unit.as_str(),
+                    good.weight_g,
+                    good.volume_ml,
+                    good.base_price,
+                    good.pop_limit_milli
+                ),
+                (unit, 450, volume, price, 5000)
+            );
+            assert_eq!(
+                (
+                    good.hunger_centi,
+                    good.necessities_centi,
+                    good.niceties_centi,
+                    good.luxuries_centi
+                ),
+                (0, 0, 0, 0)
+            );
+            assert_eq!(
+                rules.seasons[id].iter().map(|v| u64::from(*v)).sum::<u64>(),
+                1000
+            );
+            for building in &rules.buildings {
+                for method in &building.methods {
+                    let expected = building.id == "farm" && method.id == "mixed_farming";
+                    assert_eq!(
+                        method.annual_output.get(id).copied(),
+                        expected.then_some(10),
+                        "{}.{} {id}",
+                        building.id,
+                        method.id
+                    );
+                    if expected {
+                        assert_eq!(method.score_share_pm[id], 5);
+                        assert_eq!(
+                            method
+                                .score_share_pm
+                                .values()
+                                .map(|v| u64::from(*v))
+                                .sum::<u64>(),
+                            1000
+                        );
+                    }
+                }
+            }
+        }
+        for workers in [10, 5] {
+            let mut state = shipped_production_fixture(&rules);
+            state.places[0].buildings[0].employment[0].workers = workers;
+            state.places[0].pops[0].employment[0].workers = workers;
+            for month in 1..=12 {
+                let ledger = run_monthly_production(
+                    &rules,
+                    &mut state,
+                    Date {
+                        year: 768,
+                        month,
+                        day: 1,
+                        hour: 12,
+                    },
+                )
+                .unwrap();
+                let expected_hemp = if month == 9 { workers } else { 0 };
+                let expected_linen = match (workers, month) {
+                    (10, 10 | 11) => 5,
+                    (5, 10) => 2,
+                    (5, 11) => 3,
+                    _ => 0,
+                };
+                assert_eq!(
+                    ledger.produced[index("hemp")],
+                    expected_hemp,
+                    "month {month}, staffing {workers}"
+                );
+                assert_eq!(
+                    ledger.produced[index("linen")],
+                    expected_linen,
+                    "month {month}, staffing {workers}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn category_labels_do_not_change_production() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/game/economy.toml");
+        let rules = Rules::load(path).unwrap();
+        let mut unlabelled = rules.clone();
+        for good in &mut unlabelled.goods {
+            good.tags.retain(|tag| tag != "fabric");
+            good.supplies.remove("fabric");
+        }
+        let mut left = shipped_production_fixture(&rules);
+        left.places[0].price_drift_carries = vec![0; rules.goods.len()];
+        left.places[0].prices_milli = rules
+            .goods
+            .iter()
+            .map(|good| good.base_price * 1000)
+            .collect();
+        for pop in &mut left.places[0].pops {
+            pop.workers = 100;
+            pop.consumption.pantry_hunger_centi = vec![0; rules.goods.len()];
+            pop.consumption.ticking_carries = vec![0; rules.goods.len()];
+        }
+        let mut right = left.clone();
+        for month in 1..=12 {
+            let date = Date {
+                year: 768,
+                month,
+                day: 1,
+                hour: 12,
+            };
+            for day in 1..=days_in_month(768, month).unwrap() {
+                let date = Date { day, ..date };
+                run_daily_economy(&rules, &mut left, date).unwrap();
+                run_daily_economy(&unlabelled, &mut right, date).unwrap();
+            }
+        }
+        assert_eq!(left, right);
+    }
+
+    #[test]
     fn shipped_goods_have_the_owner_approved_tags() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/game/economy.toml");
         let rules = Rules::load(path).unwrap();
@@ -10608,7 +10868,9 @@ mod tests {
             ("wine", &["food"][..]),
             ("honey", &["food"][..]),
             ("wool", &["clothing"][..]),
-            ("hides", &["clothing"][..]),
+            ("hides", &["clothing", "fabric"][..]),
+            ("linen", &["clothing", "fabric"][..]),
+            ("hemp", &["fabric"][..]),
             ("cattle", &["herd"][..]),
             ("pigs", &["herd"][..]),
             ("sheep", &["herd"][..]),
@@ -12954,6 +13216,7 @@ mod tests {
             Good {
                 id: "grain_2".to_owned(),
                 tags: Vec::new(),
+                supplies: BTreeMap::new(),
                 unit: "unit".to_owned(),
                 weight_g: 1,
                 volume_ml: 1,
@@ -12967,6 +13230,7 @@ mod tests {
             Good {
                 id: "fish".to_owned(),
                 tags: Vec::new(),
+                supplies: BTreeMap::new(),
                 unit: "unit".to_owned(),
                 weight_g: 1,
                 volume_ml: 1,
@@ -13151,6 +13415,7 @@ mod tests {
         rules.goods.push(Good {
             id: "fish".to_owned(),
             tags: Vec::new(),
+            supplies: BTreeMap::new(),
             unit: "pound".to_owned(),
             weight_g: 1,
             volume_ml: 1,
@@ -13362,6 +13627,7 @@ mod tests {
         rules.goods.push(Good {
             id: "fish".to_owned(),
             tags: Vec::new(),
+            supplies: BTreeMap::new(),
             unit: "pound".to_owned(),
             weight_g: 1,
             volume_ml: 1,
@@ -13513,6 +13779,7 @@ mod tests {
         rules.goods.push(Good {
             id: "fish".to_owned(),
             tags: Vec::new(),
+            supplies: BTreeMap::new(),
             unit: "pound".to_owned(),
             weight_g: 1,
             volume_ml: 1,
@@ -13687,6 +13954,7 @@ mod tests {
             rules.goods.push(Good {
                 id: id.to_owned(),
                 tags: Vec::new(),
+                supplies: BTreeMap::new(),
                 unit: "unit".to_owned(),
                 weight_g: 1,
                 volume_ml,
@@ -13970,6 +14238,7 @@ mod tests {
             rules.goods.push(Good {
                 id: id.to_owned(),
                 tags: Vec::new(),
+                supplies: BTreeMap::new(),
                 unit: "unit".to_owned(),
                 weight_g: 1,
                 volume_ml: 1,
@@ -14278,6 +14547,7 @@ mod tests {
         rules.goods.push(Good {
             id: "beef".to_owned(),
             tags: Vec::new(),
+            supplies: BTreeMap::new(),
             unit: "pound".to_owned(),
             weight_g: 1,
             volume_ml: 1,
@@ -14291,6 +14561,7 @@ mod tests {
         rules.goods.push(Good {
             id: "hides".to_owned(),
             tags: Vec::new(),
+            supplies: BTreeMap::new(),
             unit: "hide".to_owned(),
             weight_g: 1,
             volume_ml: 1,
@@ -14839,6 +15110,7 @@ mod tests {
         rules.goods.push(Good {
             id: "herbs".to_owned(),
             tags: Vec::new(),
+            supplies: BTreeMap::new(),
             unit: "pound".to_owned(),
             weight_g: 1,
             volume_ml: 1,
@@ -14905,6 +15177,7 @@ mod tests {
         rules.goods.push(Good {
             id: "herbs".to_owned(),
             tags: Vec::new(),
+            supplies: BTreeMap::new(),
             unit: "pound".to_owned(),
             weight_g: 1,
             volume_ml: 1,
@@ -15109,6 +15382,7 @@ mod tests {
         rules.goods.push(Good {
             id: "herbs".to_owned(),
             tags: Vec::new(),
+            supplies: BTreeMap::new(),
             unit: "pound".to_owned(),
             weight_g: 1,
             volume_ml: 1,
@@ -15196,6 +15470,7 @@ mod tests {
             rules.goods.push(Good {
                 id: id.to_owned(),
                 tags: Vec::new(),
+                supplies: BTreeMap::new(),
                 unit: "unit".to_owned(),
                 weight_g: 1,
                 volume_ml: 1,
@@ -15267,6 +15542,7 @@ mod tests {
             rules.goods.push(Good {
                 id: id.to_owned(),
                 tags: Vec::new(),
+                supplies: BTreeMap::new(),
                 unit: "unit".to_owned(),
                 weight_g: 1,
                 volume_ml: 1,

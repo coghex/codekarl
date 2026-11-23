@@ -436,7 +436,7 @@ mod tests {
             [
                 "building0.holdings=24549",
                 "building1.demesne=65262",
-                "building2.farm=11267",
+                "building2.farm=13727",
                 "building3.storehouse=0",
             ],
             "Armagh day-1 posted-wage golden values"
@@ -448,7 +448,10 @@ mod tests {
                     .is_some_and(|(_, wage)| wage.parse::<u64>().is_ok())
         }));
         assert!(row_fields[17].contains("oats=95000"));
-        assert_eq!(row_fields[18], "apples=80;dairy=2317;ale=359;mead=36");
+        assert_eq!(
+            row_fields[18],
+            "apples=80;dairy=2317;ale=359;mead=36;linen=137"
+        );
         assert!(row_fields[19].contains("pop0:"));
         assert_eq!(row_fields[20], "cattle=644;pigs=430;sheep=362");
         assert_eq!(row_fields[22], "", "losses column");

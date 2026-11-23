@@ -259,7 +259,8 @@ base_price=150
 pop_limit_milli=2000
 [[goods]]
 id="hides"
-tags=["clothing"]
+tags=["clothing", "fabric"]
+supplies={ fabric=8000 }
 unit="hide dried"
 weight_g=10000
 volume_ml=30000
@@ -269,6 +270,30 @@ niceties_centi=0
 luxuries_centi=0
 base_price=200
 pop_limit_milli=1000
+[[goods]]
+id="linen"
+tags=["clothing", "fabric"]
+unit="pound of cloth"
+weight_g=450
+volume_ml=2000
+hunger_centi=0
+necessities_centi=0
+niceties_centi=0
+luxuries_centi=0
+base_price=120
+pop_limit_milli=5000
+[[goods]]
+id="hemp"
+tags=["fabric"]
+unit="pound of fibre"
+weight_g=450
+volume_ml=4000
+hunger_centi=0
+necessities_centi=0
+niceties_centi=0
+luxuries_centi=0
+base_price=30
+pop_limit_milli=5000
 [[goods]]
 id="cattle"
 tags=["herd"]
@@ -364,8 +389,8 @@ recruit_range_m=30000
 id="mixed_farming"
 resource="usable_land"
 suitability="crops"
-annual_output={ oats=300, barley=50, peas_beans=6, vegetables=32, beef=1100, pork=970, mutton=165, dairy=860, wool=10, hides=5 }
-score_share_pm={ oats=700, barley=120, peas_beans=30, vegetables=80, beef=25, pork=20, mutton=5, dairy=10, wool=5, hides=5 }
+annual_output={ oats=300, barley=50, peas_beans=6, vegetables=32, beef=1100, pork=970, mutton=165, dairy=860, wool=10, hides=5, linen=10, hemp=10 }
+score_share_pm={ oats=690, barley=120, peas_beans=30, vegetables=80, beef=25, pork=20, mutton=5, dairy=10, wool=5, hides=5, linen=5, hemp=5 }
 [[buildings.methods]]
 id="coastal_subsistence"
 resource="sea"
@@ -422,6 +447,8 @@ overhead_pm=0
 recruit_range_m=0
 
 [seasons]
+hemp=[0,0,0,0,0,0,0,0,1000,0,0,0]
+linen=[0,0,0,0,0,0,0,0,0,500,500,0]
 grain=[0,0,0,0,0,0,0,0,1000,0,0,0]
 vegetables=[0,0,0,0,0,0,250,250,250,250,0,0]
 apples=[0,0,0,0,0,0,0,250,250,250,250,0]

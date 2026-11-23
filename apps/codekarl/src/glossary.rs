@@ -244,12 +244,12 @@ mod tests {
     }
 
     #[test]
-    fn shipped_glossary_has_172_sorted_entries() {
+    fn shipped_glossary_has_174_sorted_entries() {
         let fonts = fonts();
         let shipped = load(&assets(), &fonts).expect("the shipped glossary");
         let keys = shipped.keys().collect::<Vec<_>>();
-        // The game's 109 terms and the 63 of the character glossary (CK-375).
-        assert_eq!(keys.len(), 109 + 63);
+        // The game's 111 terms and the 63 of the character glossary (CK-375).
+        assert_eq!(keys.len(), 111 + 63);
         assert!(keys.windows(2).all(|pair| pair[0] < pair[1]));
         assert!(!assets().join("ui/glossary-r1.toml").exists());
     }
