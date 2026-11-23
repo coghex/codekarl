@@ -782,6 +782,9 @@ deaths_d = dependents × dep_death_base[type] × g_hunger(N) × g_comfort(W, L) 
      - production by the season tables (§3.19);
      - herds (§3.14);
      - payday (§3.6), with alms and the storehouse;
+
+  2a. **the exchange** (CK-391, §3.16): each place's pops swap goods with one another, after the price step and any payday and before
+     drawing, so what a pop swaps for today it eats today;
   3. drawing (§3.6);
   4. eating and needs (§3.7);
   5. **on the 1st:**
@@ -1153,8 +1156,8 @@ pops move, the herd stays. These are counts, not individual animals, so livestoc
 - **Sell orders (r17, C6: one basis with buying):**
   - **a pop (Firm, owner 2026-11-09, `owner-direction-market-notes-r1.md`):** **per food**, its holding above that good's target
     `T_g = max(food target, comfort target)`, the same target its buy order uses. So a pop never buys and sells one good on the same day,
-    and a pop short of food overall still offers a food it holds more of than its diet wants. Goods with no hunger value are not sold by
-    pops. (r17's "above a 240-day total, in proportion" is replaced.);
+    and a pop short of food overall still offers a food it holds more of than its diet wants. **CK-391:** a pop's holding above its target is offered for every good, with a hunger value or without (wool, hides, herbs and
+    beeswax included), because the exchange below swaps the same spare. (r17's "above a 240-day total, in proportion" is replaced.);
   - **a building:** its stockpile plus its communal account, above its owner pops' 60-day draw. **The draw covers each owner pop's whole
     size** (Firm, owner 2026-11-09), apportioned by largest remainder across the buildings where it holds owner positions, by those
     positions.
@@ -1176,6 +1179,27 @@ pops move, the herd stays. These are counts, not individual animals, so livestoc
     and a place has none after a start or a load until its next daily price step;
   - **no promise across builds:** like any change in `crates/economy/src`, CK-272 changed the build id, so a save written before it
     is refused (`SaveError::BuildMismatch`).
+
+**The daily swap between two pops (CK-391, trade slice 3a; design-trade-r5 T31, T33 to T35, T37, T43).** Once a day at noon, for each
+place, pops swap goods with one another: a pop short of a good swaps with a pop in the opposite position, one good each way, in whole
+units, in near-equal value at the place's prices. Nothing crosses from one place to another, and nothing new is saved.
+- **Spare and want.** A pop's *spare* of a good is its holding (store plus storehouse account) above its target, the one its orders use;
+  its *want* is the target less the holding. Every good can be spare.
+- **Market capacity (owner, r62).** Each level of a building type gives a volume a day
+  (`market_capacity_ml_per_level`: farm 50 litres, holdings 100, demesne 100, storehouse none; placeholders). A building's capacity is
+  split among the pops with owner positions in it, by those positions, by largest remainder in the pops' order; a pop's capacity is the
+  sum over its buildings. It is worked out afresh each day, and a pop with none starts no swap.
+- **One swap.** The *starter* gives whole units of one good and receives whole units of another from the *partner*. A pair is allowed
+  only if the starter gives at least what it receives in value; the difference is at most `swap_loss_limit_pm` (100‰) of what it gives
+  (owner, r78, r89); neither pop gives more than its spare or receives more than its want; both pops can take in what they receive,
+  tested together on a staged copy after both loads have left (the storehouse is one store with one volume for each kind, shared by
+  every account); and both loads fit in the starter's capacity left. Of the allowed pairs the swap receives the most units, then gives
+  the fewest. It moves both loads or neither and spends only the starter's capacity (owner, r63, r80).
+- **The exchange.** Pops take one turn each as starter, in the place's order. In its turn a starter works through its wants, goods with
+  a hunger value first and then the least bulky for its worth, and for each want tries the other pops in order and, with each, the goods
+  that pop wants and the starter has to spare. A starter that holds less than 60 days of food when the exchange begins seeks only food
+  that day; as a partner it trades as any pop does. Nothing keeps a good for a pop: a short good goes to whichever swap comes first
+  (slice 3b adds shares and building stock).
 
 **Prices (saved, per place and good; r14 representation):**
 - **Representation:** a price is a `u64` in **thousandths of a value unit** (`price_m`), always at least 1.
