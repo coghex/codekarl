@@ -273,6 +273,7 @@ The numbers are placeholders for tuning.
 
 | Good | Unit | Hunger | Necessities | Niceties | Luxuries | From |
 |---|---|---|---|---|---|---|
+| hardwood, peat | load | – | | | | farm wood focus or turf cutting |
 | oats | bushel | high | ✓ | | | farm, holdings |
 | barley | bushel | high | ✓ | | | farm, holdings |
 | cattle, pigs, sheep (live) | head | – | | | | the herds (§3.14); not eaten except by emergency butchering |
@@ -370,12 +371,13 @@ monastery's holdings, both, or neither. The kind-and-size tables of §3.12–3.1
 
 **The subsistence farm.**
 - **At most one per place,** as map-design §5.5 has it: all of a location's labourers work one farm.
-- **Two methods, chosen per level by value (Firm, r17):** early-medieval mixed farming, and **coastal subsistence** (fish and
+- **Four methods, chosen per level by value (Firm, r17):** mixed farming, wood focus, turf cutting, and **coastal subsistence** (fish and
   seabirds, worked by peasants). Coastal levels draw on the same fish pool as the holdings' fishing (below). Mixed farming's outputs per
   level are data:
   - oats and barley at harvest;
   - cattle, dairy, pigs and sheep through the year;
   - small amounts of peas and beans, vegetables, wool and hides.
+- **Wood and turf:** wood focus needs four forest cells per level and makes 3,000 loads of hardwood yearly; turf cutting needs two bog cells and makes 4,000 loads of peat. They retain herds, grow no crops, and use terrain cells independently of field room.
 - **Ownership:** owned by its workers, who keep all of its output (`docs/game/crown-military-church.md`). Its owners and workers are the
   peasant pops working it. Several peasant pops of different cultures and religions can work one farm (vision, Firm).
 
@@ -913,6 +915,8 @@ No random draw is used (map-design §5.1). Every number goes into the scenario's
 
 | Good | Unit | Weight | Volume | Hunger | Necessities | Niceties | Luxuries | Price |
 |---|---|---|---|---|---|---|---|---|
+| hardwood | load | 50 kg | 100 L | – | – | – | – | 10 |
+| peat | load | 50 kg | 150 L | – | – | – | – | 6 |
 | oats | bushel | 14.5 kg | 35 L | 18 | 18 | – | – | 100 |
 | barley | bushel | 21.8 kg | 35 L | 28 | 28 | – | – | 120 |
 | peas and beans | bushel | 27 kg | 35 L | 46 | 46 | – | – | 120 |
@@ -1102,6 +1106,7 @@ pops move, the herd stays. These are counts, not individual animals, so livestoc
 
 - **Every good has a unit, a weight and a cargo volume** (§3.12), stored as integers in grams and millilitres. Stores count units.
   Hunger and tier values are the food value of one unit; they are not the unit of storage.
+- **Fuel stacks outside:** hardwood and peat use no indoor pop or building store volume, but their per-person limits (30 and 40 loads) still apply. Their cargo volumes remain 100 and 150 L for transport. Hardwood supplies wood and fuel; peat supplies 0.7 fuel per load.
 - **Capacities are volumes:**
   - a pop's store, 720 L per person;
   - a farm's store, 100 L per employee;

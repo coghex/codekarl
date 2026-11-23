@@ -166,6 +166,12 @@ author's record, moved here from the design round's notes; the files, hashes and
 - **Who and how:** ck-worker-1 (Codex), 2026-11-23, drew both from plain pixel shapes using the existing goods palette. No other game's or icon set's artwork was viewed, copied or traced.
 - **Review:** the owner judges the appearance in the running game. The generator's `--check` verifies the images.
 
+## Hardwood and peat goods icons (CK-397)
+
+- **What:** 9 × 9 hardwood logs and peat bricks in `assets/ui/goods/make_goods.py` and generated PNGs.
+- **Who and how:** ck-worker-1 (Codex), 2026-11-23, drew the icons from plain pixel shapes using the existing palette. No other game's or icon set's artwork was viewed, copied or traced.
+- **Review:** the owner judges their appearance in the running game; the generator's `--check` verifies the images.
+
 ## Elsewhere
 
 - **The goods icons** (CK-267): `.pipeline/coordination/ui-polish-design/goods-icons-provenance-r1.md`; `docs/ui-design.md` describes
