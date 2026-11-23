@@ -1432,6 +1432,7 @@ pub(crate) fn snapshot(hour: u8, speed: u8, paused: Option<PauseReason>) -> SimS
         speed: ck_sim::Speed::new(speed).expect("a speed"),
         paused,
         unsaved: false,
+        layers: ck_sim::MapLayers::default(),
         economy_revision: 0,
         economy: None,
         world: 0,
@@ -1770,7 +1771,7 @@ fn the_time_bar_creates_its_panel_first_then_touches_only_what_changed() {
     let glyphs = text.chars().filter(|c| *c != ' ').count();
     assert_eq!(
         first.iter().filter(|e| e.starts_with("create ")).count(),
-        glyphs + 3 * 11 + 10 * 11 + 7 + 1 + 6 + 10 + 7 + 1 + 1,
+        glyphs + 3 * 11 + 11 * 11 + 7 + 1 + 6 + 10 + 7 + 1 + 2,
         "{first:?}"
     );
     assert!(

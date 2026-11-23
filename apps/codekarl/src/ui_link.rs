@@ -1536,6 +1536,9 @@ impl UiLink for CodekarlUi {
             || matches!(*owner, GestureOwner::Ui(_))
             || latest_over.is_some();
         if let Some(map) = &self.map {
+            if let Some(snapshot) = self.sim.as_ref().and_then(|sim| sim.slot.latest()) {
+                crate::map_app::lock(map).set_layers(snapshot.layers)?;
+            }
             let mut map_tick = tick.clone();
             map_tick.input = input.clone();
             if let Some(filtered) = &game_input {
@@ -4447,10 +4450,60 @@ mod tests {
             speed: ck_sim::Speed::new(speed).expect("a speed"),
             paused,
             unsaved: false,
+            layers: ck_sim::MapLayers::default(),
             economy_revision: 0,
             economy: None,
             world: 0,
         }
+    }
+
+    #[test]
+    fn ordered_layer_snapshots_reach_the_map_on_the_next_input_pass() {
+        let harness = Harness::new(
+            "frame.on_update(function() end)",
+            Extras {
+                extensions: vec![frame_extension()],
+                ..Extras::default()
+            },
+        );
+        let (controller, sink) = crate::map_app::tests::river_link_fixture();
+        let map = crate::map_app::shared(controller);
+        let initial_camera = crate::map_app::lock(&map).camera().unwrap();
+        let slot = SimSlot::new(Arc::new(|| {}));
+        let (sender, _receiver) = std::sync::mpsc::channel();
+        let mut link =
+            CodekarlUi::with_map(harness.ui.slot.clone(), Arc::clone(&map)).with_sim(SimLink {
+                views: Arc::default(),
+                controls: crate::game::controls::SimControls::new(sender),
+                slot: Arc::clone(&slot),
+                time_registered: Arc::new(AtomicBool::new(false)),
+                hover_registered: Arc::new(AtomicBool::new(false)),
+                select_registered: Arc::new(AtomicBool::new(false)),
+            });
+        let mut tick = known_tick();
+        tick.metrics.points = (400, 320);
+        tick.metrics.pixels = PixelSize {
+            width: 800,
+            height: 640,
+        };
+        tick.input.actions.clear();
+        tick.input.transitions.clear();
+        tick.input.overflow = false;
+        let mut changed = snapshot_at(0, 1, Some(PauseReason::Load));
+        changed.layers.rivers = true;
+        changed.unsaved = true;
+        slot.publish(changed.clone());
+        link.input(&tick).unwrap();
+        assert!(!sink.latest().map.unwrap().camera.rivers().is_empty());
+        assert_eq!(crate::map_app::lock(&map).camera().unwrap(), initial_camera);
+        let mut loaded = changed;
+        loaded.layers.rivers = false;
+        loaded.unsaved = false;
+        loaded.world += 1;
+        slot.publish(loaded);
+        link.input(&tick).unwrap();
+        assert!(sink.latest().map.unwrap().camera.rivers().is_empty());
+        assert_eq!(crate::map_app::lock(&map).camera().unwrap(), initial_camera);
     }
 
     /// A UI VM running `script` with `game.on_time` and a `window.record` that notes `hour speed paused`, over a link with a

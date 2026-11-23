@@ -442,6 +442,7 @@ local function close_picker(bar)
   bar.picker = nil
   if active == bar then active = nil end
   picker:destroy()
+  if bar.on_close ~= nil then bar.on_close() end
 end
 
 local function open_picker(bar, kind)
@@ -690,6 +691,71 @@ function Bar:destroy()
   if not self.window.closed then self.window:detach(self) end
 end
 
+-- A two-row checkbox picker for the map bar. It shares the picker slot and
+-- the same row, checkbox, hover and pointer behaviour as the list filter.
+function listbar.layers(spec)
+  local bar = {picker = nil, on_close = spec.on_close, opener = spec.opener}
+  function bar:toggle()
+    if self.picker ~= nil then close_picker(self); return end
+    if active ~= nil then close_picker(active) end
+    local picker = {kind = "layers", closed = false, owned = {}, rows = {}, view_width = seen_width, view_height = seen_height}
+    self.picker, active = picker, self
+    picker.group = ui.create_group()
+    picker.rows_group = ui.create_group()
+    local colours = theme.kind("places_bar")
+    local width = (math.max(width_of("rivers"), width_of("roads")) + 20) * P
+    local height = 2 * ROW + 6 * P
+    local x, y = spec.position(width, height)
+    picker.panel = panel.new{x = x, y = y, width = width, height = height, kind = "places_bar", cut = 3, group = picker.group}
+    picker.panel_key = ui.key("layers_panel")
+    picker.owned[picker.panel_key] = true
+    render.set_hit(picker.panel_key, {{x = x, y = y, width = width, height = height}}, picker.group)
+    pointer.register(picker.panel_key, {on_event = function() end, on_hover = function() end, on_overflow = function() end})
+    render.set_group_offset(picker.rows_group, x + 4 * P, y + 3 * P)
+    picker.hover_quad = render.create_quad{texture = ui.texture(WHITE), x = ui.HIDDEN, y = ui.HIDDEN, width = width - 2 * P,
+      height = ROW, group = picker.rows_group, tint = colours.row_hover}
+    function picker:scroll() end
+    function picker:show_hover()
+      if self.hover == nil then render.set_position(self.hover_quad, ui.HIDDEN, ui.HIDDEN)
+      else render.set_position(self.hover_quad, -3 * P, (self.hover - 1) * ROW) end
+    end
+    function picker:owns(key) return self.owned[key] == true end
+    function picker:refresh()
+      for _, row in ipairs(self.rows) do
+        local ticked = spec.value(row.name)
+        if ticked and row.tick == nil then row.tick = tick_quad(self.rows_group, row.y, colours.text)
+        elseif not ticked and row.tick ~= nil then render.destroy_quad(row.tick); row.tick = nil end
+      end
+    end
+    function picker:destroy()
+      if self.closed then return end
+      self.closed = true
+      for key in pairs(self.owned) do retired[key] = true; pointer.unregister(key) end
+      render.set_hit(self.panel_key, nil, self.group)
+      for _, row in ipairs(self.rows) do render.set_hit(row.key, nil, self.rows_group) end
+      self.panel:destroy()
+      render.destroy_group(self.rows_group)
+      render.destroy_group(self.group)
+    end
+    for index, name in ipairs({"rivers", "roads"}) do
+      local top = (index - 1) * ROW
+      local key = ui.key("layers_box")
+      picker.owned[key] = true
+      local row = {name = name, key = key, y = top}
+      picker.rows[index] = row
+      row.box = checkbox(picker.rows_group, top, colours.text)
+      row.line = text.line(12 * P, top + P, picker.rows_group, colours.text)
+      text.set(row.line, name)
+      render.set_hit(key, {{x = -3 * P, y = top, width = width - 2 * P, height = ROW}}, picker.rows_group)
+      pointer.register(key, row_widget(picker, key, index, function() spec.change(name, not spec.value(name)); picker:refresh() end))
+    end
+    picker:refresh()
+    if spec.on_open ~= nil then spec.on_open() end
+  end
+  function bar:refresh() if self.picker ~= nil then self.picker:refresh() end end
+  return bar
+end
+
 -- ---------------------------------------------------------------------------------------------------------------------------------
 -- What closes a picker
 -- ---------------------------------------------------------------------------------------------------------------------------------
@@ -709,7 +775,7 @@ function listbar.update(update)
   local bar = active
   if bar ~= nil then
     local picker = bar.picker
-    local opener = (picker.kind == "filter" and bar.filter_button or bar.sort_button).key
+    local opener = picker.kind == "layers" and bar.opener or (picker.kind == "filter" and bar.filter_button or bar.sort_button).key
     local resized = (picker.view_width ~= nil and width ~= nil and width ~= picker.view_width)
       or (picker.view_height ~= nil and height ~= nil and height ~= picker.view_height)
     local pointer_state = update.pointer

@@ -38,6 +38,19 @@ ICONS = {
     ),
     "pause": (7, ("##.##.",) * 7),
     "play": (7, ("#.....", "##....", "###...", "####..", "###...", "##....", "#.....")),
+    # Original map layers: two flat bars and an upward chevron, drawn from plain shapes.
+    "layers": (
+        9,
+        (
+            "...#....",
+            "..#.#...",
+            ".#...#..",
+            "........",
+            "#######.",
+            "........",
+            "#######.",
+        ),
+    ),
     # The map modes' buttons (milestone 9, slice 8): a barrel of stores, and three bars that rise (the yield).
     "stockpile": (
         9,

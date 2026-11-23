@@ -76,6 +76,8 @@ if game ~= nil then
   local modes_group = nil
   local mode_buttons = {}
   local shown_mode = "off"
+  local layers_button, layers_picker
+  local layers = {rivers = false, roads = false}
   local speed_boxes = {}
   local time_controls = {}
   local shown_speed = nil
@@ -202,7 +204,7 @@ if game ~= nil then
   -- from black to white by its height. The button of the mode that shows is selected; pressing it turns the mode off, pressing another
   -- changes the mode.
   local MODE_BUTTON_WIDTH = 13 -- UI pixels: the 9-pixel icon and the button's padding
-  local MODES_WIDTH = 5 + MODE_BUTTON_WIDTH + 3 + MODE_BUTTON_WIDTH + 3 + MODE_BUTTON_WIDTH + 3 + MODE_BUTTON_WIDTH + 5
+  local MODES_WIDTH = 5 + 5 * MODE_BUTTON_WIDTH + 4 * 3 + 5
 
   -- Centred at the bottom of the window, its bottom edge a margin above the window's: it does not depend on any other panel.
   local function modes_origin()
@@ -214,10 +216,11 @@ if game ~= nil then
     local x, y = modes_origin()
     modes_panel:set_rect(x, y, MODES_WIDTH * P, 19 * P)
     render.set_hit("modes_bar", {{x = x, y = y, width = MODES_WIDTH * P, height = 19 * P}}, modes_group)
-    mode_buttons.stockpile:move(x + 5 * P, y + 2 * P)
-    mode_buttons.yield:move(x + (5 + MODE_BUTTON_WIDTH + 3) * P, y + 2 * P)
-    mode_buttons.elevation:move(x + (5 + 2 * (MODE_BUTTON_WIDTH + 3)) * P, y + 2 * P)
-    mode_buttons.fertility:move(x + (5 + 3 * (MODE_BUTTON_WIDTH + 3)) * P, y + 2 * P)
+    layers_button:move(x + 5 * P, y + 2 * P)
+    mode_buttons.stockpile:move(x + (5 + MODE_BUTTON_WIDTH + 3) * P, y + 2 * P)
+    mode_buttons.yield:move(x + (5 + 2 * (MODE_BUTTON_WIDTH + 3)) * P, y + 2 * P)
+    mode_buttons.elevation:move(x + (5 + 3 * (MODE_BUTTON_WIDTH + 3)) * P, y + 2 * P)
+    mode_buttons.fertility:move(x + (5 + 4 * (MODE_BUTTON_WIDTH + 3)) * P, y + 2 * P)
   end
 
   local function select_mode(name)
@@ -241,22 +244,37 @@ if game ~= nil then
     }
     -- Publish the bar capture before the buttons' narrower regions.
     render.set_hit("modes_bar", {{x = x, y = y, width = MODES_WIDTH * P, height = 19 * P}}, modes_group)
+    layers_button = button.new{
+      x = x + 5 * P, y = y + 2 * P, icons = {"layers"}, icon = "layers", tooltip = "map layers", kind = "places_bar", group = modes_group,
+      on_click = function() layers_picker:toggle() end,
+    }
+    layers_picker = listbar.layers{
+      opener = layers_button.key,
+      position = function(width, height)
+        local left, top = modes_origin()
+        return left, top - height - P
+      end,
+      value = function(name) return layers[name] end,
+      change = function(name, shown) layers[name] = shown; game.set_map_layer(name, shown) end,
+      on_open = function() layers_button:set_selected(true) end,
+      on_close = function() layers_button:set_selected(false) end,
+    }
     mode_buttons.stockpile = button.new{
-      x = x + 5 * P, y = y + 2 * P, icons = {"stockpile"}, icon = "stockpile", tooltip = "stockpile map", kind = "places_bar", group = modes_group,
+      x = x + (5 + MODE_BUTTON_WIDTH + 3) * P, y = y + 2 * P, icons = {"stockpile"}, icon = "stockpile", tooltip = "stockpile map", kind = "places_bar", group = modes_group,
       on_click = function() select_mode("stockpile") end,
     }
     mode_buttons.yield = button.new{
-      x = x + (5 + MODE_BUTTON_WIDTH + 3) * P, y = y + 2 * P, icons = {"yield"}, icon = "yield", tooltip = "yield map", kind = "places_bar",
+      x = x + (5 + 2 * (MODE_BUTTON_WIDTH + 3)) * P, y = y + 2 * P, icons = {"yield"}, icon = "yield", tooltip = "yield map", kind = "places_bar",
       group = modes_group,
       on_click = function() select_mode("yield") end,
     }
     mode_buttons.elevation = button.new{
-      x = x + (5 + 2 * (MODE_BUTTON_WIDTH + 3)) * P, y = y + 2 * P, icons = {"elevation"}, icon = "elevation", tooltip = "elevation map", kind = "places_bar",
+      x = x + (5 + 3 * (MODE_BUTTON_WIDTH + 3)) * P, y = y + 2 * P, icons = {"elevation"}, icon = "elevation", tooltip = "elevation map", kind = "places_bar",
       group = modes_group,
       on_click = function() select_mode("elevation") end,
     }
     mode_buttons.fertility = button.new{
-      x = x + (5 + 3 * (MODE_BUTTON_WIDTH + 3)) * P, y = y + 2 * P, icons = {"fertility"}, icon = "fertility", tooltip = "fertility", kind = "places_bar",
+      x = x + (5 + 4 * (MODE_BUTTON_WIDTH + 3)) * P, y = y + 2 * P, icons = {"fertility"}, icon = "fertility", tooltip = "fertility", kind = "places_bar",
       group = modes_group, on_click = function() select_mode("fertility") end,
     }
     tooltip.attach(mode_buttons.stockpile.key, function() return tooltip.explanation("stockpile_map") end)
@@ -395,6 +413,8 @@ if game ~= nil then
   }
 
   game.on_time(function(time)
+    layers.rivers, layers.roads = not not time.rivers, not not time.roads
+    if layers_picker ~= nil then layers_picker:refresh() end
     require("lib.save_screen").set_time(time)
     current_world = time.world or 0
     find_popup.set_revision(time.economy_revision, current_world)

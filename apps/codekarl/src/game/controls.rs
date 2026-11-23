@@ -217,6 +217,11 @@ impl SimControls {
         let _ = self.sender.send(Message::Save(call, reply));
     }
 
+    /// Send a layer update on the ordered simulation route.
+    pub(crate) fn set_map_layer(&self, layer: super::slot::MapLayer, shown: bool) {
+        let _ = self.sender.send(Message::SetMapLayer(layer, shown));
+    }
+
     /// Marks a player choice on the core's ordered message route, without waiting for it.
     pub(crate) fn mark_unsaved(&self) {
         let _ = self.sender.send(Message::MarkUnsaved);

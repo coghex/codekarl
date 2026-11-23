@@ -49,6 +49,7 @@ pub(crate) struct Prepared {
     pub(crate) scenario: ck_map::Scenario,
     pub(super) identity: Identity,
     pub(super) simulation: Simulation<GameState, GameCommand>,
+    pub(super) layers: ck_sim::MapLayers,
     pub(super) gameplay: Option<GameplayWiring>,
     /// The shared economy rules the view is derived with; `None` for assets that predate M9.
     economy_rules: Option<Arc<Rules>>,
@@ -197,7 +198,7 @@ pub(crate) fn prepare(
         )
     };
     let storage_parent = request.game.saves.parent().unwrap_or(Path::new("."));
-    let (simulation, storage) = if let Some(path) = request.load {
+    let (simulation, storage, layers) = if let Some(path) = request.load {
         let mut file = std::fs::File::open(path)
             .map_err(|error| format!("cannot read save {}: {error}", path.display()))?;
         let staging = super::character_storage::Storage::fresh_path(storage_parent)
@@ -212,11 +213,12 @@ pub(crate) fn prepare(
         let storage = super::character_storage::Storage::at(staging, None, None, None);
         super::character_storage::Storage::validate(&storage.path, &save.state)
             .map_err(|e| e.to_string())?;
+        let layers = save.meta.layers;
         let simulation = Simulation::from_save(save, scheduler(), apply)
             .map_err(|error| format!("save {}: {error}", path.display()))?;
         let date = simulation.date().unwrap_or(start);
         log(Level::Info, format!("loaded {} at {date}", path.display()));
-        (simulation, storage)
+        (simulation, storage, layers)
     } else {
         let seed = match request.seed {
             Some(seed) => seed,
@@ -253,6 +255,7 @@ pub(crate) fn prepare(
                 apply,
             ),
             storage,
+            ck_sim::MapLayers::default(),
         )
     };
     let mut storage = storage;
@@ -268,6 +271,7 @@ pub(crate) fn prepare(
         scenario,
         identity,
         simulation,
+        layers,
         gameplay,
         economy_rules,
         houses,
@@ -399,9 +403,10 @@ pub(super) fn test_core(
         identity,
         simulation,
         storage,
+        layers,
         ..
     } = prepared;
-    Core::new_with_views(
+    Core::new_with_views_and_layers(
         simulation,
         identity,
         identity_saves,
@@ -412,6 +417,7 @@ pub(super) fn test_core(
         },
         outputs,
         Some(view_builder(wiring)),
+        layers,
     )
     .with_character_storage(storage, super::character_storage::Storage::validate)
 }
@@ -437,6 +443,7 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
     let Prepared {
         identity,
         simulation,
+        layers,
         gameplay,
         economy_rules,
         shelter_by_place,
@@ -488,7 +495,7 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
         let scheduler_io = Arc::clone(&characters_io);
         let reset_runtime = runtime.clone();
         let build = move || {
-            Core::new_with_views(
+            Core::new_with_views_and_layers(
                 simulation,
                 identity,
                 saves,
@@ -518,6 +525,7 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
                     fail: Box::new(move |message| failing.fail(message)),
                 },
                 Some(view_builder(wiring)),
+                layers,
             )
             .with_character_storage(storage, super::character_storage::Storage::validate)
             .with_terminal_probe(move || {

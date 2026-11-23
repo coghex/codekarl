@@ -107,6 +107,7 @@ pub(crate) struct MapController<R: RiverViewSelector = PreparedRivers> {
     bridge: Arc<SceneBridge>,
     crop: Crop,
     rivers: R,
+    layers: ck_sim::MapLayers,
     locations: PreparedLocations,
     markers: PreparedMarkers,
     location_names: Vec<(String, String)>,
@@ -192,6 +193,17 @@ impl MapController<PreparedRivers> {
 }
 
 impl<R: RiverViewSelector> MapController<R> {
+    /// Republish the current camera as soon as the ordered layer state changes.
+    pub(crate) fn set_layers(&mut self, layers: ck_sim::MapLayers) -> Result<(), String> {
+        if self.layers != layers {
+            self.layers = layers;
+            if let Some(camera) = self.camera {
+                self.publish_for_generation(camera, self.bridge.metrics_generation())?;
+            }
+        }
+        Ok(())
+    }
+
     /// Changes all three input rates together; the next tick observes the new values.
     pub(crate) fn set_controls(
         &mut self,
@@ -318,6 +330,7 @@ impl<R: RiverViewSelector> MapController<R> {
             scroll_remainder: [0; 2],
             scroll_direction: [0; 2],
             camera: None,
+            layers: ck_sim::MapLayers::default(),
             published_generation: 0,
             zoom_in_elapsed: Duration::ZERO,
             zoom_out_elapsed: Duration::ZERO,
@@ -666,16 +679,22 @@ impl<R: RiverViewSelector> MapController<R> {
             .into_iter()
             .map(|(xy, index)| [xy[0], xy[1], u32::from(index)])
             .collect::<Vec<_>>();
-        let mut overlays = self
-            .rivers
-            .select_map_view(
-                camera.step,
-                top_left,
-                camera.view,
-                &locations,
-                self.location_palette_len,
-            )
-            .ok_or_else(|| format!("map river coverage is invalid for step {}", camera.step))?;
+        let mut overlays = if self.layers.rivers {
+            self.rivers
+                .select_map_view(
+                    camera.step,
+                    top_left,
+                    camera.view,
+                    &locations,
+                    self.location_palette_len,
+                )
+                .ok_or_else(|| format!("map river coverage is invalid for step {}", camera.step))?
+        } else {
+            RiverNetworkView {
+                rivers: Vec::new(),
+                indexed: locations.clone(),
+            }
+        };
         overlays.lift_markers(&locations, &self.location_kinds);
         MapCamera::new_with_locations(
             camera.step,
@@ -949,7 +968,7 @@ pub(crate) mod tests {
     use ck_window::{InputSnapshot, PixelSize, WindowMetrics};
 
     #[derive(Default)]
-    struct CapturingSink(Mutex<Option<ck_render_2d::Snapshot>>);
+    pub(crate) struct CapturingSink(Mutex<Option<ck_render_2d::Snapshot>>);
 
     impl ck_render_2d::QuadSink for CapturingSink {
         fn publish(&self, snapshot: ck_render_2d::Snapshot) -> Option<ck_render_2d::Snapshot> {
@@ -961,7 +980,7 @@ pub(crate) mod tests {
     }
 
     impl CapturingSink {
-        fn latest(&self) -> ck_render_2d::Snapshot {
+        pub(crate) fn latest(&self) -> ck_render_2d::Snapshot {
             self.0
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
@@ -1432,6 +1451,7 @@ pub(crate) mod tests {
             CountingRivers::new(loaded.rivers.clone()),
         )
         .expect("map lane accepts fixture");
+        controller.layers.rivers = true;
         let desc = WindowDesc {
             title: "river controller test".to_owned(),
             width: 400,
@@ -1452,6 +1472,39 @@ pub(crate) mod tests {
             )
             .expect("test sink attaches");
         (controller, bridge, sink)
+    }
+
+    /// A real river controller and its published frames for the UI link's ordered snapshot test.
+    pub(crate) fn river_link_fixture() -> (MapController, Arc<CapturingSink>) {
+        let center = FixedPoint {
+            x: i32::try_from(23_883 * ck_map::FIXED_PER_CELL).unwrap(),
+            y: i32::try_from(23_883 * ck_map::FIXED_PER_CELL).unwrap(),
+        };
+        let loaded = loaded_map_with_rivers(vec![ck_map::RiverLine {
+            points: vec![center],
+        }]);
+        let bridge = SceneBridge::new(ck_render_2d::Filter::Nearest);
+        let mut controller = MapController::new(&loaded, Arc::clone(&bridge), 1, 20, 24).unwrap();
+        let desc = WindowDesc {
+            title: "link layers".into(),
+            width: 400,
+            height: 320,
+            clear: [0.0; 3],
+            ..WindowDesc::default()
+        };
+        controller.open(&desc).unwrap();
+        let sink = Arc::new(CapturingSink::default());
+        bridge
+            .attach(
+                &desc,
+                PixelSize {
+                    width: 800,
+                    height: 640,
+                },
+                sink.clone(),
+            )
+            .unwrap();
+        (controller, sink)
     }
 
     fn expected_center_river(camera: Camera) -> [u32; 2] {
@@ -1623,6 +1676,13 @@ pub(crate) mod tests {
                 ..WindowDesc::default()
             })
             .expect("initial format-2 camera is valid");
+        assert_eq!(controller.layers, ck_sim::MapLayers::default());
+        controller
+            .set_layers(ck_sim::MapLayers {
+                rivers: true,
+                roads: false,
+            })
+            .unwrap();
         let check_camera = |controller: &mut MapController, camera: Camera| {
             let snapshot = controller
                 .snapshot(camera, controller.bridge.metrics_generation())
@@ -1705,6 +1765,72 @@ pub(crate) mod tests {
             error.contains("overlay palette has more than 256 colours"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn hidden_network_matches_locations_alone_at_multiple_cameras_and_roads_change_nothing() {
+        let scenario = ck_map::fixture::location_scenario();
+        let bridge = SceneBridge::new(ck_render_2d::Filter::Nearest);
+        let mut controller = MapController::from_scenario(&scenario, bridge, 1, 20, 24).unwrap();
+        controller
+            .open(&WindowDesc {
+                title: "layers".into(),
+                width: 400,
+                height: 320,
+                clear: [0.0; 3],
+                ..WindowDesc::default()
+            })
+            .unwrap();
+        for step in [5, 14, 15, 45] {
+            let camera = at_step(&mut controller, step);
+            let expected = PreparedLocations::new(
+                scenario.locations.clone(),
+                scenario.location_kinds.clone(),
+                scenario.map.data.crop,
+            )
+            .select_view(camera.step, camera.top_left(), camera.view)
+            .unwrap()
+            .into_iter()
+            .map(|(xy, index)| [xy[0], xy[1], u32::from(index)])
+            .collect::<Vec<_>>();
+            let mut previous = None;
+            for rivers in [false, true] {
+                for roads in [false, true] {
+                    controller.layers = ck_sim::MapLayers { rivers, roads };
+                    let snapshot = controller
+                        .snapshot(camera, controller.bridge.metrics_generation())
+                        .unwrap();
+                    if !rivers {
+                        assert!(snapshot.rivers().is_empty());
+                        assert_eq!(snapshot.locations().as_ref(), expected.as_slice());
+                    }
+                    let image = (snapshot.rivers().to_vec(), snapshot.locations().to_vec());
+                    if roads {
+                        assert_eq!(previous.take().unwrap(), image);
+                    } else {
+                        previous = Some(image);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn layer_change_republishes_the_same_camera_without_rivers() {
+        let (mut controller, _bridge, sink) = river_test_controller();
+        let before = controller.camera().unwrap();
+        assert!(!sink.latest().map.unwrap().camera.rivers().is_empty());
+        controller.set_layers(ck_sim::MapLayers::default()).unwrap();
+        let hidden = sink.latest().map.unwrap();
+        assert!(hidden.camera.rivers().is_empty());
+        assert_eq!(controller.camera().unwrap(), before);
+        controller
+            .set_layers(ck_sim::MapLayers {
+                rivers: true,
+                roads: true,
+            })
+            .unwrap();
+        assert!(!sink.latest().map.unwrap().camera.rivers().is_empty());
     }
 
     #[test]

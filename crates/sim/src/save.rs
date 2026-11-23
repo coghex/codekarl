@@ -32,6 +32,16 @@ const JOURNAL: [u8; 4] = *b"JRNL";
 const END: [u8; 4] = *b"END\0";
 const SECTION_ORDER: [[u8; 4]; 4] = [CLOCK, STATE, PENDING, JOURNAL];
 
+/// View layers saved with the game, outside its simulation digest.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MapLayers {
+    /// Whether rivers are drawn.
+    pub rivers: bool,
+    /// Whether roads are drawn.
+    pub roads: bool,
+}
+
 /// The header of a save: what identifies the game it belongs to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SaveMeta {
@@ -55,6 +65,8 @@ pub struct SaveMeta {
     pub start: Date,
     /// The master seed.
     pub seed: u64,
+    /// Saved view layers.
+    pub layers: MapLayers,
 }
 
 /// What a loader insists on: the build and the content hashes of what it has loaded.
@@ -295,6 +307,7 @@ struct HeaderToml {
     tick: i64,
     seed: String,
     start: StartToml,
+    layers: MapLayers,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -481,6 +494,7 @@ fn game_date(tick: u64) -> Result<String, SaveError> {
 fn write_header(meta: &SaveMeta, tick: u64) -> Result<String, SaveError> {
     check_meta(meta, tick)?;
     let header = HeaderToml {
+        layers: meta.layers,
         format: FORMAT,
         name: meta.name.clone(),
         written: meta.written.clone(),
@@ -516,6 +530,7 @@ fn read_header(bytes: &[u8]) -> Result<(SaveMeta, u64), SaveError> {
     let header: HeaderToml = toml::from_str(text).map_err(malformed)?;
     let tick = u64::try_from(header.tick).map_err(malformed)?;
     let meta = SaveMeta {
+        layers: header.layers,
         name: header.name,
         written: header.written,
         build: header.build,

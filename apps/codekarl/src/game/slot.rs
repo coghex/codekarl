@@ -17,6 +17,15 @@ pub(crate) enum PauseReason {
     Load,
 }
 
+pub(crate) use ck_sim::MapLayers;
+
+/// A layer selected by the player.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MapLayer {
+    Rivers,
+    Roads,
+}
+
 /// What the UI shows of the simulation, at one moment.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SimSnapshot {
@@ -30,6 +39,8 @@ pub(crate) struct SimSnapshot {
     pub(crate) paused: Option<PauseReason>,
     /// Whether the current game state has changes since its last successful save.
     pub(crate) unsaved: bool,
+    /// View layers at this ordered boundary.
+    pub(crate) layers: MapLayers,
     /// The revision of [`economy`](Self::economy): it rises with every new view, a load included, and is `0` while there is
     /// none.
     pub(crate) economy_revision: u64,
@@ -61,6 +72,7 @@ impl SimSnapshot {
             || self.speed != other.speed
             || self.paused != other.paused
             || self.unsaved != other.unsaved
+            || self.layers != other.layers
             || self.economy_revision != other.economy_revision
             || self.world != other.world
     }

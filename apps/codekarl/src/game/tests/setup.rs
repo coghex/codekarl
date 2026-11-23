@@ -159,8 +159,13 @@ pub(super) fn write_save(game: &GameConfig, ticks: u64, seed: u64) -> (PathBuf, 
         assert!(simulation.step().unwrap().is_empty());
     }
     let mut bytes = Vec::new();
+    let mut meta = game_prepared.identity.meta(seed);
+    meta.layers = ck_sim::MapLayers {
+        rivers: true,
+        roads: true,
+    };
     simulation
-        .save(game_prepared.identity.meta(seed))
+        .save(meta)
         .write_with_sections(
             &mut bytes,
             &mut [
@@ -181,9 +186,36 @@ fn a_loaded_game_is_the_save_exactly() {
     let (path, digest) = write_save(&game, 888, 99);
     let (result, records) = prepared(&game, Some(&path), None);
     let loaded = result.unwrap();
+    assert_eq!(
+        loaded.layers,
+        ck_sim::MapLayers {
+            rivers: true,
+            roads: true
+        }
+    );
     assert_eq!(loaded.simulation.seed(), 99);
     assert_eq!(loaded.simulation.time().hours(), 888 + loaded_start());
     assert_eq!(loaded.simulation.digest().unwrap(), digest);
+    let snapshots = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let published = snapshots.clone();
+    let _core = super::super::setup::test_core(
+        loaded,
+        game.saves.clone(),
+        super::super::core::Outputs {
+            log: Box::new(|_, _| {}),
+            publish: Box::new(move |snapshot| published.lock().unwrap().push(snapshot)),
+            fail: Box::new(|_| {}),
+        },
+    );
+    let snapshots = snapshots.lock().unwrap();
+    assert_eq!(snapshots.len(), 1);
+    assert_eq!(
+        snapshots[0].layers,
+        ck_sim::MapLayers {
+            rivers: true,
+            roads: true
+        }
+    );
     // A load logs the save, not a new seed.
     assert_eq!(records.len(), 1);
     assert!(records[0].1.starts_with("loaded "), "{records:?}");

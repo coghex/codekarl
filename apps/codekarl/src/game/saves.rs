@@ -255,6 +255,7 @@ impl Identity {
             rules_hash: self.rules_hash.clone(),
             start: self.start,
             seed,
+            layers: ck_sim::MapLayers::default(),
         }
     }
 

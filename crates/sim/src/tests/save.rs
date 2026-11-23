@@ -822,3 +822,20 @@ fn huge_core_section_length_is_refused_and_staging_is_removed() {
     assert!(result.is_err());
     assert!(!stage.exists());
 }
+
+#[test]
+fn map_layers_are_required_booleans_in_the_header() {
+    let mut save = valid_save();
+    save.meta.layers.rivers = true;
+    save.meta.layers.roads = false;
+    let bytes = save.to_bytes().unwrap();
+    assert_eq!(load(&bytes).unwrap().meta.layers, save.meta.layers);
+    let parts = take_apart(&bytes);
+    assert!(parts.header.contains("[layers]"));
+    assert!(malformed(&with_header(
+        |h| h.replace("rivers = false", "rivers = \"no\"")
+    )));
+    assert!(malformed(
+        &with_header(|h| h.replace("roads = false\n", ""))
+    ));
+}
