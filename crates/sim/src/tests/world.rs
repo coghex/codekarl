@@ -171,6 +171,7 @@ pub(super) fn meta(seed: u64) -> SaveMeta {
         rules_hash: "dd44".to_owned(),
         start: start_date(),
         seed,
+        layers: crate::MapLayers::default(),
     }
 }
 

@@ -584,7 +584,7 @@ mod tests {
     }
 
     /// The application's icons: name, width in pixels and the seven shape rows after the two blank ones.
-    const ICONS: [(&str, usize, &[&str]); 19] = [
+    const ICONS: [(&str, usize, &[&str]); 20] = [
         (
             "rewind",
             9,
@@ -632,6 +632,14 @@ mod tests {
             9,
             &[
                 "...##...", "..####..", "..####..", ".######.", ".######.", "########", "########",
+            ],
+        ),
+        // Original map layers icon, from bars and an upward chevron.
+        (
+            "layers",
+            9,
+            &[
+                "...#....", "..#.#...", ".#...#..", "........", "#######.", "........", "#######.",
             ],
         ),
         // Original sprout icon, drawn from plain geometric shapes for CK-382.

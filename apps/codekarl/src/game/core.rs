@@ -16,7 +16,7 @@ use ck_sim::{Canonical, Clock, Date, Save, Scheduler, Simulation, Speed};
 use super::{
     controls::{Control, GuardedLoadResult, GuardedResultSink},
     saves::{self, Entry, Fit, Identity, quicksave_path},
-    slot::{PauseReason, SimSnapshot},
+    slot::{MapLayer, MapLayers, PauseReason, SimSnapshot},
     view::EconomyView,
 };
 
@@ -31,6 +31,8 @@ pub(crate) enum Message {
     Control(Control),
     /// A UI choice that counts as an unsaved change.
     MarkUnsaved,
+    /// Atomically set a view layer and mark a change unsaved.
+    SetMapLayer(MapLayer, bool),
     /// A named-save API request; the reply carries only the completed operation outcome.
     Save(SaveCall, Sender<SaveReply>),
     /// A guarded named load; the result is returned to the UI link asynchronously.
@@ -48,6 +50,7 @@ impl PartialEq for Message {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Control(left), Self::Control(right)) => left == right,
+            (Self::SetMapLayer(a, b), Self::SetMapLayer(c, d)) => a == c && b == d,
             (Self::MarkUnsaved, Self::MarkUnsaved)
             | (Self::Stop, Self::Stop)
             | (Self::Cancel, Self::Cancel) => true,
@@ -136,6 +139,7 @@ pub(crate) struct Core<S, C> {
     paused: Option<PauseReason>,
     /// Whether the player's game has changed since its last successful save or load.
     unsaved: bool,
+    layers: MapLayers,
     identity: Identity,
     saves: PathBuf,
     rebuild: Rebuild<S, C>,
@@ -172,6 +176,7 @@ where
         replace: bool,
     ) -> std::io::Result<()> {
         let mut save = self.save();
+        save.meta.layers = self.layers;
         if let Some(name) = name {
             save.meta.name = name;
             save.meta.written = saves::utc_now_rfc3339();
@@ -206,6 +211,7 @@ where
 
     /// Like [`new`](Self::new), with `views` building the economy view that every snapshot carries: the first (revision 1) is
     /// in the first snapshot, the next after each day's systems and after a load.
+    #[cfg(test)]
     pub(crate) fn new_with_views(
         simulation: Simulation<S, C>,
         identity: Identity,
@@ -214,12 +220,34 @@ where
         outputs: Outputs,
         views: Option<ViewBuilder<S>>,
     ) -> Self {
+        Self::new_with_views_and_layers(
+            simulation,
+            identity,
+            saves,
+            rebuild,
+            outputs,
+            views,
+            MapLayers::default(),
+        )
+    }
+
+    /// Builds the core with its initial saved layer choices before publishing its first snapshot.
+    pub(crate) fn new_with_views_and_layers(
+        simulation: Simulation<S, C>,
+        identity: Identity,
+        saves: PathBuf,
+        rebuild: Rebuild<S, C>,
+        outputs: Outputs,
+        views: Option<ViewBuilder<S>>,
+        layers: MapLayers,
+    ) -> Self {
         let mut core = Self {
             simulation,
             external: None,
             clock: Clock::new(),
             paused: Some(PauseReason::Load),
             unsaved: false,
+            layers,
             identity,
             saves,
             rebuild,
@@ -278,6 +306,7 @@ where
             speed: self.clock.speed(),
             paused: self.paused,
             unsaved: self.unsaved,
+            layers: self.layers,
             economy_revision: self.revision,
             economy: self.view.clone(),
             world: self.world,
@@ -329,6 +358,18 @@ where
                 } else {
                     Flow::Continue
                 }
+            }
+            Message::SetMapLayer(layer, shown) => {
+                let value = match layer {
+                    MapLayer::Rivers => &mut self.layers.rivers,
+                    MapLayer::Roads => &mut self.layers.roads,
+                };
+                if *value != shown {
+                    *value = shown;
+                    self.unsaved = true;
+                    self.publish_if_changed();
+                }
+                Flow::Continue
             }
             Message::MarkUnsaved => {
                 self.unsaved = true;
@@ -602,7 +643,8 @@ where
             return Err(format!("save cannot be loaded: {}", entry.fit.as_str()));
         }
         match self.load_from(&path) {
-            Ok(simulation) => {
+            Ok((simulation, layers)) => {
+                self.layers = layers;
                 (self.rebuild.reset)(simulation.seed());
                 self.simulation = simulation;
                 self.clock = Clock::new();
@@ -637,7 +679,8 @@ where
     fn quickload(&mut self) {
         let path = quicksave_path(&self.saves);
         match self.load_from(&path) {
-            Ok(simulation) => {
+            Ok((simulation, layers)) => {
+                self.layers = layers;
                 (self.rebuild.reset)(simulation.seed());
                 self.simulation = simulation;
                 self.clock = Clock::new();
@@ -652,7 +695,10 @@ where
         }
     }
 
-    fn load_from(&mut self, path: &std::path::Path) -> Result<Simulation<S, C>, String> {
+    fn load_from(
+        &mut self,
+        path: &std::path::Path,
+    ) -> Result<(Simulation<S, C>, MapLayers), String> {
         let mut file = saves::open_regular(path)
             .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
         if let Some((storage, validate)) = &self.external {
@@ -673,18 +719,21 @@ where
                 storage.log_cell.clone(),
             );
             validate(&staged.path, &save.state).map_err(|e| e.to_string())?;
+            let layers = save.meta.layers;
             let simulation =
                 Simulation::from_save(save, (self.rebuild.scheduler)(), self.rebuild.apply)
                     .map_err(|e| e.to_string())?;
             staged.publish();
             self.external = Some((staged, *validate));
-            Ok(simulation)
+            Ok((simulation, layers))
         } else {
             let mut bytes = Vec::new();
             std::io::Read::read_to_end(&mut file, &mut bytes).map_err(|e| e.to_string())?;
             let save = Save::<S>::from_bytes(&bytes, &self.identity.expected())
                 .map_err(|e| e.to_string())?;
+            let layers = save.meta.layers;
             Simulation::from_save(save, (self.rebuild.scheduler)(), self.rebuild.apply)
+                .map(|simulation| (simulation, layers))
                 .map_err(|e| e.to_string())
         }
     }

@@ -86,6 +86,7 @@ pub(crate) fn extension_with_select(
             "set_find_keyboard_block",
             set_find_keyboard_block_function(controls.clone()),
         )
+        .function("set_map_layer", set_map_layer_function(controls.clone()))
         .function("mark_unsaved", mark_unsaved_function(controls.clone()))
         .function("saves", saves_function(controls.clone()))
         .function("save", save_function(controls.clone(), SaveCall::New))
@@ -127,6 +128,33 @@ pub(crate) fn extension_with_select(
                 result_controls.set_save_result_registered(is_registered);
             }),
         )
+}
+
+fn set_map_layer_function(controls: SimControls) -> HostFunction {
+    Arc::new(move |arguments| {
+        let [
+            Some(ConfigValue::String(name)),
+            Some(ConfigValue::Bool(shown)),
+        ] = arguments
+        else {
+            return Err(
+                "game.set_map_layer: expected a layer name (rivers or roads) and a boolean"
+                    .to_owned(),
+            );
+        };
+        let layer = match name.as_str() {
+            "rivers" => crate::game::slot::MapLayer::Rivers,
+            "roads" => crate::game::slot::MapLayer::Roads,
+            _ => {
+                return Err(
+                    "game.set_map_layer: expected a layer name (rivers or roads) and a boolean"
+                        .to_owned(),
+                );
+            }
+        };
+        controls.set_map_layer(layer, *shown);
+        Ok(Vec::new())
+    })
 }
 
 fn mark_unsaved_function(controls: SimControls) -> HostFunction {
@@ -1285,6 +1313,11 @@ pub(crate) fn time_table(snapshot: &SimSnapshot) -> ConfigValue {
         ("paused".to_owned(), paused),
         ("unsaved".to_owned(), ConfigValue::Bool(snapshot.unsaved)),
         (
+            "rivers".to_owned(),
+            ConfigValue::Bool(snapshot.layers.rivers),
+        ),
+        ("roads".to_owned(), ConfigValue::Bool(snapshot.layers.roads)),
+        (
             "economy_revision".to_owned(),
             integer(snapshot.economy_revision),
         ),
@@ -1296,6 +1329,41 @@ pub(crate) fn time_table(snapshot: &SimSnapshot) -> ConfigValue {
 mod tests {
     use super::*;
     use crate::game::{core::Message, saves::Fit};
+
+    #[test]
+    fn set_map_layer_validates_and_sends_one_ordered_message() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let set = set_map_layer_function(SimControls::new(sender));
+        for (name, layer) in [
+            ("rivers", crate::game::slot::MapLayer::Rivers),
+            ("roads", crate::game::slot::MapLayer::Roads),
+        ] {
+            assert!(
+                set(&[
+                    Some(ConfigValue::String(name.into())),
+                    Some(ConfigValue::Bool(true))
+                ])
+                .unwrap()
+                .is_empty()
+            );
+            assert_eq!(receiver.recv().unwrap(), Message::SetMapLayer(layer, true));
+        }
+        let name = Some(ConfigValue::String("rivers".into()));
+        for args in [
+            vec![],
+            vec![name.clone()],
+            vec![name.clone(), Some(ConfigValue::Bool(true)), None],
+            vec![name.clone(), Some(ConfigValue::String("yes".into()))],
+            vec![
+                Some(ConfigValue::String("sea".into())),
+                Some(ConfigValue::Bool(true)),
+            ],
+        ] {
+            let error = set(&args).unwrap_err();
+            assert!(error.contains("game.set_map_layer") && error.contains("expected"));
+        }
+        assert!(receiver.try_recv().is_err());
+    }
 
     #[test]
     fn selected_place_arguments_use_authored_kind_and_size_fields() {
@@ -1341,6 +1409,8 @@ mod tests {
                 "hour",
                 "month",
                 "paused",
+                "rivers",
+                "roads",
                 "speed",
                 "unsaved",
                 "world",

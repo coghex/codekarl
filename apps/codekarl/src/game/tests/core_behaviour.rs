@@ -420,3 +420,50 @@ fn the_pause_only_control_leaves_every_paused_game_as_it_is_the_reason_included(
     player.control(Control::Pause);
     assert_eq!(player.paused(), Some(PauseReason::Player));
 }
+
+#[test]
+fn layer_changes_are_ordered_and_only_changes_mark_unsaved() {
+    use crate::game::slot::{MapLayer, MapLayers};
+    let mut h = Harness::new(42);
+    assert_eq!(h.core.snapshot().layers, MapLayers::default());
+    h.core
+        .dispatch(Message::SetMapLayer(MapLayer::Rivers, false), h.now);
+    assert!(!h.core.has_unsaved_changes());
+    h.core
+        .dispatch(Message::SetMapLayer(MapLayer::Rivers, true), h.now);
+    assert_eq!(
+        h.core.snapshot().layers,
+        MapLayers {
+            rivers: true,
+            roads: false
+        }
+    );
+    assert!(h.core.has_unsaved_changes());
+    h.core
+        .dispatch(Message::SetMapLayer(MapLayer::Roads, true), h.now);
+    assert_eq!(
+        h.core.snapshot().layers,
+        MapLayers {
+            rivers: true,
+            roads: true
+        }
+    );
+}
+
+#[test]
+fn quicksave_restores_layer_choices_without_changing_simulation_digest() {
+    use crate::game::slot::MapLayer;
+    let mut h = Harness::new(42);
+    let digest = h.digest();
+    h.core
+        .dispatch(Message::SetMapLayer(MapLayer::Rivers, true), h.now);
+    h.control(Control::Quicksave);
+    assert!(!h.core.has_unsaved_changes());
+    h.core
+        .dispatch(Message::SetMapLayer(MapLayer::Roads, true), h.now);
+    h.control(Control::Quickload);
+    assert!(h.core.snapshot().layers.rivers);
+    assert!(!h.core.snapshot().layers.roads);
+    assert!(!h.core.has_unsaved_changes());
+    assert_eq!(h.digest(), digest);
+}

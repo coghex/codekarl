@@ -111,6 +111,7 @@ game = {
   on_select = function(callback) callbacks.select = callback end,
   on_hover = function(callback) callbacks.hover = callback end,
   control = function() end,
+  set_map_layer = host_game.set_map_layer,
   mark_unsaved = function()
     unsaved_marks = (unsaved_marks or 0) + 1
     host_game.mark_unsaved()
@@ -147,6 +148,17 @@ frame.on_update = function(callback)
     if frame_test_observer then frame_test_observer(update) end
   end)
 end
+local listbar_library = require("lib.listbar")
+local real_layers_new = listbar_library.layers
+listbar_library.layers = function(spec) layers_widget = real_layers_new(spec); return layers_widget end
+function announce_layers()
+  if layers_widget.picker == nil then note("layers closed"); return end
+  local rows = layers_widget.picker.rows
+  note("layers " .. tostring(rows[1].tick ~= nil) .. " " .. tostring(rows[2].tick ~= nil))
+end
+function layer_time(rivers, roads)
+  callbacks.time({year = 768, month = 1, day = 1, hour = 0, paused = true, speed = 1, economy_revision = 1, rivers = rivers, roads = roads})
+end
 local buttons_library = require("lib.button")
 local real_button_new = buttons_library.new
 mode_buttons = {}
@@ -167,11 +179,11 @@ buttons_library.new = function(spec)
   end
   if spec.icon == "cards" or spec.icon == "rows" then look_buttons[spec.icon] = created end
   if spec.icon == "rewind" or spec.icon == "pause" or spec.icon == "fast_forward" then time_buttons[spec.icon] = created end
-  if spec.icon == "stockpile" or spec.icon == "yield" or spec.icon == "elevation" or spec.icon == "fertility" then mode_buttons[spec.icon] = created end
+  if spec.icon == "layers" or spec.icon == "stockpile" or spec.icon == "yield" or spec.icon == "elevation" or spec.icon == "fertility" then mode_buttons[spec.icon] = created end
   return created
 end
 function announce_modes()
-  for _, key in ipairs({"stockpile", "yield", "elevation", "fertility"}) do
+  for _, key in ipairs({"layers", "stockpile", "yield", "elevation", "fertility"}) do
     local button = mode_buttons[key]
     local width, height = button:size()
     note(string.format("mode %s %d %d %s", key, button.x + width / 2, button.y + height / 2, tostring(button.selected == true)))
@@ -181,7 +193,7 @@ end
 -- Each mode button's and ledger icon's left edge, top edge, width and height, in window points.
 function announce_bars()
   note("places_text_buttons " .. places_text_buttons)
-  for _, key in ipairs({"stockpile", "yield", "elevation", "fertility"}) do
+  for _, key in ipairs({"layers", "stockpile", "yield", "elevation", "fertility"}) do
     local button = mode_buttons[key]
     local width, height = button:size()
     note(string.format("bar %s %g %g %g %g", key, button.x, button.y, width, height))
@@ -1087,38 +1099,22 @@ fn point_value(value: i64) -> f64 {
 /// at the bar's `x + 5 P`, the three a button and 3 pixels apart, all at the bar's `y + 2 P`.
 fn assert_mode_bar_at(rig: &Rig, bar: [i64; 2]) {
     const P: i64 = 2;
-    let [stockpile, yields, elevation, fertility] =
-        ["stockpile", "yield", "elevation", "fertility"].map(|key| bar_button(rig, key));
-    assert_eq!(
-        stockpile,
-        [bar[0] + 5 * P, bar[1] + 2 * P, 13 * P, 15 * P],
-        "the stockpile button"
-    );
-    assert_eq!(
-        yields,
-        [bar[0] + (5 + 13 + 3) * P, stockpile[1], 13 * P, 15 * P],
-        "the yield button, a button and a gap on"
-    );
-    assert_eq!(
-        elevation,
-        [
-            bar[0] + (5 + 2 * (13 + 3)) * P,
-            stockpile[1],
-            13 * P,
-            15 * P
-        ],
-        "the elevation button"
-    );
-    assert_eq!(
-        fertility,
-        [
-            bar[0] + (5 + 3 * (13 + 3)) * P,
-            stockpile[1],
-            13 * P,
-            15 * P
-        ],
-        "the fertility button"
-    );
+    for (index, key) in ["layers", "stockpile", "yield", "elevation", "fertility"]
+        .iter()
+        .enumerate()
+    {
+        let index = i64::try_from(index).unwrap();
+        assert_eq!(
+            bar_button(rig, key),
+            [
+                bar[0] + (5 + index * 16) * P,
+                bar[1] + 2 * P,
+                13 * P,
+                15 * P
+            ],
+            "{key}"
+        );
+    }
 }
 
 fn press_bar(rig: &mut Rig, key: &str) {

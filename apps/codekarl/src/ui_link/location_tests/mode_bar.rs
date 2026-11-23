@@ -162,16 +162,20 @@ fn the_mode_bar_is_centred_at_the_bottom_of_the_window_and_follows_a_resize() {
     rig.opened();
     // 1800 by 900 points. The bar is 142 by 38: centred it starts at (1800 - 142) / 2 = 829, which snaps to the 2-point grid as 830, and its
     // bottom edge is a margin of 8 above the window's: y = 900 - 38 - 8 = 854.
-    assert_mode_bar_at(&rig, [830, 854]);
+    assert_mode_bar_at(&rig, [814, 854]);
     let stockpile = bar_button(&rig, "stockpile");
-    assert_eq!(stockpile[0], 830 + 5 * 2, "the first button's left edge");
+    assert_eq!(
+        bar_button(&rig, "layers")[0],
+        814 + 5 * 2,
+        "the first button is layers"
+    );
     assert_eq!(
         stockpile[1] + stockpile[3] / 2,
         854 + 19,
         "the row's vertical centre"
     );
     let elevation = bar_button(&rig, "fertility");
-    let left_gap = stockpile[0] - 5 * 2;
+    let left_gap = bar_button(&rig, "layers")[0] - 5 * 2;
     let right_gap = 1800 - (elevation[0] + elevation[2] + 5 * 2);
     assert!(
         (left_gap - right_gap).abs() <= 2,
@@ -180,7 +184,7 @@ fn the_mode_bar_is_centred_at_the_bottom_of_the_window_and_follows_a_resize() {
     // 1200 by 700: (1200 - 142) / 2 = 529, snapped 530; y = 700 - 38 - 8 = 654. The buttons moved with the bar.
     rig.deliver_fixture_frame_at(1200, 700, 2);
     rig.opened();
-    assert_mode_bar_at(&rig, [530, 654]);
+    assert_mode_bar_at(&rig, [514, 654]);
 }
 
 #[test]
@@ -241,4 +245,70 @@ fn fertility_button_selects_and_toggles_off() {
     rig.opened();
     assert_eq!(modes_called(&rig), ["yield", "fertility", "off"]);
     assert!(!mode_button(&rig, "fertility").2);
+}
+
+#[test]
+fn layers_button_toggles_rivers_on_the_real_ordered_route() {
+    let mut rig = rig(&[
+        "time(1, 1) announce_modes()",
+        "announce_modes()",
+        "announce_modes()",
+    ]);
+    rig.opened();
+    press_mode(&mut rig, "layers");
+    rig.opened();
+    assert!(mode_button(&rig, "layers").2);
+    rig.feed(&[
+        PointerEvent::Down(points(830.0, 808.0)),
+        PointerEvent::Up(points(830.0, 808.0)),
+    ]);
+    rig.deliver_fixture_frame_at(1800, 900, 2);
+    assert_eq!(
+        rig.control_receiver.recv().unwrap(),
+        crate::game::core::Message::SetMapLayer(crate::game::slot::MapLayer::Rivers, true)
+    );
+    rig.feed(&[
+        PointerEvent::Down(points(830.0, 808.0)),
+        PointerEvent::Up(points(830.0, 808.0)),
+    ]);
+    rig.deliver_fixture_frame_at(1800, 900, 2);
+    assert_eq!(
+        rig.control_receiver.recv().unwrap(),
+        crate::game::core::Message::SetMapLayer(crate::game::slot::MapLayer::Rivers, false)
+    );
+    assert!(rig.control_receiver.try_recv().is_err());
+    press_mode(&mut rig, "layers");
+    rig.opened();
+    assert!(!mode_button(&rig, "layers").2);
+    assert!(modes_called(&rig).is_empty());
+}
+
+#[test]
+fn layer_boxes_follow_snapshots_and_close_on_escape_and_resize() {
+    let mut rig = rig(&[
+        "time(1, 1) announce_modes()",
+        "announce_layers()",
+        "layer_time(true, true) announce_layers()",
+        "announce_layers()",
+        "announce_layers()",
+    ]);
+    rig.opened();
+    press_mode(&mut rig, "layers");
+    rig.opened();
+    assert!(notes(&rig).iter().any(|s| s == "layers false false"));
+    rig.opened();
+    assert!(notes(&rig).iter().any(|s| s == "layers true true"));
+    assert!(rig.escape());
+    rig.opened();
+    assert_eq!(
+        notes(&rig).last().map(String::as_str),
+        Some("layers closed")
+    );
+    press_mode(&mut rig, "layers");
+    rig.deliver_fixture_frame_at(1200, 700, 2);
+    rig.opened();
+    assert_eq!(
+        notes(&rig).last().map(String::as_str),
+        Some("layers closed")
+    );
 }

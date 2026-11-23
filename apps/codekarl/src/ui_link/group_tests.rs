@@ -2145,7 +2145,7 @@ end)
     let help_key = buttons
         .iter()
         .rev()
-        .nth(7)
+        .nth(8)
         .cloned()
         .expect("the production time bar has a Help button");
     let point = (0..400)

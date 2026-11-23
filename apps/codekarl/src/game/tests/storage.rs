@@ -1299,3 +1299,62 @@ fn character_archive_logs_and_live_state_survive_streamed_save() {
         .unwrap();
     assert_eq!(before, digest(&storage.path.join("ARCH")));
 }
+
+#[test]
+fn layer_saves_and_loads_follow_the_ordered_route() {
+    use crate::game::{core::Message, slot::MapLayer};
+    for rivers in [false, true] {
+        for roads in [false, true] {
+            let mut h = Harness::new(42);
+            let digest = h.digest();
+            h.core
+                .dispatch(Message::SetMapLayer(MapLayer::Rivers, rivers), h.now);
+            h.core
+                .dispatch(Message::SetMapLayer(MapLayer::Roads, roads), h.now);
+            assert!(matches!(
+                h.save_call(SaveCall::New("Named".into())),
+                SaveReply::Finished(Ok(()))
+            ));
+            h.control(Control::Quicksave);
+            h.core
+                .dispatch(Message::SetMapLayer(MapLayer::Rivers, !rivers), h.now);
+            assert_eq!(guarded_load(&mut h, "named.cksave"), Err("unsaved".into()));
+            assert_eq!(h.core.snapshot().layers.rivers, !rivers);
+            assert!(matches!(
+                h.save_call(SaveCall::Load("named.cksave".into())),
+                SaveReply::Finished(Ok(()))
+            ));
+            assert_eq!(
+                h.core.snapshot().layers,
+                ck_sim::MapLayers { rivers, roads }
+            );
+            assert_eq!(h.digest(), digest);
+            h.core
+                .dispatch(Message::SetMapLayer(MapLayer::Roads, !roads), h.now);
+            h.control(Control::Quickload);
+            assert_eq!(
+                h.core.snapshot().layers,
+                ck_sim::MapLayers { rivers, roads }
+            );
+            h.core
+                .dispatch(Message::SetMapLayer(MapLayer::Roads, !roads), h.now);
+            assert!(matches!(
+                h.save_call(SaveCall::Over("named.cksave".into())),
+                SaveReply::Finished(Ok(()))
+            ));
+            h.core
+                .dispatch(Message::SetMapLayer(MapLayer::Roads, roads), h.now);
+            assert!(matches!(
+                h.save_call(SaveCall::Load("named.cksave".into())),
+                SaveReply::Finished(Ok(()))
+            ));
+            assert_eq!(
+                h.core.snapshot().layers,
+                ck_sim::MapLayers {
+                    rivers,
+                    roads: !roads
+                }
+            );
+        }
+    }
+}

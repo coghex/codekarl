@@ -1617,3 +1617,95 @@ eq(#bar.picker.entries, 1)
     click(&mut rig, "all");
     rig.opened();
 }
+
+#[test]
+fn layers_picker_shares_slot_rows_and_escape_with_list_pickers() {
+    let mut rig = rig(
+        r#"
+new_window(120, 100) new_bar()
+values = {rivers = false, roads = false}
+calls = {}
+layer_bar = lb.layers{
+  opener = "layer_opener", position = function() return 300, 200 end,
+  value = function(name) return values[name] end,
+  change = function(name, value) values[name] = value; calls[#calls + 1] = name .. tostring(value) end,
+}
+"#,
+        &[
+            r#"
+bar:view({row("a", "town", 1)})
+layer_bar:toggle()
+expect(layer_bar.picker ~= nil)
+eq(layer_bar.picker.rows[1].name, "rivers")
+eq(layer_bar.picker.rows[2].name, "roads")
+local x, y, w, h = hit_rect(layer_bar.picker.rows[1].key)
+mark("river", x + w / 2, y + h / 2)
+"#,
+            r#"
+eq(calls[1], "riverstrue")
+expect(layer_bar.picker ~= nil and layer_bar.picker.rows[1].tick ~= nil)
+"#,
+            r#"
+eq(calls[2], "riversfalse")
+expect(layer_bar.picker.rows[1].tick == nil)
+expect(lb.close_open())
+eq(layer_bar.picker, nil)
+"#,
+        ],
+    );
+    rig.opened();
+    click(&mut rig, "river");
+    rig.opened();
+    click(&mut rig, "river");
+    rig.opened();
+}
+
+#[test]
+fn layers_filter_and_sort_replace_one_another_in_the_single_picker_slot() {
+    let mut rig = rig(
+        r#"
+new_window(120, 100) new_bar()
+layer_bar = lb.layers{opener = "layer_opener", position = function() return 300, 200 end,
+  value = function() return false end, change = function() end}
+"#,
+        &[r#"
+bar:view({row("a", "town", 1)})
+bar.filter_button.on_click()
+expect(bar.picker ~= nil and bar.picker.kind == "filter")
+layer_bar:toggle()
+eq(bar.picker, nil)
+expect(layer_bar.picker ~= nil)
+bar.sort_button.on_click()
+eq(layer_bar.picker, nil)
+expect(bar.picker ~= nil and bar.picker.kind == "sort")
+layer_bar:toggle()
+eq(bar.picker, nil)
+expect(layer_bar.picker ~= nil)
+bar.filter_button.on_click()
+eq(layer_bar.picker, nil)
+expect(bar.picker ~= nil and bar.picker.kind == "filter")
+"#],
+    );
+    rig.opened();
+}
+
+#[test]
+fn layers_close_on_outside_press_and_escape_keeps_the_window_underneath() {
+    let mut rig = rig(
+        r#"
+new_window(120, 100)
+layer_bar = lb.layers{opener = "layer_opener", position = function() return 300, 200 end,
+  value = function() return false end, change = function() end}
+"#,
+        &[
+            r"layer_bar:toggle() expect(layer_bar.picker ~= nil)",
+            r#"eq(layer_bar.picker, nil, "outside press closed the layers") layer_bar:toggle()"#,
+            r#"eq(layer_bar.picker, nil, "Escape closed the layers") expect(not W.closed, "window underneath remains open")"#,
+        ],
+    );
+    rig.opened();
+    click_at(&mut rig, (700.0, 500.0));
+    rig.opened();
+    assert!(rig.escape(), "Escape is consumed by the picker");
+    rig.opened();
+}
