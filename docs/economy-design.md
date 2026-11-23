@@ -121,7 +121,7 @@ with sources, and **Open** what is still to decide.
 - **A starving pop** eats its food first. When the food is gone, it butchers its livestock.
 - **Dairy** is set by the size of the herd, not by the workers or the size of the building.
 - **The herd per level** is based on research, with each head of household (an owner of the subsistence farm) holding the herd. The
-  owner approved: 12 cattle, 8 pigs and 7 sheep per level; a start at 75%; seasonal dairy; and grain recalculated so that a level still
+  owner approved: 12 cattle, 8 pigs and 7 sheep per level; a start at two thirds; seasonal dairy; and grain recalculated so that a level still
   just feeds its people.
 
 **Methods, markets and barter (owner, 2026-11-08, after review r12)**
@@ -1072,13 +1072,13 @@ any building (Firm: no strict rules), and every value goes into the guesswork lo
 
 **Herds belong to buildings.** Each farm, holdings and demesne keeps a head count for each species its building type names. The ordered
 species list, birth and death rates, slaughter yields, recurring products and emergency-butchering priority are rules data; each building
-type supplies its own starting count and maximum per farming level. The shipped species are cattle, pigs and sheep. If pops move, the
+type supplies its maximum per farming level. Every herd starts at two thirds of its total maximum, rounded down. The shipped species are cattle, pigs and sheep. If pops move, the
 herd stays. These are counts, not individual animals, so livestock stays abstract as the vision requires.
 
 | | Cattle | Pigs | Sheep |
 |---|---|---|---|
 | maximum per level (Firm) | 12 | 8 | 7 |
-| starting head per level (Firm) | 9 | 6 | 5 |
+| starting share of maximum | 2/3 | 2/3 | 2/3 |
 | births, ‰ of the herd per year | 500 | 1,500 | 800 |
 | deaths, ‰ of the herd per year | 80 | 100 | 80 |
 | slaughter yield per head | 220 lb beef, 1 hide | 88 lb pork | 33 lb mutton |
