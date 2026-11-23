@@ -292,6 +292,85 @@ fn the_scenario_hash_covers_the_scenario_file_and_its_locations_and_nothing_else
 }
 
 #[test]
+fn the_scenario_hash_covers_both_network_files_but_not_the_baseline() {
+    let (_dir, game) = fixture();
+    let scenario = &game.scenario;
+    let without_network = hashes::scenario_hash(scenario).unwrap();
+    fs::write(scenario.join("network.toml"), "hand list").unwrap();
+    assert!(
+        hashes::scenario_hash(scenario)
+            .unwrap_err()
+            .contains("roads.toml")
+    );
+    fs::write(scenario.join("roads.toml"), "stored network").unwrap();
+    let hash = || hashes::scenario_hash(scenario).unwrap();
+    assert_ne!(hash(), without_network);
+    each_file_matters(scenario, &["network.toml", "roads.toml"], &hash);
+    let before = hash();
+    fs::write(scenario.join("courses-approved.json"), "approved courses").unwrap();
+    assert_eq!(hash(), before);
+    fs::remove_file(scenario.join("network.toml")).unwrap();
+    assert!(
+        hashes::scenario_hash(scenario)
+            .unwrap_err()
+            .contains("network.toml")
+    );
+}
+
+#[test]
+fn a_refused_network_prevents_start_and_reports_its_file() {
+    let (_dir, game) = fixture();
+    fs::write(game.scenario.join("network.toml"), "hand list").unwrap();
+    fs::write(game.scenario.join("roads.toml"), "format = 99\n").unwrap();
+    let message = prepared(&game, None, Some(42)).0.err().expect("refused");
+    assert!(message.contains("roads.toml"), "{message}");
+}
+
+#[test]
+fn a_network_changes_the_content_hash_but_not_the_simulation() {
+    let (_dir, game) = fixture();
+    let (save, _) = write_save(&game, 0, 42);
+    let mut before = prepared(&game, None, Some(42)).0.unwrap();
+    let old_hash = hashes::scenario_hash(&game.scenario).unwrap();
+    let mut digests = vec![before.simulation.digest().unwrap()];
+    for _ in 0..3 {
+        before.simulation.step().unwrap();
+        digests.push(before.simulation.digest().unwrap());
+    }
+    let crop = before.scenario.map.data.crop;
+    let mut roads = String::from(
+        "format = 1\nhand_list_sha256 = \"cadb7f67e609caf88b363089d58964a35c2621a970915dc72fbd70449f1c4c4d\"\nbaseline_sha256 = \"unused\"\nnext_node_id = 3\nnext_stretch_id = 1\n",
+    );
+    for (index, location) in before.scenario.locations.iter().enumerate() {
+        use std::fmt::Write as _;
+        writeln!(
+            roads,
+            "[[node]]\nid = {}\nkind = \"place\"\ncell = [{}, {}]\nplace = \"{}\"",
+            index + 1,
+            location.cell.x - crop.origin.x,
+            location.cell.y - crop.origin.y,
+            location.id
+        )
+        .unwrap();
+    }
+    fs::write(game.scenario.join("network.toml"), "hand list").unwrap();
+    fs::write(game.scenario.join("roads.toml"), roads).unwrap();
+    assert_ne!(hashes::scenario_hash(&game.scenario).unwrap(), old_hash);
+    let error = prepared(&game, Some(&save), None)
+        .0
+        .err()
+        .expect("old save refused");
+    assert!(error.contains("scenario hash"), "{error}");
+    let mut after = prepared(&game, None, Some(42)).0.unwrap();
+    assert!(after.scenario.network.is_some());
+    assert_eq!(after.simulation.digest().unwrap(), digests[0]);
+    for expected in &digests[1..] {
+        after.simulation.step().unwrap();
+        assert_eq!(after.simulation.digest().unwrap(), *expected);
+    }
+}
+
+#[test]
 fn the_map_hash_covers_the_map_file_every_layer_and_the_location_kinds() {
     let (_dir, game) = fixture();
     let map = map_directory(&game);

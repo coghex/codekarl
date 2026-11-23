@@ -2407,6 +2407,8 @@ GUARDS: tuple[Guard, ...] = (
     ),
     # CK-358: the location-kind and catchment unit tests load the shipped scenario.
     Guard("crates/map/src/scenario/tests.rs", "map.core", ("assets/scenarios/ireland-768/",)),
+    # CK-389: the land-network unit test walks the shipped Ireland graph.
+    Guard("crates/map/src/network.rs", "map.core", ("assets/scenarios/ireland-768/",)),
     # CK-348: the water import tool's tests load `import_waters.py` from the map directory by its path: plain Python, no other tool.
     Guard("tests/test_map_waters.py", "unittest-waters", ("assets/map/ireland/import_waters.py",)),
     Guard(

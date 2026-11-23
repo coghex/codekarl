@@ -142,6 +142,39 @@ fn lat_lon_for_cell(x: i32, y: i32) -> (f64, f64) {
 }
 
 #[test]
+fn offshore_access_does_not_permit_a_location_on_a_lake() {
+    let fixture = Fixture::new();
+    let root = fixture.root().join("network-case");
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/network");
+    for relative in ["map/fixture", "scenarios/fixture"] {
+        let destination = root.join(relative);
+        fs::create_dir_all(&destination).unwrap();
+        for entry in fs::read_dir(source.join(relative)).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_type().unwrap().is_file() {
+                fs::copy(entry.path(), destination.join(entry.file_name())).unwrap();
+            }
+        }
+    }
+    let scenario = root.join("scenarios/fixture");
+    assert!(load_scenario(&scenario).unwrap().network.is_some());
+    let path = scenario.join("locations.toml");
+    let source = fs::read_to_string(&path).unwrap();
+    let (lat, lon) = lat_lon_for_cell(22436 + 3, 14979 + 5);
+    let changed = source.replace(
+        "lat = 55.521963845582405\nlon = -10.85390199127871",
+        &format!("lat = {lat}\nlon = {lon}"),
+    );
+    assert_ne!(source, changed);
+    fs::write(path, changed).unwrap();
+    let message = load_scenario(&scenario).unwrap_err().to_string();
+    assert!(
+        message.contains("locations.toml") && message.contains("isle") && message.contains("lake"),
+        "{message}"
+    );
+}
+
+#[test]
 fn scenario_loads_map_locations_styles_and_catchment_owners() {
     let fixture = Fixture::new();
     let scenario = load_scenario(fixture.path()).expect("scenario loads");
