@@ -1070,17 +1070,19 @@ any building (Firm: no strict rules), and every value goes into the guesswork lo
 
 ### 3.14 Herds (Firm, owner 2026-11-08; Proposal numbers)
 
-**Herds belong to buildings.** Each subsistence farm and farming holdings keeps a head count per species: cattle, pigs and sheep. If
-pops move, the herd stays. These are counts, not individual animals, so livestock stays abstract as the vision requires.
+**Herds belong to buildings.** Each farm, holdings and demesne keeps a head count for each species its building type names. The ordered
+species list, birth and death rates, slaughter yields, recurring products and emergency-butchering priority are rules data; each building
+type supplies its own starting count and maximum per farming level. The shipped species are cattle, pigs and sheep. If pops move, the
+herd stays. These are counts, not individual animals, so livestock stays abstract as the vision requires.
 
 | | Cattle | Pigs | Sheep |
 |---|---|---|---|
 | maximum per level (Firm) | 12 | 8 | 7 |
-| start (Firm) | 75% of the maximum | 75% | 75% |
+| starting head per level (Firm) | 9 | 6 | 5 |
 | births, ‰ of the herd per year | 500 | 1,500 | 800 |
 | deaths, ‰ of the herd per year | 80 | 100 | 80 |
 | slaughter yield per head | 220 lb beef, 1 hide | 88 lb pork | 33 lb mutton |
-| herd products | dairy 72 lb per head per year, by season | – | wool 1.5 lb per head per year, in June: `portion(sheep × 15, cov, 10 000, carry)` whole pounds |
+| herd products | dairy 72 lb per head per year, by season | – | wool 1.5 lb per head per year, in June |
 
 - **Research:** *Críth Gablach* gives the *ócaire*, the smallest free farmer, 7 cows and a bull, 7 pigs and a sow, and 7 sheep. The
   per-level herd is a little above that.
@@ -1093,7 +1095,8 @@ pops move, the herd stays. These are counts, not individual animals, so livestoc
   4. **There is no seasonal cull** (Firm).
 - **Dairy** is set by the herd's size, not by workers or levels (Firm). Each month it is
   `portion(cattle × 72, season_pm[month] × cov, 10⁶, carry)` whole pounds, where `cov` is the coverage multiplier in ‰.
-  - The carry is in millionths of a pound.
+  - The data stores the annual amount as 72,000 thousandths of a pound. Product carries are saved separately for each building,
+    species and product, so products of the same good never share a fractional remainder.
   - Because the season's shares sum to 1000 over the year, a constant herd of one cow at full coverage gives exactly 72 lb a year.
   - r10's denominator of 12,000 was a defect that gave 6 lb. The seasonal table (‰ of the year) follows the research (dairy from May):
 
@@ -1102,8 +1105,11 @@ pops move, the herd stays. These are counts, not individual animals, so livestoc
   | 20 | 20 | 40 | 80 | 130 | 150 | 150 | 130 | 110 | 80 | 50 | 40 |
 
   Each month's figure is that month's share of the year, and the shares sum to 1000.
-- **Every product is whole units.** Slaughter yields whole pounds and hides per head. Dairy and wool go through `portion`, with their
-  fractions in saved carries, so a store only ever receives whole units.
+- **Every product is whole units.** A seasonal product uses `portion(head × amount_milli, season_pm × cov, 10⁹, carry)`; a product
+  paid in one month uses `portion(head × amount_milli, cov, 10⁶, carry)` in that month. Slaughter yields whole units per head. Fractions
+  stay in each product's saved carry, so a store only ever receives whole units.
+- **Emergency butchering** follows the separate priority in the species data. The shipped order is pigs, sheep, then cattle; only a
+  species yielding a good with positive hunger value is eligible. Each slaughter yield is paid in its authored order.
 - **Coverage applies to herd products too,** because an unmanaged herd is poorly kept (Proposal): births, dairy and wool are multiplied
   by the coverage multiplier.
 - **Replenishing** (Firm): when a herd is below its maximum, live animals held by the building or its owner pops return to it. In M9
