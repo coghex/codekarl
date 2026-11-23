@@ -131,10 +131,13 @@ type ExternalStorage<S> = (
     fn(&std::path::Path, &S) -> std::io::Result<()>,
 );
 
+type StateValidation<S> = Box<dyn Fn(&S) -> Result<(), String> + Send>;
+
 /// The game: a [`Simulation`], its clock, why it is paused and the means to save and load it.
 pub(crate) struct Core<S, C> {
     simulation: Simulation<S, C>,
     external: Option<ExternalStorage<S>>,
+    state_validation: Option<StateValidation<S>>,
     clock: Clock,
     paused: Option<PauseReason>,
     /// Whether the player's game has changed since its last successful save or load.
@@ -161,6 +164,13 @@ where
     S: Canonical + Clone + Send + 'static,
     C: Canonical + Send + 'static,
 {
+    pub(super) fn with_state_validation(
+        mut self,
+        validate: impl Fn(&S) -> Result<(), String> + Send + 'static,
+    ) -> Self {
+        self.state_validation = Some(Box::new(validate));
+        self
+    }
     pub(super) fn with_character_storage(
         mut self,
         storage: super::character_storage::Storage,
@@ -244,6 +254,7 @@ where
         let mut core = Self {
             simulation,
             external: None,
+            state_validation: None,
             clock: Clock::new(),
             paused: Some(PauseReason::Load),
             unsaved: false,
@@ -718,6 +729,9 @@ where
                 storage.cell.clone(),
                 storage.log_cell.clone(),
             );
+            if let Some(validate) = &self.state_validation {
+                validate(&save.state)?;
+            }
             validate(&staged.path, &save.state).map_err(|e| e.to_string())?;
             let layers = save.meta.layers;
             let simulation =
@@ -731,6 +745,9 @@ where
             std::io::Read::read_to_end(&mut file, &mut bytes).map_err(|e| e.to_string())?;
             let save = Save::<S>::from_bytes(&bytes, &self.identity.expected())
                 .map_err(|e| e.to_string())?;
+            if let Some(validate) = &self.state_validation {
+                validate(&save.state)?;
+            }
             let layers = save.meta.layers;
             Simulation::from_save(save, (self.rebuild.scheduler)(), self.rebuild.apply)
                 .map(|simulation| (simulation, layers))

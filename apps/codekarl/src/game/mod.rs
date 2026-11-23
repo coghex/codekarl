@@ -31,6 +31,7 @@ pub(crate) mod owner;
 pub(crate) mod saves;
 pub(crate) mod setup;
 pub(crate) mod slot;
+mod stretch;
 #[cfg(test)]
 pub(crate) mod tests;
 pub(crate) mod view;
@@ -40,6 +41,8 @@ pub(crate) mod view;
 pub(crate) struct GameState {
     /// Authored population, buildings, stores, employment and prices.
     pub(crate) economy: ck_economy::EconomyState,
+    /// State of each physical land stretch, keyed by its stable id.
+    pub(crate) stretches: std::collections::BTreeMap<u64, stretch::StretchState>,
     /// Live characters and their next identifier.
     pub(crate) characters: ck_characters::CharacterStore,
 }
@@ -47,13 +50,15 @@ pub(crate) struct GameState {
 impl Canonical for GameState {
     fn encode(&self, out: &mut Vec<u8>) -> Result<(), CanonicalError> {
         self.economy.encode(out)?;
-        self.characters.encode(out)
+        self.characters.encode(out)?;
+        self.stretches.encode(out)
     }
 
     fn decode(input: &mut Reader<'_>) -> Result<Self, CanonicalError> {
         Ok(Self {
             economy: ck_economy::EconomyState::decode(input)?,
             characters: ck_characters::CharacterStore::decode(input)?,
+            stretches: std::collections::BTreeMap::decode(input)?,
         })
     }
 }
