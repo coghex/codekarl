@@ -134,7 +134,9 @@ fn the_shipped_figures_join_the_scenarios_places_and_pops_before_any_generation(
     fs::create_dir(&named).unwrap();
     for entry in fs::read_dir(&directory).unwrap() {
         let entry = entry.unwrap();
-        fs::copy(entry.path(), named.join(entry.file_name())).unwrap();
+        if entry.file_type().unwrap().is_file() {
+            fs::copy(entry.path(), named.join(entry.file_name())).unwrap();
+        }
     }
     assert_eq!(
         crate::game::hashes::scenario_hash(&named).unwrap(),

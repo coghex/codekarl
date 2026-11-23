@@ -1,0 +1,1226 @@
+# Hand-kept Ireland travel network. Courses are proposed and approved separately.
+[costs]
+terrain = { pasture = 1.0, forest = 1.5, mountain = 2.0, marsh = 3.0, bog = 3.5 }
+slope = 10.0
+fertile = 0.5
+crossing_base = 2.0
+crossing_per_m = 0.125
+reuse = 0.6
+
+[[road]]
+id = "midluachra"
+name = "Slige Midluachra"
+
+[[road]]
+id = "assail"
+name = "Slige Assail"
+
+[[road]]
+id = "mor"
+name = "Slige Mór"
+
+[[road]]
+id = "chualann"
+name = "Slige Chualann"
+
+[[road]]
+id = "dala"
+name = "Slige Dála"
+
+[[access]]
+place = "church_island_currane"
+quality = "offshore"
+
+[[landing]]
+place = "church_island_currane"
+cell = [102, 834]
+
+[[access]]
+place = "church_island_valentia"
+quality = "offshore"
+
+[[landing]]
+place = "church_island_valentia"
+cell = [82, 812]
+
+[[access]]
+place = "devenish"
+quality = "offshore"
+
+[[landing]]
+place = "devenish"
+cell = [429, 273]
+
+[[access]]
+place = "hare_island"
+quality = "offshore"
+
+[[landing]]
+place = "hare_island"
+cell = [394, 476]
+
+[[access]]
+place = "illaunloughan"
+quality = "offshore_at_high_tide"
+
+[[landing]]
+place = "illaunloughan"
+cell = [70, 822]
+
+[[access]]
+place = "inchbofin"
+quality = "offshore"
+
+[[landing]]
+place = "inchbofin"
+cell = [398, 461]
+
+[[access]]
+place = "inchcleraun"
+quality = "offshore"
+
+[[landing]]
+place = "inchcleraun"
+cell = [386, 449]
+
+[[access]]
+place = "inis_patraic"
+quality = "offshore"
+
+[[landing]]
+place = "inis_patraic"
+cell = [638, 452]
+
+[[access]]
+place = "iniscealtra"
+quality = "offshore"
+
+[[landing]]
+place = "iniscealtra"
+cell = [324, 597]
+
+[[access]]
+place = "inisfallen"
+quality = "offshore"
+
+[[landing]]
+place = "inisfallen"
+cell = [181, 788]
+
+[[access]]
+place = "inishbofin"
+quality = "offshore"
+
+[[landing]]
+place = "inishbofin"
+cell = [103, 450]
+
+[[access]]
+place = "inishglora"
+quality = "offshore"
+
+[[landing]]
+place = "inishglora"
+cell = [107, 312]
+
+[[access]]
+place = "inishkea_north"
+quality = "offshore"
+
+[[landing]]
+place = "inishkea_north"
+cell = [101, 330]
+
+[[access]]
+place = "inishkeel"
+quality = "offshore_at_high_tide"
+
+[[landing]]
+place = "inishkeel"
+cell = [325, 164]
+
+[[access]]
+place = "inishmacsaint"
+quality = "offshore"
+
+[[landing]]
+place = "inishmacsaint"
+cell = [418, 259]
+
+[[access]]
+place = "inishmurray"
+quality = "offshore"
+
+[[landing]]
+place = "inishmurray"
+cell = [304, 270]
+
+[[access]]
+place = "killeany"
+quality = "offshore"
+
+[[landing]]
+place = "killeany"
+cell = [163, 531]
+
+[[access]]
+place = "nendrum"
+quality = "offshore"
+
+[[landing]]
+place = "nendrum"
+cell = [696, 243]
+
+[[access]]
+place = "rechru"
+quality = "offshore"
+
+[[landing]]
+place = "rechru"
+cell = [640, 465]
+
+[[access]]
+place = "scattery"
+quality = "offshore"
+
+[[landing]]
+place = "scattery"
+cell = [183, 665]
+
+[[access]]
+place = "skellig_michael"
+quality = "offshore"
+
+[[landing]]
+place = "skellig_michael"
+cell = [65, 834]
+
+[[access]]
+place = "spike_island"
+quality = "offshore"
+
+[[landing]]
+place = "spike_island"
+cell = [344, 834]
+
+[[access]]
+place = "tory"
+quality = "offshore"
+
+[[landing]]
+place = "tory"
+cell = [353, 91]
+
+[[access]]
+place = "white_island"
+quality = "offshore"
+
+[[landing]]
+place = "white_island"
+cell = [419, 245]
+
+[[link]]
+id = "midluachra-1"
+road = "midluachra"
+from = "tara"
+to = "armagh"
+via = ["slane", { lat = 54.073, lon = -6.372, note = "the Moyry Pass" }]
+category = "road"
+level = 1
+note = "Slige Midluachra: Tara to Armagh"
+
+[[link]]
+id = "midluachra-2"
+road = "midluachra"
+from = "armagh"
+to = "dunseverick"
+category = "road"
+level = 1
+note = "Slige Midluachra: Armagh to Dunseverick"
+
+[[link]]
+id = "assail"
+road = "assail"
+from = "tara"
+to = "rathcroghan"
+via = [{ lat = 53.565, lon = -7.395, note = "Lough Owel" }]
+category = "road"
+level = 1
+note = "Slige Assail: Tara to Rathcroghan"
+
+[[link]]
+id = "mor-1"
+road = "mor"
+from = "tara"
+to = "clonard"
+category = "road"
+level = 1
+note = "Slige Mor: Tara to Clonard"
+
+[[link]]
+id = "mor-2"
+road = "mor"
+from = "clondalkin"
+to = "clonard"
+category = "road"
+level = 1
+note = "Slige Mor: Dublin to Clonard"
+
+[[link]]
+id = "mor-3"
+road = "mor"
+from = "clonard"
+to = "clonmacnoise"
+via = ["durrow"]
+category = "road"
+level = 1
+note = "Slige Mor: Clonard to Clonmacnoise"
+
+[[link]]
+id = "mor-4"
+road = "mor"
+from = "clonmacnoise"
+to = "aidne_seat"
+category = "road"
+level = 1
+note = "Slige Mor: Clonmacnoise to Galway Bay"
+
+[[link]]
+id = "chualann-1"
+road = "chualann"
+from = "tara"
+to = "clondalkin"
+via = ["finglas"]
+category = "road"
+level = 1
+note = "Slige Chualann: Tara to Dublin"
+
+[[link]]
+id = "chualann-2"
+road = "chualann"
+from = "clondalkin"
+to = "ferns"
+category = "road"
+level = 1
+note = "Slige Chualann: Dublin to Ferns"
+
+[[link]]
+id = "dala-1"
+road = "dala"
+from = "clondalkin"
+to = "roscrea"
+via = ["naas", "kildare", "aghaboe"]
+category = "road"
+level = 1
+note = "Slige Dala: Dublin to Roscrea"
+
+[[link]]
+id = "dala-2"
+road = "dala"
+from = "roscrea"
+to = "mungret"
+via = [{ lat = 52.672676, lon = -8.494863, note = "east of the Shannon north of Limerick" }]
+category = "road"
+level = 1
+note = "Slige Dala: Roscrea to Limerick"
+
+[[link]]
+id = "munster-1"
+from = "roscrea"
+to = "cashel"
+category = "path"
+level = 3
+note = "Roscrea to Cashel"
+
+[[link]]
+id = "munster-2"
+from = "cashel"
+to = "cork"
+via = ["lismore"]
+category = "path"
+level = 3
+note = "Cashel to Cork"
+
+[[link]]
+id = "munster-3"
+from = "cashel"
+to = "mungret"
+via = ["emly"]
+category = "path"
+level = 3
+note = "Cashel to Limerick"
+
+[[link]]
+id = "leinster"
+from = "kildare"
+to = "old_leighlin"
+category = "path"
+level = 3
+note = "Kildare to Old Leighlin"
+
+[[link]]
+id = "north-1"
+from = "armagh"
+to = "ailech"
+via = ["clogher", "ardstraw"]
+category = "path"
+level = 3
+note = "Armagh to Ailech"
+
+[[link]]
+id = "north-2"
+from = "armagh"
+to = "downpatrick"
+category = "path"
+level = 3
+note = "Armagh to Downpatrick"
+
+[[link]]
+id = "west-1"
+from = "rathcroghan"
+to = "killala"
+category = "path"
+level = 3
+note = "Rathcroghan to Killala"
+
+[[link]]
+id = "west-2"
+from = "rathcroghan"
+to = "drumcliff"
+category = "path"
+level = 3
+note = "Rathcroghan to Drumcliff"
+
+[[link]]
+id = "path-antrim"
+from = "antrim"
+to = { parent = "midluachra-2", cell = [622, 192] }
+category = "path"
+level = 1
+note = "path of Aontroim"
+
+[[link]]
+id = "path-monaincha"
+from = "monaincha"
+to = { parent = "dala-1", cell = [419, 593] }
+category = "path"
+level = 1
+note = "path of Loch Cré"
+
+[[link]]
+id = "path-connor"
+from = "connor"
+to = { parent = "midluachra-2", cell = [610, 175] }
+category = "path"
+level = 1
+note = "path of Coinnire"
+
+[[link]]
+id = "path-emain_macha"
+from = "emain_macha"
+to = { parent = "north-1", cell = [558, 277] }
+category = "path"
+level = 1
+note = "path of Emain Macha"
+
+[[link]]
+id = "path-clonfert"
+from = "clonfert"
+to = { parent = "mor-4", cell = [376, 526] }
+category = "path"
+level = 1
+note = "path of Cluain Fearta"
+
+[[link]]
+id = "path-uliathain_seat"
+from = "uliathain_seat"
+to = { parent = "munster-2", cell = [354, 781] }
+category = "path"
+level = 1
+note = "path of Uí Liatháin"
+
+[[link]]
+id = "path-dunleer"
+from = "dunleer"
+to = { parent = "midluachra-1", cell = [596, 394] }
+category = "path"
+level = 1
+note = "path of Lann Léire"
+
+[[link]]
+id = "path-lyons_hill"
+from = "lyons_hill"
+to = { parent = "chualann-2", cell = [578, 513] }
+category = "path"
+level = 1
+note = "path of Liamhain"
+
+[[link]]
+id = "path-cairpre_seat"
+from = "cairpre_seat"
+to = "drumcliff"
+category = "path"
+level = 1
+note = "path of Cairpre Droma Cliab"
+
+[[link]]
+id = "path-tir_amalgaid"
+from = "tir_amalgaid"
+to = { parent = "west-1", cell = [224, 311] }
+category = "path"
+level = 1
+note = "path of Tír Amalgaid"
+
+[[link]]
+id = "path-knowth"
+from = "knowth"
+to = { parent = "midluachra-1", cell = [583, 421] }
+category = "path"
+level = 1
+note = "path of Cnóbha"
+
+[[link]]
+id = "path-monasterboice"
+from = "monasterboice"
+to = { parent = "midluachra-1", cell = [592, 406] }
+category = "path"
+level = 1
+note = "path of Mainistir Bhuithe"
+
+[[link]]
+id = "path-dromore"
+from = "dromore"
+to = { parent = "north-2", cell = [630, 264] }
+category = "path"
+level = 1
+note = "path of Droim Mór"
+
+[[link]]
+id = "path-clonenagh"
+from = "clonenagh"
+to = { parent = "dala-1", cell = [466, 581] }
+category = "path"
+level = 1
+note = "path of Cluain Eidhneach"
+
+[[link]]
+id = "path-lagore"
+from = "lagore"
+to = { parent = "chualann-1", cell = [585, 462] }
+category = "path"
+level = 1
+note = "path of Loch Gabhair"
+
+[[link]]
+id = "path-dun_ailinne"
+from = "dun_ailinne"
+to = { parent = "chualann-2", cell = [552, 557] }
+category = "path"
+level = 1
+note = "path of Dún Ailinne"
+
+[[link]]
+id = "path-saul"
+from = "saul"
+to = "downpatrick"
+category = "path"
+level = 1
+note = "path of Sabhall"
+
+[[link]]
+id = "path-mullaghmast"
+from = "mullaghmast"
+to = { parent = "chualann-2", cell = [542, 578] }
+category = "path"
+level = 1
+note = "path of Maistiu"
+
+[[link]]
+id = "path-rathmore"
+from = "rathmore"
+to = { parent = "midluachra-2", cell = [622, 196] }
+category = "path"
+level = 1
+note = "path of An Ráth Mhór"
+
+[[link]]
+id = "path-trim"
+from = "trim"
+to = { parent = "assail", cell = [545, 456] }
+category = "path"
+level = 1
+note = "path of Baile Átha Troim"
+
+[[link]]
+id = "path-loegaire_seat"
+from = "loegaire_seat"
+to = "trim"
+category = "path"
+level = 1
+note = "path of Cenél Lóegairi"
+
+[[link]]
+id = "path-dromiskin"
+from = "dromiskin"
+to = { parent = "midluachra-1", cell = [594, 374] }
+category = "path"
+level = 1
+note = "path of Droim Ineasclainn"
+
+[[link]]
+id = "path-knockainey"
+from = "knockainey"
+to = { parent = "munster-3", cell = [329, 691] }
+category = "path"
+level = 1
+note = "path of Cnoc Áine"
+
+[[link]]
+id = "path-carraig_aille"
+from = "carraig_aille"
+to = { parent = "path-knockainey", cell = [323, 693] }
+category = "path"
+level = 1
+note = "path of Carraig Aille"
+
+[[link]]
+id = "path-inchcleraun"
+from = "inchcleraun"
+to = { parent = "assail", cell = [392, 442] }
+category = "path"
+level = 1
+note = "path of Inis Clothrann"
+
+[[link]]
+id = "path-uisneach"
+from = "uisneach"
+to = { parent = "assail", cell = [439, 463] }
+category = "path"
+level = 1
+note = "path of Uisneach"
+
+[[link]]
+id = "path-croaghan_hill"
+from = "croaghan_hill"
+to = { parent = "north-1", cell = [452, 170] }
+category = "path"
+level = 1
+note = "path of Cruachán Maige Ítha"
+
+[[link]]
+id = "path-louth"
+from = "louth"
+to = { parent = "midluachra-1", cell = [594, 370] }
+category = "path"
+level = 1
+note = "path of Lú"
+
+[[link]]
+id = "path-ardagh"
+from = "ardagh"
+to = { parent = "assail", cell = [423, 448] }
+category = "path"
+level = 1
+note = "path of Ardach"
+
+[[link]]
+id = "path-tethbae_seat"
+from = "tethbae_seat"
+to = "ardagh"
+category = "path"
+level = 1
+note = "path of Ráth Ardachaidh"
+
+[[link]]
+id = "path-swords"
+from = "swords"
+to = { parent = "chualann-1", cell = [606, 487] }
+category = "path"
+level = 1
+note = "path of Sord"
+
+[[link]]
+id = "path-lusk"
+from = "lusk"
+to = "swords"
+category = "path"
+level = 1
+note = "path of Lusca"
+
+[[link]]
+id = "path-lemanaghan"
+from = "lemanaghan"
+to = { parent = "mor-3", cell = [414, 507] }
+category = "path"
+level = 1
+note = "path of Liath Mancháin"
+
+[[link]]
+id = "path-fore"
+from = "fore"
+to = { parent = "assail", cell = [495, 442] }
+category = "path"
+level = 1
+note = "path of Baile Fhobhair"
+
+[[link]]
+id = "path-raphoe"
+from = "raphoe"
+to = { parent = "north-1", cell = [454, 166] }
+category = "path"
+level = 1
+note = "path of Ráth Bhoth"
+
+[[link]]
+id = "path-duleek"
+from = "duleek"
+to = { parent = "midluachra-1", cell = [575, 426] }
+category = "path"
+level = 1
+note = "path of Damhliag"
+
+[[link]]
+id = "path-kilmacduagh"
+from = "kilmacduagh"
+to = { parent = "mor-4", cell = [263, 548] }
+category = "path"
+level = 1
+note = "path of Cill Mhic Duach"
+
+[[link]]
+id = "path-seirkieran"
+from = "seirkieran"
+to = { parent = "dala-1", cell = [412, 590] }
+category = "path"
+level = 1
+note = "path of Saighir Chiaráin"
+
+[[link]]
+id = "path-roscommon"
+from = "roscommon"
+to = { parent = "assail", cell = [363, 429] }
+category = "path"
+level = 1
+note = "path of Ros Comáin"
+
+[[link]]
+id = "path-inis_patraic"
+from = "inis_patraic"
+to = "lusk"
+category = "path"
+level = 1
+note = "path of Inis Pádraig"
+
+[[link]]
+id = "path-rechru"
+from = "rechru"
+to = { parent = "path-inis_patraic", cell = [634, 459] }
+category = "path"
+level = 1
+note = "path of Reachrainn"
+
+[[link]]
+id = "path-gowran"
+from = "gowran"
+to = { parent = "leinster", cell = [516, 638] }
+category = "path"
+level = 1
+note = "path of Belach Gabráin"
+
+[[link]]
+id = "path-rathangan"
+from = "rathangan"
+to = { parent = "dala-1", cell = [525, 548] }
+category = "path"
+level = 1
+note = "path of Ráth Iomgháin"
+
+[[link]]
+id = "path-bruree"
+from = "bruree"
+to = "knockainey"
+category = "path"
+level = 1
+note = "path of Brú Rí"
+
+[[link]]
+id = "path-derry"
+from = "derry"
+to = { parent = "north-1", cell = [457, 135] }
+category = "path"
+level = 1
+note = "path of Doire"
+
+[[link]]
+id = "path-inishmurray"
+from = "inishmurray"
+to = "drumcliff"
+category = "path"
+level = 1
+note = "path of Inis Muirígh"
+
+[[link]]
+id = "path-elphin"
+from = "elphin"
+to = "rathcroghan"
+category = "path"
+level = 1
+note = "path of Ail Finn"
+
+[[link]]
+id = "path-tailtiu"
+from = "tailtiu"
+to = { parent = "midluachra-1", cell = [570, 441] }
+category = "path"
+level = 1
+note = "path of Tailtiu"
+
+[[link]]
+id = "path-moynagh"
+from = "moynagh"
+to = "tailtiu"
+category = "path"
+level = 1
+note = "path of Maigh nEach"
+
+[[link]]
+id = "path-rahan"
+from = "rahan"
+to = { parent = "mor-3", cell = [429, 509] }
+category = "path"
+level = 1
+note = "path of Raithean"
+
+[[link]]
+id = "path-mayo"
+from = "mayo"
+to = { parent = "west-1", cell = [254, 379] }
+category = "path"
+level = 1
+note = "path of Maigh Eo"
+
+[[link]]
+id = "path-corco_modruad"
+from = "corco_modruad"
+to = "aidne_seat"
+category = "path"
+level = 1
+note = "path of Corco Modruad"
+
+[[link]]
+id = "path-birr"
+from = "birr"
+to = "seirkieran"
+category = "path"
+level = 1
+note = "path of Biorra"
+
+[[link]]
+id = "path-granard"
+from = "granard"
+to = "tethbae_seat"
+category = "path"
+level = 1
+note = "path of Gránard"
+
+[[link]]
+id = "path-ui_echach_seat"
+from = "ui_echach_seat"
+to = { parent = "north-2", cell = [611, 269] }
+category = "path"
+level = 1
+note = "path of Cnoc Uí Echach"
+
+[[link]]
+id = "path-nendrum"
+from = "nendrum"
+to = { parent = "north-2", cell = [669, 269] }
+category = "path"
+level = 1
+note = "path of Naondroim"
+
+[[link]]
+id = "path-movilla"
+from = "movilla"
+to = { parent = "path-nendrum", cell = [693, 248] }
+category = "path"
+level = 1
+note = "path of Maigh Bhile"
+
+[[link]]
+id = "path-bangor"
+from = "bangor"
+to = "movilla"
+category = "path"
+level = 1
+note = "path of Beannchar"
+
+[[link]]
+id = "path-killeigh"
+from = "killeigh"
+to = { parent = "mor-3", cell = [463, 502] }
+category = "path"
+level = 1
+note = "path of Cill Aichidh"
+
+[[link]]
+id = "path-ui_maine_seat"
+from = "ui_maine_seat"
+to = { parent = "path-roscommon", cell = [358, 437] }
+category = "path"
+level = 1
+note = "path of Dún Imghain"
+
+[[link]]
+id = "path-spike_island"
+from = "spike_island"
+to = "cork"
+category = "path"
+level = 1
+note = "path of Inis Píc"
+
+[[link]]
+id = "path-lorrha"
+from = "lorrha"
+to = "birr"
+category = "path"
+level = 1
+note = "path of Lothra"
+
+[[link]]
+id = "path-terryglass"
+from = "terryglass"
+to = "lorrha"
+category = "path"
+level = 1
+note = "path of Tír Dhá Ghlas"
+
+[[link]]
+id = "path-fahan"
+from = "fahan"
+to = "derry"
+category = "path"
+level = 1
+note = "path of Fathain"
+
+[[link]]
+id = "path-hare_island"
+from = "hare_island"
+to = { parent = "mor-3", cell = [408, 507] }
+category = "path"
+level = 1
+note = "path of Inis Ainghin"
+
+[[link]]
+id = "path-inchbofin"
+from = "inchbofin"
+to = "hare_island"
+category = "path"
+level = 1
+note = "path of Inis Bó Finne (Loch Rí)"
+
+[[link]]
+id = "path-st_mullins"
+from = "st_mullins"
+to = "gowran"
+category = "path"
+level = 1
+note = "path of Tigh Moling"
+
+[[link]]
+id = "path-cloyne"
+from = "cloyne"
+to = { parent = "munster-2", cell = [322, 813] }
+category = "path"
+level = 1
+note = "path of Cluain"
+
+[[link]]
+id = "path-cong"
+from = "cong"
+to = "mayo"
+category = "path"
+level = 1
+note = "path of Conga"
+
+[[link]]
+id = "path-tuam"
+from = "tuam"
+to = { parent = "path-cong", cell = [223, 447] }
+category = "path"
+level = 1
+note = "path of Tuaim"
+
+[[link]]
+id = "path-annaghdown"
+from = "annaghdown"
+to = { parent = "path-tuam", cell = [256, 463] }
+category = "path"
+level = 1
+note = "path of Eanach Dhúin"
+
+[[link]]
+id = "path-clones"
+from = "clones"
+to = { parent = "north-1", cell = [521, 265] }
+category = "path"
+level = 1
+note = "path of Cluain Eois"
+
+[[link]]
+id = "path-white_island"
+from = "white_island"
+to = { parent = "north-1", cell = [480, 224] }
+category = "path"
+level = 1
+note = "path of An tOileán Bán"
+
+[[link]]
+id = "path-devenish"
+from = "devenish"
+to = { parent = "path-white_island", cell = [421, 244] }
+category = "path"
+level = 1
+note = "path of Daimhinis"
+
+[[link]]
+id = "path-inishmacsaint"
+from = "inishmacsaint"
+to = "devenish"
+category = "path"
+level = 1
+note = "path of Inis Mac Saint"
+
+[[link]]
+id = "path-taghmon"
+from = "taghmon"
+to = "st_mullins"
+category = "path"
+level = 1
+note = "path of Teach Munna"
+
+[[link]]
+id = "path-ahenny"
+from = "ahenny"
+to = { parent = "munster-2", cell = [399, 698] }
+category = "path"
+level = 1
+note = "path of Áth Eine"
+
+[[link]]
+id = "path-ardmore"
+from = "ardmore"
+to = "cloyne"
+category = "path"
+level = 1
+note = "path of Aird Mhór"
+
+[[link]]
+id = "path-iniscealtra"
+from = "iniscealtra"
+to = { parent = "dala-2", cell = [319, 642] }
+category = "path"
+level = 1
+note = "path of Inis Cealtra"
+
+[[link]]
+id = "path-carndonagh"
+from = "carndonagh"
+to = { parent = "path-fahan", cell = [471, 122] }
+category = "path"
+level = 1
+note = "path of Carn Domhnach"
+
+[[link]]
+id = "path-glendalough"
+from = "glendalough"
+to = { parent = "chualann-1", cell = [602, 503] }
+category = "path"
+level = 1
+note = "path of Gleann Dá Loch"
+
+[[link]]
+id = "path-scattery"
+from = "scattery"
+to = "kilmacduagh"
+category = "path"
+level = 1
+note = "path of Inis Cathaigh"
+
+[[link]]
+id = "path-ross_carbery"
+from = "ross_carbery"
+to = { parent = "munster-2", cell = [317, 821] }
+category = "path"
+level = 1
+note = "path of Ros Ó gCairbre"
+
+[[link]]
+id = "path-killeany"
+from = "killeany"
+to = { parent = "mor-4", cell = [271, 544] }
+category = "path"
+level = 1
+note = "path of Cill Éinne"
+
+[[link]]
+id = "path-inishbofin"
+from = "inishbofin"
+to = { parent = "path-cong", cell = [235, 413] }
+category = "path"
+level = 1
+note = "path of Inis Bó Finne"
+
+[[link]]
+id = "path-ciarraige_seat"
+from = "ciarraige_seat"
+to = { parent = "munster-3", cell = [296, 664] }
+via = [{ lat = 52.56, lon = -8.79, note = "the Maigue at Adare" }]
+category = "path"
+level = 1
+note = "path of Ciarraige Luachra"
+
+[[link]]
+id = "path-ardfert"
+from = "ardfert"
+to = "ciarraige_seat"
+category = "path"
+level = 1
+note = "path of Ard Fhearta"
+
+[[link]]
+id = "path-inisfallen"
+from = "inisfallen"
+to = "ardfert"
+category = "path"
+level = 1
+note = "path of Inis Faithlinn"
+
+[[link]]
+id = "path-locha_lein"
+from = "locha_lein"
+to = { parent = "path-inisfallen", cell = [182, 787] }
+category = "path"
+level = 1
+note = "path of Loch Léin"
+
+[[link]]
+id = "path-church_island_valentia"
+from = "church_island_valentia"
+to = { parent = "path-inisfallen", cell = [180, 769] }
+category = "path"
+level = 1
+note = "path of Oileán an Teampaill (Dairbhre)"
+
+[[link]]
+id = "path-illaunloughan"
+from = "illaunloughan"
+to = "church_island_valentia"
+category = "path"
+level = 1
+note = "path of Oileán Leacháin"
+
+[[link]]
+id = "path-skellig_michael"
+from = "skellig_michael"
+to = "illaunloughan"
+category = "path"
+level = 1
+note = "path of Sceilg Mhichíl"
+
+[[link]]
+id = "path-church_island_currane"
+from = "church_island_currane"
+to = { parent = "path-illaunloughan", cell = [77, 819] }
+category = "path"
+level = 1
+note = "path of Oileán an Teampaill (Loch Luíoch)"
+
+[[link]]
+id = "path-inishkeel"
+from = "inishkeel"
+to = { parent = "path-white_island", cell = [423, 243] }
+category = "path"
+level = 1
+note = "path of Inis Caoil"
+
+[[link]]
+id = "path-tory"
+from = "tory"
+to = "raphoe"
+via = [{ lat = 54.96, lon = -7.65, note = "south of the head of the Swilly" }]
+category = "path"
+level = 1
+note = "path of Toraigh"
+
+[[link]]
+id = "path-inishglora"
+from = "inishglora"
+to = "tir_amalgaid"
+category = "path"
+level = 1
+note = "path of Inis Gluaire"
+
+[[link]]
+id = "path-inishkea_north"
+from = "inishkea_north"
+to = { parent = "path-inishglora", cell = [107, 313] }
+category = "path"
+level = 1
+note = "path of Inis Gé Thuaidh"
+
+[[link]]
+id = "cut-aidne_seat-annaghdown"
+from = "aidne_seat"
+to = "annaghdown"
+category = "path"
+level = 0
+note = "short cut: Dúrlas Guaire to Eanach Dhúin"
+
+[[link]]
+id = "cut-clonfert-lorrha"
+from = "clonfert"
+to = "lorrha"
+category = "path"
+level = 0
+note = "short cut: Cluain Fearta to Lothra"
+
+[[link]]
+id = "cut-clonenagh-killeigh"
+from = "clonenagh"
+to = "killeigh"
+category = "path"
+level = 0
+note = "short cut: Cluain Eidhneach to Cill Aichidh"
+
+[[link]]
+id = "cut-rahan-seirkieran"
+from = "rahan"
+to = "seirkieran"
+category = "path"
+level = 0
+note = "short cut: Raithean to Saighir Chiaráin"
+
+[[link]]
+id = "cut-hare_island-uisneach"
+from = "hare_island"
+to = "uisneach"
+category = "path"
+level = 0
+note = "short cut: Inis Ainghin to Uisneach"
+
+[[link]]
+id = "cut-durrow-uisneach"
+from = "durrow"
+to = "uisneach"
+category = "path"
+level = 0
+note = "short cut: Darú to Uisneach"
+
+[[link]]
+id = "cut-louth-moynagh"
+from = "louth"
+to = "moynagh"
+category = "path"
+level = 0
+note = "short cut: Lú to Maigh nEach"

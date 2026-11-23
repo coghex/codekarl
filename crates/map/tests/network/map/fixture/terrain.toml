@@ -1,0 +1,29 @@
+shallow_threshold = 20
+[ice]
+colour = "eeeeee"
+second = "cccccc"
+[look]
+light = [-3827, -9239]
+d0 = [1, 80]
+[water]
+sea = "123456"
+shallow_sea = "234567"
+lake = "345678"
+river = "456789"
+[[terrain]]
+name = "sea"
+kind = "sea"
+key = "070809"
+[[terrain]]
+name = "lake"
+kind = "lake"
+key = "040506"
+[[terrain]]
+name = "pasture"
+kind = "land"
+key = "010203"
+solid = "112233"
+second = "223344"
+dark = "334455"
+dark_second = "445566"
+dark_lit = "556677"

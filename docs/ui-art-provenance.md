@@ -160,6 +160,12 @@ author's record, moved here from the design round's notes; the files, hashes and
 - **The colours** are theme entries (`assets/ui/theme.toml`): virtue pink and sin purple (r67), the four humours' own colours (r67, r68), the dark
   of a portrait cell and an icon tile, and the light chip. They are identity colours, not good and bad.
 
+## Linen and hemp goods icons (CK-392)
+
+- **What:** 9 × 9 pixel linen folded cloth with one fold line, and hemp rope coil, in `assets/ui/goods/make_goods.py` and its generated PNGs.
+- **Who and how:** ck-worker-1 (Codex), 2026-11-23, drew both from plain pixel shapes using the existing goods palette. No other game's or icon set's artwork was viewed, copied or traced.
+- **Review:** the owner judges the appearance in the running game. The generator's `--check` verifies the images.
+
 ## Elsewhere
 
 - **The goods icons** (CK-267): `.pipeline/coordination/ui-polish-design/goods-icons-provenance-r1.md`; `docs/ui-design.md` describes

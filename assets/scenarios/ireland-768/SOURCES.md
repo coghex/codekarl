@@ -353,3 +353,29 @@ all three, the first two found by the scenario's own id, `ireland_768` being `ir
   than characters is raised by one dependent instead of refusing a character, and each addition is counted in the start log. The designer's
   join expected it only at Uisneach, by a few; with generator data r2 (generated relatives live to the start by the death curve) it fires at 15
   pops for 91 dependents on seed 7 (Uisneach +14, Ciarraige +11, Aidne and Lagore +10; the start log of a new game lists each pop), `assets/game/lifecycle/generator.toml`.
+
+## Travel network (CK-388, slice 1a)
+
+`network.toml` is the hand-kept list of the 123 links shown in the owner's road mock-ups, approved in designer records r20 and r21.
+`network-seed.json` preserves the mock-up courses (`links.json`, SHA-256
+`47ecd35f69afbad8046a06f51a1f051a0d267428a12f0f2e78deb2575e0039b4`); the hand-list draft was designer 7's
+`network-draft-designer7-r1.toml`, SHA-256 `fd275147dedbbb1ed59f34d0438ef8b2ef897629acae3ca0555798391db5d27c`.
+The 24 access qualities follow owner record r41. The great roads start as road level 1; other backbone links as path level 3;
+the other paths as path level 1; and the seven shortcuts as path level 0 (owner records r28 and r38).
+
+The worker chose three pins to carry out the moves approved in r43: Dála at 52.672676, -8.494863 to remain on its side of the
+Shannon; the Ciarraige path at 52.56, -8.79 for the Maigue crossing at Adare; and the Tory path at 54.96, -7.65 to go around the
+head of the Swilly. Inis Cealtra's replacement join on Dála is cell (319, 642); the old completion at (319, 641) is retained as
+superseded evidence in the change log. The owner approved the first proposal and its twelve seed completions as the first stored
+network in designer record `owner-direction-designer-r75`. The approval does not decide which crossings are fords.
+
+The hand list starts with the mock-up's costs: terrain pasture 1, forest 1.5, mountain 2, marsh 3, bog 3.5; slope 10; fertility
+0.5; river crossing base 2 and 0.125 per metre of width; earlier-road reuse 0.6. Route costs use fixed-point arithmetic; the game's
+`terrain.png` defines land and the tool does not read `water.png`.
+
+In a copy with no `courses-approved.json` or `roads.toml`, `python3 assets/map/ireland/network.py import` creates the seed baseline
+and the first proposal;
+`python3 assets/map/ireland/network.py build` proposes later changes. Inspect `network-changes.md` and its linked pictures, obtain
+approval, then run `python3 assets/map/ireland/network.py accept --record 'approval record'`. The separate
+`python3 assets/map/ireland/network.py check` verifies the stored network without writing it, and `report` prints the stored report. To preview changed costs, use
+`build --recalculate LINK_ID` or `build --recalculate --all`. The tool reads Pillow for the map PNGs.

@@ -1,0 +1,79 @@
+[[location]]
+id = "a"
+name = "Fixture place"
+kind = "town"
+size = 1
+source = "fixture"
+confidence = "high"
+lat = 55.53902632907395
+lon = -10.891586317447523
+
+[[location]]
+id = "b"
+name = "Fixture place"
+kind = "town"
+size = 1
+source = "fixture"
+confidence = "high"
+lat = 55.53902632907395
+lon = -10.831291395577422
+
+[[location]]
+id = "c"
+name = "Fixture place"
+kind = "town"
+size = 1
+source = "fixture"
+confidence = "high"
+lat = 55.53902632907395
+lon = -10.876512586979997
+
+[[location]]
+id = "d"
+name = "Fixture place"
+kind = "town"
+size = 1
+source = "fixture"
+confidence = "high"
+lat = 55.526230160364136
+lon = -10.876512586979997
+
+[[location]]
+id = "e"
+name = "Fixture place"
+kind = "town"
+size = 1
+source = "fixture"
+confidence = "high"
+lat = 55.530496012522256
+lon = -10.891586317447523
+
+[[location]]
+id = "isle"
+name = "Fixture place"
+kind = "town"
+size = 1
+source = "fixture"
+confidence = "high"
+lat = 55.521963845582405
+lon = -10.85390199127871
+
+[[location]]
+id = "shore"
+name = "Fixture place"
+kind = "town"
+size = 1
+source = "fixture"
+confidence = "high"
+lat = 55.53902632907395
+lon = -10.838828260811184
+
+[[location]]
+id = "tide"
+name = "Fixture place"
+kind = "town"
+size = 1
+source = "fixture"
+confidence = "high"
+lat = 55.53902632907395
+lon = -10.846365126044946
