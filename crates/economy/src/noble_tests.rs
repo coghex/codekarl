@@ -1083,7 +1083,8 @@ fn two_pops_two_buildings_each_with_one_spare_place_only_the_demesne_tenant_pays
     // Rent: only the person in the demesne pays; the farm's tenant pays nothing.
     let mut place = place(vec![labourer(), peasant()]);
     let fill = housing_fill(&rules, &place, 0).unwrap();
-    let mut ledger = PlaceProductionLedger::new("fixture", rules.goods.len());
+    let mut ledger =
+        PlaceProductionLedger::new("fixture", rules.goods.len(), rules.herd_species.len());
     ledger.stock_after = total_stored_goods(&rules, &place).unwrap();
     collect_monthly_rent(&rules, &mut place, &fill, 30, &mut ledger).unwrap();
     assert_eq!(
@@ -1125,7 +1126,8 @@ fn pay_rent(
     days: u64,
 ) -> PlaceProductionLedger {
     let fill = housing_fill(rules, place, shelter).unwrap();
-    let mut ledger = PlaceProductionLedger::new(&place.id, rules.goods.len());
+    let mut ledger =
+        PlaceProductionLedger::new(&place.id, rules.goods.len(), rules.herd_species.len());
     ledger.stock_after = total_stored_goods(rules, place).unwrap();
     collect_monthly_rent(rules, place, &fill, days, &mut ledger).unwrap();
     ledger
@@ -1762,7 +1764,8 @@ fn a_rent_counter_past_u64_is_a_named_error_never_a_silent_cap() {
         housed: vec![vec![1 << 56]],
         ..HousingFill::default()
     };
-    let mut ledger = PlaceProductionLedger::new("fixture", rules.goods.len());
+    let mut ledger =
+        PlaceProductionLedger::new("fixture", rules.goods.len(), rules.herd_species.len());
     ledger.stock_after = total_stored_goods(&rules, &place).unwrap();
     let error = collect_monthly_rent(&rules, &mut place, &fill, 30, &mut ledger).unwrap_err();
     assert_eq!(

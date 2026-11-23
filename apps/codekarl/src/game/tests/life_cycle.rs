@@ -201,6 +201,62 @@ fn noon(year: u16, month: u8, day: u8) -> Date {
 }
 
 #[test]
+fn herds_and_product_carries_survive_saves_on_both_sides_of_noon() {
+    let rules = start().0.clone();
+    let mut economy = start().1.clone();
+    economy.places.retain(|place| {
+        place
+            .buildings
+            .iter()
+            .any(|building| !building.herds.is_empty())
+    });
+    economy.places.truncate(1);
+    let herd = economy.places[0]
+        .buildings
+        .iter_mut()
+        .find(|building| !building.herds.is_empty())
+        .unwrap();
+    herd.herd_product_carries[0] = 123_456;
+    for hour in [11, 13] {
+        let from = at(768, 2, 1, hour);
+        let mut game = Game::with_economy(
+            rules.clone(),
+            economy.clone(),
+            Vec::new(),
+            from,
+            &format!("herd-save-{hour}"),
+        );
+        let identity = crate::game::saves::Identity {
+            build: "herd-test".into(),
+            scenario: "fixture".into(),
+            scenario_hash: "0".repeat(64),
+            map_hash: "0".repeat(64),
+            scripts_hash: "0".repeat(64),
+            rules_hash: "0".repeat(64),
+            start: date(768, 2, 1, hour),
+        };
+        let saved = game.simulation.save(identity.meta(42));
+        let bytes = saved.to_bytes().unwrap();
+        let loaded = ck_sim::Save::<GameState>::from_bytes(&bytes, &identity.expected()).unwrap();
+        assert_eq!(loaded.state.economy, game.state().economy);
+        let mut scheduler = Scheduler::<GameState>::new();
+        register_economy_callback_with_storage(
+            &mut scheduler,
+            Arc::new(rules.clone()),
+            Arc::clone(&game.handle),
+        );
+        let mut resumed =
+            Simulation::<GameState, GameCommand>::from_save(loaded, scheduler, apply).unwrap();
+        for _ in 0..24 {
+            assert!(game.simulation.step().unwrap().is_empty());
+            assert!(resumed.step().unwrap().is_empty());
+        }
+        assert_eq!(resumed.state().economy, game.state().economy);
+        assert_eq!(resumed.digest().unwrap(), game.simulation.digest().unwrap());
+    }
+}
+
+#[test]
 fn a_certain_death_before_the_step_on_the_1st_counts_in_that_months_deaths_and_clears_the_pending_count()
  {
     let (rules, economy) = start();
