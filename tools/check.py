@@ -1173,6 +1173,7 @@ STEPS = [
         paths=(
             "apps/codekarl/",
             "crates/economy/",
+            "crates/map/tests/network/",
             "config/",
             "scripts/",
             "assets/",
@@ -1208,6 +1209,7 @@ STEPS = [
         paths=(
             "apps/codekarl/",
             "crates/economy/",
+            "crates/map/tests/network/",
             "config/",
             "scripts/",
             "assets/",

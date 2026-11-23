@@ -211,6 +211,10 @@ pub(crate) fn prepare(
         )
         .map_err(|e| format!("save {}: {e}", path.display()))?;
         let storage = super::character_storage::Storage::at(staging, None, None, None);
+        let expected = super::stretch::starting(scenario.network.as_ref())
+            .into_keys()
+            .collect();
+        super::stretch::validate(&save.state.stretches, &expected)?;
         super::character_storage::Storage::validate(&storage.path, &save.state)
             .map_err(|e| e.to_string())?;
         let layers = save.meta.layers;
@@ -250,6 +254,7 @@ pub(crate) fn prepare(
                 GameState {
                     economy: economy_state,
                     characters,
+                    stretches: super::stretch::starting(scenario.network.as_ref()),
                 },
                 scheduler(),
                 apply,
@@ -399,6 +404,13 @@ pub(super) fn test_core(
     outputs: Outputs,
 ) -> Core<GameState, GameCommand> {
     let wiring = prepared.view_wiring();
+    let stretch_ids = prepared
+        .simulation
+        .state()
+        .stretches
+        .keys()
+        .copied()
+        .collect();
     let Prepared {
         identity,
         simulation,
@@ -419,6 +431,9 @@ pub(super) fn test_core(
         Some(view_builder(wiring)),
         layers,
     )
+    .with_state_validation(move |state: &GameState| {
+        super::stretch::validate(&state.stretches, &stretch_ids)
+    })
     .with_character_storage(storage, super::character_storage::Storage::validate)
 }
 
@@ -440,6 +455,13 @@ pub(crate) struct Connected {
 )]
 pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> Connected {
     let wiring = prepared.view_wiring();
+    let stretch_ids = prepared
+        .simulation
+        .state()
+        .stretches
+        .keys()
+        .copied()
+        .collect();
     let Prepared {
         identity,
         simulation,
@@ -527,6 +549,9 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
                 Some(view_builder(wiring)),
                 layers,
             )
+            .with_state_validation(move |state: &GameState| {
+                super::stretch::validate(&state.stretches, &stretch_ids)
+            })
             .with_character_storage(storage, super::character_storage::Storage::validate)
             .with_terminal_probe(move || {
                 terminal_runtime
@@ -1337,6 +1362,356 @@ mod nearby_place_tests {
                     .iter()
                     .all(|other| other.distance_m <= 200_000 && other.id != *place)
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod stretch_save_tests {
+    use super::*;
+    use crate::game::{controls::Control, core::Message, stretch::StretchState};
+    use std::{
+        collections::BTreeMap,
+        fs,
+        sync::{Arc, Mutex},
+        time::Duration,
+    };
+
+    fn fixture(dir: &Path) -> (GameConfig, Prepared) {
+        let game = GameConfig {
+            scenario: Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../crates/map/tests/network/scenarios/fixture"),
+            saves: dir.join("saves"),
+        };
+        let prepared = prepare(
+            &Request {
+                game: &game,
+                vms: &[],
+                load: None,
+                seed: Some(42),
+            },
+            || Ok(42),
+            &mut |_, _| {},
+        )
+        .unwrap();
+        (game, prepared)
+    }
+
+    fn save_with(prepared: &Prepared, path: &Path, states: BTreeMap<u64, StretchState>) -> u64 {
+        let mut save = prepared.simulation.save(prepared.identity.meta(42));
+        save.state.stretches = states;
+        let digest = save.digest().unwrap();
+        let mut archive = fs::File::open(prepared.storage.path.join("ARCH")).unwrap();
+        let mut logs = fs::File::open(prepared.storage.path.join("LOGS")).unwrap();
+        let lengths = (
+            archive.metadata().unwrap().len(),
+            logs.metadata().unwrap().len(),
+        );
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut file = fs::File::create(path).unwrap();
+        save.write_with_sections(
+            &mut file,
+            &mut [
+                (*b"ARCH", lengths.0, &mut archive),
+                (*b"LOGS", lengths.1, &mut logs),
+            ],
+        )
+        .unwrap();
+        digest
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "The same malformed saves must be checked through both loaders and their storage bindings."
+    )]
+    fn both_load_paths_refuse_bad_stretch_states_before_installing_storage() {
+        let dir = crate::testing::Dir::new();
+        let (game, prepared) = fixture(&dir.0);
+        let original = prepared.simulation.state().stretches.clone();
+        let ids: Vec<_> = original.keys().copied().collect();
+        let mut cases = Vec::new();
+        let mut missing = original.clone();
+        missing.remove(&ids[0]);
+        cases.push((missing, format!("missing stretch {}", ids[0])));
+        let mut extra = original.clone();
+        extra.insert(u64::MAX, original[&ids[0]].clone());
+        cases.push((extra, format!("unexpected stretch {}", u64::MAX)));
+        let mut both = original.clone();
+        both.remove(&ids[0]);
+        both.remove(&ids[1]);
+        both.insert(u64::MAX, original[&ids[0]].clone());
+        cases.push((both, format!("missing stretch {}", ids[0])));
+        for (field, value) in [("category", 2), ("level", 6), ("condition", 1001)] {
+            let mut bad = original.clone();
+            let s = bad.get_mut(&ids[0]).unwrap();
+            match field {
+                "category" => s.category = u8::try_from(value).unwrap(),
+                "level" => s.level = u8::try_from(value).unwrap(),
+                _ => s.condition = value,
+            }
+            cases.push((bad, format!("stretch {}: invalid {field} {value}", ids[0])));
+        }
+        let path = super::super::saves::quicksave_path(&game.saves);
+        let handle = Arc::clone(prepared.storage.handle.as_ref().unwrap());
+        let archive = Arc::clone(prepared.storage.cell.as_ref().unwrap());
+        let logs = Arc::clone(prepared.storage.log_cell.as_ref().unwrap());
+        let original_path = handle.lock().unwrap().clone();
+        let original_archive = archive.lock().unwrap().clone().unwrap();
+        let original_logs = logs.lock().unwrap().clone().unwrap();
+        for (bad, error) in cases {
+            save_with(&prepared, &path, bad);
+            let startup = prepare(
+                &Request {
+                    game: &game,
+                    vms: &[],
+                    load: Some(&path),
+                    seed: None,
+                },
+                || Ok(42),
+                &mut |_, _| {},
+            );
+            assert!(startup.err().unwrap().contains(&error));
+            let records = Arc::new(Mutex::new(Vec::new()));
+            let output = Arc::clone(&records);
+            // Use a fresh prepared game for each refusal, with the actual attached storage and readers.
+            let (_, running) = fixture(&dir.0);
+            let (_, unbroken) = fixture(&dir.0);
+            let running_handle = Arc::clone(running.storage.handle.as_ref().unwrap());
+            let running_archive = Arc::clone(running.storage.cell.as_ref().unwrap());
+            let running_logs = Arc::clone(running.storage.log_cell.as_ref().unwrap());
+            let before_path = running_handle.lock().unwrap().clone();
+            let before_archive = running_archive.lock().unwrap().clone().unwrap();
+            let before_logs = running_logs.lock().unwrap().clone().unwrap();
+            let mut core = test_core(
+                running,
+                game.saves.clone(),
+                Outputs {
+                    log: Box::new(move |_, line| output.lock().unwrap().push(line)),
+                    publish: Box::new(|_| {}),
+                    fail: Box::new(|e| panic!("{e}")),
+                },
+            );
+            let mut control = test_core(
+                unbroken,
+                game.saves.clone(),
+                Outputs {
+                    log: Box::new(|_, _| {}),
+                    publish: Box::new(|_| {}),
+                    fail: Box::new(|e| panic!("{e}")),
+                },
+            );
+            let before = core.digest();
+            assert_eq!(before, control.digest());
+            core.dispatch(Message::Control(Control::Quickload), Duration::ZERO);
+            assert!(
+                records
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|line| line.contains(&error))
+            );
+            assert_eq!(core.digest(), before);
+            for world in [&mut core, &mut control] {
+                world.dispatch(Message::Control(Control::TogglePause), Duration::ZERO);
+                for second in 1..=13 {
+                    world.run_wake(Duration::from_secs(second), &mut || None);
+                }
+            }
+            assert_eq!(core.digest(), control.digest());
+            assert_eq!(core.snapshot().date.hour, 13, "the noon tick has completed");
+            assert_eq!(*running_handle.lock().unwrap(), before_path);
+            assert!(Arc::ptr_eq(
+                running_archive.lock().unwrap().as_ref().unwrap(),
+                &before_archive
+            ));
+            assert!(Arc::ptr_eq(
+                running_logs.lock().unwrap().as_ref().unwrap(),
+                &before_logs
+            ));
+        }
+        assert_eq!(*handle.lock().unwrap(), original_path);
+        assert!(Arc::ptr_eq(
+            archive.lock().unwrap().as_ref().unwrap(),
+            &original_archive
+        ));
+        assert!(Arc::ptr_eq(
+            logs.lock().unwrap().as_ref().unwrap(),
+            &original_logs
+        ));
+    }
+
+    #[test]
+    fn fixture_stretches_remain_unchanged_through_the_real_daily_and_monthly_systems() {
+        let dir = crate::testing::Dir::new();
+        let (_, prepared) = fixture(&dir.0);
+        let initial = prepared.simulation.state().clone();
+        let stretches = initial.stretches.clone();
+        assert!(!stretches.is_empty());
+        let rules = Rules::load(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/game/economy.toml"),
+        )
+        .unwrap();
+        let scheduler = gameplay_scheduler_with_rules(
+            None,
+            Some(Arc::new(rules)),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            prepared.storage.handle.clone(),
+        );
+        let mut game = Simulation::<GameState, GameCommand>::new(
+            prepared.simulation.time(),
+            prepared.simulation.seed(),
+            initial,
+            scheduler,
+            apply,
+        );
+        let start = game.date().unwrap();
+        let mut crossed_month = false;
+        while game.date().unwrap().year == start.year {
+            let errors = game.step().unwrap();
+            assert!(errors.is_empty(), "{errors:?}");
+            if game.date().unwrap().month != start.month {
+                crossed_month = true;
+                assert_eq!(game.state().stretches, stretches);
+            }
+        }
+        assert!(crossed_month);
+        let target_year = game.date().unwrap().year;
+        while game.date().unwrap().year == target_year
+            && (
+                game.date().unwrap().month,
+                game.date().unwrap().day,
+                game.date().unwrap().hour,
+            ) != (start.month, start.day, start.hour)
+        {
+            let errors = game.step().unwrap();
+            assert!(errors.is_empty(), "{errors:?}");
+        }
+        assert_eq!(game.date().unwrap().year, start.year + 1);
+        assert_eq!(
+            (
+                game.date().unwrap().month,
+                game.date().unwrap().day,
+                game.date().unwrap().hour
+            ),
+            (start.month, start.day, start.hour)
+        );
+        assert_eq!(game.state().stretches, stretches);
+    }
+
+    #[test]
+    fn mixed_stretches_round_trip_and_saves_bracket_noon() {
+        let dir = crate::testing::Dir::new();
+        let (game, mut prepared) = fixture(&dir.0);
+        let path = super::super::saves::quicksave_path(&game.saves);
+        let mut mixed = prepared.simulation.state().stretches.clone();
+        let ids: Vec<_> = mixed.keys().copied().collect();
+        for (id, category, level, condition) in [
+            (ids[0], 1, 1, 0),
+            (ids[1], 1, 1, 437),
+            (ids[2], 0, 4, 1000),
+            (ids[3], 0, 0, 600),
+        ] {
+            mixed.insert(
+                id,
+                StretchState {
+                    category,
+                    level,
+                    condition,
+                },
+            );
+        }
+        let digest = save_with(&prepared, &path, mixed.clone());
+        let load = || {
+            prepare(
+                &Request {
+                    game: &game,
+                    vms: &[],
+                    load: Some(&path),
+                    seed: None,
+                },
+                || Ok(42),
+                &mut |_, _| {},
+            )
+            .unwrap()
+        };
+        let loaded = load();
+        assert_eq!(loaded.simulation.state().stretches, mixed);
+        assert_eq!(loaded.simulation.digest().unwrap(), digest);
+        for hour in [11, 13] {
+            while prepared.simulation.date().unwrap().hour != hour {
+                prepared.simulation.step().unwrap();
+            }
+            let state = prepared.simulation.state().stretches.clone();
+            let digest = save_with(&prepared, &path, state.clone());
+            let mut loaded = load();
+            assert_eq!(loaded.simulation.digest().unwrap(), digest);
+            assert_eq!(loaded.simulation.state().stretches, state);
+            for _ in 0..24 {
+                prepared.simulation.step().unwrap();
+                loaded.simulation.step().unwrap();
+            }
+            assert_eq!(
+                loaded.simulation.digest().unwrap(),
+                prepared.simulation.digest().unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn shipped_network_initializes_every_stretch_and_exactly_the_five_roads() {
+        let dir = crate::testing::Dir::new();
+        let game = GameConfig {
+            scenario: Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../assets/scenarios/ireland-768"),
+            saves: dir.0.join("saves"),
+        };
+        let prepared = prepare(
+            &Request {
+                game: &game,
+                vms: &[],
+                load: None,
+                seed: Some(42),
+            },
+            || Ok(42),
+            &mut |_, _| {},
+        )
+        .unwrap();
+        let network = prepared.scenario.network.as_ref().unwrap();
+        let states = &prepared.simulation.state().stretches;
+        assert_eq!(states.len(), network.stretches.len());
+        let roads: std::collections::BTreeSet<_> = network
+            .roads
+            .iter()
+            .flat_map(|road| &road.links)
+            .flat_map(|id| {
+                network
+                    .links
+                    .iter()
+                    .find(|link| &link.id == id)
+                    .unwrap()
+                    .stretches
+                    .iter()
+                    .map(|(id, _)| *id)
+            })
+            .collect();
+        assert_eq!(network.roads.len(), 5);
+        for stretch in &network.stretches {
+            let state = &states[&stretch.id];
+            assert_eq!(
+                state.category,
+                u8::from(stretch.category == ck_map::LandCategory::Road)
+            );
+            assert_eq!(state.level, stretch.level);
+            assert_eq!(state.condition, 1000);
+            assert_eq!(state.category == 1, roads.contains(&stretch.id));
+            if roads.contains(&stretch.id) {
+                assert_eq!(state.level, 1);
+            }
         }
     }
 }

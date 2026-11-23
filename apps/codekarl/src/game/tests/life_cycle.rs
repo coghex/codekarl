@@ -138,6 +138,7 @@ impl Game {
         let state = GameState {
             economy,
             characters: store_of(characters),
+            stretches: BTreeMap::new(),
         };
         let simulation = Self::simulate(rules, &handle, state, from);
         Self {

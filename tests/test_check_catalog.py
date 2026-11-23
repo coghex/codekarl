@@ -2438,7 +2438,12 @@ GUARDS: tuple[Guard, ...] = (
     # CK-231 (the same gap): the map modes' tests load Ireland 768's map and places, and their window witness runs the shipped UI script.
     Guard("apps/codekarl/src/map_modes.rs", "rust.app", ("assets/scenarios/ireland-768/",)),
     # CK-244: setup's island recruitment test loads the shipped Ireland scenario.
-    Guard("apps/codekarl/src/game/setup.rs", "rust.app", ("assets/scenarios/ireland-768/",)),
+    Guard(
+        "apps/codekarl/src/game/setup.rs",
+        "rust.app",
+        ("assets/scenarios/ireland-768/", "assets/game/economy.toml", "crates/map/tests/network/"),
+    ),
+    Guard("apps/codekarl/src/game/stretch.rs", "rust.app", ("crates/map/tests/network/",)),
     # CK-277: tooltip widget tests read the shipped glossary for the date explanation contract.
     Guard("apps/codekarl/src/widget_tests.rs", "rust.app", ("assets/ui/glossary.toml",)),
     # The shipped UI witness reads the shipped script, so the narrow app.ui-witness group owns that dependency.
@@ -4236,6 +4241,16 @@ if __name__ == "__main__":
 
 
 class NetworkGroupSelection(unittest.TestCase):
+    def test_shared_network_fixture_selects_both_application_test_groups(self) -> None:
+        choices = {
+            choice.step.name: choice
+            for choice in check.plan(
+                check.STEPS, ["crates/map/tests/network/scenarios/fixture/roads.toml"]
+            ).choices
+        }
+        self.assertTrue(choices["rust.app"].selected)
+        self.assertTrue(choices["rust.app-default"].selected)
+
     def test_network_inputs_and_scenario_only_select_network_test(self) -> None:
         paths = (
             "assets/map/ireland/network.py",

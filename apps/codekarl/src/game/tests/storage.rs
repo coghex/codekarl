@@ -553,6 +553,7 @@ fn same_build_saves_and_digests_ignore_derived_daily_market_orders() {
             crate::game::GameState {
                 economy,
                 characters: ck_characters::CharacterStore::default(),
+                stretches: std::collections::BTreeMap::new(),
             },
             Scheduler::new(),
             crate::game::apply,
