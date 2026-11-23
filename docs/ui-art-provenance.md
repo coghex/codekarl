@@ -9,7 +9,7 @@ author's record, moved here from the design round's notes; the files, hashes and
 
 ## Map layers icon (CK-387)
 
-- **What it is:** the map layers button's 9×9 grid in `assets/ui/theme/make_theme.py`, rendered into `icon_layers.png`.
+- **What it is:** the map layers button's seven-row grid in `assets/ui/theme/make_theme.py`, padded into the 9×11 `icon_layers.png`.
 - **How it was made:** ck-worker-1 (Codex) drew two short horizontal bars and an upward chevron from plain shapes for this feature. No other game's icon or reference image was consulted.
 - **Verification:** `make_theme.py --check` checks the generated image. The owner judges its appearance in the running game.
 
