@@ -1134,7 +1134,7 @@ pops move, the herd stays. These are counts, not individual animals, so livestoc
 **Orders (derived each day, never saved):**
 - **Buy orders, per pop** (Firm r14: from diet profiles):
   - **food (E6: one basis, the 240-day target):** `buy_g = max(0, ⌈share_g × need × 240 / (1000 × hunger_g)⌉ − holding_g)` units, where
-    `holding_g` counts the store and the pop's account. `share_g` is the pop type's profile normalised for the place (§3.17), and `need`
+    `holding_g` counts the store and the pop's account. `share_g` is the pop type's profile (§3.17), and `need`
     and `hunger_g` are in hundredths. r14's 30-day rule is removed;
   - **niceties and luxuries** (Firm, owner 2026-11-09, `owner-direction-tier-orders-r1.md`): the tier profile's goods, up to the
     type's expectation over the same 240 days, minus holdings. Exactly, for each tier `T` and each good `g` in the type's tier profile:
@@ -1208,7 +1208,7 @@ profile of the goods it wants for niceties and luxuries.
 | meat (beef, pork, mutton, equally) | 100 | 150 | 50 |
 | peas and beans | 70 | 70 | 70 |
 | vegetables | 50 | 50 | 80 |
-| fish (coastal places only; elsewhere renormalised away) | 30 | 30 | 100 |
+| fish | 30 | 30 | 100 |
 
 **Tier profiles:** labourers ale and honey; monks ale, mead, apples and herbs; peasants none. Each tier's goods have **fixed shares**
 in ‰ (Firm, owner 2026-11-09; data, tunable), started at a holdings level's yearly output × the tier value, so a balanced place sits
@@ -1241,7 +1241,6 @@ labourers more meat.
 
 **Normalisation (R14-F3):**
 - **Meat:** the profile's meat share is split equally between beef, pork and mutton, `⌊share / 3⌋` each, with the remainder to beef.
-- **Inland places** have no fish share. The other shares are scaled up to sum to 1000 by largest remainder, in table order.
 
 ### 3.18 Storehouses (Firm, r17)
 
@@ -1548,7 +1547,7 @@ Sources: `small-gaps-r3.md` §3, `rent-r1.md`, `p1-noble-economy-r1.toml`, `p1-n
   overflow. Peasants' own farms, church housing and makeshift shelter stay free.
   - **How much:** for *n* paying people of a pop type *t*, `⌊ n × V_t / 20 ⌋` value units, where `V_t` is the value at the place's local
     prices of one person's necessities for the month: the units the food target gives one person of the type for the month's days
-    (its diet profile, with the inland normalisation and the per-good round up to whole units), each at its local price.
+    (its diet profile and the per-good round up to whole units), each at its local price.
   - **In goods, whole units:** a store worth no more than the due is paid whole. Otherwise each good gives its proportional share
     rounded down, then, while what is owed is at least the price of some good with stock left, units of the cheapest such good (ties in
     rules order) are taken, as many as fit in one step. What is left, less than the cheapest unit, is forgiven residue.
