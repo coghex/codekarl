@@ -191,10 +191,16 @@ fn append_month_rows(
             .ok_or_else(|| format!("monthly ledger is missing place `{}`", place.id))?;
         let mut herds = [0_u64; 3];
         for building in &place.buildings {
-            for (index, count) in building.herds.iter().take(3).enumerate() {
-                herds[index] = herds[index]
-                    .checked_add(*count)
-                    .ok_or("place herd total overflow")?;
+            for (column, animal) in ["cattle", "pigs", "sheep"].iter().enumerate() {
+                if let Some(index) = rules
+                    .herd_species
+                    .iter()
+                    .position(|species| species.animal == *animal)
+                {
+                    herds[column] = herds[column]
+                        .checked_add(building.herds.get(index).copied().unwrap_or(0))
+                        .ok_or("place herd total overflow")?;
+                }
             }
         }
         let prices = goods

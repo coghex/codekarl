@@ -18,16 +18,6 @@ use std::collections::BTreeMap;
 const POP_STORE_ML_PER_PERSON: u64 = 720_000;
 /// A storehouse level's store, in millilitres: 50 people's worth of a pop store (design §3.18).
 const STOREHOUSE_STORE_ML_PER_LEVEL: u64 = 50 * POP_STORE_ML_PER_PERSON;
-/// The goods a herd gives (design §3.14): they follow the herd, not the land, so a method's annual output at the land's suitability
-/// does not count them. Dairy counts through the herd (see [`DAIRY_LB_PER_COW_A_YEAR`]); the meats do not count at all (the owner's
-/// rulings of 2026-11-09: herd is not food, but dairy counts toward the yield and the meat does not); wool and hides are not food.
-const HERD_GOODS: [&str; 6] = ["beef", "pork", "mutton", "dairy", "wool", "hides"];
-/// What a cow gives a year at full coverage (design §3.14: dairy is `cattle × 72` pounds, set by the herd's size).
-const DAIRY_LB_PER_COW_A_YEAR: u64 = 72;
-/// The species of a building's herd, in the order the state holds them, with each one's maximum head per farming level
-/// (design §3.14).
-const HERDS: [(&str, u64); 3] = [("cattle", 12), ("pigs", 8), ("sheep", 7)];
-
 /// One good's price at a place against its base price.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PriceView {
@@ -406,7 +396,7 @@ fn projected_yield(rules: &Rules, building: &BuildingState, mean_fertility_pm: u
             continue;
         }
         for (good_id, annual) in &method.annual_output {
-            if HERD_GOODS.contains(&good_id.as_str()) {
+            if ck_economy::herd_supplies(rules, definition, good_id) {
                 continue;
             }
             let Some((good_index, good)) = rules
@@ -439,16 +429,20 @@ fn projected_yield(rules: &Rules, building: &BuildingState, mean_fertility_pm: u
             total = total.saturating_add(units * u128::from(good.hunger_centi));
         }
     }
-    // Dairy follows the herd, whatever the methods: the cattle (the first species) at 72 pounds a head.
-    if let (Some(cattle), Some(dairy)) = (
-        building.herds.first(),
-        rules.goods.iter().find(|good| good.id == "dairy"),
-    ) {
-        total = total.saturating_add(
-            u128::from(*cattle)
-                * u128::from(DAIRY_LB_PER_COW_A_YEAR)
-                * u128::from(dairy.hunger_centi),
-        );
+    for (species, head) in rules.herd_species.iter().zip(&building.herds) {
+        if !definition.herds.contains_key(&species.animal) {
+            continue;
+        }
+        for product in &species.products {
+            if let Some(good) = rules.goods.iter().find(|good| good.id == product.good) {
+                total = total.saturating_add(
+                    u128::from(*head)
+                        .saturating_mul(u128::from(product.amount_milli.unwrap_or(0)))
+                        .saturating_mul(u128::from(good.hunger_centi))
+                        / 1000,
+                );
+            }
+        }
     }
     u64::try_from(total).unwrap_or(u64::MAX)
 }
@@ -491,13 +485,19 @@ fn building_view(
                 sum.saturating_add(u64::from(*levels))
             })
     });
-    let herds = HERDS
+    let herds = rules
+        .herd_species
         .iter()
         .zip(&building.herds)
-        .map(|((species, per_level), head)| HerdView {
-            species: (*species).to_owned(),
-            head: *head,
-            maximum: farming_levels.saturating_mul(*per_level),
+        .filter_map(|(species, head)| {
+            definition?
+                .herds
+                .get(&species.animal)
+                .map(|capacity| HerdView {
+                    species: species.animal.clone(),
+                    head: *head,
+                    maximum: farming_levels.saturating_mul(capacity.maximum),
+                })
         })
         .collect();
     BuildingView {
@@ -838,7 +838,7 @@ mod tests {
                     method_suitability: vec![vec![0; goods]; 2],
                     herd_birth_carries: vec![0; 3],
                     herd_death_carries: vec![0; 3],
-                    herd_product_carries: vec![0; goods],
+                    herd_product_carries: vec![0; 2],
                     herd_grazing_sums: vec![0; 3],
                     wage_carries: vec![0; goods],
                     pay_carries: vec![0; goods],
@@ -1112,7 +1112,7 @@ mod tests {
         holdings.method_suitability = vec![vec![0; goods]; 2];
         holdings.herd_birth_carries = vec![0; 3];
         holdings.herd_death_carries = vec![0; 3];
-        holdings.herd_product_carries = vec![0; goods];
+        holdings.herd_product_carries = vec![0; 2];
         holdings.herd_grazing_sums = vec![0; 3];
         holdings.wage_carries = vec![0; goods];
         holdings.pay_carries = vec![0; goods];
@@ -1894,6 +1894,93 @@ mod tests {
             None => build(Some(rules), &state, &["fixture".to_owned()], test_date()),
         };
         view.places[0].projected_yield
+    }
+
+    #[test]
+    fn herd_yield_saturates_for_large_authored_amounts_and_counts() {
+        let mut rules = shipped_rules();
+        rules.herd_species[0].products[0].amount_milli = Some(u64::MAX);
+        let mut place = fixture(&rules);
+        place.buildings[0].herds[0] = u64::MAX;
+        assert_eq!(projected_yield(&rules, &place.buildings[0], 550), u64::MAX);
+    }
+
+    #[test]
+    fn herd_rows_and_food_yield_follow_each_buildings_species() {
+        let mut rules = shipped_rules();
+        let mut goat = rules
+            .goods
+            .iter()
+            .find(|g| g.id == "cattle")
+            .unwrap()
+            .clone();
+        goat.id = "goats".into();
+        rules.goods.push(goat);
+        rules.herd_species.push(ck_economy::HerdSpecies {
+            animal: "goats".into(),
+            births_pm_year: 0,
+            deaths_pm_year: 0,
+            emergency_order: 3,
+            yields: vec![ck_economy::HerdYield {
+                good: "hides".into(),
+                units: 1,
+            }],
+            products: vec![ck_economy::HerdProduct {
+                good: "oats".into(),
+                amount_milli: Some(2500),
+                season: None,
+                month: Some(6),
+            }],
+        });
+        let farm_definition = rules.buildings.iter_mut().find(|b| b.id == "farm").unwrap();
+        farm_definition.herds.retain(|id, _| id == "sheep");
+        farm_definition.herds.insert(
+            "goats".into(),
+            ck_economy::HerdCapacity {
+                maximum: 13,
+                start: 1,
+            },
+        );
+        farm_definition.methods[0].annual_output =
+            BTreeMap::from([("dairy".into(), 860), ("oats".into(), 100)]);
+        let mut place = fixture(&rules);
+        let farm = &mut place.buildings[0];
+        farm.method_levels = vec![1, 0];
+        farm.herds = vec![0, 0, 3, 2];
+        farm.method_suitability[0][index_of(&rules, "dairy")] = 700;
+        farm.method_suitability[0][index_of(&rules, "oats")] = 1000;
+        let view = building_view(&rules, farm, 0, test_date());
+        assert_eq!(
+            view.herds,
+            [
+                HerdView {
+                    species: "sheep".into(),
+                    head: 3,
+                    maximum: 7
+                },
+                HerdView {
+                    species: "goats".into(),
+                    head: 2,
+                    maximum: 13
+                }
+            ]
+        );
+        let dairy = u64::from(rules.goods[index_of(&rules, "dairy")].hunger_centi);
+        let oats = u64::from(rules.goods[index_of(&rules, "oats")].hunger_centi);
+        assert_eq!(projected_yield(&rules, farm, 550), 602 * dairy + 5 * oats);
+        let mut holdings = farm.clone();
+        holdings.kind = "holdings".into();
+        holdings.herds = vec![4, 0, 0, 0];
+        let other = building_view(&rules, &holdings, 0, test_date());
+        assert_eq!(
+            other.herds[0],
+            HerdView {
+                species: "cattle".into(),
+                head: 4,
+                maximum: 12
+            }
+        );
+        assert_eq!(other.herds.len(), 3);
     }
 
     #[test]

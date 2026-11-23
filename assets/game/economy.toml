@@ -11,6 +11,29 @@ fertility_reference_pm = 550
 hire_pm = 100
 leave_pm = 50
 
+[[herd_species]]
+animal="cattle"
+births_pm_year=500
+deaths_pm_year=80
+emergency_order=2
+yields=[{good="beef", units=220}, {good="hides", units=1}]
+products=[{good="dairy", amount_milli=72000, season="dairy"}]
+
+[[herd_species]]
+animal="pigs"
+births_pm_year=1500
+deaths_pm_year=100
+emergency_order=0
+yields=[{good="pork", units=88}]
+
+[[herd_species]]
+animal="sheep"
+births_pm_year=800
+deaths_pm_year=80
+emergency_order=1
+yields=[{good="mutton", units=33}]
+products=[{good="wool", amount_milli=1500, month=6}]
+
 [footprint_m2]
 farm = 2000
 holdings = 4000
@@ -379,6 +402,7 @@ noble=[1000,700,300]   # start content, at their expectations
 
 [[buildings]]
 id="farm"
+herds={ cattle={maximum=12,start=9}, pigs={maximum=8,start=6}, sheep={maximum=7,start=5} }
 workers_per_level=10
 land_per_level=2
 owner_workers={ peasant=10 }
@@ -399,6 +423,7 @@ annual_output={ fish=8000, seabirds=1500 }
 score_share_pm={ fish=850, seabirds=150 }
 [[buildings]]
 id="holdings"
+herds={ cattle={maximum=12,start=9}, pigs={maximum=8,start=6}, sheep={maximum=7,start=5} }
 workers_per_level=10
 land_per_level=2
 owner_workers={ monk=5, labourer=10 }
@@ -423,6 +448,7 @@ score_share_pm={ fish=800, seabirds=150, vegetables=30, herbs=20 }
 # jobs (one owner covers 10 of them) and `owner_kind` names the pop type that owns: one noble covers 10 labourers.
 [[buildings]]
 id="demesne"
+herds={ cattle={maximum=12,start=9}, pigs={maximum=8,start=6}, sheep={maximum=7,start=5} }
 workers_per_level=10
 land_per_level=2
 owner_workers={ labourer=10 }

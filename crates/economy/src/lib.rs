@@ -136,6 +136,59 @@ pub struct Method {
     pub score_share_pm: BTreeMap<String, u16>,
 }
 
+/// One good received for each slaughtered animal.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct HerdYield {
+    /// Good identifier.
+    pub good: String,
+    /// Whole units per head.
+    pub units: u64,
+}
+
+/// A recurring herd product, with one of season or month.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct HerdProduct {
+    /// Good identifier.
+    pub good: String,
+    /// Thousandths of a unit per head per year.
+    pub amount_milli: Option<u64>,
+    /// Seasonal share table.
+    pub season: Option<String>,
+    /// Month of payment, when not seasonal.
+    pub month: Option<u8>,
+}
+
+/// Rules for a species, in display and ledger order.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct HerdSpecies {
+    /// Live animal good.
+    pub animal: String,
+    /// Births per thousand per year.
+    pub births_pm_year: u64,
+    /// Deaths per thousand per year.
+    pub deaths_pm_year: u64,
+    /// Emergency slaughter priority, lowest first.
+    pub emergency_order: u32,
+    /// Slaughter outputs in payout order.
+    pub yields: Vec<HerdYield>,
+    /// Recurring products in authored order.
+    #[serde(default)]
+    pub products: Vec<HerdProduct>,
+}
+
+/// Capacity and opening count per farming level.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct HerdCapacity {
+    /// Maximum head per level.
+    pub maximum: u64,
+    /// Opening head per level.
+    pub start: u64,
+}
+
 /// A building's job positions, land use, owner coverage and production methods.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -160,6 +213,9 @@ pub struct BuildingType {
     /// Maximum ground-distance in metres for recruiting into this building.
     /// `None` is retained during deserialization so validation can name a missing key.
     pub recruit_range_m: Option<u32>,
+    /// Species kept by this building, keyed by animal good.
+    #[serde(default)]
+    pub herds: BTreeMap<String, HerdCapacity>,
     /// Ordered methods; their order resolves equal estimates.
     #[serde(default)]
     pub methods: Vec<Method>,
@@ -169,6 +225,9 @@ pub struct BuildingType {
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Rules {
+    /// Herd species in canonical order.
+    #[serde(default)]
+    pub herd_species: Vec<HerdSpecies>,
     /// Goods in canonical authoring order.
     pub goods: Vec<Good>,
     /// Population types.
@@ -866,6 +925,83 @@ impl Rules {
                 }
             }
         }
+        unique_ids(
+            file,
+            "herd_species",
+            self.herd_species.iter().map(|s| s.animal.as_str()),
+        )?;
+        let mut priorities = std::collections::BTreeSet::new();
+        for species in &self.herd_species {
+            let entry = format!("herd_species.{}", species.animal);
+            if !goods.contains(species.animal.as_str()) {
+                return Err(refuse(entry, "unknown animal good".to_owned()));
+            }
+            if !priorities.insert(species.emergency_order) {
+                return Err(refuse(
+                    format!("{entry}.emergency_order"),
+                    "duplicate emergency order".to_owned(),
+                ));
+            }
+            for yield_item in &species.yields {
+                if !goods.contains(yield_item.good.as_str()) {
+                    return Err(refuse(
+                        format!("{entry}.yields.{}", yield_item.good),
+                        "unknown good".to_owned(),
+                    ));
+                }
+            }
+            for product in &species.products {
+                let product_entry = format!("{entry}.products.{}", product.good);
+                if !goods.contains(product.good.as_str()) {
+                    return Err(refuse(product_entry, "unknown good".to_owned()));
+                }
+                if product.amount_milli.is_none() {
+                    return Err(refuse(
+                        format!("{product_entry}.amount_milli"),
+                        "amount is missing".to_owned(),
+                    ));
+                }
+                match (&product.season, product.month) {
+                    (Some(season), None) if self.seasons.contains_key(season) => {}
+                    (Some(_), None) => {
+                        return Err(refuse(product_entry, "unknown season table".to_owned()));
+                    }
+                    (None, Some(1..=12)) => {}
+                    _ => {
+                        return Err(refuse(
+                            product_entry,
+                            "specify one season table or month in 1..=12".to_owned(),
+                        ));
+                    }
+                }
+            }
+        }
+        for building in &self.buildings {
+            for (animal, capacity) in &building.herds {
+                let entry = format!("buildings.{}.herds.{animal}", building.id);
+                if !self.herd_species.iter().any(|s| s.animal == *animal) {
+                    return Err(refuse(entry, "unknown herd species".to_owned()));
+                }
+                if capacity.start > capacity.maximum {
+                    return Err(refuse(entry, "start exceeds maximum".to_owned()));
+                }
+            }
+        }
+        for terrain in &self.terrain_order {
+            for species in &self.herd_species {
+                if self
+                    .grazing
+                    .get(terrain)
+                    .and_then(|g| g.get(&species.animal))
+                    .is_none()
+                {
+                    return Err(refuse(
+                        format!("grazing.{terrain}.{}", species.animal),
+                        "value is missing".to_owned(),
+                    ));
+                }
+            }
+        }
         for (terrain, values) in &self.grazing {
             if !self.terrain_order.contains(terrain) {
                 return Err(refuse(
@@ -880,7 +1016,11 @@ impl Rules {
                         "per-mille value must be in 0..=1000".to_owned(),
                     ));
                 }
-                if !["cattle", "pigs", "sheep"].contains(&animal.as_str()) {
+                if !self
+                    .herd_species
+                    .iter()
+                    .any(|species| species.animal == *animal)
+                {
                     return Err(refuse(
                         format!("grazing.{terrain}.{animal}"),
                         "unknown herd species".to_owned(),
@@ -1560,7 +1700,7 @@ pub fn starting_state(
                     problem: "annual supply overflow".to_owned(),
                 })?;
             }
-            let herds = herd_counts(&assignment.method_levels, building);
+            let herds = herd_counts(rules, &assignment.method_levels, building)?;
             let herd_carry = vec![0; herds.len()];
             buildings.push(BuildingState {
                 kind: kind.to_owned(),
@@ -1575,7 +1715,10 @@ pub fn starting_state(
                 herd_grazing_sums: assignment.herd_grazing_sums,
                 herd_birth_carries: herd_carry.clone(),
                 herd_death_carries: herd_carry,
-                herd_product_carries: vec![0; rules.goods.len()],
+                herd_product_carries: vec![
+                    0;
+                    rules.herd_species.iter().map(|s| s.products.len()).sum()
+                ],
                 wage_carries: vec![0; rules.goods.len()],
                 pay_carries: vec![0; rules.goods.len()],
                 fee_carries: Vec::new(),
@@ -2072,7 +2215,7 @@ fn assign_building_levels(
 ) -> Result<BuildingAssignment, DataError> {
     let mut assigned = vec![0_u32; building.methods.len()];
     let mut method_suitability = vec![vec![0_u64; rules.goods.len()]; building.methods.len()];
-    let mut herd_grazing_sums = vec![0_u64; 3];
+    let mut herd_grazing_sums = vec![0_u64; rules.herd_species.len()];
     let mut used_land = 0_u32;
     let mut used_sea = 0_u32;
     let mut output = BTreeMap::<String, u64>::new();
@@ -2109,6 +2252,7 @@ fn assign_building_levels(
                     })?;
                 let output_units = starting_method_output(
                     rules,
+                    building,
                     method,
                     good_id,
                     *base_output,
@@ -2163,17 +2307,18 @@ fn assign_building_levels(
                         "method output references unknown good",
                     )
                 })?;
-            let suitability = method_suitability_pm(rules, method, good_id, terrain.as_deref());
+            let suitability =
+                method_suitability_pm(rules, building, method, good_id, terrain.as_deref());
             method_suitability[index][good_index] = method_suitability[index][good_index]
                 .checked_add(u64::from(suitability))
                 .ok_or_else(|| missing_data("projection".to_owned(), "suitability sum overflow"))?;
         }
         if let Some(terrain) = terrain.as_deref() {
-            for (species, animal) in ["cattle", "pigs", "sheep"].into_iter().enumerate() {
+            for (species, animal) in rules.herd_species.iter().enumerate() {
                 let grazing = rules
                     .grazing
                     .get(terrain)
-                    .and_then(|values| values.get(animal))
+                    .and_then(|values| values.get(&animal.animal))
                     .copied()
                     .unwrap_or(0);
                 herd_grazing_sums[species] = herd_grazing_sums[species]
@@ -2200,6 +2345,7 @@ fn assign_building_levels(
         for (good_id, quantity) in &method.annual_output {
             let produced = starting_method_output(
                 rules,
+                building,
                 method,
                 good_id,
                 *quantity,
@@ -2226,13 +2372,14 @@ fn assign_building_levels(
 
 fn starting_method_output(
     rules: &Rules,
+    building: &BuildingType,
     method: &Method,
     good_id: &str,
     base_output: u64,
     terrain: Option<&str>,
     quality_pm: u16,
 ) -> Result<u128, DataError> {
-    let suitability = method_suitability_pm(rules, method, good_id, terrain);
+    let suitability = method_suitability_pm(rules, building, method, good_id, terrain);
     let mut numerator = u128::from(base_output)
         .checked_mul(u128::from(suitability))
         .ok_or_else(|| {
@@ -2503,17 +2650,31 @@ fn pay_storehouse_fee(
     Ok(())
 }
 
+/// Whether this building's configured herd supplies a good.
+#[must_use]
+pub fn herd_supplies(rules: &Rules, building: &BuildingType, good_id: &str) -> bool {
+    rules
+        .herd_species
+        .iter()
+        .filter(|species| building.herds.contains_key(&species.animal))
+        .any(|species| {
+            species.yields.iter().any(|item| item.good == good_id)
+                || species.products.iter().any(|item| item.good == good_id)
+        })
+}
+
 fn method_suitability_pm(
     rules: &Rules,
+    building: &BuildingType,
     method: &Method,
     good_id: &str,
     terrain: Option<&str>,
 ) -> u16 {
-    let suitability = if method.resource == "sea" {
+    let suitability = if herd_supplies(rules, building, good_id) {
+        // Preserve the authored startup estimate for outputs supplied by this herd.
+        750_u128
+    } else if method.resource == "sea" {
         1000_u128
-    } else if ["beef", "pork", "mutton", "dairy", "wool", "hides"].contains(&good_id) {
-        // Authored herd yields are per maximum herd; each starting herd is three quarters full.
-        750
     } else {
         terrain
             .and_then(|key| rules.suitability.get(key))
@@ -2975,19 +3136,41 @@ fn choose_terrain(
     best.map(|(_, _, terrain)| terrain)
 }
 
-fn herd_counts(method_levels: &[u32], building: &BuildingType) -> Vec<u64> {
+fn herd_counts(
+    rules: &Rules,
+    method_levels: &[u32],
+    building: &BuildingType,
+) -> Result<Vec<u64>, DataError> {
     let farming_levels = building
         .methods
         .iter()
-        .enumerate()
-        .filter(|(_, method)| method.resource != "sea")
-        .map(|(index, _)| method_levels[index])
-        .sum::<u32>();
-    vec![
-        u64::from(farming_levels) * 9,
-        u64::from(farming_levels) * 6,
-        u64::from(farming_levels) * 5,
-    ]
+        .zip(method_levels)
+        .filter(|(method, _)| method.resource != "sea")
+        .try_fold(0_u64, |total, (_, levels)| {
+            total.checked_add(u64::from(*levels))
+        })
+        .ok_or_else(|| {
+            missing_data(
+                format!("buildings.{}.herds", building.id),
+                "farming level sum overflow",
+            )
+        })?;
+    rules
+        .herd_species
+        .iter()
+        .map(|species| {
+            let start = building
+                .herds
+                .get(&species.animal)
+                .map_or(0, |capacity| capacity.start);
+            farming_levels.checked_mul(start).ok_or_else(|| {
+                missing_data(
+                    format!("buildings.{}.herds.{}", building.id, species.animal),
+                    "starting herd count overflow",
+                )
+            })
+        })
+        .collect()
 }
 
 fn storehouse_kinds(rules: &Rules, production: &BTreeMap<String, u64>, levels: u32) -> Vec<u32> {
@@ -3549,7 +3732,7 @@ pub struct BuildingState {
     pub herd_death_carries: Vec<u64>,
     /// Fractional dairy and wool product carries in good order.
     pub herd_product_carries: Vec<u64>,
-    /// Sum of per-level grazing suitability for cattle, pigs and sheep.
+    /// Sum of per-level grazing suitability in species order.
     pub herd_grazing_sums: Vec<u64>,
     /// Fractional wage shares in millionths, in good order.
     pub wage_carries: Vec<u64>,
@@ -4814,40 +4997,40 @@ fn satisfaction_baseline(pop: &PopType, needs: [u16; 3]) -> i64 {
 }
 
 impl ProductionLedger {
-    fn new(good_count: usize) -> Self {
+    fn new(good_count: usize, species_count: usize) -> Self {
         Self {
             produced: vec![0; good_count],
             lost: vec![0; good_count],
-            herd_births: vec![0; 3],
-            herd_deaths: vec![0; 3],
-            herd_slaughter: vec![0; 3],
+            herd_births: vec![0; species_count],
+            herd_deaths: vec![0; species_count],
+            herd_slaughter: vec![0; species_count],
             stock_before: vec![0; good_count],
             stock_after: vec![0; good_count],
             unpaid_wages: vec![0; good_count],
             intake_pm: Vec::new(),
             daily_consumption: None,
             movement_by_pop: Vec::new(),
-            herds_before: vec![0; 3],
-            herds_after: vec![0; 3],
+            herds_before: vec![0; species_count],
+            herds_after: vec![0; species_count],
             places: Vec::new(),
         }
     }
 }
 
 impl PlaceProductionLedger {
-    fn new(place_id: &str, good_count: usize) -> Self {
+    fn new(place_id: &str, good_count: usize, species_count: usize) -> Self {
         Self {
             place_id: place_id.to_owned(),
             produced: vec![0; good_count],
             lost: vec![0; good_count],
-            herd_births: vec![0; 3],
-            herd_deaths: vec![0; 3],
-            herd_slaughter: vec![0; 3],
+            herd_births: vec![0; species_count],
+            herd_deaths: vec![0; species_count],
+            herd_slaughter: vec![0; species_count],
             stock_before: vec![0; good_count],
             stock_after: vec![0; good_count],
             unpaid_wages: vec![0; good_count],
-            herds_before: vec![0; 3],
-            herds_after: vec![0; 3],
+            herds_before: vec![0; species_count],
+            herds_after: vec![0; species_count],
         }
     }
 }
@@ -4887,10 +5070,10 @@ fn total_state_stored_goods(rules: &Rules, state: &EconomyState) -> Result<Vec<u
     Ok(totals)
 }
 
-fn total_state_herds(state: &EconomyState) -> Result<Vec<u64>, DataError> {
-    let mut totals = vec![0_u64; 3];
+fn total_state_herds(state: &EconomyState, species_count: usize) -> Result<Vec<u64>, DataError> {
+    let mut totals = vec![0_u64; species_count];
     for place in &state.places {
-        for (total, amount) in totals.iter_mut().zip(total_herds(place)?) {
+        for (total, amount) in totals.iter_mut().zip(total_herds(place, species_count)?) {
             *total = total
                 .checked_add(amount)
                 .ok_or_else(|| missing_data("ledger.herds".to_owned(), "herd total overflow"))?;
@@ -4914,13 +5097,13 @@ fn add_daily_good(
     Ok(())
 }
 
-fn total_herds(place: &PlaceState) -> Result<Vec<u64>, DataError> {
-    let mut totals = vec![0_u64; 3];
+fn total_herds(place: &PlaceState, species_count: usize) -> Result<Vec<u64>, DataError> {
+    let mut totals = vec![0_u64; species_count];
     for building in &place.buildings {
         if !building.herds.is_empty() && building.herds.len() != totals.len() {
             return Err(missing_data(
                 format!("places.{}.buildings.{}.herds", place.id, building.kind),
-                "saved herd dimensions must contain cattle, pigs and sheep",
+                "saved herd dimensions do not match species",
             ));
         }
         for (total, amount) in totals.iter_mut().zip(&building.herds) {
@@ -5215,7 +5398,8 @@ fn butcher_emergency(
                 .then_some(index)
         })
         .collect::<Vec<_>>();
-    let species_order = [1_usize, 2, 0];
+    let mut species_order: Vec<usize> = (0..rules.herd_species.len()).collect();
+    species_order.sort_by_key(|index| rules.herd_species[*index].emergency_order);
     for building_index in owner_buildings {
         if place.buildings[building_index].herds.is_empty() {
             continue;
@@ -5238,7 +5422,19 @@ fn butcher_emergency(
             .filter(|(method, _)| method.resource == "usable_land")
             .map(|(_, levels)| *levels)
             .sum::<u32>();
-        for species in species_order {
+        for &species in &species_order {
+            let species_rules = &rules.herd_species[species];
+            if !definition.herds.contains_key(&species_rules.animal)
+                || !species_rules.yields.iter().any(|item| {
+                    item.units > 0
+                        && rules
+                            .goods
+                            .iter()
+                            .any(|good| good.id == item.good && good.hunger_centi > 0)
+                })
+            {
+                continue;
+            }
             while held_hunger(rules, &place.pops[pop_index])? < threshold {
                 let herd = *place.buildings[building_index]
                     .herds
@@ -5254,12 +5450,6 @@ fn butcher_emergency(
                 if herd <= floor {
                     break;
                 }
-                let (meat_id, yield_per_head) = match species {
-                    0 => ("beef", 220_u64),
-                    1 => ("pork", 88),
-                    _ => ("mutton", 33),
-                };
-                let meat_index = index_for_good(rules, meat_id)?;
                 let before = held_hunger(rules, &place.pops[pop_index])?;
                 place.buildings[building_index].herds[species] -= 1;
                 add_daily_good(
@@ -5268,73 +5458,30 @@ fn butcher_emergency(
                     1,
                     "ledger.daily.herd_slaughter",
                 )?;
-                add_daily_good(
-                    &mut ledger.butchered,
-                    meat_index,
-                    yield_per_head,
-                    "ledger.daily.butchered",
-                )?;
-                let left = receive_pop(
-                    rules,
-                    &mut place.pops[pop_index],
-                    meat_index,
-                    yield_per_head,
-                )?;
-                let lost = left;
-                if lost != 0 {
-                    add_daily_good(&mut ledger.lost, meat_index, lost, "ledger.daily.lost")?;
-                    add_counter_units(
-                        &mut place.counters.current.lost,
-                        rules.goods.len(),
-                        meat_index,
-                        lost,
-                        "counters.lost",
-                    )?;
-                    place.pops[pop_index].counters.current.losses = place.pops[pop_index]
-                        .counters
-                        .current
-                        .losses
-                        .checked_add(lost)
-                        .ok_or_else(|| {
-                            missing_data("butchering.loss".to_owned(), "loss counter overflow")
-                        })?;
-                    place.counters.current.losses = place
-                        .counters
-                        .current
-                        .losses
-                        .checked_add(lost)
-                        .ok_or_else(|| {
-                            missing_data("butchering.loss".to_owned(), "loss counter overflow")
-                        })?;
-                }
-                if species == 0 {
-                    let hides_index = index_for_good(rules, "hides")?;
+                for item in &species_rules.yields {
+                    let good_index = index_for_good(rules, &item.good)?;
                     add_daily_good(
                         &mut ledger.butchered,
-                        hides_index,
-                        1,
+                        good_index,
+                        item.units,
                         "ledger.daily.butchered",
                     )?;
-                    let hide_left = receive_pop(rules, &mut place.pops[pop_index], hides_index, 1)?;
-                    if hide_left != 0 {
-                        add_daily_good(
-                            &mut ledger.lost,
-                            hides_index,
-                            hide_left,
-                            "ledger.daily.lost",
-                        )?;
+                    let lost =
+                        receive_pop(rules, &mut place.pops[pop_index], good_index, item.units)?;
+                    if lost != 0 {
+                        add_daily_good(&mut ledger.lost, good_index, lost, "ledger.daily.lost")?;
                         add_counter_units(
                             &mut place.counters.current.lost,
                             rules.goods.len(),
-                            hides_index,
-                            hide_left,
+                            good_index,
+                            lost,
                             "counters.lost",
                         )?;
                         place.pops[pop_index].counters.current.losses = place.pops[pop_index]
                             .counters
                             .current
                             .losses
-                            .checked_add(hide_left)
+                            .checked_add(lost)
                             .ok_or_else(|| {
                                 missing_data("butchering.loss".to_owned(), "loss counter overflow")
                             })?;
@@ -5342,7 +5489,7 @@ fn butcher_emergency(
                             .counters
                             .current
                             .losses
-                            .checked_add(hide_left)
+                            .checked_add(lost)
                             .ok_or_else(|| {
                                 missing_data("butchering.loss".to_owned(), "loss counter overflow")
                             })?;
@@ -5459,12 +5606,12 @@ fn run_daily_consumption_with_ledger(
     let mut next = state.clone();
     let mut ledger = DailyConsumptionLedger {
         stock_before: total_state_stored_goods(rules, &next)?,
-        herds_before: total_state_herds(&next)?,
+        herds_before: total_state_herds(&next, rules.herd_species.len())?,
         butchered: vec![0; rules.goods.len()],
         opened: vec![0; rules.goods.len()],
         ticked: vec![0; rules.goods.len()],
         lost: vec![0; rules.goods.len()],
-        herd_slaughter: vec![0; 3],
+        herd_slaughter: vec![0; rules.herd_species.len()],
         ..DailyConsumptionLedger::default()
     };
     let mut intake_by_place = Vec::with_capacity(next.places.len());
@@ -5505,7 +5652,7 @@ fn run_daily_consumption_with_ledger(
         intake_by_place.push(place_intake);
     }
     ledger.stock_after = total_state_stored_goods(rules, &next)?;
-    ledger.herds_after = total_state_herds(&next)?;
+    ledger.herds_after = total_state_herds(&next, rules.herd_species.len())?;
     *state = next;
     Ok((intake_by_place, ledger))
 }
@@ -5856,7 +6003,10 @@ pub fn run_monthly_production_with_quality(
     quality_by_place: &BTreeMap<String, u16>,
 ) -> Result<ProductionLedger, DataError> {
     if date.day != 1 {
-        return Ok(ProductionLedger::new(rules.goods.len()));
+        return Ok(ProductionLedger::new(
+            rules.goods.len(),
+            rules.herd_species.len(),
+        ));
     }
     if !(1..=12).contains(&date.month) {
         return Err(missing_data(
@@ -5866,7 +6016,7 @@ pub fn run_monthly_production_with_quality(
     }
     rules.validate("economy rules")?;
     let mut next = state.clone();
-    let mut ledger = ProductionLedger::new(rules.goods.len());
+    let mut ledger = ProductionLedger::new(rules.goods.len(), rules.herd_species.len());
     for place in &mut next.places {
         let quality_pm = quality_by_place
             .get(&place.id)
@@ -5877,9 +6027,10 @@ pub fn run_monthly_production_with_quality(
         for pop in &mut place.pops {
             roll_counter_month(&mut pop.counters, None)?;
         }
-        let mut place_ledger = PlaceProductionLedger::new(&place.id, rules.goods.len());
+        let mut place_ledger =
+            PlaceProductionLedger::new(&place.id, rules.goods.len(), rules.herd_species.len());
         place_ledger.stock_before = total_stored_goods(rules, place)?;
-        place_ledger.herds_before = total_herds(place)?;
+        place_ledger.herds_before = total_herds(place, rules.herd_species.len())?;
         let mut pending_overflow = Vec::<(usize, usize, Vec<(Option<usize>, u64)>)>::new();
         for (building_index, building) in place.buildings.iter_mut().enumerate() {
             let Some(definition) = rules.buildings.iter().find(|item| item.id == building.kind)
@@ -5976,9 +6127,7 @@ pub fn run_monthly_production_with_quality(
                     continue;
                 }
                 for (good_id, annual) in &method.annual_output {
-                    if ["beef", "pork", "mutton", "dairy", "wool", "hides"]
-                        .contains(&good_id.as_str())
-                    {
+                    if herd_supplies(rules, definition, good_id) {
                         continue;
                     }
                     let good_index = rules
@@ -6077,15 +6226,21 @@ pub fn run_monthly_production_with_quality(
                 }
             }
             if !building.herds.is_empty() {
-                if building.herds.len() != 3
-                    || building.herd_birth_carries.len() != 3
-                    || building.herd_death_carries.len() != 3
-                    || building.herd_product_carries.len() != rules.goods.len()
-                    || building.herd_grazing_sums.len() != 3
+                let species_count = rules.herd_species.len();
+                let product_count: usize = rules
+                    .herd_species
+                    .iter()
+                    .map(|species| species.products.len())
+                    .sum();
+                if building.herds.len() != species_count
+                    || building.herd_birth_carries.len() != species_count
+                    || building.herd_death_carries.len() != species_count
+                    || building.herd_product_carries.len() != product_count
+                    || building.herd_grazing_sums.len() != species_count
                 {
                     return Err(missing_data(
                         format!("places.{}.buildings.{}.herds", place.id, building.kind),
-                        "herd and carry dimensions must contain cattle, pigs and sheep",
+                        "herd and carry dimensions do not match species",
                     ));
                 }
                 let birth_season = rules.seasons.get("herd_births").ok_or_else(|| {
@@ -6101,9 +6256,6 @@ pub fn run_monthly_production_with_quality(
                             )
                         })?,
                 );
-                let birth_rates = [500_u64, 1_500, 800];
-                let death_rates = [80_u64, 100, 80];
-                let maximum_per_level = [12_u64, 8, 7];
                 let farming_levels = definition
                     .methods
                     .iter()
@@ -6115,10 +6267,13 @@ pub fn run_monthly_production_with_quality(
                     .ok_or_else(|| {
                         missing_data("herds".to_owned(), "farming level sum overflow")
                     })?;
-                for species in 0..3 {
+                for (species, species_rules) in rules.herd_species.iter().enumerate() {
+                    let Some(capacity) = definition.herds.get(&species_rules.animal) else {
+                        continue;
+                    };
                     let herd = building.herds[species];
                     let birth_num = u128::from(herd)
-                        .checked_mul(u128::from(birth_rates[species]))
+                        .checked_mul(u128::from(species_rules.births_pm_year))
                         .and_then(|value| {
                             let grazing = if farming_levels == 0 {
                                 0
@@ -6148,7 +6303,7 @@ pub fn run_monthly_production_with_quality(
                             missing_data("herds.births".to_owned(), "birth carry exceeds u64")
                         })?;
                     let death_num = u128::from(herd)
-                        .checked_mul(u128::from(death_rates[species]))
+                        .checked_mul(u128::from(species_rules.deaths_pm_year))
                         .and_then(|value| {
                             value.checked_add(u128::from(building.herd_death_carries[species]))
                         })
@@ -6173,7 +6328,7 @@ pub fn run_monthly_production_with_quality(
                         .ok_or_else(|| missing_data("herds".to_owned(), "herd count overflow"))?;
                     let surviving = after_births.saturating_sub(deaths);
                     let maximum = farming_levels
-                        .checked_mul(maximum_per_level[species])
+                        .checked_mul(capacity.maximum)
                         .ok_or_else(|| missing_data("herds".to_owned(), "herd maximum overflow"))?;
                     let slaughtered = surviving.saturating_sub(maximum);
                     place_ledger.herd_slaughter[species] = place_ledger.herd_slaughter[species]
@@ -6182,18 +6337,15 @@ pub fn run_monthly_production_with_quality(
                             missing_data("ledger.herds".to_owned(), "slaughter total overflow")
                         })?;
                     building.herds[species] = surviving - slaughtered;
-                    let yields: &[(&str, u64)] = match species {
-                        0 => &[("beef", 220), ("hides", 1)],
-                        1 => &[("pork", 88)],
-                        _ => &[("mutton", 33)],
-                    };
-                    for (good_id, yield_per_head) in yields {
+                    for yield_item in &species_rules.yields {
+                        let good_id = &yield_item.good;
+                        let yield_per_head = yield_item.units;
                         let Some(good_index) =
                             rules.goods.iter().position(|good| good.id == *good_id)
                         else {
                             continue;
                         };
-                        let output = slaughtered.checked_mul(*yield_per_head).ok_or_else(|| {
+                        let output = slaughtered.checked_mul(yield_per_head).ok_or_else(|| {
                             missing_data(
                                 format!("herds.slaughter.{good_id}"),
                                 "slaughter yield overflow",
@@ -6214,75 +6366,65 @@ pub fn run_monthly_production_with_quality(
                 }
             }
             if !building.herds.is_empty() {
-                for (good_id, base, season_key, denominator) in [
-                    ("dairy", 72_u64, Some("dairy"), 1_000_000_u64),
-                    ("wool", 15_u64, None, 10_000_u64),
-                ] {
-                    let Some(good_index) = rules.goods.iter().position(|good| good.id == good_id)
-                    else {
-                        continue;
-                    };
-                    let eligible_month = season_key.is_some() || date.month == 6;
-                    if !eligible_month {
-                        continue;
+                let mut carry_index = 0;
+                for (species_index, species) in rules.herd_species.iter().enumerate() {
+                    for product in &species.products {
+                        let slot = carry_index;
+                        carry_index += 1;
+                        if !definition.herds.contains_key(&species.animal) {
+                            continue;
+                        }
+                        let (share, denominator) = if let Some(season) = &product.season {
+                            (
+                                u128::from(rules.seasons[season][usize::from(date.month - 1)]),
+                                1_000_000_000_u128,
+                            )
+                        } else if product.month == Some(date.month) {
+                            (1, 1_000_000_u128)
+                        } else {
+                            continue;
+                        };
+                        let good_index = index_for_good(rules, &product.good)?;
+                        let numerator = u128::from(building.herds[species_index])
+                            .checked_mul(u128::from(product.amount_milli.ok_or_else(|| {
+                                missing_data(
+                                    format!("herds.products.{}.amount_milli", product.good),
+                                    "amount is missing",
+                                )
+                            })?))
+                            .and_then(|v| v.checked_mul(share))
+                            .and_then(|v| v.checked_mul(u128::from(coverage_efficiency)))
+                            .and_then(|v| {
+                                v.checked_add(u128::from(building.herd_product_carries[slot]))
+                            })
+                            .ok_or_else(|| {
+                                missing_data(
+                                    format!("herds.products.{}", product.good),
+                                    "product numerator overflow",
+                                )
+                            })?;
+                        let quantity = u64::try_from(numerator / denominator).map_err(|_| {
+                            missing_data(
+                                format!("herds.products.{}", product.good),
+                                "product exceeds u64",
+                            )
+                        })?;
+                        building.herd_product_carries[slot] =
+                            u64::try_from(numerator % denominator).map_err(|_| {
+                                missing_data(
+                                    format!("herds.products.{}", product.good),
+                                    "product carry exceeds u64",
+                                )
+                            })?;
+                        monthly_output[good_index] = monthly_output[good_index]
+                            .checked_add(quantity)
+                            .ok_or_else(|| {
+                                missing_data(
+                                    format!("herds.products.{}", product.good),
+                                    "product stock overflow",
+                                )
+                            })?;
                     }
-                    let season_share = if let Some(key) = season_key {
-                        let shares = rules.seasons.get(key).ok_or_else(|| {
-                            missing_data(format!("seasons.{key}"), "season table is missing")
-                        })?;
-                        u128::from(
-                            *shares
-                                .get(usize::from(date.month.saturating_sub(1)))
-                                .ok_or_else(|| {
-                                    missing_data(
-                                        format!("seasons.{key}"),
-                                        "month is outside 1..=12",
-                                    )
-                                })?,
-                        )
-                    } else {
-                        1
-                    };
-                    let animal_count = u128::from(if good_id == "dairy" {
-                        building.herds[0]
-                    } else {
-                        building.herds[2]
-                    });
-                    let numerator = animal_count
-                        .checked_mul(u128::from(base))
-                        .and_then(|value| value.checked_mul(season_share))
-                        .and_then(|value| value.checked_mul(u128::from(coverage_efficiency)))
-                        .and_then(|value| {
-                            value.checked_add(u128::from(building.herd_product_carries[good_index]))
-                        })
-                        .ok_or_else(|| {
-                            missing_data(
-                                format!("herds.products.{good_id}"),
-                                "product numerator overflow",
-                            )
-                        })?;
-                    let quantity =
-                        u64::try_from(numerator / u128::from(denominator)).map_err(|_| {
-                            missing_data(format!("herds.products.{good_id}"), "product exceeds u64")
-                        })?;
-                    building.herd_product_carries[good_index] =
-                        u64::try_from(numerator % u128::from(denominator)).map_err(|_| {
-                            missing_data(
-                                format!("herds.products.{good_id}"),
-                                "product carry exceeds u64",
-                            )
-                        })?;
-                    monthly_output[good_index] = monthly_output[good_index]
-                        .checked_add(quantity)
-                        .ok_or_else(|| {
-                        missing_data(
-                            format!(
-                                "places.{}.buildings.{}.stock.{good_id}",
-                                place.id, building.kind
-                            ),
-                            "herd product stock overflow",
-                        )
-                    })?;
                 }
             }
             for (good_index, output_units) in monthly_output.iter().copied().enumerate() {
@@ -6409,7 +6551,7 @@ pub fn run_monthly_production_with_quality(
             )?;
         }
         place_ledger.stock_after = total_stored_goods(rules, place)?;
-        place_ledger.herds_after = total_herds(place)?;
+        place_ledger.herds_after = total_herds(place, rules.herd_species.len())?;
         for building in &place.buildings {
             if building.pay_carries.len() != rules.goods.len() {
                 return Err(missing_data(
@@ -9103,6 +9245,7 @@ mod tests {
     )]
     fn tiny_rules() -> Rules {
         Rules {
+            herd_species: Vec::new(),
             goods: vec![Good {
                 id: "food".to_owned(),
                 tags: Vec::new(),
@@ -9164,6 +9307,7 @@ mod tests {
             buildings: vec![
                 BuildingType {
                     id: "farm".to_owned(),
+                    herds: BTreeMap::new(),
                     workers_per_level: 10,
                     land_per_level: 2,
                     owner_workers: BTreeMap::from([("peasant".to_owned(), 10)]),
@@ -9181,6 +9325,7 @@ mod tests {
                 },
                 BuildingType {
                     id: "storehouse".to_owned(),
+                    herds: BTreeMap::new(),
                     workers_per_level: 2,
                     land_per_level: 0,
                     owner_workers: BTreeMap::new(),
@@ -9227,14 +9372,7 @@ mod tests {
                 "pasture".to_owned(),
                 BTreeMap::from([("crops".to_owned(), 1000), ("food".to_owned(), 1000)]),
             )]),
-            grazing: BTreeMap::from([(
-                "pasture".to_owned(),
-                BTreeMap::from([
-                    ("cattle".to_owned(), 1000),
-                    ("pigs".to_owned(), 1000),
-                    ("sheep".to_owned(), 1000),
-                ]),
-            )]),
+            grazing: BTreeMap::from([("pasture".to_owned(), BTreeMap::new())]),
             price_k_pm: 500,
         }
     }
@@ -9247,6 +9385,43 @@ mod tests {
                 ("luxuries".to_owned(), BTreeMap::new()),
             ]),
         );
+    }
+
+    fn install_fixture_herds(rules: &mut Rules) {
+        let shipped = shipped_rules();
+        for id in [
+            "cattle", "pigs", "sheep", "beef", "pork", "mutton", "dairy", "wool", "hides",
+        ] {
+            if !rules.goods.iter().any(|good| good.id == id) {
+                rules.goods.push(
+                    shipped
+                        .goods
+                        .iter()
+                        .find(|good| good.id == id)
+                        .unwrap()
+                        .clone(),
+                );
+            }
+        }
+        rules.herd_species = shipped.herd_species;
+        rules.buildings[0].herds = shipped
+            .buildings
+            .iter()
+            .find(|building| building.id == "farm")
+            .unwrap()
+            .herds
+            .clone();
+        for terrain in &rules.terrain_order {
+            rules.grazing.entry(terrain.clone()).or_default().extend([
+                ("cattle".into(), 1000),
+                ("pigs".into(), 1000),
+                ("sheep".into(), 1000),
+            ]);
+        }
+        rules
+            .seasons
+            .entry("dairy".into())
+            .or_insert_with(|| vec![0, 0, 0, 0, 0, 1000, 0, 0, 0, 0, 0, 0]);
     }
 
     #[expect(
@@ -9286,6 +9461,7 @@ mod tests {
             "beeswax".to_owned(),
             BTreeMap::from([("peasant".to_owned(), 1_000_000)]),
         );
+        install_fixture_herds(&mut rules);
         let goods = rules.goods.len();
         let make_pop = |necessities_pm| PopState {
             kind: "peasant".to_owned(),
@@ -9368,7 +9544,7 @@ mod tests {
             method_suitability: vec![vec![1000; goods]],
             herd_birth_carries: vec![0; 3],
             herd_death_carries: vec![0; 3],
-            herd_product_carries: vec![0; goods],
+            herd_product_carries: vec![0; 2],
             herd_grazing_sums: vec![1000; 3],
             wage_carries: vec![0; 2],
             pay_carries: vec![0; 2],
@@ -9480,7 +9656,14 @@ mod tests {
                         method_suitability: vec![vec![1000; goods]; 2],
                         herd_birth_carries: vec![0; 3],
                         herd_death_carries: vec![0; 3],
-                        herd_product_carries: vec![0; goods],
+                        herd_product_carries: vec![
+                            0;
+                            rules
+                                .herd_species
+                                .iter()
+                                .map(|s| s.products.len())
+                                .sum()
+                        ],
                         herd_grazing_sums: vec![1000, 400, 1000],
                         wage_carries: vec![0; goods],
                         pay_carries: vec![0; goods],
@@ -9833,7 +10016,7 @@ mod tests {
             paid_years: vec![0; WAGE_HISTORY_MONTHS],
         };
         let mut buildings = vec![farm, storehouse];
-        let mut ledger = PlaceProductionLedger::new("fort", 1);
+        let mut ledger = PlaceProductionLedger::new("fort", 1, 3);
         settle_overflow(
             &rules,
             &mut pops,
@@ -10809,6 +10992,159 @@ mod tests {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "The daily trace keeps the shared fixture and isolated per-building witness together."
+    )]
+    fn herd_daily_trace(fed: bool) -> (String, [[u64; 6]; 3]) {
+        use std::fmt::Write as _;
+
+        let rules = shipped_rules();
+        let mut state = shipped_production_fixture(&rules);
+        let place = &mut state.places[0];
+        place.prices_milli = rules
+            .goods
+            .iter()
+            .map(|good| good.base_price * 1000)
+            .collect();
+        place.price_drift_carries = vec![0; rules.goods.len()];
+        let oats = rules
+            .goods
+            .iter()
+            .position(|good| good.id == "oats")
+            .unwrap();
+        let wool = rules
+            .goods
+            .iter()
+            .position(|good| good.id == "wool")
+            .unwrap();
+        let dairy = rules
+            .goods
+            .iter()
+            .position(|good| good.id == "dairy")
+            .unwrap();
+        for pop in &mut place.pops {
+            if fed {
+                pop.stock[oats] = 1_000_000;
+            }
+            pop.workers = 100;
+            pop.consumption.pantry_hunger_centi = vec![0; rules.goods.len()];
+            pop.consumption.ticking_carries = vec![0; rules.goods.len()];
+        }
+        place.buildings[0].herd_product_carries = vec![0; 2];
+        let farm = place.buildings[0].clone();
+        let holdings = &mut place.buildings[1];
+        holdings.method_levels = vec![1, 0];
+        holdings.herds = vec![9, 6, 5];
+        holdings.herd_birth_carries = vec![0; 3];
+        holdings.herd_death_carries = vec![0; 3];
+        holdings.herd_product_carries = vec![0; 2];
+        holdings.herd_grazing_sums = vec![1000, 400, 1000];
+        let mut demesne = farm;
+        demesne.kind = "demesne".to_owned();
+        demesne.method_levels = vec![1];
+        demesne.production_carries.truncate(1);
+        demesne.method_suitability.truncate(1);
+        place.buildings.push(demesne);
+        for (index, pop) in place.pops.iter_mut().enumerate() {
+            pop.employment
+                .push(place.buildings[3].employment[index].clone());
+        }
+        let mut trace = String::new();
+        let mut exercise = [[0_u64; 6]; 3];
+        for year in 768..=769 {
+            for month in 1..=12 {
+                for day in 1..=days_in_month(year, month).unwrap() {
+                    let date = Date {
+                        year,
+                        month,
+                        day,
+                        hour: 12,
+                    };
+                    let mut wage_units = Vec::new();
+                    if day == 1 {
+                        for (slot, index) in [0, 1, 3].into_iter().enumerate() {
+                            let mut isolated = state.clone();
+                            for (other, building) in
+                                isolated.places[0].buildings.iter_mut().enumerate()
+                            {
+                                if other != index {
+                                    building.method_levels.fill(0);
+                                    building.herds.clear();
+                                    building.herd_birth_carries.clear();
+                                    building.herd_death_carries.clear();
+                                    building.herd_grazing_sums.clear();
+                                }
+                            }
+                            let isolated_ledger =
+                                run_monthly_production(&rules, &mut isolated, date).unwrap();
+                            exercise[slot][0] += isolated_ledger.herd_births.iter().sum::<u64>();
+                            exercise[slot][1] += isolated_ledger.herd_deaths.iter().sum::<u64>();
+                            exercise[slot][2] += isolated_ledger.herd_slaughter.iter().sum::<u64>();
+                            exercise[slot][3] += isolated_ledger.produced[dairy];
+                            if month == 6 {
+                                exercise[slot][4 + usize::from(year - 768)] +=
+                                    isolated_ledger.produced[wool];
+                            }
+                            let output = isolated_ledger.produced;
+                            let building = &state.places[0].buildings[index];
+                            let definition = rules
+                                .buildings
+                                .iter()
+                                .find(|b| b.id == building.kind)
+                                .unwrap();
+                            let units: Vec<_> = output
+                                .iter()
+                                .enumerate()
+                                .map(|(good, amount)| {
+                                    if building.employment.iter().all(|e| e.workers == 0) {
+                                        0
+                                    } else {
+                                        (amount * u64::from(1000 - definition.overhead_pm) * 1000
+                                            + building.wage_carries[good])
+                                            / 1_000_000
+                                            + building.pay_carries[good]
+                                    }
+                                })
+                                .collect();
+                            wage_units.push(units);
+                        }
+                    }
+                    let ledger = run_daily_economy(&rules, &mut state, date).unwrap();
+                    let place = &state.places[0];
+                    let herds: Vec<_> = place.buildings.iter().map(|b| &b.herds).collect();
+                    let stocks: Vec<_> = place.buildings.iter().map(|b| &b.stock).collect();
+                    let pop_stocks: Vec<_> = place.pops.iter().map(|p| &p.stock).collect();
+                    let wages: Vec<_> = place
+                        .buildings
+                        .iter()
+                        .map(|b| (&b.wage_carries, &b.pay_carries, &b.wage_history))
+                        .collect();
+                    writeln!(trace, "{year}-{month:02}-{day:02} {herds:?} {:?} {:?} {:?} {:?} {stocks:?} {pop_stocks:?} {wages:?} {wage_units:?} {:?} {:?}", ledger.herd_births, ledger.herd_deaths, ledger.herd_slaughter, ledger.produced, place.prices_milli, ledger.daily_consumption).unwrap();
+                }
+            }
+        }
+        (trace, exercise)
+    }
+
+    #[test]
+    fn shipped_herd_daily_accepted_witness() {
+        let (trace, exercise) = herd_daily_trace(true);
+        for (index, counts) in exercise.iter().enumerate() {
+            assert!(
+                counts.iter().all(|count| *count > 0),
+                "building {index} must exercise births, deaths, culling, dairy and both Junes: {counts:?}"
+            );
+        }
+        assert_eq!(trace, include_str!("../tests/herd_daily_accepted.txt"));
+    }
+
+    #[test]
+    fn shipped_herd_starvation_accepted_witness() {
+        let (trace, _) = herd_daily_trace(false);
+        assert_eq!(trace, include_str!("../tests/herd_starvation_accepted.txt"));
+    }
+
     #[test]
     fn category_labels_do_not_change_production() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/game/economy.toml");
@@ -11626,7 +11962,7 @@ mod tests {
                         kind: "farm".to_owned(),
                         levels: 1,
                         method_levels: vec![1],
-                        herds: vec![9, 6, 5],
+                        herds: Vec::new(),
                         employment: vec![Employment {
                             owners: 1,
                             workers: 10
@@ -11635,10 +11971,10 @@ mod tests {
                         storehouse_accounts: None,
                         production_carries: vec![vec![0]],
                         method_suitability: vec![vec![1000]],
-                        herd_birth_carries: vec![0; 3],
-                        herd_death_carries: vec![0; 3],
-                        herd_product_carries: vec![0],
-                        herd_grazing_sums: vec![1000; 3],
+                        herd_birth_carries: Vec::new(),
+                        herd_death_carries: Vec::new(),
+                        herd_product_carries: Vec::new(),
+                        herd_grazing_sums: Vec::new(),
                         wage_carries: vec![0],
                         pay_carries: vec![0],
                         fee_carries: Vec::new(),
@@ -12116,7 +12452,7 @@ mod tests {
         let mut ledger = ProductionLedger {
             lost: vec![0; rules.goods.len()],
             unpaid_wages: vec![0; rules.goods.len()],
-            places: vec![PlaceProductionLedger::new("fort", rules.goods.len())],
+            places: vec![PlaceProductionLedger::new("fort", rules.goods.len(), 3)],
             ..ProductionLedger::default()
         };
         ledger.places[0].stock_after = total_stored_goods(&rules, &state.places[0]).unwrap();
@@ -12379,7 +12715,7 @@ mod tests {
                 .pops[0][oats],
             900
         );
-        let mut ledger = PlaceProductionLedger::new(&source.id, rules.goods.len());
+        let mut ledger = PlaceProductionLedger::new(&source.id, rules.goods.len(), 3);
         pay_storehouse_fee(
             &rules,
             &source.id,
@@ -12421,7 +12757,8 @@ mod tests {
         place.pops[0].employment[storehouse_index].workers = 0;
 
         let place = &mut state.places[0];
-        let mut ledger = PlaceProductionLedger::new(&place.id, rules.goods.len());
+        let mut ledger =
+            PlaceProductionLedger::new(&place.id, rules.goods.len(), rules.herd_species.len());
         pay_storehouse_fee(
             &rules,
             &place.id,
@@ -12505,6 +12842,7 @@ mod tests {
             "herd_births".to_owned(),
             vec![1000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
         );
+        install_fixture_herds(&mut rules);
         let (mut state, _) = starting_state(
             &rules,
             &tiny_start_data(),
@@ -12886,6 +13224,7 @@ mod tests {
             "herd_births".to_owned(),
             vec![1000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
         );
+        install_fixture_herds(&mut rules);
         let (mut state, _) = starting_state(
             &rules,
             &tiny_start_data(),
@@ -13120,6 +13459,7 @@ mod tests {
             1,
             BuildingType {
                 id: "holdings".to_owned(),
+                herds: BTreeMap::new(),
                 workers_per_level: 10,
                 land_per_level: 2,
                 owner_workers: BTreeMap::from([
@@ -13188,24 +13528,66 @@ mod tests {
 
     #[test]
     fn herd_yield_estimates_use_the_starting_herd_instead_of_crop_suitability() {
-        let rules = tiny_rules();
+        let mut rules = tiny_rules();
+        install_fixture_herds(&mut rules);
         let method = &rules.buildings[0].methods[0];
         assert_eq!(
-            starting_method_output(&rules, method, "beef", 1100, Some("pasture"), 550),
+            starting_method_output(
+                &rules,
+                &rules.buildings[0],
+                method,
+                "beef",
+                1100,
+                Some("pasture"),
+                550
+            ),
             Ok(825)
         );
         assert_eq!(
-            starting_method_output(&rules, method, "food", 300, Some("pasture"), 550),
+            starting_method_output(
+                &rules,
+                &rules.buildings[0],
+                method,
+                "food",
+                300,
+                Some("pasture"),
+                550
+            ),
             Ok(300)
         );
         assert_eq!(
-            starting_method_output(&rules, method, "food", 300, Some("pasture"), 275),
+            starting_method_output(
+                &rules,
+                &rules.buildings[0],
+                method,
+                "food",
+                300,
+                Some("pasture"),
+                275
+            ),
             Ok(150)
         );
         assert!(
-            starting_method_output(&rules, method, "food", 300, Some("pasture"), 275).unwrap()
-                < starting_method_output(&rules, method, "food", 300, Some("pasture"), 550)
-                    .unwrap()
+            starting_method_output(
+                &rules,
+                &rules.buildings[0],
+                method,
+                "food",
+                300,
+                Some("pasture"),
+                275
+            )
+            .unwrap()
+                < starting_method_output(
+                    &rules,
+                    &rules.buildings[0],
+                    method,
+                    "food",
+                    300,
+                    Some("pasture"),
+                    550
+                )
+                .unwrap()
         );
     }
 
@@ -13497,6 +13879,664 @@ mod tests {
     fn shipped_rules() -> Rules {
         Rules::load(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/game/economy.toml"))
             .unwrap()
+    }
+
+    #[test]
+    fn fourth_species_runs_its_lifecycle_and_ledger() {
+        let mut rules = shipped_rules();
+        let mut goat = rules
+            .goods
+            .iter()
+            .find(|good| good.id == "cattle")
+            .unwrap()
+            .clone();
+        goat.id = "goats".into();
+        rules.goods.push(goat);
+        rules.herd_species.push(HerdSpecies {
+            animal: "goats".into(),
+            births_pm_year: 1000,
+            deaths_pm_year: 1200,
+            emergency_order: 3,
+            yields: vec![HerdYield {
+                good: "hides".into(),
+                units: 2,
+            }],
+            products: vec![HerdProduct {
+                good: "dairy".into(),
+                amount_milli: Some(1500),
+                season: None,
+                month: Some(1),
+            }],
+        });
+        for terrain in &rules.terrain_order {
+            rules
+                .grazing
+                .get_mut(terrain)
+                .unwrap()
+                .insert("goats".into(), 500);
+        }
+        rules.seasons.insert(
+            "herd_births".into(),
+            vec![1000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        );
+        rules
+            .buildings
+            .iter_mut()
+            .find(|b| b.id == "farm")
+            .unwrap()
+            .herds
+            .insert(
+                "goats".into(),
+                HerdCapacity {
+                    maximum: 2,
+                    start: 1,
+                },
+            );
+        let mut state = shipped_production_fixture(&rules);
+        let farm = &mut state.places[0].buildings[0];
+        farm.herds = vec![0, 0, 0, 10];
+        farm.herd_birth_carries = vec![0; 4];
+        farm.herd_death_carries = vec![0; 4];
+        farm.herd_grazing_sums = vec![1000, 1000, 1000, 500];
+        farm.herd_product_carries = vec![0; 3];
+        let ledger = run_monthly_production(
+            &rules,
+            &mut state,
+            Date {
+                year: 768,
+                month: 1,
+                day: 1,
+                hour: 12,
+            },
+        )
+        .unwrap();
+        assert_eq!(ledger.herd_births, [0, 0, 0, 5]);
+        assert_eq!(ledger.herd_deaths, [0, 0, 0, 1]);
+        assert_eq!(ledger.herd_slaughter, [0, 0, 0, 12]);
+        assert_eq!(ledger.herds_after, [0, 0, 0, 2]);
+        assert_eq!(ledger.places[0].herd_slaughter[3], 12);
+        assert_eq!(ledger.produced[good_at(&rules, "hides")], 24);
+        assert_eq!(ledger.produced[good_at(&rules, "dairy")], 3);
+        let february = run_monthly_production(
+            &rules,
+            &mut state,
+            Date {
+                year: 768,
+                month: 2,
+                day: 1,
+                hour: 12,
+            },
+        )
+        .unwrap();
+        assert_eq!(february.herd_deaths[3], 0);
+        assert_eq!(state.places[0].buildings[0].herd_death_carries[3], 2400);
+        let march = run_monthly_production(
+            &rules,
+            &mut state,
+            Date {
+                year: 768,
+                month: 3,
+                day: 1,
+                hour: 12,
+            },
+        )
+        .unwrap();
+        assert_eq!(march.herd_deaths[3], 0);
+        assert_eq!(state.places[0].buildings[0].herd_death_carries[3], 4800);
+    }
+
+    #[test]
+    fn sheep_only_farm_makes_dairy_as_an_ordinary_crop() {
+        let mut rules = shipped_rules();
+        let farm_index = rules.buildings.iter().position(|b| b.id == "farm").unwrap();
+        rules.buildings[farm_index]
+            .herds
+            .retain(|animal, _| animal == "sheep");
+        rules.buildings[farm_index].methods[0].annual_output =
+            BTreeMap::from([("dairy".into(), 860)]);
+        rules.buildings[farm_index].methods[0].score_share_pm =
+            BTreeMap::from([("dairy".into(), 1000)]);
+        let method = &rules.buildings[farm_index].methods[0];
+        assert_eq!(
+            starting_method_output(
+                &rules,
+                &rules.buildings[farm_index],
+                method,
+                "dairy",
+                860,
+                Some("pasture"),
+                550
+            )
+            .unwrap(),
+            602
+        );
+        let mut state = shipped_production_fixture(&rules);
+        let dairy = good_at(&rules, "dairy");
+        let farm = &mut state.places[0].buildings[0];
+        farm.herds = vec![0, 0, 1];
+        farm.method_suitability[0][dairy] = 700;
+        let mut total = 0;
+        let mut wool = 0;
+        for month in 1..=12 {
+            let ledger = run_monthly_production(
+                &rules,
+                &mut state,
+                Date {
+                    year: 768,
+                    month,
+                    day: 1,
+                    hour: 12,
+                },
+            )
+            .unwrap();
+            total += ledger.produced[dairy];
+            wool += ledger.produced[good_at(&rules, "wool")];
+        }
+        assert_eq!(total, 602);
+        assert_eq!(wool, 1);
+        let cattle = HerdCapacity {
+            maximum: 12,
+            start: 9,
+        };
+        rules.buildings[farm_index]
+            .herds
+            .insert("cattle".into(), cattle);
+        let method = &rules.buildings[farm_index].methods[0];
+        assert_eq!(
+            starting_method_output(
+                &rules,
+                &rules.buildings[farm_index],
+                method,
+                "dairy",
+                860,
+                Some("pasture"),
+                550
+            )
+            .unwrap(),
+            645
+        );
+        let mut with_cattle = shipped_production_fixture(&rules);
+        with_cattle.places[0].buildings[0].herds = vec![1, 0, 1];
+        let january = run_monthly_production(
+            &rules,
+            &mut with_cattle,
+            Date {
+                year: 768,
+                month: 1,
+                day: 1,
+                hour: 12,
+            },
+        )
+        .unwrap();
+        assert_eq!(january.produced[dairy], 1);
+    }
+
+    #[test]
+    fn emergency_priority_skips_hide_only_species_before_pigs_and_cattle() {
+        let mut rules = shipped_rules();
+        let mut goat = rules
+            .goods
+            .iter()
+            .find(|g| g.id == "cattle")
+            .unwrap()
+            .clone();
+        goat.id = "goats".into();
+        rules.goods.push(goat);
+        for species in &mut rules.herd_species {
+            species.emergency_order += 1;
+        }
+        rules.herd_species.push(HerdSpecies {
+            animal: "goats".into(),
+            births_pm_year: 0,
+            deaths_pm_year: 0,
+            emergency_order: 0,
+            yields: vec![HerdYield {
+                good: "hides".into(),
+                units: 1,
+            }],
+            products: Vec::new(),
+        });
+        for terrain in &rules.terrain_order {
+            rules
+                .grazing
+                .get_mut(terrain)
+                .unwrap()
+                .insert("goats".into(), 1000);
+        }
+        rules
+            .buildings
+            .iter_mut()
+            .find(|b| b.id == "farm")
+            .unwrap()
+            .herds
+            .insert(
+                "goats".into(),
+                HerdCapacity {
+                    maximum: 10,
+                    start: 1,
+                },
+            );
+        let mut state = shipped_production_fixture(&rules);
+        let place = &mut state.places[0];
+        place.buildings[0].herds = vec![1, 1, 0, 1];
+        place.pops[0].consumption.necessities_pm = 200;
+        place.pops[0].consumption.pantry_hunger_centi = vec![0; rules.goods.len()];
+        let mut ledger = DailyConsumptionLedger {
+            butchered: vec![0; rules.goods.len()],
+            lost: vec![0; rules.goods.len()],
+            herd_slaughter: vec![0; 4],
+            ..DailyConsumptionLedger::default()
+        };
+        butcher_emergency(&rules, place, 0, 1, &mut ledger).unwrap();
+        assert_eq!(place.buildings[0].herds, [1, 0, 0, 1]);
+        assert_eq!(ledger.herd_slaughter, [0, 1, 0, 0]);
+        assert_eq!(ledger.butchered[good_at(&rules, "pork")], 88);
+    }
+
+    #[test]
+    fn herd_products_keep_separate_carries_and_fractional_wool() {
+        let mut rules = shipped_rules();
+        for species in &mut rules.herd_species {
+            species.births_pm_year = 0;
+            species.deaths_pm_year = 0;
+        }
+        let mut goat = rules
+            .goods
+            .iter()
+            .find(|good| good.id == "cattle")
+            .unwrap()
+            .clone();
+        goat.id = "goats".into();
+        rules.goods.push(goat);
+        rules.herd_species.push(HerdSpecies {
+            animal: "goats".into(),
+            births_pm_year: 0,
+            deaths_pm_year: 0,
+            emergency_order: 3,
+            yields: vec![HerdYield {
+                good: "hides".into(),
+                units: 1,
+            }],
+            products: vec![HerdProduct {
+                good: "dairy".into(),
+                amount_milli: Some(1500),
+                season: None,
+                month: Some(1),
+            }],
+        });
+        for terrain in &rules.terrain_order {
+            rules
+                .grazing
+                .get_mut(terrain)
+                .unwrap()
+                .insert("goats".into(), 1000);
+        }
+        rules
+            .seasons
+            .insert("dairy".into(), vec![1000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        rules
+            .buildings
+            .iter_mut()
+            .find(|b| b.id == "farm")
+            .unwrap()
+            .herds
+            .insert(
+                "goats".into(),
+                HerdCapacity {
+                    maximum: 10,
+                    start: 1,
+                },
+            );
+        let mut state = shipped_production_fixture(&rules);
+        let farm = &mut state.places[0].buildings[0];
+        farm.herds = vec![1, 0, 1, 1];
+        farm.herd_birth_carries = vec![0; 4];
+        farm.herd_death_carries = vec![0; 4];
+        farm.herd_grazing_sums = vec![1000; 4];
+        farm.herd_product_carries = vec![0, 0, 500_000];
+        let date = Date {
+            year: 768,
+            month: 1,
+            day: 1,
+            hour: 12,
+        };
+        let january = run_monthly_production(&rules, &mut state, date).unwrap();
+        assert_eq!(january.produced[good_at(&rules, "dairy")], 74);
+        assert_eq!(state.places[0].buildings[0].herd_product_carries, [0, 0, 0]);
+        let june1 = run_monthly_production(&rules, &mut state, Date { month: 6, ..date }).unwrap();
+        assert_eq!(june1.produced[good_at(&rules, "wool")], 1);
+        let june2 = run_monthly_production(
+            &rules,
+            &mut state,
+            Date {
+                year: 769,
+                month: 6,
+                ..date
+            },
+        )
+        .unwrap();
+        assert_eq!(june2.produced[good_at(&rules, "wool")], 2);
+    }
+
+    #[test]
+    fn new_species_product_uses_the_herd_startup_estimate() {
+        let mut rules = shipped_rules();
+        let mut goat = rules
+            .goods
+            .iter()
+            .find(|good| good.id == "cattle")
+            .unwrap()
+            .clone();
+        goat.id = "goats".into();
+        rules.goods.push(goat);
+        rules.herd_species.push(HerdSpecies {
+            animal: "goats".into(),
+            births_pm_year: 0,
+            deaths_pm_year: 0,
+            emergency_order: 3,
+            yields: Vec::new(),
+            products: vec![HerdProduct {
+                good: "dairy".into(),
+                amount_milli: Some(1000),
+                season: None,
+                month: Some(6),
+            }],
+        });
+        let farm = rules
+            .buildings
+            .iter_mut()
+            .find(|building| building.id == "farm")
+            .unwrap();
+        farm.herds.clear();
+        farm.herds.insert(
+            "goats".into(),
+            HerdCapacity {
+                maximum: 4,
+                start: 1,
+            },
+        );
+        let farm = &rules.buildings[0];
+        assert_eq!(
+            starting_method_output(
+                &rules,
+                farm,
+                &farm.methods[0],
+                "dairy",
+                860,
+                Some("pasture"),
+                550
+            )
+            .unwrap(),
+            645
+        );
+        let mut sea_method = farm.methods[0].clone();
+        sea_method.resource = "sea".into();
+        assert_eq!(
+            starting_method_output(&rules, farm, &sea_method, "dairy", 860, None, 550).unwrap(),
+            645
+        );
+    }
+
+    #[test]
+    fn economy_save_preserves_herds_and_product_carries_through_production() {
+        let rules = shipped_rules();
+        let mut uninterrupted = shipped_production_fixture(&rules);
+        uninterrupted.places[0].buildings[0].herd_product_carries[0] = 123_456;
+        let bytes = uninterrupted.to_bytes().unwrap();
+        let mut loaded = EconomyState::from_bytes(&bytes).unwrap();
+        assert_eq!(loaded.places[0].buildings[0].herds, [9, 6, 5]);
+        assert_eq!(
+            loaded.places[0].buildings[0].herd_product_carries[0],
+            123_456
+        );
+        let date = Date {
+            year: 768,
+            month: 1,
+            day: 1,
+            hour: 12,
+        };
+        let left = run_monthly_production(&rules, &mut uninterrupted, date).unwrap();
+        let right = run_monthly_production(&rules, &mut loaded, date).unwrap();
+        assert_eq!(right, left);
+        assert_eq!(loaded, uninterrupted);
+    }
+
+    #[test]
+    fn starting_state_creates_the_shipped_head_counts_per_level() {
+        let mut rules = tiny_rules();
+        install_fixture_herds(&mut rules);
+        let mut data = tiny_start_data();
+        let defaults = data
+            .defaults
+            .get_mut("ringfort")
+            .unwrap()
+            .get_mut("1")
+            .unwrap();
+        defaults.farm_levels = 2;
+        let location = StartLocation {
+            id: "fort".into(),
+            kind: "ringfort".into(),
+            size: 1,
+            land: LandCounts {
+                land_cells: BTreeMap::from([("pasture".into(), 8)]),
+                fertility_pm: BTreeMap::from([("pasture".into(), 8000)]),
+                fertile_cells: 8,
+                fertile_cells_by_terrain: BTreeMap::new(),
+                sea: 0,
+            },
+        };
+        let mut one = data.clone();
+        one.defaults
+            .get_mut("ringfort")
+            .unwrap()
+            .get_mut("1")
+            .unwrap()
+            .farm_levels = 1;
+        let (single, _) =
+            starting_state(&rules, &one, std::slice::from_ref(&location), 10).unwrap();
+        let single_farm = single.places[0]
+            .buildings
+            .iter()
+            .find(|building| building.kind == "farm")
+            .unwrap();
+        assert_eq!(single_farm.herds, [9, 6, 5]);
+        let (state, _) = starting_state(&rules, &data, &[location], 10).unwrap();
+        let farm = state.places[0]
+            .buildings
+            .iter()
+            .find(|building| building.kind == "farm")
+            .unwrap();
+        assert_eq!(farm.method_levels, [2]);
+        assert_eq!(farm.herds, [18, 12, 10]);
+    }
+
+    #[test]
+    fn starting_herd_count_overflow_is_refused() {
+        let mut rules = shipped_rules();
+        let farm = &mut rules.buildings[0];
+        farm.herds.get_mut("cattle").unwrap().start = u64::MAX;
+        let error = herd_counts(&rules, &[2, 0], &rules.buildings[0]).unwrap_err();
+        assert_eq!(error.entry, "buildings.farm.herds.cattle");
+        assert!(error.problem.contains("overflow"));
+    }
+
+    #[test]
+    fn shipped_herd_species_values_are_literal() {
+        let rules = shipped_rules();
+        assert_eq!(
+            rules.herd_species,
+            vec![
+                HerdSpecies {
+                    animal: "cattle".into(),
+                    births_pm_year: 500,
+                    deaths_pm_year: 80,
+                    emergency_order: 2,
+                    yields: vec![
+                        HerdYield {
+                            good: "beef".into(),
+                            units: 220
+                        },
+                        HerdYield {
+                            good: "hides".into(),
+                            units: 1
+                        }
+                    ],
+                    products: vec![HerdProduct {
+                        good: "dairy".into(),
+                        amount_milli: Some(72_000),
+                        season: Some("dairy".into()),
+                        month: None
+                    }]
+                },
+                HerdSpecies {
+                    animal: "pigs".into(),
+                    births_pm_year: 1500,
+                    deaths_pm_year: 100,
+                    emergency_order: 0,
+                    yields: vec![HerdYield {
+                        good: "pork".into(),
+                        units: 88
+                    }],
+                    products: Vec::new()
+                },
+                HerdSpecies {
+                    animal: "sheep".into(),
+                    births_pm_year: 800,
+                    deaths_pm_year: 80,
+                    emergency_order: 1,
+                    yields: vec![HerdYield {
+                        good: "mutton".into(),
+                        units: 33
+                    }],
+                    products: vec![HerdProduct {
+                        good: "wool".into(),
+                        amount_milli: Some(1500),
+                        season: None,
+                        month: Some(6)
+                    }]
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn herd_rules_validate_species_products_capacities_and_grazing() {
+        let rules = shipped_rules();
+        assert_eq!(
+            rules
+                .herd_species
+                .iter()
+                .map(|s| s.animal.as_str())
+                .collect::<Vec<_>>(),
+            ["cattle", "pigs", "sheep"]
+        );
+        for name in ["farm", "holdings", "demesne"] {
+            let b = rules.buildings.iter().find(|b| b.id == name).unwrap();
+            assert_eq!(
+                b.herds["cattle"],
+                HerdCapacity {
+                    maximum: 12,
+                    start: 9
+                }
+            );
+            assert_eq!(
+                b.herds["pigs"],
+                HerdCapacity {
+                    maximum: 8,
+                    start: 6
+                }
+            );
+            assert_eq!(
+                b.herds["sheep"],
+                HerdCapacity {
+                    maximum: 7,
+                    start: 5
+                }
+            );
+        }
+        let mut cases: Vec<(&str, Rules)> = Vec::new();
+        let mut bad = rules.clone();
+        bad.herd_species[0].animal = "unknown".into();
+        cases.push(("herd_species.unknown", bad));
+        let mut bad = rules.clone();
+        bad.herd_species.push(bad.herd_species[0].clone());
+        cases.push(("herd_species", bad));
+        let mut bad = rules.clone();
+        bad.buildings[0].herds.insert(
+            "unknown".into(),
+            HerdCapacity {
+                maximum: 1,
+                start: 1,
+            },
+        );
+        cases.push(("buildings.farm.herds.unknown", bad));
+        let mut bad = rules.clone();
+        bad.buildings[0].herds.get_mut("cattle").unwrap().start = 13;
+        cases.push(("buildings.farm.herds.cattle", bad));
+        let mut bad = rules.clone();
+        bad.herd_species[0].yields[0].good = "unknown".into();
+        cases.push(("herd_species.cattle.yields.unknown", bad));
+        let mut bad = rules.clone();
+        bad.herd_species[0].products[0].good = "unknown".into();
+        cases.push(("herd_species.cattle.products.unknown", bad));
+        let mut bad = rules.clone();
+        bad.herd_species[0].products[0].season = Some("unknown".into());
+        cases.push(("herd_species.cattle.products.dairy", bad));
+        let mut bad = rules.clone();
+        bad.herd_species[2].products[0].month = Some(13);
+        cases.push(("herd_species.sheep.products.wool", bad));
+        let mut bad = rules.clone();
+        bad.herd_species[1].emergency_order = bad.herd_species[0].emergency_order;
+        cases.push(("herd_species.pigs.emergency_order", bad));
+        let mut bad = rules.clone();
+        bad.grazing.get_mut("pasture").unwrap().remove("pigs");
+        cases.push(("grazing.pasture.pigs", bad));
+        for (entry, rules) in cases {
+            assert_eq!(rules.validate("fixture").unwrap_err().entry, entry);
+        }
+        let mut bad = rules.clone();
+        bad.herd_species[0].products[0].amount_milli = None;
+        assert_eq!(
+            bad.validate("fixture").unwrap_err().entry,
+            "herd_species.cattle.products.dairy.amount_milli"
+        );
+    }
+
+    #[test]
+    fn close_startup_methods_match_the_accepted_projection() {
+        let mut rules = shipped_rules();
+        let farm = rules.buildings.iter_mut().find(|b| b.id == "farm").unwrap();
+        let mut second = farm.methods[0].clone();
+        farm.methods[0].annual_output = BTreeMap::from([("dairy".to_owned(), 860)]);
+        farm.methods[0].score_share_pm = BTreeMap::from([("dairy".to_owned(), 1000)]);
+        second.id = "oat_alternative".to_owned();
+        second.annual_output = BTreeMap::from([("oats".to_owned(), 369)]);
+        second.score_share_pm = BTreeMap::from([("oats".to_owned(), 1000)]);
+        farm.methods = vec![farm.methods[0].clone(), second];
+        let pop = inland_pop(&rules, "peasant", 100, &[]);
+        let mut land = LandCounts {
+            land_cells: BTreeMap::from([("pasture".to_owned(), 12)]),
+            fertility_pm: BTreeMap::from([("pasture".to_owned(), 12000)]),
+            fertile_cells: 12,
+            fertile_cells_by_terrain: BTreeMap::new(),
+            sea: 0,
+        };
+        let result = assign_building_levels(
+            &rules,
+            &rules.buildings[0],
+            6,
+            &mut land,
+            &mut 0,
+            &BTreeMap::new(),
+            &[pop],
+            550,
+        )
+        .unwrap();
+        assert_eq!(result.method_levels, [4, 2]);
+        assert_eq!(
+            result.output,
+            BTreeMap::from([("dairy".to_owned(), 2580), ("oats".to_owned(), 516)])
+        );
     }
 
     fn good_at(rules: &Rules, id: &str) -> usize {
@@ -13850,6 +14890,7 @@ mod tests {
             1,
             BuildingType {
                 id: "holdings".to_owned(),
+                herds: BTreeMap::new(),
                 workers_per_level: 10,
                 land_per_level: 2,
                 owner_workers: BTreeMap::from([
@@ -14214,6 +15255,15 @@ mod tests {
         );
         let mut uninterrupted = state;
         let mut loaded = decoded;
+        for current in [&mut uninterrupted, &mut loaded] {
+            for building in &mut current.places[0].buildings {
+                building.herds.clear();
+                building.herd_birth_carries.clear();
+                building.herd_death_carries.clear();
+                building.herd_product_carries.clear();
+                building.herd_grazing_sums.clear();
+            }
+        }
         let date = Date {
             year: 768,
             month: 1,
@@ -14269,6 +15319,7 @@ mod tests {
             "wool".to_owned(),
             [0, 0, 0, 0, 1000, 0, 0, 0, 0, 0, 0, 0].into(),
         );
+        install_fixture_herds(&mut rules);
         let (mut state, _) = starting_state(
             &rules,
             &tiny_start_data(),
@@ -14295,11 +15346,7 @@ mod tests {
         farm.herds = vec![20, 12, 1];
         farm.herd_birth_carries = vec![999_999_999_999; 3];
         farm.herd_death_carries = vec![11_999; 3];
-        farm.herd_product_carries[rules
-            .goods
-            .iter()
-            .position(|good| good.id == "wool")
-            .unwrap()] = 4_999;
+        farm.herd_product_carries[1] = 499_900;
 
         let january = run_monthly_production(
             &rules,
@@ -14572,6 +15619,7 @@ mod tests {
             base_price: 100,
             pop_limit_milli: 1_000_000,
         });
+        install_fixture_herds(&mut rules);
         let no_workers = EconomyState {
             places: vec![PlaceState {
                 id: "ownerless".to_owned(),
@@ -14604,7 +15652,7 @@ mod tests {
                     method_suitability: vec![vec![1000; rules.goods.len()]],
                     herd_birth_carries: vec![0; 3],
                     herd_death_carries: vec![0; 3],
-                    herd_product_carries: vec![0; rules.goods.len()],
+                    herd_product_carries: vec![0; 2],
                     herd_grazing_sums: vec![0; 3],
                     wage_carries: vec![0; rules.goods.len()],
                     pay_carries: vec![0; rules.goods.len()],
@@ -14789,7 +15837,7 @@ mod tests {
         let mut pops = vec![pop("labourer", 1), pop("peasant", 0)];
         let mut buildings = vec![farm, storehouse];
         let mut counters = CounterBuckets::default();
-        let mut ledger = PlaceProductionLedger::new("fort", 1);
+        let mut ledger = PlaceProductionLedger::new("fort", 1, 3);
         settle_overflow(
             &rules,
             &mut pops,
@@ -15554,6 +16602,7 @@ mod tests {
                 pop_limit_milli: 100_000,
             });
         }
+        install_fixture_herds(&mut rules);
         let make = |necessities_pm| {
             let goods = rules.goods.len();
             let pop = PopState {
@@ -17193,6 +18242,7 @@ mod tests {
         rules.hire_pm = 100;
         rules.buildings.push(BuildingType {
             id: "holdings".to_owned(),
+            herds: BTreeMap::new(),
             workers_per_level: 10,
             land_per_level: 1,
             owner_workers: BTreeMap::from([("monk".to_owned(), 5), ("labourer".to_owned(), 10)]),
