@@ -1929,7 +1929,7 @@ mod stretch_save_tests {
         };
         // Each fault of rule 12 in turn: the method, the ground against the resource, the paydays, the numbers, the counts and the
         // carries (a farm's methods are the field, the sea, the wood focus and the turf cutting).
-        let refusals: [(&str, LevelChange); 14] = [
+        let refusals: [(&str, LevelChange); 16] = [
             ("is not one of the building's", |b| {
                 b.level_records[0].method = 99;
             }),
@@ -1952,6 +1952,20 @@ mod stretch_save_tests {
                 // A sea level with ground.
                 b.level_records[0].method = 1;
                 b.level_records[0].ground = Some("pasture".to_owned());
+            }),
+            ("missing unpaid work account", |b| {
+                let good = b.level_records[0]
+                    .unpaid_work
+                    .keys()
+                    .next()
+                    .unwrap()
+                    .clone();
+                b.level_records[0].unpaid_work.remove(&good);
+            }),
+            ("unexpected unpaid work account", |b| {
+                b.level_records[0]
+                    .unpaid_work
+                    .insert("not_a_product".into(), ck_economy::bigint::Big::default());
             }),
             ("completed paydays", |b| b.level_records[0].paydays = 14),
             ("the number is used twice", |b| {
@@ -2061,6 +2075,60 @@ mod stretch_save_tests {
             );
             assert_quickload_installs(&game, &new_game, label, &save.state.economy);
         }
+        // A large account is legal on both paths and stays legal after the next crop payday.
+        let mut large = source.simulation.save(source.identity.meta(42));
+        let farm = target(&mut large);
+        let record = farm
+            .level_records
+            .iter_mut()
+            .find(|record| record.method == 0)
+            .unwrap();
+        let level_number = record.number;
+        record.unpaid_work.insert(
+            "oats".into(),
+            ck_economy::bigint::Big::new(u128::from(u32::MAX)),
+        );
+        write(&large);
+        let loaded = start_from().expect("a large unpaid account loads");
+        assert_eq!(loaded.simulation.state().economy, large.state.economy);
+        assert_quickload_installs(
+            &game,
+            &new_game,
+            "a large unpaid account",
+            &large.state.economy,
+        );
+        ck_economy::run_monthly_production(
+            &rules,
+            &mut large.state.economy,
+            Date {
+                year: 768,
+                month: 10,
+                day: 1,
+                hour: 12,
+            },
+        )
+        .unwrap();
+        let updated = target(&mut large)
+            .level_records
+            .iter()
+            .find(|r| r.number == level_number)
+            .unwrap()
+            .unpaid_work["oats"]
+            .to_u128()
+            .unwrap();
+        assert!(
+            updated > u128::from(u32::MAX),
+            "payday crossed the 32-bit boundary"
+        );
+        write(&large);
+        let loaded = start_from().expect("the updated account loads again");
+        assert_eq!(loaded.simulation.state().economy, large.state.economy);
+        assert_quickload_installs(
+            &game,
+            &new_game,
+            "the updated unpaid account",
+            &large.state.economy,
+        );
         // The same cut farm with one carry above nothing is refused, naming the building, the method and the good.
         let mut save = source.simulation.save(source.identity.meta(42));
         let farm = target(&mut save);
@@ -2115,12 +2183,19 @@ mod stretch_save_tests {
         farm.levels = levels;
         farm.method_levels = vec![0; farm.method_levels.len()];
         farm.method_levels[0] = levels;
+        let unpaid_work = definition.methods[0]
+            .annual_output
+            .keys()
+            .filter(|good| !ck_economy::herd_supplies(&rules, definition, good))
+            .map(|good| (good.clone(), ck_economy::bigint::Big::default()))
+            .collect::<std::collections::BTreeMap<_, _>>();
         farm.level_records = (0..levels)
             .map(|number| ck_economy::LevelRecord {
                 number,
                 method: 0,
                 ground: Some("pasture".to_owned()),
                 paydays: ck_economy::MATURE_PAYDAYS,
+                unpaid_work: unpaid_work.clone(),
             })
             .collect();
         farm.production_carries[0][0] = 19_800_000_000_000_000_000;
@@ -2571,26 +2646,92 @@ mod stretch_save_tests {
     }
 
     #[test]
-    fn a_new_shipped_game_saved_at_11_and_at_13_on_its_first_day_matches_the_unbroken_game() {
-        // The economy is the opening levels the start rule chose (CK-404). Each save is of a fresh game stepped to its hour of the
-        // first day, so the 13:00 save is the one straight after the first noon tick, not the second noon.
+    fn shipped_ninth_october_start_opens_with_october_crop_work() {
+        let dir = crate::testing::Dir::new();
+        let game = shipped_start(&dir.0, None);
+        let start = game.simulation.date().unwrap();
+        assert_eq!((start.month, start.day, start.hour), (10, 9, 0));
+        let rules = Rules::load(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/game/economy.toml"),
+        )
+        .unwrap();
+        let land = game.view_wiring().land_by_place;
+        let quality = land
+            .iter()
+            .map(|(id, land)| (id.clone(), ck_economy::mean_fertility(land).unwrap()))
+            .collect();
+        let scenario_dir =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/scenarios/ireland-768");
+        let assets = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+        let (original, _) =
+            economy::starting_economy(&assets, &scenario_dir, &game.scenario).unwrap();
+        for (built, installed) in original
+            .places
+            .iter()
+            .zip(&game.simulation.state().economy.places)
+        {
+            for (built, installed) in built.buildings.iter().zip(&installed.buildings) {
+                for (built, installed) in built.level_records.iter().zip(&installed.level_records) {
+                    assert_eq!(built.unpaid_work, installed.unpaid_work);
+                }
+            }
+        }
+        let mut october = original.clone();
+        for place in &mut october.places {
+            for building in &mut place.buildings {
+                for level in &mut building.level_records {
+                    for value in level.unpaid_work.values_mut() {
+                        *value = ck_economy::bigint::Big::default();
+                    }
+                }
+            }
+        }
+        ck_economy::run_monthly_production_with_quality(
+            &rules,
+            &mut october,
+            Date {
+                year: 768,
+                month: 10,
+                day: 1,
+                hour: 12,
+            },
+            &quality,
+        )
+        .unwrap();
+        let mut positive = 0;
+        for (actual, simulated) in original.places.iter().zip(&october.places) {
+            for (a, b) in actual.buildings.iter().zip(&simulated.buildings) {
+                for (a, b) in a.level_records.iter().zip(&b.level_records) {
+                    if let (Some(actual), Some(expected)) =
+                        (a.unpaid_work.get("oats"), b.unpaid_work.get("oats"))
+                    {
+                        assert_eq!(actual, expected, "level {}", a.number);
+                        positive += usize::from(actual != &ck_economy::bigint::Big::default());
+                    }
+                }
+            }
+        }
+        assert!(positive > 0);
+    }
+
+    #[test]
+    fn a_shipped_game_saved_at_11_and_13_on_payday_matches_the_unbroken_game() {
+        // The two saves straddle a first-of-month noon, when seasonal production and unpaid work are updated.
         let dir = crate::testing::Dir::new();
         let path = super::super::saves::quicksave_path(&dir.0.join("saves"));
-        let first = shipped_start(&dir.0, None).simulation.date().unwrap();
         for hour in [11, 13] {
             let mut prepared = shipped_start(&dir.0, None);
             assert!(
                 !prepared.simulation.state().economy.places.is_empty(),
                 "the start has populated the economy"
             );
-            while prepared.simulation.date().unwrap().hour != hour {
+            while {
+                let date = prepared.simulation.date().unwrap();
+                date.day != 1 || date.hour != hour
+            } {
                 prepared.simulation.step().unwrap();
             }
-            assert_eq!(
-                prepared.simulation.date().unwrap(),
-                Date { hour, ..first },
-                "the save is on the first day"
-            );
+            assert_eq!(prepared.simulation.date().unwrap().day, 1);
             let state = prepared.simulation.state().stretches.clone();
             let digest = save_with(&prepared, &path, state);
             let mut loaded = shipped_start(&dir.0, Some(&path));
@@ -2605,6 +2746,81 @@ mod stretch_save_tests {
                 prepared.simulation.digest().unwrap(),
                 "saved at {hour}:00"
             );
+        }
+    }
+
+    #[test]
+    #[ignore = "the full shipped-year witness runs in the named methods.year group and milestone full check"]
+    fn shipped_yearly_monthly_looks_report_passing_moves() {
+        let dir = crate::testing::Dir::new();
+        let mut game = shipped_start(&dir.0, None);
+        let land = game.view_wiring().land_by_place;
+        let rules = Rules::load(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/game/economy.toml"),
+        )
+        .unwrap();
+        for _ in 0..12 {
+            while {
+                let date = game.simulation.date().unwrap();
+                date.day != 1 || date.hour != 11
+            } {
+                game.simulation.step().unwrap();
+            }
+            let prices: Vec<_> = game
+                .simulation
+                .state()
+                .economy
+                .places
+                .iter()
+                .map(|p| p.prices_milli.clone())
+                .collect();
+            game.simulation.step().unwrap();
+            game.simulation.step().unwrap();
+            let date = game.simulation.date().unwrap();
+            let mut passing = std::collections::BTreeMap::<(String, String), usize>::new();
+            for (place_index, place) in game.simulation.state().economy.places.iter().enumerate() {
+                for (index, building) in place.buildings.iter().enumerate() {
+                    let def = rules
+                        .buildings
+                        .iter()
+                        .find(|d| d.id == building.kind)
+                        .unwrap();
+                    if def.methods.len() < 2 {
+                        continue;
+                    }
+                    let result = ck_economy::switching::look(
+                        &rules,
+                        place,
+                        &land[&place.id],
+                        index,
+                        date.month,
+                        &prices[place_index],
+                        &std::collections::BTreeMap::new(),
+                    )
+                    .unwrap();
+                    for item in result.moves.iter().filter(|item| {
+                        !item.surplus.negative
+                            && item.surplus.magnitude.numerator
+                                != ck_economy::bigint::Big::default()
+                    }) {
+                        let record = building
+                            .level_records
+                            .iter()
+                            .find(|r| r.number == item.level)
+                            .unwrap();
+                        *passing
+                            .entry((
+                                def.methods[record.method as usize].id.clone(),
+                                def.methods[item.method].id.clone(),
+                            ))
+                            .or_default() += 1;
+                    }
+                }
+            }
+            println!("{}-{:02}: {passing:?}", date.year, date.month);
+            while game.simulation.date().unwrap().day == 1 {
+                game.simulation.step().unwrap();
+            }
         }
     }
 

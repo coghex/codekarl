@@ -76,7 +76,7 @@ the backend-neutral crates (`rust.core`) and of the application without a real w
 `rust.app-default`), the Metal tests that need the GPU but no window (`metal.gpu`, `app.metal-gpu`), the native tests
 that open real windows with keyboard and mouse input ignored (`native.window` for Cocoa, `app.native-window` and the presenter's `metal.window-*` groups), the two shipped UI cases (`app.ui-witness`: places list and time bar; skipped as covered when `app.native-window` is selected), each Python test group and the
 chat CI. Economy changes also run `rust.app` and `rust.app-default`. Changes to Rust sources run `unittest-catalog` because it inventories those files.
-**Optional** groups run only when named: the scale runs, the GLFW focus cases (`glfw.window-focus`) and the Vulkan GPU and
+**Optional** groups run only when named, except `methods.year` and `travel.scale`, which also run at the full milestone level: the scale runs, the GLFW focus cases (`glfw.window-focus`) and the Vulkan GPU and
 window groups (`glfw.window`, `vulkan.gpu`, `vulkan.window`, `render2d.vulkan-window` and `vulkan.app`). Docs and editor files are
 claimed by the doctor group.
 
@@ -103,8 +103,8 @@ compile-only.
   builds in its own `target/ck-full/<n>` slot. At milestone completion, the manager runs this level
   once on a clean accepted copy and keeps its log. If no submissions are pending, use the existing
   empty-batch refusal and run this check directly; do not create an empty batch.
-- `--quick` runs fmt, ruff and ShellCheck (the record hook); `--fast` runs the same groups as the full
-  level without the build slot and without `CK_REQUIRE_FULL_SPEC`.
+- `--quick` runs fmt, ruff and ShellCheck (the record hook); `--fast` runs the full level's groups except
+  `methods.year` and `travel.scale`, without the build slot and without `CK_REQUIRE_FULL_SPEC`.
 
 A manual run holds no project lock; only batch validation holds `ci.lock`. Exit status: 0 pass, 1
 failure, 2 a refused command line, 75 when a step outlived the 45-minute watchdog (an infrastructure

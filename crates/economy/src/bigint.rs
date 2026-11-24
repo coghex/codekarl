@@ -164,3 +164,20 @@ pub fn product(factors: &[u128]) -> Big {
         .iter()
         .fold(Big::new(1), |total, factor| total.mul(&Big::new(*factor)))
 }
+
+impl ck_sim::Canonical for Big {
+    fn encode(&self, out: &mut Vec<u8>) -> Result<(), ck_sim::CanonicalError> {
+        self.0.encode(out)
+    }
+
+    fn decode(input: &mut ck_sim::Reader<'_>) -> Result<Self, ck_sim::CanonicalError> {
+        let limbs = Vec::<u32>::decode(input)?;
+        if limbs.last() == Some(&0) {
+            return Err(ck_sim::CanonicalError::BadTag {
+                ty: "Big's leading limb",
+                tag: 0,
+            });
+        }
+        Ok(Self(limbs))
+    }
+}

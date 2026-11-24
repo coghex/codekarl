@@ -4,6 +4,7 @@ herd_start_share = [2, 3]
 # hunger/tier values are integer hundredths of a person-day.
 # are hundredths of a person-day, storage limits are thousandths of a unit/person.
 price_k_pm = 500
+method_switch_margin_pm = 200
 swap_loss_limit_pm = 100
 religions = ["christianity", "irish_paganism", "norse_paganism", "anglo_saxon_paganism"]
 terrain_order = ["pasture", "forest", "bog", "marsh", "mountain"]

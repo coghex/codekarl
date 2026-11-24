@@ -1122,6 +1122,7 @@ mod tests {
             method: 0,
             ground: Some("pasture".to_owned()),
             paydays: ck_economy::MATURE_PAYDAYS,
+            unpaid_work: std::collections::BTreeMap::new(),
         }];
         holdings.herds = vec![0; 4];
         holdings.employment.clear();
