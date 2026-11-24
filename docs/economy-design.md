@@ -464,16 +464,22 @@ monastery's holdings, both, or neither. The kind-and-size tables of §3.12–3.1
   A building whose every level was cut has no records and carries of nothing, written or left out, and is a good save.
   - Staffing is conserved and never rounded; only whole goods are floored.
   - Coverage applies to the whole building.
-- **Chosen once in M9.** Changing a level's method mid-game is the vision's conversion, and comes with construction. It is out of
-  scope. The owner has set its rules for later (2026-11-09):
-  - **cost:** the level loses the goods of its old method, and the new method produces nothing for its first month;
-  - **lock:** a switch starts a countdown that locks the level's method until the end of the year. This matters for the future real
-    farms: a fishing village must not switch to oats in September, collect the harvest, and switch back;
-  - **room:** a switch must fit the target method's limit, so it can never put a building over a cap. A monastery with no land can
-    never switch to farming. Owner: "if a monastary has no land, it shouldnt ever be over the cap, so that rule would never apply to a
-    switch, only newly built farm";
-  - so the cut below applies only to authored levels at load, and the room check to newly built levels. Neither ever deletes an
-    existing level.
+- **Methods change in play (CK-409; the owner's rules of 2026-11-09, S5 to S7, and r111, r112).** Once a month, on the 1st at noon,
+  after the month's production, herds and payday and before the place's exchange, every building with two or more methods takes its
+  look at its levels (the holdings, the demesne, then the farm of a place), at the prices the day began with, and moves **at most one
+  level** to another method when that would earn clearly more. Each move is made before the next building looks.
+  - **cost (S5):** the level gives up what it had worked for and not been paid (its accounts are dropped and nothing is paid for them),
+    and starts its new method with no completed paydays, so its next payday pays it nothing;
+  - **lock (S6):** a level that has switched is left out of every look for the rest of the calendar year, and is tried again on the first
+    1st of the next. Each level saves the year of its last switch;
+  - **room (S7):** a move is tried only where there is room, and each is made before the next look, so a switch can never put a
+    building over a limit: field room on some terrain for a land method, forest or bog cells for wood and turf, and, for a sea method,
+    at least one sea cell in the catchment, which no level uses up (§3.23);
+  - **the herd:** the building's maximums follow its levels at once. A herd above its new maximum is slaughtered that day: every yield
+    of the species is output of the building and is paid by payday's own split (the same wage share and weights, the wage carry taken
+    on from where payday left it), but it is not a second payday and posts no wage. Where the new method keeps animals and a kind
+    has none, the herd starts with two head for each level that keeps animals, and no more than its maximum; no store pays for them;
+  - the cut below applies only to authored levels at load, and the room check to newly built levels.
 - **Limits:** farming levels by usable land (fertility, §3.24), and fishing levels by building footprint, with at least one sea cell in
   the catchment (§3.23, slice 9; the sea-cell stand-in above is withdrawn). Authored levels that fit under no method's limit are cut, and the load report lists them.
 - **Every monastery is productive** (Firm, for now). The load report names any place where no method can hold a level, so that the
@@ -1140,6 +1146,11 @@ herd stays. These are counts, not individual animals, so livestock stays abstrac
   2. **Deaths** are `portion(herd, death_pm_year, 12 000, carry)`, capped at the herd.
   3. **The surplus above the maximum** is slaughtered at once (Firm). Its meat and hides are output of the building, and are paid out as
      wages in goods (§3.6). They follow the flow, so meat beyond full stores is lost (Firm).
+     - **When a level switches method (CK-409, §3.4)** the maximum drops with the building's farming levels, and the animals above it
+       are slaughtered that day and paid out by payday's split, with no second payday and no wage posted.
+     - **Founders (owner, r118):** where a switch gives a building with no animals of a kind a method that keeps them, the herd starts
+       with two head for each level that keeps animals, no more than its maximum. They are taken from no store and no other herd, and are
+       counted as arrivals in the production pass's ledger, not as births.
   4. **There is no seasonal cull** (Firm).
 - **Dairy** is set by the herd's size, not by workers or levels (Firm). Each month it is
   `portion(cattle × 72, season_pm[month] × cov, 10⁶, carry)` whole pounds, where `cov` is the coverage multiplier in ‰.
