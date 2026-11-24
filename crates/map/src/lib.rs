@@ -14,11 +14,17 @@ pub mod look;
 mod mode;
 mod network;
 mod scenario;
+mod water;
 
 pub use network::{
     LandAccess, LandAccessQuality, LandCategory, LandCrossing, LandCrossingKind, LandDirection,
     LandEnd, LandJoin, LandLink, LandNetwork, LandNode, LandNodeKind, LandRoad, LandStretch,
     LandWade,
+};
+
+pub use water::{
+    Bank, Joint, Landing, MAX_REACH_M, Reach, ReachKind, RiverBreak, SeaMark, Strait, Water,
+    WaterClass, WaterJoin,
 };
 
 pub use loading::{
@@ -1678,3 +1684,5 @@ mod tests;
 
 #[cfg(test)]
 mod loading_tests;
+#[cfg(test)]
+mod water_tests;

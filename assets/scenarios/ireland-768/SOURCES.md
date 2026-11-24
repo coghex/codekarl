@@ -379,3 +379,18 @@ and the first proposal;
 approval, then run `python3 assets/map/ireland/network.py accept --record 'approval record'`. The separate
 `python3 assets/map/ireland/network.py check` verifies the stored network without writing it, and `report` prints the stored report. To preview changed costs, use
 `build --recalculate LINK_ID` or `build --recalculate --all`. The tool reads Pillow for the map PNGs.
+
+## Water a boat can use, and landings (CK-401, slice 3b)
+
+The stored network is format 3: format 2 with the water. `network.toml` gains the `[water]` table (the one narrowest river, 20 m, for
+every boat; shore height 10 m; strait length 500 m), the two `[[water_class]]` entries (`barge`, 1 km, not sea-going, from design
+decisions N13 and r56; `currach`, 5 km, sea-going, the designer's proposal), and the two `[[river_break]]` entries (Assaroe on
+`erne-44` in cell (360, 243); Doonass on `shannon-18` in cell (318, 642), design decision r39). There is no `[[mark]]` (no place needs
+a sea-going boat). The tool reads `terrain.png` and `rivers.toml` and works, once and exactly, the sea-distance layer
+`sea_distance.png` (one channel of 16 bits: a sea cell's metres from the nearest cell that is not sea, cut at 65,534; 65,535
+elsewhere), the river graph (joints, reaches and joins), the bodies of water of each class, the landings of every node, the ends of
+each crossing stretch, and the straits of the ten places that are not islands on this map. `roads.toml` records it all, with the sha256
+of `terrain.png`, `rivers.toml` and the layer, and `network-report.md` lists it. `python3 assets/map/ireland/network.py check`
+builds it again from the inputs and compares, the layer byte for byte. The owner's decisions are r107 (a place on the coast may take
+any shore), r125 (an island's mainland landing works whatever its shore) and r126 (a traveller embarks only at a place, a road
+junction, the end of a crossing or an island's mainland landing). The scenario's content hash covers the layer.

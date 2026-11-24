@@ -2,10 +2,12 @@
 
 import copy
 import importlib.util
+import json
 import tempfile
 import tomllib
 import unittest
 from collections import defaultdict
+from collections.abc import Sequence
 from fractions import Fraction
 from itertools import pairwise
 from pathlib import Path
@@ -2727,3 +2729,2017 @@ class IrelandCrossingTests(unittest.TestCase):
         self.assertIn("## Places outside the largest land piece\n- none", report)
         self.assertIn("owenmore-sligo", report)
         self.assertIn("robe", report)
+
+
+# ---- Water: classes, the river graph, landings (CK-401) ----
+
+_TERRAIN_KEYS = {
+    "~": ("sea", "sea"),
+    "l": ("lake", "lake"),
+    ".": ("pasture", "land"),
+    "m": ("marsh", "land"),
+    "h": ("pasture", "land"),
+}
+_BARGE = {"id": "barge", "reach_m": 1000, "sea_going": False}
+_CURRACH = {"id": "currach", "reach_m": 5000, "sea_going": True}
+_ORIGIN = (22436, 14979)
+_LAYER_LAND = 65_535
+_BARGE_REACH_M = 1000
+_CURRACH_REACH_M = 5000
+_STRAIT_M = 500
+_WITHIN_CELLS = 6
+_Node = int | tuple[str, int]
+
+
+def _latlon(x: Any, y: Any, origin: tuple[int, int] = _ORIGIN) -> tuple[float, float]:  # noqa: ANN401  # Fractions and floats.
+    import math  # noqa: PLC0415  # The inverse of the tool's projection.
+
+    radius = 6_378_137.0
+    half = math.pi * radius
+    east = (origin[0] + float(x)) * 839.0
+    south = (origin[1] + float(y)) * 839.0
+    lat = 2 * math.atan(math.exp((half - south) / radius)) - math.pi / 2
+    return math.degrees(lat), math.degrees((east - half) / radius)
+
+
+def survey(
+    name: str,
+    points: list[tuple[Any, Any]],
+    *,
+    kind: str = "river",
+    width: tuple[float, float] = (30.0, 30.0),
+    ends: str = "sea",
+) -> dict[str, Any]:
+    """A surveyed stretch from points in cell coordinates (a cell is a unit square)."""
+    return {
+        "id": name,
+        "river": name.split("-")[0],
+        "kind": kind,
+        "width_m": list(width),
+        "ends": ends,
+        "points": [_latlon(x, y) for x, y in points],
+    }
+
+
+def water_context(
+    rows: list[str],
+    rivers: list[dict[str, Any]] | None = None,
+    *,
+    classes: list[dict[str, Any]] | None = None,
+    extra: dict[str, Any] | None = None,
+    heights: dict[tuple[int, int], int] | None = None,
+) -> dict[str, Any]:
+    """A small world: rows of '~' sea, 'l' lake, '.' land, 'm' marsh, 'h' high land (50 m)."""
+    kinds = [[_TERRAIN_KEYS[c][1] for c in row] for row in rows]
+    names = [[_TERRAIN_KEYS[c][0] for c in row] for row in rows]
+    elevation = [[50 if c == "h" else 0 for c in row] for row in rows]
+    for (x, y), value in (heights or {}).items():
+        elevation[y][x] = value
+    hand: dict[str, Any] = {"water_class": [dict(c) for c in (classes or [_BARGE, _CURRACH])]}
+    hand.update(extra or {})
+    layers = {
+        "origin": _ORIGIN,
+        "kind": kinds,
+        "terrain": names,
+        "elevation": elevation,
+        "land": [[k not in {"sea", "lake"} for k in row] for row in kinds],
+    }
+    stretches = rivers or []
+    return {
+        "layers": layers,
+        "hand": hand,
+        "rivers": stretches,
+        "index": network.RiverIndex(stretches, _ORIGIN),
+        "hashes": {"terrain": "t" * 64, "rivers": "r" * 64},
+    }
+
+
+def water_graph(
+    nodes: Sequence[tuple[int, str, tuple[int, int], str | None]],
+    access: Sequence[tuple[str, str, int]] | None = None,
+    stretches: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """A graph of nodes (id, kind, cell, place), access entries (place, quality, landing node)."""
+    return {
+        "node": [
+            {"id": i, "kind": k, "cell": list(c), **({"place": p} if p else {})}
+            for i, k, c, p in nodes
+        ],
+        "stretch": stretches or [],
+        "link": [],
+        "access": [{"place": p, "quality": q, "landing": n} for p, q, n in access or []],
+        "next_node_id": 100,
+        "next_stretch_id": 100,
+    }
+
+
+def work_water(
+    context: dict[str, Any],
+    graph: dict[str, Any] | None = None,
+    hits: dict[int, list[dict[str, Any]]] | None = None,
+    previous: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    graph = graph if graph is not None else water_graph([])
+    plan = network.plan_water(graph, context, hits or {}, previous)
+    network.store_water(graph, plan, context, context["hashes"])
+    return graph, plan
+
+
+def kinds_of(*rows: str) -> list[list[str]]:
+    return [[_TERRAIN_KEYS[c][1] for c in row] for row in rows]
+
+
+class WaterLayerTests(unittest.TestCase):
+    def test_distance_is_to_the_nearest_cell_that_is_not_sea_and_a_lake_counts_as_land(
+        self,
+    ) -> None:
+        layer = network.sea_distance_layer(kinds_of("l~~~~~", "~~~~~."), _ORIGIN)
+        one = (network.cell_side_um(0, _ORIGIN) + 500_000) // 1_000_000
+        self.assertEqual((layer[0][0], layer[1][5]), (65_535, 65_535))
+        self.assertEqual((layer[0][1], layer[1][4]), (one, one))
+        # (2, 0) is two cells from the lake and three from the land; (3, 1) is two from the land.
+        self.assertEqual(layer[0][2], network.sea_distance_layer(kinds_of("l~~"), _ORIGIN)[0][2])
+        self.assertLess(layer[0][3], layer[0][2] * 2)
+
+    def test_distance_is_straight_in_cells_so_a_diagonal_is_longer_than_a_side(self) -> None:
+        layer = network.sea_distance_layer(kinds_of("~~~", "~~~", "~~."), _ORIGIN)
+        side = network.cell_side_um(0, _ORIGIN)
+        self.assertEqual(layer[1][2], (side + 500_000) // 1_000_000)
+        self.assertGreater(layer[1][1], layer[1][2])
+
+    def test_half_a_metre_goes_up_and_a_class_at_the_exact_distance_may_use_the_cell(self) -> None:
+        side = network.cell_side_um(0, _ORIGIN)
+        for cells in range(1, 6):
+            layer = network.sea_distance_layer(kinds_of("." + "~" * cells), _ORIGIN)
+            self.assertEqual(layer[0][cells], (cells * side + 500_000) // 1_000_000)
+        # A half goes up: with a side of 474.5 m, two cells are 949 m exactly.
+        self.assertEqual((2 * 474_500_000 + 500_000) // 1_000_000, 949)
+        self.assertEqual((474_500_000 + 500_000) // 1_000_000, 475)
+        distance = network.sea_distance_layer(kinds_of(".~~"), _ORIGIN)[0][2]
+        for reach, usable in ((distance, True), (distance - 1, False)):
+            context = water_context(
+                [".~~"], classes=[{"id": "c", "reach_m": reach, "sea_going": True}]
+            )
+            _, plan = work_water(context)
+            self.assertEqual((2, 0) in plan["usable"][0], usable, reach)
+
+    def test_distance_is_cut_at_65534_and_land_is_65535(self) -> None:
+        layer = network.sea_distance_layer(kinds_of("." + "~" * 300), _ORIGIN)[0]
+        self.assertEqual(layer[0], 65_535)
+        self.assertLess(layer[100], 65_534)
+        self.assertEqual(layer[300], 65_534)
+        self.assertEqual(max(v for v in layer if v != _LAYER_LAND), 65_534)
+
+    def test_a_reach_beyond_65533_metres_is_refused(self) -> None:
+        for reach in (65_534, -1):
+            with self.assertRaisesRegex(ValueError, "reach_m"):
+                network.validate_water(
+                    {"water_class": [{"id": "x", "reach_m": reach, "sea_going": True}]}, {}
+                )
+        network.validate_water(
+            {"water_class": [{"id": "x", "reach_m": 65_533, "sea_going": True}]}, {}
+        )
+
+    def test_the_layer_round_trips_as_one_channel_of_sixteen_bits(self) -> None:
+        layer = [[0, 65_535, 1000], [65_534, 7, 8]]
+        data = network.sea_distance_png(layer)
+        self.assertEqual(network.read_sea_distance(data, 3, 2), layer)
+        with self.assertRaisesRegex(ValueError, "size"):
+            network.read_sea_distance(data, 2, 3)
+        import io  # noqa: PLC0415  # Encode samples of the wrong format.
+
+        from PIL import Image  # noqa: PLC0415  # Pillow is a tool dependency.
+
+        stream = io.BytesIO()
+        Image.new("L", (3, 2)).save(stream, format="PNG")
+        with self.assertRaisesRegex(ValueError, "sample format"):
+            network.read_sea_distance(stream.getvalue(), 3, 2)
+        with self.assertRaisesRegex(ValueError, "malformed"):
+            network.read_sea_distance(b"not a png", 3, 2)
+
+
+def spans(graph: dict[str, Any], stretch: str) -> list[tuple[int, int, bool]]:
+    """A stretch's reaches as beginning, end and whether each is usable."""
+    return [(r["begin"], r["end"], r["usable"]) for r in graph["reach"] if r["stretch"] == stretch]
+
+
+class RiverGraphTests(unittest.TestCase):
+    def test_a_river_narrowing_across_one_lake_cell_is_usable_to_half_way(self) -> None:
+        context = water_context(
+            ["....", ".l..", "...."],
+            [survey("r-1", [(0, 1.5), (3, 1.5)], width=(21, 19))],
+        )
+        graph, plan = work_water(context)
+        self.assertEqual(
+            spans(graph, "r-1"),
+            [(0, 333_333, True), (333_333, 500_000, True), (500_000, 1_000_000, False)],
+        )
+        self.assertEqual([j["cell"] for j in graph["joint"]], [[0, 1], [1, 1], [1, 1], [2, 1]])
+        self.assertEqual(
+            [(j["reach"], j["cell"], j["classes"]) for j in graph["water_join"]],
+            [(1, [1, 1], ["barge", "currach"])],
+        )
+        self.assertEqual([c["bodies"] for c in graph["water_class"]], [1, 1])
+        self.assertEqual(plan["bodies"][0]["sizes"], [[1, 3]])
+
+    def test_a_river_widening_across_one_lake_cell_is_joined_at_half_way(self) -> None:
+        context = water_context(
+            ["....", ".l..", "...."],
+            [survey("r-1", [(0, 1.5), (3, 1.5)], width=(19, 21))],
+        )
+        graph, _ = work_water(context)
+        self.assertEqual(spans(graph, "r-1"), [(0, 500_000, False), (500_000, 1_000_000, True)])
+        self.assertEqual([(j["reach"], j["cell"]) for j in graph["water_join"]], [(1, [1, 1])])
+
+    def test_a_line_through_three_lake_cells_has_a_joint_and_a_join_for_each(self) -> None:
+        context = water_context(
+            ["......", ".lll..", "......"],
+            [survey("r-1", [(0, 1.5), (6, 1.5)])],
+        )
+        graph, plan = work_water(context)
+        self.assertEqual(
+            spans(graph, "r-1"),
+            [
+                (0, 166_667, True),
+                (166_667, 333_333, True),
+                (333_333, 500_000, True),
+                (500_000, 1_000_000, True),
+            ],
+        )
+        self.assertEqual([j["cell"] for j in graph["water_join"]], [[1, 1], [2, 1], [3, 1]])
+        self.assertTrue(all(r["length_mm"] > 0 for r in graph["reach"]))
+        self.assertEqual([c["bodies"] for c in graph["water_class"]], [1, 1])
+        self.assertEqual(plan["bodies"][0]["sizes"], [[3, 5]])
+
+    def test_a_stretch_with_two_distant_points_is_in_every_cell_between(self) -> None:
+        context = water_context(
+            ["..........", "..l..l....", ".........."],
+            [survey("r-1", [(0.5, 1.5), (9.5, 1.5)])],
+        )
+        graph, _ = work_water(context)
+        self.assertEqual([j["cell"] for j in graph["water_join"]], [[2, 1], [5, 1]])
+        self.assertEqual([c["bodies"] for c in graph["water_class"]], [1, 1])
+
+    def test_open_cells_touching_only_at_a_corner_are_two_bodies(self) -> None:
+        context = water_context(["l.", ".l"])
+        graph, _ = work_water(context)
+        self.assertEqual([c["bodies"] for c in graph["water_class"]], [2, 2])
+
+    def test_two_lines_in_one_land_cell_are_two_bodies(self) -> None:
+        context = water_context(
+            ["...", "...", "..."],
+            [survey("a-1", [(0.2, 1.3), (2.8, 1.3)]), survey("b-1", [(0.2, 1.7), (2.8, 1.7)])],
+        )
+        graph, _ = work_water(context)
+        self.assertEqual([c["bodies"] for c in graph["water_class"]], [2, 2])
+
+    def test_a_break_is_at_the_middle_of_the_first_run_and_splits_the_river(self) -> None:
+        context = water_context(
+            [".....", "..l..", "....."],
+            [survey("r-1", [(0, 1.5), (5, 1.5)])],
+            extra={"river_break": [{"stretch": "r-1", "cell": [2, 1], "name": "Falls"}]},
+        )
+        # The lake cell is the one the line is in: the break at its middle cuts the line there.
+        graph, _ = work_water(context)
+        item = graph["river_break"][0]
+        above, below = graph["joint"][item["above"]], graph["joint"][item["below"]]
+        self.assertEqual((above["stretch"], below["stretch"]), ("r-1", "r-1"))
+        self.assertEqual((item["name"], item["cell"]), ("Falls", [2, 1]))
+        # The lake cell holds the run from 0.4 to 0.6; its middle, 0.5, is the break. No reach spans it.
+        self.assertEqual(
+            spans(graph, "r-1"),
+            [(0, 400_000, True), (400_000, 500_000, True), (500_000, 1_000_000, True)],
+        )
+        self.assertEqual(item["below"], item["above"] + 1)
+        self.assertEqual(len(graph["joint"]), 5)
+        # Each side of the break is joined to the lake cell, so that cell is the one way between them.
+        self.assertEqual([j["cell"] for j in graph["water_join"]], [[2, 1], [2, 1]])
+        self.assertEqual([c["bodies"] for c in graph["water_class"]], [1, 1])
+
+    def test_a_break_beside_a_lake_cell_the_line_is_not_in_does_not_rejoin_the_river(self) -> None:
+        context = water_context(
+            ["..l..", ".....", "....."],
+            [survey("r-1", [(0, 1.5), (5, 1.5)])],
+            extra={"river_break": [{"stretch": "r-1", "cell": [2, 1], "name": "Falls"}]},
+        )
+        graph, _ = work_water(context)
+        # The river's two parts and the lake cell above it: three bodies.
+        self.assertEqual([c["bodies"] for c in graph["water_class"]], [3, 3])
+
+    def test_a_break_in_a_cell_the_stretch_is_not_in_is_refused(self) -> None:
+        context = water_context(
+            ["....."],
+            [survey("r-1", [(0, 0.5), (5, 0.5)])],
+            extra={"river_break": [{"stretch": "r-1", "cell": [2, 3], "name": "Falls"}]},
+        )
+        with self.assertRaisesRegex(ValueError, "Falls.*not in cell"):
+            work_water(context)
+
+    def test_a_tributary_a_lough_and_its_outlet_are_one_body(self) -> None:
+        context = water_context(
+            ["........", "..lll...", "........"],
+            [
+                survey("main-1", [(4, 1.5), (8, 1.5)]),
+                survey("lough-1", [(1.5, 1.5), (4, 1.5)], kind="lough", ends="main-1"),
+                survey("trib-1", [(5, 0.2), (5, 1.5)], ends="main-1"),
+            ],
+        )
+        graph, _ = work_water(context)
+        self.assertEqual([c["bodies"] for c in graph["water_class"]], [1, 1])
+
+    def test_a_fork_round_an_island_with_a_break_on_one_arm_is_one_body(self) -> None:
+        rows = [".........." for _ in range(4)]
+        rows[1] = ".l......l."
+        arms = [
+            survey("north-1", [(1.5, 1.5), (3, 0.5), (7, 0.5), (8.5, 1.5)]),
+            survey("south-1", [(1.5, 1.5), (3, 2.5), (7, 2.5), (8.5, 1.5)]),
+        ]
+        breaks = [{"stretch": "north-1", "cell": [5, 0], "name": "North falls"}]
+        graph, _ = work_water(water_context(rows, arms, extra={"river_break": breaks}))
+        # The north arm is cut in two, and the south arm is the only way between its parts.
+        self.assertEqual([c["bodies"] for c in graph["water_class"]], [1, 1])
+        both = [*breaks, {"stretch": "south-1", "cell": [5, 2], "name": "South falls"}]
+        graph, _ = work_water(water_context(rows, arms, extra={"river_break": both}))
+        self.assertEqual([c["bodies"] for c in graph["water_class"]], [2, 2])
+
+    def test_a_reach_between_a_crossing_and_a_break_0_4_metres_apart_is_400_mm(self) -> None:
+        context = water_context(["..."], [survey("r-1", [(0, 0.5), (3, 0.5)])])
+        line = network.WaterLine(
+            network.RiverLine(context["rivers"][0], _ORIGIN), network.Fraction(20), []
+        )
+        # 0.4 m along the line, at this latitude, as a position in the tool's own units.
+        side = network.cell_side_um(0, _ORIGIN) / 1e6
+        start = network.Fraction(1_000_000)
+        end = start + network.Fraction(0.4 / side * 1_000_000)
+        self.assertEqual(network.reach_length_mm(line, start, end, _ORIGIN), 400)
+        self.assertEqual(network.reach_length_mm(line, start, start + 1, _ORIGIN), 1)
+
+
+def landings_at(graph: dict[str, Any], node: int) -> list[dict[str, Any]]:
+    return [x for x in graph["landing"] if x["node"] == node]
+
+
+class LandingTests(unittest.TestCase):
+    def test_a_place_takes_the_nearest_shore_and_each_class_its_body(self) -> None:
+        rows = ["~~~~~", "~...~", "~...~", "~~~~~"]
+        graph, _ = work_water(water_context(rows), water_graph([(1, "place", (2, 1), "p")]))
+        [landing] = landings_at(graph, 1)
+        self.assertEqual(
+            (landing["cell"], landing["shore"], landing["approach_m"], landing["bodies"]),
+            ([2, 0], [2, 1], 0, [0, 0]),
+        )
+        self.assertNotIn("bank", landing)
+
+    def test_an_approach_is_a_path_over_land_so_it_bends_round_a_lake_cell(self) -> None:
+        rows = ["...~", ".l.~"]
+        graph = water_graph(
+            [(1, "place", (0, 1), "p"), (2, "landing", (0, 0), "p")],
+            access=[("p", "offshore", 2)],
+        )
+        graph, _ = work_water(water_context(rows), graph)
+        by_cell = {tuple(x["cell"]): x for x in landings_at(graph, 1)}
+        side = network.cell_side_um(1, _ORIGIN)
+        # The lake beside the place is a landing of its own; the sea is three steps away over land.
+        self.assertEqual(by_cell[1, 1]["approach_m"], 0)
+        self.assertEqual(by_cell[3, 0]["shore"], [2, 0])
+        self.assertEqual(by_cell[3, 0]["approach_m"], (3 * side + 500_000) // 1_000_000)
+
+    def test_a_place_that_reaches_two_barge_bodies_gets_a_landing_in_each(self) -> None:
+        rows = ["...~", ".l.~"]
+        graph = water_graph(
+            [(1, "place", (0, 1), "p"), (2, "landing", (0, 0), "p")], [("p", "offshore", 2)]
+        )
+        graph, plan = work_water(water_context(rows), graph)
+        barge = {x["bodies"][0] for x in landings_at(graph, 1)}
+        self.assertEqual(len(barge), 2)
+        self.assertEqual(plan["bodies"][0]["count"], 2)
+
+    def test_a_junction_on_marsh_or_high_ground_has_no_landing_and_is_reported(self) -> None:
+        rows = ["~m~", "~.~", "~h~", "~~~"]
+        nodes = [
+            (1, "junction", (1, 0), None),
+            (2, "junction", (1, 2), None),
+            (3, "junction", (1, 1), None),
+        ]
+        graph, plan = work_water(water_context(rows), water_graph(nodes))
+        self.assertEqual(landings_at(graph, 1), [])
+        self.assertEqual(landings_at(graph, 2), [])
+        self.assertTrue(landings_at(graph, 3))
+        self.assertEqual(
+            sorted((r["node"], r["reason"]) for r in plan["refused"]),
+            [(1, "marsh"), (2, "50 m above the water")],
+        )
+
+    def test_a_place_in_marsh_and_a_mainland_landing_node_on_marsh_each_get_one(self) -> None:
+        rows = ["~m~m~"]
+        nodes = [(1, "place", (1, 0), "p"), (2, "landing", (3, 0), "q"), (3, "place", (3, 0), "q")]
+        graph, _ = work_water(water_context(rows), water_graph(nodes, [("q", "offshore", 2)]))
+        self.assertTrue(landings_at(graph, 1))
+        self.assertTrue(landings_at(graph, 2))
+
+    def test_a_lake_shore_is_judged_by_its_height_above_the_lake_and_the_sea_by_its_height_above_zero(
+        self,
+    ) -> None:
+        rows = ["l.~"]
+        context = water_context(rows, heights={(0, 0): 100, (1, 0): 105})
+        graph, plan = work_water(context, water_graph([(1, "junction", (1, 0), None)]))
+        # 5 m above the lake is fine; 105 m above the sea at the other side is not.
+        self.assertEqual([x["cell"] for x in landings_at(graph, 1)], [[0, 0]])
+        self.assertEqual([r["reason"] for r in plan["refused"]], ["105 m above the water"])
+
+    def test_a_river_in_the_nodes_own_cell_is_never_too_high(self) -> None:
+        rows = ["...", ".h.", "..."]
+        context = water_context(rows, [survey("r-1", [(0, 1.5), (3, 1.5)])])
+        graph, plan = work_water(context, water_graph([(1, "junction", (1, 1), None)]))
+        self.assertEqual(len(landings_at(graph, 1)), 1)
+        self.assertEqual(plan["refused"], [])
+
+    def test_a_junction_where_a_river_widens_past_20_m_gets_a_landing_half_way(self) -> None:
+        rows = ["...", "...", "..."]
+        context = water_context(rows, [survey("r-1", [(0, 1.5), (3, 1.5)], width=(19, 21))])
+        graph, _ = work_water(context, water_graph([(1, "junction", (1, 1), None)]))
+        [landing] = landings_at(graph, 1)
+        reach = graph["reach"][
+            next(i for i, r in enumerate(graph["reach"]) if r["from"] == landing["joint"])
+        ]
+        self.assertEqual((reach["begin"], reach["usable"]), (500_000, True))
+        self.assertEqual((landing["bank"], landing["bodies"]), ("left", [0, 0]))
+
+    def test_a_node_with_a_break_in_its_cell_gets_a_landing_on_each_side_on_one_bank(self) -> None:
+        rows = ["...", "...", "..."]
+        breaks = [{"stretch": "r-1", "cell": [1, 1], "name": "Falls"}]
+        context = water_context(
+            rows, [survey("r-1", [(0, 1.5), (3, 1.5)])], extra={"river_break": breaks}
+        )
+        graph, _ = work_water(context, water_graph([(1, "junction", (1, 1), None)]))
+        landings = landings_at(graph, 1)
+        self.assertEqual(len(landings), 2)
+        self.assertEqual({x["bank"] for x in landings}, {"left"})
+        self.assertEqual(sorted(x["run"] for x in landings), [0, 1])
+        self.assertEqual(len({x["bodies"][0] for x in landings}), 2)
+
+    def test_a_landing_keeps_its_id_when_a_joint_is_added_upstream(self) -> None:
+        river = survey("r-1", [(0, 1.5), (6, 1.5)])
+        nodes = [(1, "junction", (4, 1), None)]
+        rows = ["......", "......", "......"]
+        graph, _ = work_water(water_context(rows, [river]), water_graph(nodes))
+        before = landings_at(graph, 1)[0]
+        previous = {"landing": graph["landing"], "next_landing_id": graph["next_landing_id"]}
+        again, _ = work_water(
+            water_context(
+                [".l....", ".l....", "......"][:0]
+                or ["..l...", "......", "......"][:0]
+                or ["......", ".l....", "......"],
+                [river],
+            ),
+            water_graph(nodes),
+            previous=previous,
+        )
+        after = landings_at(again, 1)[0]
+        self.assertEqual(after["id"], before["id"])
+        self.assertNotEqual(after["joint"], before["joint"])
+
+    def test_the_two_places_held_as_shore_each_get_a_strait_with_the_classes_the_mark_allows(
+        self,
+    ) -> None:
+        rows = ["~~~~~", "~...~", "~~~~~"]
+        nodes = [(1, "place", (1, 1), "p"), (2, "landing", (2, 1), "p")]
+        for marks, classes in (([], ["barge", "currach"]), ([{"place": "p"}], ["currach"])):
+            context = water_context(rows, extra={"mark": marks})
+            graph, _ = work_water(context, water_graph(nodes, [("p", "offshore", 2)]))
+            self.assertEqual(
+                [
+                    (s["place"], s["from"], s["to"], s["length_m"], s["classes"])
+                    for s in graph["strait"]
+                ],
+                [("p", 1, 2, 500, classes)],
+            )
+            # A marked place's landings have a body for the currach and none for the barge.
+            bodies = [x["bodies"] for x in graph["landing"] if x["node"] in {1, 2}]
+            self.assertTrue(all((b[0] < 0) == bool(marks) and b[1] >= 0 for b in bodies), bodies)
+
+    def test_an_island_place_across_water_from_its_landing_has_no_strait(self) -> None:
+        rows = ["~~~~~~~", "~.~~~.~", "~~~~~~~"]
+        nodes = [(1, "place", (1, 1), "p"), (2, "landing", (5, 1), "p")]
+        graph, _ = work_water(water_context(rows), water_graph(nodes, [("p", "offshore", 2)]))
+        self.assertEqual(graph["strait"], [])
+
+    def test_a_place_with_no_water_on_its_land_has_no_landing(self) -> None:
+        graph, _ = work_water(water_context(["....."]), water_graph([(1, "place", (2, 0), "p")]))
+        self.assertEqual(graph["landing"], [])
+
+
+def crossing_world(  # noqa: PLR0913  # The world's parts and, for a rebuild, the stored graph before it.
+    rows: list[str],
+    rivers: list[dict[str, Any]],
+    cells: list[tuple[int, int]],
+    entries: list[tuple[str, tuple[int, int], str]],
+    *,
+    extra: dict[str, Any] | None = None,
+    previous: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """One road over rivers, cut by slice 3a's own tool, with its water worked."""
+    context = water_context(rows, rivers, extra=extra)
+    graph = water_graph(
+        [(1, "place", cells[0], "a"), (2, "place", cells[-1], "b")],
+        stretches=[
+            {
+                "id": 3,
+                "from": 1,
+                "to": 2,
+                "cells": [list(c) for c in cells],
+                "length_m": 1000 * len(cells),
+                "category": "road",
+                "level": 1,
+                "tidal": False,
+            }
+        ],
+    )
+    graph["link"] = [{"id": "x", "stretches": [[3, "forward"]]}]
+    hand = [{"river": r, "at": list(c), "kind": k, "note": "test"} for r, c, k in entries]
+    hits = network.apply_crossings(
+        graph, context["index"], hand, _ORIGIN, {r["river"] for r in rivers}
+    )
+    graph, plan = work_water(context, graph, hits, previous)
+    return context, graph, plan
+
+
+def crossing_stretches(graph: dict[str, Any]) -> list[dict[str, Any]]:
+    return [s for s in graph["stretch"] if s.get("crossings")]
+
+
+class CrossingEndTests(unittest.TestCase):
+    ROWS: ClassVar[list[str]] = ["......", "......", "......"]
+    ROAD: ClassVar[list[tuple[int, int]]] = [(0, 1), (1, 1), (2, 1), (3, 1)]
+
+    def test_a_none_crossing_with_both_banks_allowed_has_both_ends_in_one_body(self) -> None:
+        river = survey("r-1", [(2.2, 0), (2.2, 3)])
+        _, graph, _ = crossing_world(self.ROWS, [river], self.ROAD, [("r", (2, 1), "none")])
+        [stretch] = crossing_stretches(graph)
+        ends = {x["end"]: x for x in graph["landing"] if x.get("crossing") == stretch["id"]}
+        self.assertEqual(sorted(ends), ["from", "to"])
+        self.assertEqual(stretch["landing_from"], ends["from"]["id"])
+        self.assertEqual(stretch["landing_to"], ends["to"]["id"])
+        self.assertEqual(ends["from"]["bodies"], ends["to"]["bodies"])
+        self.assertEqual(ends["from"]["joint"], ends["to"]["joint"])
+        # The river runs south: the road's west is its right bank, and the east its left.
+        self.assertEqual((ends["from"]["bank"], ends["to"]["bank"]), ("right", "left"))
+        self.assertEqual(
+            (ends["from"]["node"], ends["to"]["node"]), (stretch["from"], stretch["to"])
+        )
+
+    def test_a_bank_that_is_refused_means_no_boat_crosses(self) -> None:
+        river = survey("r-1", [(2.2, 0), (2.2, 3)])
+        rows = ["......", "..m...", "......"]
+        _, graph, plan = crossing_world(rows, [river], self.ROAD, [("r", (2, 1), "none")])
+        [stretch] = crossing_stretches(graph)
+        self.assertIn("landing_from", stretch)
+        self.assertNotIn("landing_to", stretch)
+        self.assertIn((stretch["to"], "marsh"), [(r["node"], r["reason"]) for r in plan["refused"]])
+        report = network.water_report(graph, plan)
+        self.assertIn(
+            f"stretch {stretch['id']}: landings {stretch['landing_from']}, none; barge cannot cross; currach cannot cross",
+            "\n".join(report),
+        )
+
+    def test_a_crossing_whose_nearest_point_is_a_break_has_no_landing_at_either_end(self) -> None:
+        river = survey("r-1", [(2.2, 0), (2.2, 3)])
+        breaks = [{"stretch": "r-1", "cell": [2, 1], "name": "Falls"}]
+        _, graph, plan = crossing_world(
+            self.ROWS, [river], self.ROAD, [("r", (2, 1), "none")], extra={"river_break": breaks}
+        )
+        [stretch] = crossing_stretches(graph)
+        self.assertNotIn("landing_from", stretch)
+        self.assertNotIn("landing_to", stretch)
+        self.assertEqual(
+            sorted(r["reason"] for r in plan["refused"] if "crossing" in r),
+            ["the point is a break", "the point is a break"],
+        )
+
+    def test_a_stretch_over_two_rivers_that_do_not_meet_has_landings_and_no_boat_crosses(
+        self,
+    ) -> None:
+        rivers = [
+            survey("a-1", [(1.6, 0), (1.6, 3)]),
+            survey("b-1", [(2.3, 0), (2.3, 3)], ends="sea"),
+        ]
+        _, graph, plan = crossing_world(
+            self.ROWS, rivers, self.ROAD, [("a", (1, 1), "none"), ("b", (2, 1), "none")]
+        )
+        [stretch] = crossing_stretches(graph)
+        self.assertEqual(len(stretch["crossings"]), 2)
+        landings = {x["end"]: x for x in graph["landing"] if x.get("crossing") == stretch["id"]}
+        self.assertEqual(sorted(landings), ["from", "to"])
+        self.assertNotEqual(landings["from"]["bodies"], landings["to"]["bodies"])
+        self.assertIsNotNone(plan)
+
+    def test_two_crossing_stretches_meeting_at_a_node_have_a_landing_for_each_end(self) -> None:
+        rivers = [
+            survey("a-1", [(2.5, 0), (2.5, 3)]),
+            survey("b-1", [(3.1, 0), (3.1, 3)]),
+        ]
+        road = [(0, 1), (1, 1), (2, 1), (3, 1), (4, 1)]
+        rows = ["......", "......", "......"]
+        _, graph, _ = crossing_world(
+            rows, rivers, road, [("a", (2, 1), "none"), ("b", (3, 1), "none")]
+        )
+        first, second = sorted(crossing_stretches(graph), key=lambda s: s["cells"][0])
+        self.assertEqual(first["to"], second["from"])
+        by_id = {x["id"]: x for x in graph["landing"]}
+        arriving, leaving = by_id[first["landing_to"]], by_id[second["landing_from"]]
+        # The first river is met at the centre of the shared node's cell: it belongs to the stretch
+        # arriving there, on the bank opposite the side the road comes from.
+        self.assertEqual(arriving["bank"], "left")
+        # The second river is met half way on, and the road lies on its west bank before it.
+        self.assertEqual(leaving["bank"], "right")
+        self.assertNotEqual(arriving["joint"], leaving["joint"])
+        # The node also has landings of its own in each river it holds, apart from the crossing ends'.
+        own = [x for x in landings_at(graph, first["to"]) if "crossing" not in x]
+        self.assertEqual(len(own), 1)
+        self.assertEqual(own[0]["survey"], "a-1")
+        self.assertNotEqual(own[0]["id"], arriving["id"])
+
+    def test_a_crossing_ends_landing_is_known_by_its_stretch_and_end_alone(self) -> None:
+        for bank in ("left", "right"):
+            for node in (1, 2, 17):
+                key = network.landing_key(
+                    {"node": node, "bank": bank, "crossing": 52, "end": "from"}
+                )
+                self.assertEqual(key, ("crossing", 52, "from"))
+        self.assertNotEqual(
+            network.landing_key({"node": 1, "crossing": 52, "end": "from"}),
+            network.landing_key({"node": 1, "crossing": 52, "end": "to"}),
+        )
+
+    def test_a_crossing_end_keeps_its_id_when_its_bank_or_node_changes_on_a_rebuild(self) -> None:
+        river = survey("r-1", [(2.2, 0), (2.2, 3)])
+        _, graph, _ = crossing_world(self.ROWS, [river], self.ROAD, [("r", (2, 1), "none")])
+        ends = {x["end"]: x for x in graph["landing"] if x.get("crossing") is not None}
+        self.assertEqual(sorted(ends), ["from", "to"])
+        flipped = {"left": "right", "right": "left"}
+        # The survey or the approach now puts each end on the other bank and at another node, the crossing and its end the same.
+        previous = {
+            "landing": [
+                {**x, "bank": flipped[x["bank"]], "node": x["node"] + 50} if "crossing" in x else x
+                for x in graph["landing"]
+            ],
+            "next_landing_id": graph["next_landing_id"],
+        }
+        _, again, _ = crossing_world(
+            self.ROWS, [river], self.ROAD, [("r", (2, 1), "none")], previous=previous
+        )
+        after = {x["end"]: x for x in again["landing"] if x.get("crossing") is not None}
+        for end in ("from", "to"):
+            self.assertEqual(after[end]["id"], ends[end]["id"], end)
+            self.assertEqual(after[end]["bank"], ends[end]["bank"])
+        self.assertEqual(again["next_landing_id"], graph["next_landing_id"])
+
+    def test_in_a_group_whose_first_point_is_not_its_widest_the_end_is_at_the_nearest_point(
+        self,
+    ) -> None:
+        # One river crossed three times within 500 m is one crossing; it widens as it goes, so the
+        # first point is the narrowest and the group is wide at its last.
+        river = survey(
+            "r-1",
+            [(1.6, 0), (1.6, 2), (2.0, 2), (2.0, 1), (2.4, 1), (2.4, 3)],
+            width=(5, 40),
+        )
+        _, graph, _ = crossing_world(self.ROWS, [river], self.ROAD, [("r", (2, 1), "none")])
+        [stretch] = crossing_stretches(graph)
+        self.assertEqual(len(stretch["crossings"]), 1)
+        self.assertNotIn("landing_from", stretch)
+        self.assertIn("landing_to", stretch)
+
+
+class WaterFormatTests(unittest.TestCase):
+    """The stored format 3, built from the shared fixture with a river added beside its roads."""
+
+    FIXTURE: ClassVar[Path] = Path(__file__).resolve().parents[1] / "crates/map/tests/network"
+
+    def make(self, directory: str) -> tuple[Path, Path]:
+        import shutil  # noqa: PLC0415  # Work on a copy of the shared fixture.
+
+        copy = Path(directory) / "fixture"
+        shutil.copytree(self.FIXTURE / "map", copy / "map")
+        shutil.copytree(self.FIXTURE / "scenarios", copy / "scenarios")
+        map_dir, scenario = copy / "map/fixture", copy / "scenarios/fixture"
+        river = survey("sea-1", [(1, 8.5), (12, 8.5)], width=(30, 30))
+        stretch = {**river, "points": [list(p) for p in river["points"]]}
+        text = (
+            "format = 2\n\n[tiers]\nshow_from_step = [0, 14, 24]\n\n"
+            '[[river]]\nid = "sea"\nname = "Sea"\ntier = 3\n\n[[stretch]]\n'
+            'id = "sea-1"\nriver = "sea"\nkind = "river"\nwidth_m = [30.0, 30.0]\nends = "sea"\n'
+            f"points = {stretch['points']}\n"
+        )
+        (map_dir / "rivers.toml").write_text(text)
+        network.build_network(map_dir, scenario)
+        return map_dir, scenario
+
+    def test_two_builds_give_the_same_bytes_and_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            map_dir, scenario = self.make(directory)
+            first = {n: (scenario / n).read_bytes() for n in ("roads.toml", "sea_distance.png")}
+            network.build_network(map_dir, scenario)
+            self.assertEqual({n: (scenario / n).read_bytes() for n in first}, first)
+            network.check_network(map_dir, scenario)
+            stored = tomllib.loads(first["roads.toml"].decode())
+            self.assertEqual(stored["format"], 3)
+            self.assertEqual(
+                [(c["id"], c["bodies"]) for c in stored["water_class"]],
+                [("barge", 3), ("currach", 3)],
+            )
+            self.assertEqual(stored["sea_distance"], "sea_distance.png")
+
+    def test_a_build_that_fails_leaves_the_stored_network_the_layer_and_the_report(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            map_dir, scenario = self.make(directory)
+            names = ("roads.toml", "sea_distance.png", "network-report.md")
+            before = {n: (scenario / n).read_bytes() for n in names}
+            hand = scenario / "network.toml"
+            hand.write_text(hand.read_text().replace("reach_m = 1000", "reach_m = 900"))
+            with (
+                mock.patch.object(network, "network_report", side_effect=RuntimeError("fails")),
+                self.assertRaisesRegex(RuntimeError, "fails"),
+            ):
+                network.build_network(map_dir, scenario)
+            self.assertEqual({n: (scenario / n).read_bytes() for n in names}, before)
+            original = Path.replace
+            count = 0
+
+            def interrupted(path: Path, target: Path) -> Path:
+                nonlocal count
+                count += 1
+                if count == _WRITES_BEFORE_FAILURE:
+                    raise OSError("injected write failure")
+                return original(path, target)
+
+            with (
+                mock.patch.object(Path, "replace", interrupted),
+                self.assertRaisesRegex(OSError, "injected"),
+            ):
+                network.build_network(map_dir, scenario)
+            self.assertEqual({n: (scenario / n).read_bytes() for n in names}, before)
+
+    def test_check_refuses_a_layer_that_is_missing_stale_malformed_or_changed(self) -> None:
+        import io  # noqa: PLC0415  # Encode layers of other shapes.
+
+        from PIL import Image  # noqa: PLC0415  # Pillow is a tool dependency.
+
+        with tempfile.TemporaryDirectory() as directory:
+            map_dir, scenario = self.make(directory)
+            layer = scenario / "sea_distance.png"
+            good = layer.read_bytes()
+            values = network.read_sea_distance(good, 14, 10)
+
+            def refuses(data: bytes | None, pattern: str) -> None:
+                if data is None:
+                    layer.unlink()
+                else:
+                    layer.write_bytes(data)
+                with self.assertRaisesRegex(ValueError, pattern):
+                    network.check_network(map_dir, scenario)
+                layer.write_bytes(good)
+
+            refuses(None, "missing")
+            refuses(b"not a png", "malformed")
+            eight = io.BytesIO()
+            Image.new("L", (14, 10)).save(eight, format="PNG")
+            refuses(eight.getvalue(), "sample format")
+            other = io.BytesIO()
+            Image.new("I;16", (13, 10)).save(other, format="PNG")
+            refuses(other.getvalue(), "size")
+            changed = [row[:] for row in values]
+            changed[0][0] = 7
+            refuses(network.sea_distance_png(changed), r"cell \(0, 0\) is 7")
+            network.check_network(map_dir, scenario)
+
+    def test_check_refuses_each_recorded_hash_when_its_file_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            map_dir, scenario = self.make(directory)
+            rivers = map_dir / "rivers.toml"
+            original = rivers.read_text()
+            rivers.write_text(
+                original + "# a comment changes the bytes and nothing else\n".replace("\\\n", "\n")
+            )
+            with self.assertRaisesRegex(ValueError, "rivers_sha256"):
+                network.check_network(map_dir, scenario)
+            rivers.write_text(original)
+            from PIL import Image  # noqa: PLC0415  # Same pixels, other bytes.
+
+            with Image.open(map_dir / "terrain.png") as image:
+                image.convert("RGB").save(map_dir / "terrain.png", compress_level=1, optimize=False)
+            with self.assertRaisesRegex(ValueError, "terrain_sha256"):
+                network.check_network(map_dir, scenario)
+
+    def test_check_refuses_a_river_graph_with_one_reach_changed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            map_dir, scenario = self.make(directory)
+            roads = scenario / "roads.toml"
+            text = roads.read_text()
+            self.assertIn("length_mm = ", text)
+            mark = text.index("[[reach]]")
+            line = text.index("length_mm = ", mark)
+            end = text.index("\n".replace("\\\n", "\n"), line)
+            roads.write_text(text[:line] + "length_mm = 1" + text[end:])
+            with self.assertRaisesRegex(ValueError, "reach 0 differs"):
+                network.check_network(map_dir, scenario)
+
+    def test_the_report_gains_each_water_section_and_the_road_beside_water_with_no_node(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            _, scenario = self.make(directory)
+            report = (scenario / "network-report.md").read_text()
+            for heading in (
+                "## Water classes",
+                "## Bodies of water",
+                "## Landings",
+                "## Places without a landing",
+                "## Shores refused",
+                "## Crossing stretches by boat",
+                "## Straits",
+                "## Sea-going marks",
+                "## Roads beside usable water with no node",
+                "## Places joined by land and water",
+            ):
+                self.assertIn(heading, report)
+            self.assertIn("- stretch 6: cell (3, 4)", report)
+
+    def test_a_hand_list_with_a_river_width_for_a_class_is_refused(self) -> None:
+        bad = {"water_class": [{**_BARGE, "river_width_m": 20}]}
+        with self.assertRaisesRegex(ValueError, "water_class: unknown key river_width_m"):
+            network.validate_water(bad, {})
+        with self.assertRaisesRegex(ValueError, "water river_width_m"):
+            network.validate_water({"water": {"river_width_m": -1}}, {})
+        with self.assertRaisesRegex(ValueError, "mark q: repeated or unknown place"):
+            network.validate_water({"mark": [{"place": "q"}]}, {"p": (0, 0)})
+        with self.assertRaisesRegex(ValueError, "already in that cell"):
+            network.validate_water(
+                {
+                    "river_break": [
+                        {"stretch": "s", "cell": [1, 1], "name": "A"},
+                        {"stretch": "s", "cell": [1, 1], "name": "B"},
+                    ]
+                },
+                {},
+            )
+
+
+_WRITES_BEFORE_FAILURE = 3
+
+
+class IrelandWaterTests(unittest.TestCase):
+    """The statements of "It passes when", counted on the stored network of Ireland."""
+
+    root: ClassVar[Path]
+    graph: ClassVar[dict[str, Any]]
+    layer: ClassVar[list[list[int]]]
+    kinds: ClassVar[list[list[str]]]
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.root = Path(__file__).resolve().parents[1]
+        scenario = cls.root / "assets/scenarios/ireland-768"
+        cls.graph = tomllib.loads((scenario / "roads.toml").read_text())
+        cls.kinds = network.read_rasters(cls.root / "assets/map/ireland")["kind"]
+        data = (scenario / "sea_distance.png").read_bytes()
+        cls.layer = network.read_sea_distance(data, len(cls.kinds[0]), len(cls.kinds))
+
+    def landings_of(self, place: str, kind: str) -> list[dict[str, Any]]:
+        nodes = [n["id"] for n in self.graph["node"] if n["kind"] == kind and n["place"] == place]
+        return [x for x in self.graph["landing"] if x["node"] in nodes]
+
+    def bodies(self, place: str, kind: str, number: int) -> set[int]:
+        return {
+            x["bodies"][number] for x in self.landings_of(place, kind) if x["bodies"][number] >= 0
+        }
+
+    def test_check_names_a_join_changed_between_a_cell_and_the_next_reach_and_does_not_crash(
+        self,
+    ) -> None:
+        # The identity of a join holds its reach, the reach it runs on to and its cell, one of the last two absent. A join to a cell
+        # changed into one to a reach (and back) leaves the two kinds of identity to be put in order together.
+        import contextlib  # noqa: PLC0415  # Read what the command prints.
+        import io  # noqa: PLC0415  # Catch the command's output.
+        import shutil  # noqa: PLC0415  # Work on a copy of the shipped scenario.
+
+        with tempfile.TemporaryDirectory() as directory:
+            map_dir, scenario = Path(directory) / "map", Path(directory) / "scenario"
+            shutil.copytree(
+                self.root / "assets/map/ireland",
+                map_dir,
+                ignore=shutil.ignore_patterns("__pycache__"),
+            )
+            shutil.copytree(self.root / "assets/scenarios/ireland-768", scenario)
+            original = (scenario / "roads.toml").read_text()
+
+            def checked() -> tuple[int, str]:
+                errors = io.StringIO()
+                with contextlib.redirect_stderr(errors), contextlib.redirect_stdout(io.StringIO()):
+                    code = network.main(
+                        ["--map-dir", str(map_dir), "--scenario", str(scenario), "check"]
+                    )
+                return code, errors.getvalue()
+
+            self.assertEqual(checked(), (0, ""))
+            graph = tomllib.loads(original)
+            joins = graph["water_join"]
+            to_cell = next(item for item in joins if "cell" in item)
+            to_reach = next(item for item in joins if "to_reach" in item)
+            for changed, other in ((to_cell, "to_reach"), (to_reach, "cell")):
+                tampered = tomllib.loads(original)
+                item = tampered["water_join"][joins.index(changed)]
+                if other == "to_reach":
+                    del item["cell"]
+                    item["to_reach"] = item["reach"]
+                else:
+                    del item["to_reach"]
+                    item["cell"] = [1, 1]
+                (scenario / "roads.toml").write_text(network.dump_roads(tampered))
+                code, errors = checked()
+                self.assertEqual(code, 1, errors)
+                self.assertRegex(errors, r"network: stored network water_join .* differs")
+            (scenario / "roads.toml").write_text(original)
+            self.assertEqual(checked(), (0, ""))
+
+    def test_check_names_a_stored_identity_of_the_wrong_type_and_does_not_crash(self) -> None:
+        # A table entry whose identity holds a string where the others hold a number is a difference to name, not a traceback.
+        import contextlib  # noqa: PLC0415  # Read what the command prints.
+        import io  # noqa: PLC0415  # Catch the command's output.
+        import re  # noqa: PLC0415  # Edit the stored text of one entry.
+        import shutil  # noqa: PLC0415  # Work on a copy of the shipped scenario.
+
+        with tempfile.TemporaryDirectory() as directory:
+            map_dir, scenario = Path(directory) / "map", Path(directory) / "scenario"
+            shutil.copytree(
+                self.root / "assets/map/ireland",
+                map_dir,
+                ignore=shutil.ignore_patterns("__pycache__"),
+            )
+            shutil.copytree(self.root / "assets/scenarios/ireland-768", scenario)
+            original = (scenario / "roads.toml").read_text()
+
+            def checked() -> tuple[int, str]:
+                errors = io.StringIO()
+                with contextlib.redirect_stderr(errors), contextlib.redirect_stdout(io.StringIO()):
+                    code = network.main(
+                        ["--map-dir", str(map_dir), "--scenario", str(scenario), "check"]
+                    )
+                return code, errors.getvalue()
+
+            self.assertEqual(checked(), (0, ""))
+            for table, field in (("water_join", "reach"), ("landing", "id"), ("reach", "id")):
+                # The text is edited, not the table: the tool's own writer would sort the entries and refuse the mix.
+                tampered, count = re.subn(
+                    rf"(\[\[{table}\]\]\n(?:[^\[]*?\n)?){field} = [^\n]+",
+                    rf'\g<1>{field} = "broken"',
+                    original,
+                    count=1,
+                )
+                self.assertEqual(count, 1, (table, field))
+                (scenario / "roads.toml").write_text(tampered)
+                code, errors = checked()
+                self.assertEqual(code, 1, (table, errors))
+                self.assertRegex(
+                    errors,
+                    rf"network: stored network {table}\b.*(differs|malformed|not an integer)",
+                )
+                self.assertNotIn("Traceback", errors)
+            (scenario / "roads.toml").write_text(original)
+            self.assertEqual(checked(), (0, ""))
+
+    def test_check_names_each_stored_id_or_counter_that_is_not_a_plain_integer(self) -> None:
+        import contextlib  # noqa: PLC0415  # Read what the command prints.
+        import io  # noqa: PLC0415  # Catch the command's output.
+        import re  # noqa: PLC0415  # Edit the stored text of one entry.
+        import shutil  # noqa: PLC0415  # Work on a copy of the shipped scenario.
+
+        with tempfile.TemporaryDirectory() as directory:
+            map_dir, scenario = Path(directory) / "map", Path(directory) / "scenario"
+            shutil.copytree(
+                self.root / "assets/map/ireland",
+                map_dir,
+                ignore=shutil.ignore_patterns("__pycache__"),
+            )
+            shutil.copytree(self.root / "assets/scenarios/ireland-768", scenario)
+            original = (scenario / "roads.toml").read_text()
+
+            def checked() -> tuple[int, str]:
+                output = io.StringIO()
+                with contextlib.redirect_stderr(output), contextlib.redirect_stdout(io.StringIO()):
+                    code = network.main(
+                        ["--map-dir", str(map_dir), "--scenario", str(scenario), "check"]
+                    )
+                return code, output.getvalue()
+
+            # The unchanged file passes; each change below is named by the table, the entry and the field with its type.
+            self.assertEqual(checked(), (0, ""))
+            graph = tomllib.loads(original)
+
+            def edit(
+                table: str,
+                field: str,
+                value: str,
+                *,
+                new_field: str | None = None,
+                keep: bool = False,
+            ) -> tuple[str, int]:
+                """The stored text with the first entry of `table` that has `field` holding `value` (under `new_field`, and
+                beside the old line when `keep`), and that entry's number."""
+                number = next(i for i, item in enumerate(graph[table]) if field in item)
+                lines, seen, found = original.split("\n"), -1, False
+                for at, line in enumerate(lines):
+                    if line == f"[[{table}]]":
+                        seen += 1
+                    elif seen == number and line.startswith(f"{field} = "):
+                        new_line = f"{new_field or field} = {value}"
+                        lines[at] = f"{line}\n{new_line}" if keep else new_line
+                        found = True
+                        break
+                self.assertTrue(found, (table, field))
+                return "\n".join(lines), number
+
+            # Every case is a change to the stored text; the message names the table, the entry, the field and the type found.
+            def case(  # noqa: PLR0913  # A case names its table, field, value and message, and may rename the key or keep the old line.
+                table: str,
+                field: str,
+                value: str,
+                message: str,
+                new_field: str | None = None,
+                keep: bool = False,
+            ) -> tuple[str, str, str, str, str | None, bool]:
+                return table, field, value, message, new_field, keep
+
+            cases = [
+                case("landing", "id", "[1]", "id is list, not an integer"),
+                # A number the loader's type cannot hold: negative where it is unsigned, or past the width of its type.
+                case("landing", "id", "-1", "id is -1, not an unsigned 64-bit integer"),
+                case("node", "id", "-5", "id is -5, not an unsigned 64-bit integer"),
+                case("stretch", "level", "256", "level is 256, not an unsigned 8-bit integer"),
+                case(
+                    "reach",
+                    "begin",
+                    "4294967296",
+                    "begin is 4294967296, not an unsigned 32-bit integer",
+                ),
+                case("landing", "run", "-1", "run is -1, not an unsigned 32-bit integer"),
+                case(
+                    "joint",
+                    "cell",
+                    "[4294967296, 0]",
+                    "cell[0] is 4294967296, not a signed 32-bit integer",
+                ),
+                case(
+                    "landing",
+                    "bodies",
+                    "[0, 9223372036854775808]",
+                    "bodies[1] is 9223372036854775808, not a signed 64-bit integer",
+                ),
+                case("landing", "id", "{ invalid = 1 }", "id is dict, not an integer"),
+                case("landing", "id", '"broken"', "id is str, not an integer"),
+                case("landing", "run", "[0]", "run is list, not an integer"),
+                case("reach", "length_mm", "2026-01-01", "length_mm is date, not an integer"),
+                case("reach", "length_mm", "1.5", "length_mm is float, not an integer"),
+                case("reach", "usable", "1", "usable is int, not a boolean"),
+                case("water_join", "reach", "1.0", "reach is float, not an integer"),
+                case("joint", "cell", "[1]", "cell is list, not a list of 2"),
+                case("stretch", "cells", "[[1, 2], [3]]", "cells[1] is list, not a list of 2"),
+                case("stretch", "length_m", "true", "length_m is bool, not an integer"),
+                case("strait", "classes", "[1]", "classes[0] is int, not a string"),
+                case(
+                    "link",
+                    "stretches",
+                    '[[[3], "forward"]]',
+                    "stretches[0][0] is list, not an integer",
+                ),
+                case("link", "stretches", "[[3, 4]]", "stretches[0][1] is int, not a string"),
+                # An unexpected key is refused by name, a date under it or not: the schema is the loader's, which rejects any other field.
+                case(
+                    "reach",
+                    "length_mm",
+                    "2026-01-01",
+                    "length_mmm is not a stored field",
+                    "length_mmm",
+                    False,
+                ),
+                case(
+                    "reach",
+                    "length_mm",
+                    "2026-01-01",
+                    "surveyed_at is not a stored field",
+                    "surveyed_at",
+                    True,
+                ),
+                case(
+                    "reach",
+                    "length_mm",
+                    "1",
+                    "surveyed_at is not a stored field",
+                    "surveyed_at",
+                    True,
+                ),
+                case("landing", "id", "07:30:00", "extra is not a stored field", "extra", True),
+            ]
+            for table, field, value, message, new_field, keep in cases:
+                tampered, number = edit(table, field, value, new_field=new_field, keep=keep)
+                (scenario / "roads.toml").write_text(tampered)
+                for command in ("check", "build"):
+                    output = io.StringIO()
+                    with (
+                        contextlib.redirect_stderr(output),
+                        contextlib.redirect_stdout(io.StringIO()),
+                    ):
+                        code = network.main(
+                            ["--map-dir", str(map_dir), "--scenario", str(scenario), command]
+                        )
+                    self.assertEqual(code, 1, (command, table, field, output.getvalue()))
+                    self.assertIn(
+                        f"network: stored network {table} entry {number}: {message}",
+                        output.getvalue(),
+                    )
+                    self.assertNotIn("Traceback", output.getvalue())
+                    # A refused build leaves the stored file as it was changed, not repaired.
+                    self.assertEqual((scenario / "roads.toml").read_text(), tampered)
+            for field, value, message in (
+                ("next_landing_id", '"broken"', "next_landing_id is str, not an integer"),
+                ("next_landing_id", "100000.0", "next_landing_id is float, not an integer"),
+                ("next_node_id", "true", "next_node_id is bool, not an integer"),
+            ):
+                tampered = re.sub(
+                    rf"^{field} = .*$", f"{field} = {value}", original, count=1, flags=re.M
+                )
+                self.assertNotEqual(tampered, original)
+                (scenario / "roads.toml").write_text(tampered)
+                code, errors = checked()
+                self.assertEqual(code, 1, (field, errors))
+                self.assertIn(f"network: stored network {message}", errors)
+                self.assertNotIn("Traceback", errors)
+            (scenario / "roads.toml").write_text(original)
+            self.assertEqual(checked(), (0, ""))
+
+    def test_the_report_names_the_places_each_class_joins_and_those_it_does_not(self) -> None:
+        report = (self.root / "assets/scenarios/ireland-768/network-report.md").read_text()
+        section = report.split("## Places joined by land and water\n")[1]
+        lines = section.splitlines()
+        self.assertEqual(lines[0], "- barge: 118 of 125 places")
+        self.assertTrue(lines[1].startswith("  - joined: aghaboe, ahenny, "))
+        self.assertEqual(
+            lines[2],
+            "  - not joined: inishbofin, inishkea_north, inishmurray, killeany, rechru, "
+            "skellig_michael, tory",
+        )
+        self.assertEqual(lines[3], "- currach: 125 of 125 places")
+        self.assertEqual(lines[5], "  - not joined: none")
+        # Every joined place is a scenario id and the two lists together are the 125 places.
+        places = {n["place"] for n in self.graph["node"] if n["kind"] == "place"}
+        for joined, missing in ((lines[1], lines[2]), (lines[4], lines[5])):
+            ids = set(joined.split(": ", 1)[1].split(", "))
+            ids |= set(missing.split(": ", 1)[1].split(", ")) - {"none"}
+            self.assertEqual(ids, places)
+
+    def test_the_stored_network_is_format_3_and_binds_the_files_it_was_built_from(self) -> None:
+        import hashlib  # noqa: PLC0415  # The recorded hashes are of the files themselves.
+
+        scenario = self.root / "assets/scenarios/ireland-768"
+        for field, path in (
+            ("terrain_sha256", self.root / "assets/map/ireland/terrain.png"),
+            ("rivers_sha256", self.root / "assets/map/ireland/rivers.toml"),
+            ("sea_distance_sha256", scenario / "sea_distance.png"),
+        ):
+            self.assertEqual(self.graph[field], hashlib.sha256(path.read_bytes()).hexdigest())
+        self.assertEqual(self.graph["format"], 3)
+        self.assertEqual([c["id"] for c in self.graph["water_class"]], ["barge", "currach"])
+        self.assertEqual([b["name"] for b in self.graph["river_break"]], ["Assaroe", "Doonass"])
+        self.assertEqual(self.graph.get("mark", []), [])
+
+    def dry_adjacency(self, tidal: bool) -> defaultdict[_Node, set[_Node]]:
+        """The nodes joined by land: stretches that need no boat (a ford at each wide crossing), tidal ones only when `tidal`."""
+        adjacency: defaultdict[_Node, set[_Node]] = defaultdict(set)
+        for stretch in self.graph["stretch"]:
+            by_land = all(c["kind"] == "ford" for c in stretch.get("crossings", []))
+            if by_land and (tidal or not stretch["tidal"]):
+                adjacency[stretch["from"]].add(stretch["to"])
+                adjacency[stretch["to"]].add(stretch["from"])
+        return adjacency
+
+    @staticmethod
+    def reached(adjacency: defaultdict[_Node, set[_Node]], start: _Node) -> set[_Node]:
+        seen, todo = {start}, [start]
+        while todo:
+            for nxt in adjacency[todo.pop()] - seen:
+                seen.add(nxt)
+                todo.append(nxt)
+        return seen
+
+    def places(self) -> dict[str, int]:
+        return {n["place"]: n["id"] for n in self.graph["node"] if n["kind"] == "place"}
+
+    def joined_places(self, number: int) -> set[str]:
+        """The places joined to the mainland's largest piece of land by land, then by water for one class (counted afresh)."""
+        adjacency = self.dry_adjacency(tidal=True)
+        for landing in self.graph["landing"]:
+            if landing["bodies"][number] >= 0:
+                adjacency[landing["node"]].add(("body", landing["bodies"][number]))
+                adjacency[("body", landing["bodies"][number])].add(landing["node"])
+        boat = self.graph["water_class"][number]["id"]
+        for strait in self.graph["strait"]:
+            if boat in strait["classes"]:
+                adjacency[strait["from"]].add(strait["to"])
+                adjacency[strait["to"]].add(strait["from"])
+        places = self.places()
+        mainland = self.reached(adjacency, places["armagh"])
+        return {place for place, node in places.items() if node in mainland}
+
+    def test_all_125_places_are_joined_for_the_currach_and_the_barge_leaves_seven_out(self) -> None:
+        places = self.places()
+        self.assertEqual(len(places), 125)
+        barge, currach = self.joined_places(0), self.joined_places(1)
+        self.assertEqual(
+            sorted(set(places) - barge),
+            [
+                "inishbofin",
+                "inishkea_north",
+                "inishmurray",
+                "killeany",
+                "rechru",
+                "skellig_michael",
+                "tory",
+            ],
+        )
+        self.assertEqual((len(currach), len(barge)), (125, 118))
+        # The committed report says the same.
+        report = (self.root / "assets/scenarios/ireland-768/network-report.md").read_text()
+        self.assertIn("- currach: 125 of 125 places", report)
+        self.assertIn("- barge: 118 of 125 places", report)
+
+    def test_by_land_alone_every_offshore_place_is_cut_off_and_only_the_tidal_stretches_join_two(
+        self,
+    ) -> None:
+        places = self.places()
+        access = {a["place"]: a for a in self.graph["access"]}
+        offshore = {p for p, a in access.items() if a["quality"] == "offshore"}
+        tidal_places = set(access) - offshore
+        self.assertEqual(
+            (len(offshore), sorted(tidal_places)), (22, ["illaunloughan", "inishkeel"])
+        )
+        armagh = places["armagh"]
+        with_tidal = self.reached(self.dry_adjacency(tidal=True), armagh)
+        without = self.reached(self.dry_adjacency(tidal=False), armagh)
+        self.assertFalse({places[p] for p in offshore} & with_tidal)
+        for place in tidal_places:
+            self.assertIn(places[place], with_tidal, place)
+            self.assertNotIn(places[place], without, place)
+
+    def test_killeanys_road_reaches_its_landing_node_whose_currach_sea_landing_shares_its_body(
+        self,
+    ) -> None:
+        places = self.places()
+        access = {a["place"]: a for a in self.graph["access"]}
+        landing_node = access["killeany"]["landing"]
+        node = next(n for n in self.graph["node"] if n["id"] == landing_node)
+        self.assertEqual(node["cell"], [163, 531])
+        self.assertIn(landing_node, self.reached(self.dry_adjacency(tidal=True), places["armagh"]))
+        currach_bodies = self.bodies("killeany", "place", 1)
+        self.assertTrue(
+            any(
+                x.get("cell") is not None
+                and self.kinds[x["cell"][1]][x["cell"][0]] == "sea"
+                and x["bodies"][1] in currach_bodies
+                for x in self.graph["landing"]
+                if x["node"] == landing_node
+            )
+        )
+
+    def test_ten_places_have_a_strait_and_no_other_place_has_one(self) -> None:
+        self.assertEqual(
+            sorted(s["place"] for s in self.graph["strait"]),
+            [
+                "church_island_currane",
+                "church_island_valentia",
+                "devenish",
+                "hare_island",
+                "illaunloughan",
+                "inisfallen",
+                "inishkeel",
+                "inishmacsaint",
+                "nendrum",
+                "scattery",
+            ],
+        )
+        self.assertTrue(
+            all(
+                s["length_m"] == _STRAIT_M and s["classes"] == ["barge", "currach"]
+                for s in self.graph["strait"]
+            )
+        )
+
+    def test_each_of_the_24_mainland_landing_nodes_has_a_landing_or_a_strait(self) -> None:
+        straits = {s["place"] for s in self.graph["strait"]}
+        landing_nodes = {x["node"] for x in self.graph["landing"]}
+        self.assertEqual(len(self.graph["access"]), 24)
+        for access in self.graph["access"]:
+            self.assertTrue(
+                access["landing"] in landing_nodes or access["place"] in straits, access["place"]
+            )
+        marsh = {
+            "church_island_valentia",
+            "inis_patraic",
+            "inishkeel",
+            "inishmurray",
+            "killeany",
+            "nendrum",
+            "rechru",
+            "spike_island",
+            "tory",
+        }
+        by_place = {a["place"]: a["landing"] for a in self.graph["access"]}
+        self.assertTrue(marsh <= set(by_place))
+        for place in marsh - {"inishkeel", "nendrum", "church_island_valentia"}:
+            self.assertIn(by_place[place], landing_nodes, place)
+
+    def test_seven_island_places_share_a_barge_body_with_their_mainland_landing_and_seven_do_not(
+        self,
+    ) -> None:
+        joined = [
+            "white_island",
+            "iniscealtra",
+            "inchbofin",
+            "inchcleraun",
+            "inis_patraic",
+            "spike_island",
+            "inishglora",
+        ]
+        apart = [
+            "inishkea_north",
+            "rechru",
+            "inishbofin",
+            "inishmurray",
+            "tory",
+            "skellig_michael",
+            "killeany",
+        ]
+        for place in joined:
+            self.assertTrue(
+                self.bodies(place, "place", 0) & self.bodies(place, "landing", 0), place
+            )
+        for place in apart:
+            self.assertFalse(
+                self.bodies(place, "place", 0) & self.bodies(place, "landing", 0), place
+            )
+
+    def test_the_barges_sea_is_11285_cells_in_23_pieces_and_the_largest_is_10416(self) -> None:
+        sea = {
+            (x, y)
+            for y, row in enumerate(self.layer)
+            for x, value in enumerate(row)
+            if value <= _BARGE_REACH_M and self.kinds[y][x] == "sea"
+        }
+        self.assertEqual(len(sea), 11_285)
+        pieces = self.pieces(sea)
+        self.assertEqual((len(pieces), max(map(len, pieces))), (23, 10_416))
+        self.assertEqual(
+            sum(1 for row in self.layer for v in row if v <= _CURRACH_REACH_M and v != _LAYER_LAND),
+            52_693,
+        )
+
+    @staticmethod
+    def pieces(cells: set[tuple[int, int]]) -> list[set[tuple[int, int]]]:
+        seen: set[tuple[int, int]] = set()
+        result = []
+        for start in sorted(cells):
+            if start in seen:
+                continue
+            piece, stack = {start}, [start]
+            seen.add(start)
+            while stack:
+                x, y = stack.pop()
+                for nxt in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
+                    if nxt in cells and nxt not in seen:
+                        seen.add(nxt)
+                        piece.add(nxt)
+                        stack.append(nxt)
+            result.append(piece)
+        return result
+
+    def test_the_largest_piece_is_a_ring_round_the_island_and_holds_twelve_cells_apart(  # noqa: PLR0912  # The ring, its winding and the twelve removals are one statement.
+        self,
+    ) -> None:
+        usable = {
+            (x, y)
+            for y, row in enumerate(self.layer)
+            for x, value in enumerate(row)
+            if self.kinds[y][x] == "lake" or (self.kinds[y][x] == "sea" and value <= _BARGE_REACH_M)
+        }
+
+        def moves(cell: tuple[int, int], within: set[tuple[int, int]]) -> list[tuple[int, int]]:
+            x, y = cell
+            found = [c for c in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)) if c in within]
+            found += [
+                (x + dx, y + dy)
+                for dx, dy in ((1, 1), (1, -1), (-1, 1), (-1, -1))
+                if (x + dx, y + dy) in within and (x + dx, y) in within and (x, y + dy) in within
+            ]
+            return found
+
+        seen: set[tuple[int, int]] = set()
+        big: set[tuple[int, int]] = set()
+        for start in sorted(usable):
+            if start in seen:
+                continue
+            piece, stack = {start}, [start]
+            seen.add(start)
+            while stack:
+                for nxt in moves(stack.pop(), usable):
+                    if nxt not in seen:
+                        seen.add(nxt)
+                        piece.add(nxt)
+                        stack.append(nxt)
+            if len(piece) > len(big):
+                big = piece
+        self.assertEqual(len(big & {c for c in usable if self.kinds[c[1]][c[0]] == "sea"}), 10_416)
+        centre = (Fraction(400) + Fraction(1, 2), Fraction(530) + Fraction(1, 2))
+        ray = centre[1] + Fraction(1, 4)
+
+        def crossing(a: tuple[int, int], b: tuple[int, int]) -> int:
+            ya, yb = a[1] + Fraction(1, 2), b[1] + Fraction(1, 2)
+            if (ya < ray) == (yb < ray):
+                return 0
+            x = a[0] + Fraction(1, 2) + (ray - ya) / (yb - ya) * (b[0] - a[0])
+            return 0 if x <= centre[0] else (1 if yb > ya else -1)
+
+        start = min(big)
+        seen_states = {(start, 0)}
+        stack2 = [(start, 0)]
+        winding = 0
+        while stack2 and not winding:
+            cell, turns = stack2.pop()
+            for nxt in moves(cell, big):
+                state = (nxt, turns + crossing(cell, nxt))
+                if state not in seen_states:
+                    seen_states.add(state)
+                    stack2.append(state)
+                    if nxt == start and state[1]:
+                        winding = state[1]
+        self.assertNotEqual(winding, 0)
+        witnesses = (
+            (476, 37),
+            (649, 88),
+            (663, 338),
+            (646, 567),
+            (603, 761),
+            (405, 825),
+            (183, 923),
+            (37, 790),
+            (115, 496),
+            (86, 364),
+            (135, 283),
+            (290, 182),
+        )
+        for cell in witnesses:
+            self.assertIn(cell, big)
+        # With the piece's cells within six cells of any one of them taken away, the other eleven are still joined: by distance in
+        # a circle and in a square, the spec saying "within six cells" of a cell and not which.
+        for witness in witnesses:
+            others = [cell for cell in witnesses if cell != witness]
+            for square in (False, True):
+                near = {
+                    cell
+                    for cell in big
+                    if (
+                        max(abs(cell[0] - witness[0]), abs(cell[1] - witness[1])) <= _WITHIN_CELLS
+                        if square
+                        else (cell[0] - witness[0]) ** 2 + (cell[1] - witness[1]) ** 2
+                        <= _WITHIN_CELLS**2
+                    )
+                }
+                rest = big - near
+                joined = {others[0]}
+                todo = [others[0]]
+                while todo:
+                    for nxt in moves(todo.pop(), rest):
+                        if nxt not in joined:
+                            joined.add(nxt)
+                            todo.append(nxt)
+                self.assertTrue(set(others) <= joined, (witness, square))
+
+    def test_the_erne_and_the_shannon_are_different_bodies_above_and_below_their_breaks(
+        self,
+    ) -> None:
+        cells = len(self.kinds) * len(self.kinds[0])
+        width = len(self.kinds[0])
+        joints, reaches = self.graph["joint"], {r["id"]: r for r in self.graph["reach"]}
+        for number, item in enumerate(self.graph["water_class"]):
+            sets = network._Sets(cells + len(joints))
+
+            def open_cell(x: int, y: int, reach: int = item["reach_m"]) -> bool:
+                return (
+                    0 <= y < len(self.kinds)
+                    and 0 <= x < width
+                    and (
+                        self.kinds[y][x] == "lake"
+                        or (self.kinds[y][x] == "sea" and self.layer[y][x] <= reach)
+                    )
+                )
+
+            for y in range(len(self.kinds)):
+                for x in range(width):
+                    if open_cell(x, y):
+                        if open_cell(x + 1, y):
+                            sets.union(y * width + x, y * width + x + 1)
+                        if open_cell(x, y + 1):
+                            sets.union(y * width + x, (y + 1) * width + x)
+            for reach in self.graph["reach"]:
+                if reach["usable"]:
+                    sets.union(cells + reach["from"], cells + reach["to"])
+            for join in self.graph["water_join"]:
+                if "to_reach" in join:
+                    sets.union(
+                        cells + reaches[join["reach"]]["to"],
+                        cells + reaches[join["to_reach"]]["from"],
+                    )
+                elif item["id"] in join["classes"]:
+                    sets.union(
+                        cells + reaches[join["reach"]]["from"],
+                        join["cell"][1] * width + join["cell"][0],
+                    )
+            for item_break in self.graph["river_break"]:
+                self.assertNotEqual(
+                    sets.find(cells + item_break["above"]),
+                    sets.find(cells + item_break["below"]),
+                    (number, item_break),
+                )
+
+
+class RoadsideReportTests(unittest.TestCase):
+    """Rule 22: the road stretches beside usable water at an allowed shore away from any node, where nothing can embark."""
+
+    @staticmethod
+    def gap(
+        rows: list[str],
+        rivers: list[dict[str, Any]],
+        *,
+        node_cells: tuple[tuple[int, int], tuple[int, int]] = ((0, 1), (2, 1)),
+        tidal: bool = False,
+    ) -> list[str]:
+        cells = [(node_cells[0][0], 1), (1, 1), (node_cells[1][0], 1)]
+        graph = water_graph(
+            [(1, "junction", node_cells[0], None), (2, "junction", node_cells[1], None)],
+            stretches=[
+                {
+                    "id": 10,
+                    "from": 1,
+                    "to": 2,
+                    "tidal": tidal,
+                    "cells": [list(c) for c in cells],
+                }
+            ],
+        )
+        graph, plan = work_water(water_context(rows, rivers), graph)
+        report = network.water_report(graph, plan)
+        start = report.index("## Roads beside usable water with no node") + 1
+        end = next((i for i in range(start, len(report)) if not report[i]), len(report))
+        section: list[str] = report[start:end]
+        return section
+
+    def test_an_allowed_lakeside_is_listed(self) -> None:
+        self.assertEqual(self.gap([".l.", "...", "..."], []), ["- stretch 10: cell (1, 1)"])
+
+    def test_a_usable_river_run_in_the_middle_cell_is_listed(self) -> None:
+        river = survey("r-1", [(1.1, 1.25), (1.9, 1.25)])
+        self.assertEqual(self.gap(["...", "...", "..."], [river]), ["- stretch 10: cell (1, 1)"])
+
+    def test_a_marsh_shore_is_not_listed(self) -> None:
+        self.assertEqual(self.gap([".l.", ".m.", "..."], []), ["- none"])
+
+    def test_a_high_shore_is_not_listed(self) -> None:
+        self.assertEqual(self.gap([".l.", ".h.", "..."], []), ["- none"])
+
+    def test_a_marsh_cell_with_a_river_run_is_not_listed(self) -> None:
+        river = survey("r-1", [(1.1, 1.25), (1.9, 1.25)])
+        self.assertEqual(self.gap(["...", ".m.", "..."], [river]), ["- none"])
+
+    def test_the_cell_of_a_node_and_a_tidal_stretch_are_not_listed(self) -> None:
+        self.assertEqual(
+            self.gap([".l.", "...", "..."], [], node_cells=((1, 1), (2, 1))), ["- none"]
+        )
+        self.assertEqual(self.gap([".l.", "...", "..."], [], tidal=True), ["- none"])
+
+
+_RIVER_CASES: dict[str, tuple[list[str], dict[str, Any]]] = {
+    "narrowing": (["....", ".l..", "...."], survey("r-1", [(0, 1.5), (3, 1.5)], width=(21, 19))),
+    "widening": (["....", ".l..", "...."], survey("r-1", [(0, 1.5), (3, 1.5)], width=(19, 21))),
+    "three_lakes": (["......", ".lll..", "......"], survey("r-1", [(0, 1.5), (6, 1.5)])),
+    # A river widening from 19 m so that it reaches 20 m a thousandth of the stretch (997/3000 of it) before the lake cell it then
+    # enters (the entry is at a third of the stretch), and one a thousandth after the entry (1003/3000), inside the cell.
+    "usable_just_before": (
+        ["....", ".l..", "...."],
+        survey("r-1", [(0, 1.5), (3, 1.5)], width=(19.0, 22.00902708124373)),
+    ),
+    "usable_just_after": (
+        ["....", ".l..", "...."],
+        survey("r-1", [(0, 1.5), (3, 1.5)], width=(19.0, 21.99102691924227)),
+    ),
+}
+
+_CROSSING_BREAK_RIVER = survey("r-1", [(2.2, 1.001684), (2.2, 3)])
+_CROSSING_BREAK = [{"stretch": "r-1", "cell": [2, 1], "name": "Falls"}]
+
+
+def crossing_break_case() -> tuple[str, str]:
+    """The stored network for slice 3a's four-cell road over a river 0.4 m below a break, and the world it was made for."""
+    _, graph, plan = crossing_world(
+        CrossingEndTests.ROWS,
+        [_CROSSING_BREAK_RIVER],
+        CrossingEndTests.ROAD,
+        [("r", (2, 1), "none")],
+        extra={"river_break": _CROSSING_BREAK},
+    )
+    graph.update({"format": 3, "hand_list_sha256": "x", "baseline_sha256": "x"})
+    # The road's one link runs over its three stretches, the crossing between two banks among them.
+    graph["link"] = [
+        {
+            "id": "x",
+            "from_node": 1,
+            "to_node": 2,
+            "stretches": [[stretch["id"], "forward"] for stretch in graph["stretch"]],
+            "record": "{}",
+        }
+    ]
+    points = [(round(x * 32768), round(y * 32768)) for x, y in plan["lines"]["r-1"].line.points]
+    layer = [value for row in plan["layer_values"] for value in row]
+    world = (
+        f"rows = [{', '.join(json.dumps(row) for row in CrossingEndTests.ROWS)}]\n"
+        f'layer = {layer}\nriver = "r-1"\npoints = {[list(point) for point in points]}\n'
+    )
+    return network.dump_roads(graph), world
+
+
+def river_case(name: str) -> tuple[str, str]:
+    """The stored network the tool makes for one small river world, and the world it was made for (rows, layer, line)."""
+    rows, river = _RIVER_CASES[name]
+    context = water_context(rows, [river])
+    graph, plan = work_water(context)
+    graph.update({"format": 3, "hand_list_sha256": "x", "baseline_sha256": "x"})
+    points = [(round(x * 32768), round(y * 32768)) for x, y in plan["lines"]["r-1"].line.points]
+    layer = [value for row in plan["layer_values"] for value in row]
+    world = (
+        f"rows = [{', '.join(json.dumps(row) for row in rows)}]\n"
+        f'layer = {layer}\nriver = "r-1"\npoints = {[list(point) for point in points]}\n'
+    )
+    return network.dump_roads(graph), world
+
+
+class RustRiverCaseTests(unittest.TestCase):
+    """The river cases of the spec that the Rust loader's tests read are the tool's own output, stored."""
+
+    ROOT: ClassVar[Path] = Path(__file__).resolve().parents[1]
+
+    def test_the_committed_river_worlds_are_what_the_tool_makes(self) -> None:
+        for name in _RIVER_CASES:
+            roads, world = river_case(name)
+            directory = self.ROOT / "crates/map/tests/water"
+            self.assertEqual((directory / f"{name}.toml").read_text(), roads, name)
+            self.assertEqual((directory / f"{name}.world.toml").read_text(), world, name)
+
+    def test_the_tool_stores_each_case_as_the_loader_tests_assume(self) -> None:
+        # The literals of the loader's tests, read from the tool's own graph: joints by cell, reaches by beginning, end and use, joins.
+        expected = {
+            "narrowing": (
+                [[0, 1], [1, 1], [1, 1], [2, 1]],
+                [(0, 333_333, True), (333_333, 500_000, True), (500_000, 1_000_000, False)],
+                [(1, [1, 1])],
+            ),
+            "widening": (
+                None,
+                [(0, 500_000, False), (500_000, 1_000_000, True)],
+                [(1, [1, 1])],
+            ),
+            "three_lakes": (
+                None,
+                [
+                    (0, 166_667, True),
+                    (166_667, 333_333, True),
+                    (333_333, 500_000, True),
+                    (500_000, 1_000_000, True),
+                ],
+                [(1, [1, 1]), (2, [2, 1]), (3, [3, 1])],
+            ),
+            "usable_just_before": (
+                [[0, 1], [0, 1], [1, 1], [2, 1]],
+                [(0, 332_333, False), (332_333, 333_333, True), (333_333, 1_000_000, True)],
+                [(2, [1, 1])],
+            ),
+            "usable_just_after": (
+                [[0, 1], [1, 1], [2, 1]],
+                [(0, 334_333, False), (334_333, 1_000_000, True)],
+                [(1, [1, 1])],
+            ),
+        }
+        for name, (joint_cells, reach_spans, joins) in expected.items():
+            graph = tomllib.loads(river_case(name)[0])
+            if joint_cells is not None:
+                self.assertEqual([j["cell"] for j in graph["joint"]], joint_cells, name)
+            self.assertEqual(spans(graph, "r-1"), reach_spans, name)
+            self.assertEqual([(j["reach"], j["cell"]) for j in graph["water_join"]], joins, name)
+
+    def test_a_threshold_a_thousandth_from_a_joint_builds_reaches_of_some_length_and_one_body(
+        self,
+    ) -> None:
+        for name in ("usable_just_before", "usable_just_after"):
+            roads, _ = river_case(name)
+            graph = tomllib.loads(roads)
+            self.assertTrue(all(r["length_mm"] > 0 for r in graph["reach"]), name)
+            self.assertEqual([c["bodies"] for c in graph["water_class"]], [1, 1], name)
+            # Built again from the same inputs, the tool stores the same bytes, as `check` compares them.
+            self.assertEqual(river_case(name)[0], roads, name)
+        before = tomllib.loads(river_case("usable_just_before")[0])
+        # The joint where the river becomes usable and the one at the lake cell's entry are a thousandth of the stretch apart (1,000
+        # millionths):
+        # two joints, 1,424 mm between them.
+        self.assertEqual([r["length_mm"] for r in before["reach"]][1], 1424)
+
+    def command_fixture(self, root: Path, name: str) -> tuple[Path, Path]:
+        """The command fixture with the river case's lake cell and river in its map, ready for build, accept and check."""
+        from PIL import Image  # noqa: I001, PLC0415  # Paint the lake cell into the disposable fixture's terrain.
+
+        map_dir, scenario = CommandTests("make_fixture").make_fixture(root)
+        with (map_dir / "terrain.toml").open("a") as stream:
+            stream.write('[[terrain]]\nname = "lake"\nkind = "lake"\nkey = "040506"\n')
+        terrain = Image.new("RGB", (4, 3), (1, 2, 3))
+        terrain.putpixel((1, 1), (4, 5, 6))
+        terrain.save(map_dir / "terrain.png")
+        river = _RIVER_CASES[name][1]
+        points = ", ".join(f"[{lat!r}, {lon!r}]" for lat, lon in river["points"])
+        (map_dir / "rivers.toml").write_text(
+            f'stretch = [{{ id = "r-1", river = "r", kind = "river", width_m = {river["width_m"]}, '
+            f'ends = "sea", points = [{points}] }}]\n'
+        )
+        with (scenario / "network.toml").open("a") as stream:
+            stream.write(
+                "\n[water]\nriver_width_m = 20\nshore_height_m = 10\nstrait_m = 500\n"
+                '\n[[water_class]]\nid = "barge"\nreach_m = 1000\nsea_going = false\n'
+                '\n[[water_class]]\nid = "currach"\nreach_m = 5000\nsea_going = true\n'
+            )
+        return map_dir, scenario
+
+    def test_the_near_joint_rivers_are_built_stored_checked_and_loaded_to_the_same_graph(
+        self,
+    ) -> None:
+        expected = {
+            "usable_just_before": [
+                (0, 332_333, False),
+                (332_333, 333_333, True),
+                (333_333, 1_000_000, True),
+            ],
+            "usable_just_after": [(0, 334_333, False), (334_333, 1_000_000, True)],
+        }
+        for name, spans_expected in expected.items():
+            with tempfile.TemporaryDirectory() as directory:
+                map_dir, scenario = self.command_fixture(Path(directory), name)
+                network.build_network(map_dir, scenario, importing=True)
+                network.accept_pending(
+                    scenario / "courses-pending.json",
+                    network.input_files(map_dir, scenario, include_seed=True),
+                    scenario / "network-report.md",
+                    scenario / "network-changes.md",
+                    "fixture approval",
+                )
+                stored = tomllib.loads((scenario / "roads.toml").read_text())
+                # Built by the tool from the survey and the terrain, the river stores the literal reaches the Rust tests read.
+                self.assertEqual(spans(stored, "r-1"), spans_expected, name)
+                self.assertTrue(all(r["length_mm"] > 0 for r in stored["reach"]), name)
+                network.build_network(map_dir, scenario)
+                # The normal stored-network check passes on the stored file...
+                network.check_network(map_dir, scenario)
+                # ...and refuses it with one reach changed, naming the reach.
+                original = (scenario / "roads.toml").read_text()
+                tampered = tomllib.loads(original)
+                tampered["reach"][1]["length_mm"] += 1
+                (scenario / "roads.toml").write_text(network.dump_roads(tampered))
+                with self.assertRaisesRegex(ValueError, r"stored network reach \d+ differs"):
+                    network.check_network(map_dir, scenario)
+                (scenario / "roads.toml").write_text(original)
+                network.check_network(map_dir, scenario)
+
+    def test_an_id_counter_at_the_end_of_u64_refuses_the_build_naming_the_counter(self) -> None:
+        import re  # noqa: PLC0415  # Edit the stored counter and entry.
+
+        largest = 2**64 - 1
+        # Every allocator names its own counter and refuses the id after the last one the loader can read.
+        for counter in ("next_node_id", "next_stretch_id", "next_landing_id"):
+            with self.assertRaisesRegex(
+                ValueError, rf"{counter} is {largest}: the next id would leave"
+            ):
+                network.allocate_ids([("a",)], {}, largest, counter)
+            ids, following = network.allocate_ids([("a",)], {}, largest - 1, counter)
+            self.assertEqual((ids, following), ({("a",): largest - 1}, largest))
+        with tempfile.TemporaryDirectory() as directory:
+            map_dir, scenario = self.command_fixture(Path(directory), "usable_just_before")
+            network.build_network(map_dir, scenario, importing=True)
+            network.accept_pending(
+                scenario / "courses-pending.json",
+                network.input_files(map_dir, scenario, include_seed=True),
+                scenario / "network-report.md",
+                scenario / "network-changes.md",
+                "fixture approval",
+            )
+            stored = (scenario / "roads.toml").read_text()
+            # A stored network that has lost a landing must hand out a new one: at the last counter it refuses, and writes nothing.
+            without = re.sub(r"\[\[landing\]\]\n(?:(?!\[\[)[^\n]*\n)*", "", stored, count=1)
+            self.assertNotEqual(without, stored)
+            at_end = re.sub(r"next_landing_id = \d+", f"next_landing_id = {largest}", without)
+            (scenario / "roads.toml").write_text(at_end)
+            before = {p: p.read_bytes() for p in scenario.iterdir() if p.is_file()}
+            with self.assertRaisesRegex(ValueError, "next_landing_id is 18446744073709551615"):
+                network.build_network(map_dir, scenario)
+            self.assertEqual({p: p.read_bytes() for p in scenario.iterdir() if p.is_file()}, before)
+            # One before the end it builds, and the counter it writes is the last one the loader reads.
+            almost = re.sub(r"next_landing_id = \d+", f"next_landing_id = {largest - 1}", without)
+            (scenario / "roads.toml").write_text(almost)
+            network.build_network(map_dir, scenario)
+            self.assertIn(f"next_landing_id = {largest}\n", (scenario / "roads.toml").read_text())
+
+    def test_a_node_id_near_the_end_of_u64_builds_and_checks_and_joins_places_by_node_count(
+        self,
+    ) -> None:
+        import re  # noqa: PLC0415  # Rewrite one node's id wherever the stored network names it.
+
+        largest = 2**64 - 1
+        with tempfile.TemporaryDirectory() as directory:
+            map_dir, scenario = self.command_fixture(Path(directory), "usable_just_before")
+            network.build_network(map_dir, scenario, importing=True)
+            network.accept_pending(
+                scenario / "courses-pending.json",
+                network.input_files(map_dir, scenario, include_seed=True),
+                scenario / "network-report.md",
+                scenario / "network-changes.md",
+                "fixture approval",
+            )
+            stored = (scenario / "roads.toml").read_text()
+            graph = tomllib.loads(stored)
+            old = max(node["id"] for node in graph["node"])
+            new = largest - 1
+            # The same network with its highest node numbered as the loader's u64 allows: the node's own entry, and every stretch end
+            # and landing that names it.
+            fields = {
+                "node": ("id",),
+                "stretch": ("from", "to"),
+                "link": ("from_node", "to_node"),
+                "landing": ("node",),
+                "access": ("landing",),
+                "strait": ("from", "to"),
+            }
+            table, lines = "", []
+            for line in stored.split("\n"):
+                header = re.match(r"^\[\[(\w+)\]\]$", line)
+                if header:
+                    table = header.group(1)
+                field = re.match(r"^(\w+) = (\d+)$", line)
+                renumbered = (
+                    field and field.group(1) in fields.get(table, ()) and int(field.group(2)) == old
+                )
+                lines.append(f"{field.group(1)} = {new}" if renumbered and field else line)
+            text = "\n".join(lines)
+            text = re.sub(r"next_node_id = \d+", f"next_node_id = {largest}", text)
+            self.assertNotEqual(text, stored)
+            sparse = tomllib.loads(text)
+            self.assertIn(new, [node["id"] for node in sparse["node"]])
+            (scenario / "roads.toml").write_text(text)
+            # Both commands read it, and the report joins the places as it did: connectivity is bounded by the node count.
+            network.check_network(map_dir, scenario)
+            network.build_network(map_dir, scenario)
+            self.assertEqual((scenario / "roads.toml").read_text(), text)
+
+            def joined_lines(document: dict[str, Any]) -> list[str]:
+                full = {"strait": [], "landing": [], "stretch": [], **document}
+                nodes = {node["id"]: node for node in full["node"]}
+                joined: list[str] = network.joined_places(
+                    full, {"names": ["barge", "currach"]}, nodes
+                )
+                return joined
+
+            joined, dense = joined_lines(sparse), joined_lines(graph)
+            self.assertEqual(joined, dense)
+
+    def test_the_crossing_0_4_metres_from_a_break_lands_at_one_joint_with_a_400_mm_reach_to_the_break(
+        self,
+    ) -> None:
+        graph = tomllib.loads(crossing_break_case()[0])
+        [cut] = graph["river_break"]
+        [crossing] = crossing_stretches(graph)
+        ends = {x["end"]: x for x in graph["landing"] if x.get("crossing") == crossing["id"]}
+        # Both ends land at joint 1; the reach from it to the break's upstream joint is 0.4 m, stored as 400 mm.
+        self.assertEqual((ends["from"]["joint"], ends["to"]["joint"]), (1, 1))
+        self.assertEqual((cut["above"], cut["below"]), (2, 3))
+        [short] = [r for r in graph["reach"] if r["to"] == cut["above"]]
+        self.assertEqual((short["from"], short["length_mm"], short["usable"]), (1, 400, True))
+        self.assertEqual((short["begin"], short["end"]), (249_368, 249_789))
+        self.assertEqual(ends["from"]["bodies"], ends["to"]["bodies"])
+
+    def test_the_committed_crossing_break_world_is_what_the_tool_makes(self) -> None:
+        roads, world = crossing_break_case()
+        directory = self.ROOT / "crates/map/tests/water"
+        self.assertEqual((directory / "crossing_break.toml").read_text(), roads)
+        self.assertEqual((directory / "crossing_break.world.toml").read_text(), world)
+
+    def test_a_reach_0_4_metres_long_between_two_joints_is_stored_as_400_mm_and_found_by_the_loader(
+        self,
+    ) -> None:
+        import re  # noqa: PLC0415  # Read the stored numbers out of the Rust test's source.
+
+        context = water_context(["..."], [survey("r-1", [(0, 0.5), (3, 0.5)])])
+        line = network.WaterLine(
+            network.RiverLine(context["rivers"][0], _ORIGIN), network.Fraction(20), []
+        )
+        side = network.cell_side_um(0, _ORIGIN) / 1e6
+        start = network.Fraction(1_000_000)
+        end = start + network.Fraction(0.4 / side * 1_000_000)
+        graph = network.build_river_graph(
+            {"r-1": line}, context["layers"]["kind"], _ORIGIN, {("r-1", start, 0), ("r-1", end, 0)}
+        )
+        # Four joints (the two ends of the stretch and the two near each other) and so three reaches, the middle one of 400 mm.
+        self.assertEqual(len(graph["joints"]), 4)
+        middle = graph["reaches"][1]
+        self.assertEqual([r["length_mm"] for r in graph["reaches"]], [474_590, 400, 948_779])
+        self.assertEqual(
+            (middle["length_mm"], middle["from"], middle["to"], middle["usable"]),
+            (400, 1, 2, True),
+        )
+        total = Fraction(line.line.total)
+        begin, finish = (network._micro(start, total), network._micro(end, total))
+        source = (self.ROOT / "crates/map/src/water_tests.rs").read_text()
+        found = re.search(r"const NEAR_CUT: \[u32; 2\] = \[([\d_]+), ([\d_]+)\];", source)
+        assert found is not None
+        self.assertEqual(
+            [int(found.group(1).replace("_", "")), int(found.group(2).replace("_", ""))],
+            [begin, finish],
+        )
+        self.assertEqual((middle["begin"], middle["end"]), (begin, finish))
+
+
+class RustWaterWorldTests(unittest.TestCase):
+    """The stored world that the Rust loader's tests read is the one the tool makes."""
+
+    ROOT: ClassVar[Path] = Path(__file__).resolve().parents[1]
+
+    @staticmethod
+    def world() -> tuple[str, dict[str, Any], dict[str, Any]]:
+        rows = ["~~~~~~~~~~", "~........~", "~..l.....~", "~........~", "~........~", "~~~~~~~~~~"]
+        river = survey("r-1", [(3.2, 1.2), (3.2, 4.8)], width=(30, 30))
+        cells = [(1, 3), (2, 3), (3, 3), (4, 3), (5, 3), (6, 3)]
+        breaks = [{"stretch": "r-1", "cell": [3, 4], "name": "Falls"}]
+        context = water_context(
+            rows, [river], extra={"river_break": breaks, "mark": [{"place": "isle"}]}
+        )
+        graph = water_graph(
+            [
+                (1, "place", cells[0], "a"),
+                (2, "place", cells[-1], "b"),
+                (3, "place", (7, 1), "isle"),
+                (4, "landing", (8, 1), "isle"),
+            ],
+            [("isle", "offshore", 4)],
+            stretches=[
+                {
+                    "id": 3,
+                    "from": 1,
+                    "to": 2,
+                    "cells": [list(c) for c in cells],
+                    "length_m": 3000,
+                    "category": "road",
+                    "level": 1,
+                    "tidal": False,
+                }
+            ],
+        )
+        graph["link"] = [
+            {"id": "x", "from_node": 1, "to_node": 2, "stretches": [[3, "forward"]], "record": "{}"}
+        ]
+        entries = [{"river": "r", "at": [3, 3], "kind": "none", "note": "t"}]
+        hits = network.apply_crossings(graph, context["index"], entries, _ORIGIN, {"r"})
+        graph, plan = work_water(context, graph, hits)
+        graph.update({"format": 3, "hand_list_sha256": "x", "baseline_sha256": "x"})
+        return network.dump_roads(graph), plan, graph
+
+    def test_the_committed_stored_world_is_what_the_tool_makes(self) -> None:
+        text, _, _ = self.world()
+        self.assertEqual((self.ROOT / "crates/map/tests/water/world.toml").read_text(), text)
+
+    def test_the_layer_and_the_river_in_the_rust_tests_are_the_tools_own(self) -> None:
+        import re  # noqa: PLC0415  # Read the constants out of the Rust test's source.
+
+        _, plan, _ = self.world()
+        source = (self.ROOT / "crates/map/src/water_tests.rs").read_text()
+        layer = re.search(r"const LAYER: \[u16; \d+\] = \[(.*?)\];", source, re.S)
+        river = re.search(r"const RIVER: \[\(i32, i32\); \d+\] = \[(.*?)\];", source, re.S)
+        assert layer is not None
+        assert river is not None
+        self.assertEqual(
+            [int(v) for v in re.findall(r"\d+", layer.group(1))],
+            [v for row in plan["layer_values"] for v in row],
+        )
+        points = [(round(x * 32768), round(y * 32768)) for x, y in plan["lines"]["r-1"].line.points]
+        self.assertEqual(
+            [int(v.replace("_", "")) for v in re.findall(r"[\d_]+", river.group(1))],
+            [c for point in points for c in point],
+        )

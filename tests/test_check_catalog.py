@@ -2420,7 +2420,14 @@ GUARDS: tuple[Guard, ...] = (
     Guard(
         "tests/test_map_network.py",
         "unittest-network",
-        ("assets/map/ireland/", "assets/map/ireland/network.py", "crates/map/tests/network/"),
+        (
+            "assets/map/ireland/",
+            "assets/map/ireland/network.py",
+            "crates/map/tests/network/",
+            # CK-401: it makes again the stored world and the layer that the loader's water tests read.
+            "crates/map/src/water_tests.rs",
+            "crates/map/tests/water/",
+        ),
     ),
     # The application tests that read shipped files or hash workspace inputs belong to rust.app.
     Guard("apps/codekarl/src/font.rs", "rust.app", ("assets/ui/font/",)),
@@ -2506,6 +2513,8 @@ GUARDS: tuple[Guard, ...] = (
             "crates/sim/src/",
             "crates/lua/src/",
             "apps/codekarl/src/game/",
+            # CK-401: the shipped scenario starts and its network files are hashed.
+            "assets/scenarios/ireland-768/",
         ),
     ),
     # CK-225: the app's Ireland economy-start integration test reads the shared rules and scenario assets.

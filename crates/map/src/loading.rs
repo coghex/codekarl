@@ -944,6 +944,16 @@ fn decode_elevation_image(
     width: u32,
     height: u32,
 ) -> Result<Vec<u16>, LoadError> {
+    decode_layer_image(directory, filename, width, height)
+}
+
+/// Decode one channel of 16 bits at an exact size, refusing any other sample format.
+pub(crate) fn decode_layer_image(
+    directory: &Path,
+    filename: &str,
+    width: u32,
+    height: u32,
+) -> Result<Vec<u16>, LoadError> {
     let path = input_path(directory, filename)?;
     let file = File::open(&path).map_err(|error| LoadError::new(filename, error))?;
     let decoder = png::Decoder::new(BufReader::new(file));
@@ -964,7 +974,7 @@ fn decode_elevation_image(
     if info.color_type != png::ColorType::Grayscale || info.bit_depth != png::BitDepth::Sixteen {
         return Err(LoadError::new(
             filename,
-            "elevation image must be 16-bit grayscale",
+            "image must be one channel of 16-bit grayscale",
         ));
     }
     let size = reader

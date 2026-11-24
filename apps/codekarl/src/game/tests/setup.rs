@@ -292,7 +292,7 @@ fn the_scenario_hash_covers_the_scenario_file_and_its_locations_and_nothing_else
 }
 
 #[test]
-fn the_scenario_hash_covers_both_network_files_but_not_the_baseline() {
+fn the_scenario_hash_covers_all_three_network_files_but_not_the_baseline() {
     let (_dir, game) = fixture();
     let scenario = &game.scenario;
     let without_network = hashes::scenario_hash(scenario).unwrap();
@@ -303,9 +303,19 @@ fn the_scenario_hash_covers_both_network_files_but_not_the_baseline() {
             .contains("roads.toml")
     );
     fs::write(scenario.join("roads.toml"), "stored network").unwrap();
+    assert!(
+        hashes::scenario_hash(scenario)
+            .unwrap_err()
+            .contains("sea_distance.png")
+    );
+    fs::write(scenario.join("sea_distance.png"), "sea distance layer").unwrap();
     let hash = || hashes::scenario_hash(scenario).unwrap();
     assert_ne!(hash(), without_network);
-    each_file_matters(scenario, &["network.toml", "roads.toml"], &hash);
+    each_file_matters(
+        scenario,
+        &["network.toml", "roads.toml", "sea_distance.png"],
+        &hash,
+    );
     let before = hash();
     fs::write(scenario.join("courses-approved.json"), "approved courses").unwrap();
     assert_eq!(hash(), before);
@@ -322,6 +332,7 @@ fn a_refused_network_prevents_start_and_reports_its_file() {
     let (_dir, game) = fixture();
     fs::write(game.scenario.join("network.toml"), "hand list").unwrap();
     fs::write(game.scenario.join("roads.toml"), "format = 99\n").unwrap();
+    fs::write(game.scenario.join("sea_distance.png"), "layer").unwrap();
     let message = prepared(&game, None, Some(42)).0.err().expect("refused");
     assert!(message.contains("roads.toml"), "{message}");
 }
@@ -338,8 +349,15 @@ fn a_network_changes_the_content_hash_but_not_the_simulation() {
         digests.push(before.simulation.digest().unwrap());
     }
     let crop = before.scenario.map.data.crop;
+    // The fixture map's own files, as the stored network binds them (CK-401): terrain.png, rivers.toml and the layer beside the network.
     let mut roads = String::from(
-        "format = 2\nhand_list_sha256 = \"cadb7f67e609caf88b363089d58964a35c2621a970915dc72fbd70449f1c4c4d\"\nbaseline_sha256 = \"unused\"\nnext_node_id = 3\nnext_stretch_id = 1\n",
+        "format = 3\nhand_list_sha256 = \"cadb7f67e609caf88b363089d58964a35c2621a970915dc72fbd70449f1c4c4d\"\nbaseline_sha256 = \"unused\"\nnext_node_id = 3\nnext_stretch_id = 1\n\
+         river_width_mm = 20000\n\
+         terrain_sha256 = \"d11fe559195ce7d790dfd644e2bf9d8e82e9820e6564d710a694f0c0d1372b2f\"\n\
+         rivers_sha256 = \"8898158a7e77c6ae6f7db850f2489486ed3b41dcc5153ac82fcdcdb1b5a819ff\"\n\
+         sea_distance = \"sea_distance.png\"\n\
+         sea_distance_sha256 = \"562db3788353cd656baca1ba6e8533ccf8e5fde34d7170ab7ca56d1d3e13567e\"\n\
+         next_landing_id = 1\n",
     );
     for (index, location) in before.scenario.locations.iter().enumerate() {
         use std::fmt::Write as _;
@@ -355,6 +373,11 @@ fn a_network_changes_the_content_hash_but_not_the_simulation() {
     }
     fs::write(game.scenario.join("network.toml"), "hand list").unwrap();
     fs::write(game.scenario.join("roads.toml"), roads).unwrap();
+    fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sea_distance.png"),
+        game.scenario.join("sea_distance.png"),
+    )
+    .unwrap();
     assert_ne!(hashes::scenario_hash(&game.scenario).unwrap(), old_hash);
     let error = prepared(&game, Some(&save), None)
         .0
@@ -841,4 +864,49 @@ fn weather_map_changes_refuse_existing_saves_through_real_loader() {
     fs::write(manifest, text).unwrap();
     let error = prepared(&game, Some(&save), None).0.err().unwrap();
     assert!(error.contains("map hash"), "{error}");
+}
+
+#[test]
+fn the_shipped_scenario_starts_with_its_landings_and_its_straits() {
+    let dir = Dir::new();
+    let game = GameConfig {
+        scenario: Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/scenarios/ireland-768"),
+        saves: dir.0.join("saves"),
+    };
+    let started = prepared(&game, None, Some(42))
+        .0
+        .expect("the shipped scenario starts");
+    let network = started.scenario.network.as_ref().expect("a stored network");
+    assert_eq!(network.landings.len(), 213);
+    assert_eq!(network.straits.len(), 10);
+    let landed: std::collections::BTreeSet<u64> = network.landings.iter().map(|l| l.node).collect();
+    let places = network
+        .nodes
+        .iter()
+        .filter(|n| n.kind == ck_map::LandNodeKind::Place && landed.contains(&n.id))
+        .count();
+    assert_eq!(places, 39);
+}
+
+#[test]
+fn the_scenario_hash_changes_when_one_byte_of_the_sea_distance_layer_changes() {
+    let game = GameConfig {
+        scenario: Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/scenarios/ireland-768"),
+        saves: PathBuf::new(),
+    };
+    let dir = Dir::new();
+    let copy = dir.0.join("assets/scenarios/ireland-768");
+    fs::create_dir_all(&copy).unwrap();
+    for entry in fs::read_dir(&game.scenario).unwrap() {
+        let entry = entry.unwrap();
+        if entry.file_type().unwrap().is_file() {
+            fs::copy(entry.path(), copy.join(entry.file_name())).unwrap();
+        }
+    }
+    let before = hashes::scenario_hash(&copy).unwrap();
+    let mut layer = fs::read(copy.join("sea_distance.png")).unwrap();
+    let last = layer.len() - 1;
+    layer[last] ^= 1;
+    fs::write(copy.join("sea_distance.png"), layer).unwrap();
+    assert_ne!(hashes::scenario_hash(&copy).unwrap(), before);
 }

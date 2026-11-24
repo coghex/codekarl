@@ -2,6 +2,7 @@
 
 import argparse
 import copy
+import datetime
 import hashlib
 import heapq
 import importlib
@@ -281,12 +282,32 @@ def split_courses(  # noqa: PLR0912  # Node and shared-edge cases are resolved t
     return lines, links
 
 
+def _is_integer(value: object) -> bool:
+    """A plain integer: not a float of the same value, and not a boolean."""
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+_ID_LIMIT = 2**64 - 1
+
+
+def next_counter(name: str, counter: int) -> int:
+    """The counter after handing out its id, refused when the counter would leave the range of the loader's `u64`."""
+    if counter + 1 > _ID_LIMIT:
+        raise ValueError(
+            f"{name} is {counter}: the next id would leave the range of an unsigned 64-bit integer"
+        )
+    return counter + 1
+
+
 def allocate_ids(
-    keys: list[Key], previous: dict[Key, int], next_id: int
+    keys: list[Key], previous: dict[Key, int], next_id: int, name: str = "id counter"
 ) -> tuple[dict[Key, int], int]:
-    """Preserve existing IDs and allocate new IDs above the historical high water mark."""
-    if len(set(previous.values())) != len(previous) or any(
-        value >= next_id for value in previous.values()
+    """Preserve existing IDs and allocate new IDs above the historical high water mark, up to the largest the loader reads."""
+    if (
+        not _is_integer(next_id)
+        or any(not _is_integer(value) for value in previous.values())
+        or len(set(previous.values())) != len(previous)
+        or any(value >= next_id for value in previous.values())
     ):
         raise ValueError("invalid ID counter or duplicate ID")
     if len(set(keys)) != len(keys):
@@ -297,7 +318,7 @@ def allocate_ids(
             result[key] = previous[key]
         else:
             result[key] = next_id
-            next_id += 1
+            next_id = next_counter(name, next_id)
     return result, next_id
 
 
@@ -361,6 +382,8 @@ def read_rasters(map_dir: Path) -> dict[str, Any]:
     rows = [colours[row * width : (row + 1) * width] for row in range(height)]
     names = terrain_names(rows, rules)
     land = terrain_land(rows, rules)
+    kind_by_colour = {tuple(bytes.fromhex(rule["key"])): rule["kind"] for rule in rules}
+    kinds = [[kind_by_colour[colour] for colour in row] for row in rows]
     elevation_values = pixels("elevation.png")
     fertility_values = pixels("fertility.png")
     elevation = [
@@ -372,6 +395,7 @@ def read_rasters(map_dir: Path) -> dict[str, Any]:
     return {
         "origin": tuple(crop["origin"]),
         "terrain": names,
+        "kind": kinds,
         "land": land,
         "elevation": elevation,
         "fertility": fertility,
@@ -484,7 +508,23 @@ def validate_hand_list(  # noqa: PLR0912, PLR0915  # Validation names the table 
         on_land(cell, label)
         return cell
 
-    keys("network", data, {"costs", "road", "access", "landing", "link", "crossing"})
+    keys(
+        "network",
+        data,
+        {
+            "costs",
+            "road",
+            "access",
+            "landing",
+            "link",
+            "crossing",
+            "water",
+            "water_class",
+            "river_break",
+            "mark",
+        },
+    )
+    validate_water(data, locations)
     for entry in data.get("crossing", []):
         fields = {"river", "at", "kind", "note"}
         keys("crossing", entry, fields, frozenset(fields))
@@ -694,6 +734,34 @@ def propose_courses(  # noqa: PLR0913, PLR0912  # Planning needs input layers, b
     }
 
 
+_WATER_TOP = (
+    "river_width_mm",
+    "terrain_sha256",
+    "rivers_sha256",
+    "sea_distance",
+    "sea_distance_sha256",
+    "next_landing_id",
+)
+
+
+def _by_id(item: dict[str, Any]) -> tuple[Any, ...]:
+    return (item["id"],)
+
+
+_TABLE_ORDER: dict[str, Callable[[dict[str, Any]], tuple[Any, ...]]] = {
+    "join": lambda item: (item["link"], item["end"]),
+    "access": lambda item: (item["place"],),
+    "river_break": lambda item: (item["name"],),
+    "mark": lambda item: (item["place"],),
+    "water_join": lambda item: (
+        item["reach"],
+        item.get("to_reach", -1),
+        tuple(item.get("cell", ())),
+    ),
+    "strait": lambda item: (item["from"], item["to"]),
+}
+
+
 def dump_roads(graph: dict[str, Any]) -> str:
     """Serialize the network in stable table and field order."""
     table_fields = {
@@ -709,11 +777,34 @@ def dump_roads(graph: dict[str, Any]) -> str:
             "tidal",
             "crossings",
             "wades",
+            "landing_from",
+            "landing_to",
         ),
         "link": ("id", "road", "from_node", "to_node", "stretches", "record"),
         "join": ("link", "end", "parent", "node", "along_m"),
         "road": ("id", "name", "links"),
         "access": ("place", "quality", "landing"),
+        "water_class": ("id", "reach_m", "sea_going", "bodies"),
+        "river_break": ("name", "stretch", "cell", "above", "below"),
+        "mark": ("place",),
+        "joint": ("id", "stretch", "cell"),
+        "reach": ("id", "stretch", "from", "to", "usable", "length_mm", "kind", "begin", "end"),
+        "water_join": ("reach", "to_reach", "cell", "classes"),
+        "landing": (
+            "id",
+            "node",
+            "bank",
+            "survey",
+            "shore",
+            "run",
+            "cell",
+            "joint",
+            "crossing",
+            "end",
+            "approach_m",
+            "bodies",
+        ),
+        "strait": ("place", "from", "to", "length_m", "classes"),
     }
     top_fields = (
         "format",
@@ -735,15 +826,14 @@ def dump_roads(graph: dict[str, Any]) -> str:
             return "[" + ", ".join(toml_value(item) for item in value) + "]"
         return json.dumps(value, ensure_ascii=True)
 
-    for field in top_fields:
-        lines.append(f"{field} = {json.dumps(graph[field], ensure_ascii=True)}")
+    for field in (*top_fields, *_WATER_TOP):
+        if field in graph:
+            lines.append(f"{field} = {json.dumps(graph[field], ensure_ascii=True)}")
     for table, fields in table_fields.items():
-        sort_keys = (
-            ("link", "end") if table == "join" else (("place",) if table == "access" else ("id",))
-        )
-        for entry in sorted(
-            graph.get(table, []), key=lambda item: tuple(item[k] for k in sort_keys)
-        ):
+        entries = graph.get(table, [])
+        if table != "water_class":
+            entries = sorted(entries, key=_TABLE_ORDER.get(table, _by_id))
+        for entry in entries:
             lines.extend(("", f"[[{table}]]"))
             for field in fields:
                 if field in entry:
@@ -807,7 +897,10 @@ def make_graph(  # noqa: PLR0913, PLR0915, PLR0912  # Graph construction binds n
 
     old_nodes = {node_key(node): node["id"] for node in previous.get("node", [])}
     node_ids, next_node = allocate_ids(
-        [node_key(entry) for entry in entries], old_nodes, previous.get("next_node_id", 1)
+        [node_key(entry) for entry in entries],
+        old_nodes,
+        previous.get("next_node_id", 1),
+        "next_node_id",
     )
     for entry in entries:
         entry["id"] = node_ids[node_key(entry)]
@@ -866,7 +959,7 @@ def make_graph(  # noqa: PLR0913, PLR0915, PLR0912  # Graph construction binds n
             }
         )
     ids, next_stretch = allocate_ids(
-        stretch_keys, old_stretches, previous.get("next_stretch_id", 1)
+        stretch_keys, old_stretches, previous.get("next_stretch_id", 1), "next_stretch_id"
     )
     for key, entry in zip(stretch_keys, stretch_entries, strict=True):
         entry["id"] = ids[key]
@@ -1094,6 +1187,7 @@ class RiverIndex:
                             total,
                             Fraction(str(stretch["width_m"][0])),
                             Fraction(str(stretch["width_m"][1])),
+                            stretch.get("id", stretch["river"]),
                         )
                     )
                     x0, x1 = sorted((a[0] // 1_000_000, b[0] // 1_000_000))
@@ -1105,6 +1199,12 @@ class RiverIndex:
 
     def crossings(self, start: Cell, end: Cell) -> list[tuple[str, Fraction, Fraction]]:
         """Find distinct intersections in order along a road step."""
+        return sorted(self.scan(start, end), key=lambda item: (item[1], item[0], item[2]))
+
+    def scan(
+        self, start: Cell, end: Cell
+    ) -> dict[tuple[str, Fraction, Fraction], tuple[str, Fraction]]:
+        """Each distinct intersection with the surveyed stretch and position it was met at."""
         a = (start[0] * 1_000_000 + 500_000, start[1] * 1_000_000 + 500_000)
         b = (end[0] * 1_000_000 + 500_000, end[1] * 1_000_000 + 500_000)
         road = (b[0] - a[0], b[1] - a[1])
@@ -1116,9 +1216,9 @@ class RiverIndex:
         for x in range(min(start[0], end[0]), max(start[0], end[0]) + 1):
             for y in range(min(start[1], end[1]), max(start[1], end[1]) + 1):
                 indices.update(self.bins.get((x, y), ()))
-        found: set[tuple[str, Fraction, Fraction]] = set()
+        found: dict[tuple[str, Fraction, Fraction], tuple[str, Fraction]] = {}
         for index in indices:
-            p, q, river, before, length, total, w0, w1 = self.segments[index]
+            p, q, river, before, length, total, w0, w1, stretch = self.segments[index]
             direction = (q[0] - p[0], q[1] - p[1])
             offset = (p[0] - a[0], p[1] - a[1])
             divisor = cross(road, direction)
@@ -1128,11 +1228,15 @@ class RiverIndex:
             u = Fraction(cross(offset, road), divisor)
             if 0 <= t <= 1 and 0 <= u <= 1:
                 width = w0 + (w1 - w0) * (before + u * length) / total
-                found.add((river, t, width))
-        return sorted(found, key=lambda item: (item[1], item[0], item[2]))
+                place = (stretch, before + u * length)
+                key = (river, t, width)
+                if key not in found or place < found[key]:
+                    found[key] = place
+        return found
 
 
-_ROADS_FORMAT = 2
+_ROADS_FORMAT = 3
+_CUT_FORMATS = (2, 3)
 _HIT_GROUP_DISTANCE_M = 500
 _CROSSING_MATCH_CELLS = 3
 
@@ -1189,6 +1293,7 @@ def group_river_hits(
                 "last_step": group[-1]["step"],
                 "t": group[0]["t"],
                 "point": group[0]["point"],
+                "members": group,
             }
             (crossings if count % 2 else touches).append(item)
 
@@ -1373,7 +1478,7 @@ def apply_crossings(  # noqa: PLR0912, PLR0913, PLR0915  # Graph cutting handles
                     node_id = old_banks.get(cell)
                     if node_id is None:
                         node_id = graph["next_node_id"]
-                        graph["next_node_id"] += 1
+                        graph["next_node_id"] = next_counter("next_node_id", node_id)
                     node = {"id": node_id, "kind": "bank", "cell": list(cell)}
                     graph["node"].append(node)
                     nodes[cell] = node
@@ -1386,7 +1491,7 @@ def apply_crossings(  # noqa: PLR0912, PLR0913, PLR0915  # Graph cutting handles
             )
             if sid is None:
                 sid = graph["next_stretch_id"]
-                graph["next_stretch_id"] += 1
+                graph["next_stretch_id"] = next_counter("next_stretch_id", sid)
             part = {
                 **stretch,
                 "id": sid,
@@ -1399,6 +1504,8 @@ def apply_crossings(  # noqa: PLR0912, PLR0913, PLR0915  # Graph cutting handles
             for a, b, members in spans:
                 if (start, end) == (a, b):
                     report_hits[sid] = members
+                    for member in members:
+                        member["span_start"] = start
                     part["crossings"] = [
                         {
                             "river": h["river"],
@@ -1513,6 +1620,7 @@ def network_report(  # noqa: PLR0913, PLR0915, PLR0912  # A report brings togeth
     course_graph: dict[str, Any] | None = None,
     crossing_entries: list[dict[str, Any]] | None = None,
     crossing_hits: dict[int, list[dict[str, Any]]] | None = None,
+    water: dict[str, Any] | None = None,
 ) -> str:
     """Report pieces, joins, shared state, geometry and river crossings of a graph."""
     nodes = {node["id"]: node for node in graph["node"]}
@@ -1661,7 +1769,1274 @@ def network_report(  # noqa: PLR0913, PLR0915, PLR0912  # A report brings togeth
             lines.append(
                 f"- stretch {stretch['id']}, {hit['along_m']} m: {hit['river']}, {hit['width_tenths_m'] / 10:.1f} m"
             )
+    if water is not None:
+        lines.extend(water_report(graph, water))
     return "\n".join(lines) + "\n"
+
+
+# ---- Water: classes, the river graph, landings (CK-401) ----
+
+_CELL_M = 839.0
+_SEA_CAP = 65_534
+_NOT_SEA = 65_535
+_MICRO = 1_000_000
+_OPEN_KINDS = ("sea", "lake")
+_SEA_LAYER = "sea_distance.png"
+_DEFAULT_WATER = {"river_width_m": 20, "shore_height_m": 10, "strait_m": 500}
+_PLACE_STEPS = 2
+_ACCESS_STEPS = 4
+
+
+def cell_side_um(row: int, origin: Cell) -> int:
+    """Ground length of a cell's side at the latitude of a row's centre, in micrometres."""
+    radius = 6_378_137.0
+    half_world = math.pi * radius
+    y = (origin[1] + row + 0.5) * _CELL_M
+    lat = 2 * math.atan(math.exp((half_world - y) / radius)) - math.pi / 2
+    return round(_CELL_M * _MICRO * math.cos(lat))
+
+
+def cell_side_m(row: int, origin: Cell) -> int:
+    """A cell side's ground length at a row, in whole metres, a half going up."""
+    return (cell_side_um(row, origin) + _MICRO // 2) // _MICRO
+
+
+def _squared_distance_rows(  # noqa: PLR0912  # The two passes of the exact transform share their stacks.
+    is_land: list[list[bool]],
+) -> list[list[int]]:
+    """Exact squared distance, in cells, from each cell to the nearest cell that is not sea."""
+    height, width = len(is_land), len(is_land[0]) if is_land else 0
+    big = width + height + 2
+    column = [[big] * width for _ in range(height)]
+    for x in range(width):
+        for y in range(height):
+            if is_land[y][x]:
+                column[y][x] = 0
+            elif y:
+                column[y][x] = min(column[y][x], column[y - 1][x] + 1)
+        for y in range(height - 2, -1, -1):
+            column[y][x] = min(column[y][x], column[y + 1][x] + 1)
+
+    def f(x: int, i: int, g: list[int]) -> int:
+        return (x - i) ** 2 + g[i] ** 2
+
+    def sep(i: int, u: int, g: list[int]) -> int:
+        return (u * u - i * i + g[u] ** 2 - g[i] ** 2) // (2 * (u - i))
+
+    result = []
+    for g in column:
+        stack_s = [0] * width
+        stack_t = [0] * width
+        q = 0
+        for u in range(1, width):
+            while q >= 0 and f(stack_t[q], stack_s[q], g) > f(stack_t[q], u, g):
+                q -= 1
+            if q < 0:
+                q = 0
+                stack_s[0] = u
+            else:
+                w = 1 + sep(stack_s[q], u, g)
+                if w < width:
+                    q += 1
+                    stack_s[q] = u
+                    stack_t[q] = w
+        row = [0] * width
+        for u in range(width - 1, -1, -1):
+            row[u] = f(u, stack_s[q], g)
+            if u == stack_t[q]:
+                q -= 1
+        result.append(row)
+    return result
+
+
+def sea_distance_layer(kinds: list[list[str]], origin: Cell) -> list[list[int]]:
+    """Each sea cell's distance from land in metres, cut at 65,534; every other cell 65,535."""
+    squared = _squared_distance_rows([[kind != "sea" for kind in row] for row in kinds])
+    layer = []
+    for y, (row, kind_row) in enumerate(zip(squared, kinds, strict=True)):
+        side = cell_side_um(y, origin)
+        out = []
+        for d2, kind in zip(row, kind_row, strict=True):
+            if kind != "sea":
+                out.append(_NOT_SEA)
+                continue
+            metres = (math.isqrt(d2 * _MICRO**2) * side + _MICRO**2 // 2) // _MICRO**2
+            out.append(min(metres, _SEA_CAP))
+        layer.append(out)
+    return layer
+
+
+def sea_distance_png(layer: list[list[int]]) -> bytes:
+    """Encode the layer as one channel of 16 bits."""
+    image_module = importlib.import_module("PIL.Image")
+    height, width = len(layer), len(layer[0]) if layer else 0
+    image = image_module.new("I;16", (width, height))
+    image.putdata([value for row in layer for value in row])
+    stream = io.BytesIO()
+    image.save(stream, format="PNG", compress_level=9, optimize=False)
+    return stream.getvalue()
+
+
+def read_sea_distance(data: bytes, width: int, height: int) -> list[list[int]]:
+    """Decode a layer, refusing anything but one channel of 16 bits at the map's size."""
+    image_module = importlib.import_module("PIL.Image")
+    try:
+        with image_module.open(io.BytesIO(data)) as image:
+            if image.mode != "I;16":
+                raise ValueError(f"sea distance layer: sample format {image.mode}, not 16 bits")
+            if image.size != (width, height):
+                raise ValueError("sea distance layer: size does not match map crop")
+            values = list(getattr(image, "get_flattened_data", image.getdata)())
+    except OSError as error:
+        raise ValueError(f"sea distance layer: malformed: {error}") from error
+    return [values[row * width : (row + 1) * width] for row in range(height)]
+
+
+class RiverLine:
+    """One surveyed stretch in cell coordinates, with positions measured as the crossing scan does."""
+
+    def __init__(self, stretch: dict[str, Any], origin: Cell) -> None:
+        self.id: str = stretch["id"]
+        self.river: str = stretch["river"]
+        self.kind: str = stretch["kind"]
+        self.ends: str = stretch["ends"]
+        self.width = (Fraction(str(stretch["width_m"][0])), Fraction(str(stretch["width_m"][1])))
+        raw = [project_point(lat, lon, origin) for lat, lon in stretch["points"]]
+        self.points = [(Fraction(x, _MICRO), Fraction(y, _MICRO)) for x, y in raw]
+        self.lengths = [
+            math.isqrt((b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2) for a, b in pairwise(raw)
+        ]
+        self.before: list[int] = []
+        running = 0
+        for length in self.lengths:
+            self.before.append(running)
+            running += length
+        self.total = running
+
+    def point_at(self, position: Fraction) -> tuple[Fraction, Fraction]:
+        """The exact point at a position along the line."""
+        for index, length in enumerate(self.lengths):
+            if length and position <= self.before[index] + length:
+                a, b = self.points[index], self.points[index + 1]
+                u = (position - self.before[index]) / length
+                return a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u
+        return self.points[-1]
+
+    def segment_at(self, position: Fraction) -> int:
+        """The index of the line's piece that holds a position."""
+        for index, length in enumerate(self.lengths):
+            if length and position <= self.before[index] + length:
+                return index
+        return len(self.lengths) - 1
+
+    def width_at(self, position: Fraction) -> Fraction:
+        """The width read along the line between its two end widths."""
+        return self.width[0] + (self.width[1] - self.width[0]) * position / self.total
+
+    def usable(self, narrowest: Fraction) -> tuple[Fraction, Fraction] | None:
+        """The part of the line that is usable water, or none when it has no length."""
+        total = Fraction(self.total)
+        if not self.total:
+            return None
+        if self.kind in {"tidal", "lough"}:
+            return Fraction(0), total
+        w0, w1 = self.width
+        if w0 == w1:
+            return (Fraction(0), total) if w0 >= narrowest else None
+        reach = total * (narrowest - w0) / (w1 - w0)
+        low, high = (
+            (max(Fraction(0), reach), total) if w1 > w0 else (Fraction(0), min(total, reach))
+        )
+        return (low, high) if low < high else None
+
+
+def line_runs(line: RiverLine) -> list[tuple[Cell, Fraction, Fraction]]:
+    """Each run of the line in a cell, in order, as the cell and its start and end positions."""
+    runs: list[tuple[Cell, Fraction, Fraction]] = []
+    for index, length in enumerate(line.lengths):
+        if not length:
+            continue
+        p, q = line.points[index], line.points[index + 1]
+        cuts = {Fraction(0), Fraction(1)}
+        for axis in (0, 1):
+            low, high = sorted((p[axis], q[axis]))
+            if low == high:
+                continue
+            for k in range(math.floor(low) + 1, math.ceil(high)):
+                cuts.add((k - p[axis]) / (q[axis] - p[axis]))
+        ordered = sorted(cuts)
+        for t0, t1 in pairwise(ordered):
+            mid = (t0 + t1) / 2
+            x = p[0] + (q[0] - p[0]) * mid
+            y = p[1] + (q[1] - p[1]) * mid
+            if x.denominator == 1 or y.denominator == 1:
+                continue
+            cell = (math.floor(x), math.floor(y))
+            start = line.before[index] + t0 * length
+            end = line.before[index] + t1 * length
+            if runs and runs[-1][0] == cell and runs[-1][2] == start:
+                runs[-1] = (cell, runs[-1][1], end)
+            else:
+                runs.append((cell, start, end))
+    return runs
+
+
+Position = Fraction
+_SIDE_BELOW = 1
+
+
+class WaterLine:
+    """A surveyed stretch with its usable part, its breaks and its runs in cells."""
+
+    def __init__(self, line: RiverLine, narrowest: Fraction, breaks: list[dict[str, Any]]) -> None:
+        self.line = line
+        self.usable = line.usable(narrowest)
+        runs = line_runs(line)
+        self.breaks: list[tuple[Position, str, Cell]] = []
+        for entry in breaks:
+            cell = (entry["cell"][0], entry["cell"][1])
+            index = next((i for i, run in enumerate(runs) if run[0] == cell), None)
+            if index is None:
+                raise ValueError(f"break {entry['name']}: stretch {line.id} is not in cell {cell}")
+            _, start, end = runs[index]
+            middle = (start + end) / 2
+            runs[index : index + 1] = [(cell, start, middle), (cell, middle, end)]
+            self.breaks.append((middle, entry["name"], cell))
+        self.breaks.sort()
+        self.runs = runs
+        seen: dict[Cell, int] = {}
+        self.run_index: list[int] = []
+        for cell, _, _ in runs:
+            self.run_index.append(seen.get(cell, 0))
+            seen[cell] = seen.get(cell, 0) + 1
+        self.break_positions = {position for position, _, _ in self.breaks}
+
+    def run_usable(self, index: int) -> tuple[Position, Position] | None:
+        """The usable part of a run, when it has length."""
+        if self.usable is None:
+            return None
+        _, start, end = self.runs[index]
+        low, high = max(start, self.usable[0]), min(end, self.usable[1])
+        return (low, high) if low < high else None
+
+    def is_usable_at(self, position: Position) -> bool:
+        """Whether a position lies in the usable part, which has length."""
+        return self.usable is not None and self.usable[0] <= position <= self.usable[1]
+
+    def side_of(self, index: int, position: Position) -> int:
+        """Which side of a break a run's own start lies on: 1 when it starts at one."""
+        start = self.runs[index][1]
+        return _SIDE_BELOW if position == start and start in self.break_positions else 0
+
+    def cell_at(self, position: Position) -> Cell:
+        """The cell that holds a position, an edge going to the cell being entered."""
+        for cell, start, end in self.runs:
+            if start <= position < end:
+                return cell
+        for cell, start, end in self.runs:
+            if start < position <= end:
+                return cell
+        x, y = self.line.point_at(position)
+        return (math.floor(x), math.floor(y))
+
+
+def ground_piece_m(
+    a: tuple[Fraction, Fraction], b: tuple[Fraction, Fraction], origin: Cell
+) -> float:
+    """The ground length of a short straight piece between two points in cell coordinates."""
+    radius = 6_378_137.0
+    half_world = math.pi * radius
+    ymid = (float(a[1]) + float(b[1])) / 2
+    lat = 2 * math.atan(math.exp((half_world - (origin[1] + ymid) * _CELL_M) / radius))
+    lat -= math.pi / 2
+    dx, dy = float(b[0] - a[0]), float(b[1] - a[1])
+    return math.hypot(dx, dy) * _CELL_M * math.cos(lat)
+
+
+def reach_length_mm(wl: WaterLine, start: Position, end: Position, origin: Cell) -> int:
+    """A reach's ground length in whole millimetres, rounded up; never nothing for two joints."""
+    line = wl.line
+    points = [line.point_at(start)]
+    for position, vertex in zip([*line.before, line.total], line.points, strict=True):
+        if start < position < end:
+            points.append(vertex)
+    points.append(line.point_at(end))
+    metres = sum(ground_piece_m(a, b, origin) for a, b in pairwise(points))
+    return max(1, math.ceil(metres * 1000 - 1e-6))
+
+
+def _micro(position: Position, total: int) -> int:
+    value = position * _MICRO / total
+    return (value.numerator * 2 + value.denominator) // (2 * value.denominator)
+
+
+def build_river_graph(  # noqa: PLR0912  # One pass makes joints, reaches and joins together.
+    lines: dict[str, WaterLine],
+    kinds: list[list[str]],
+    origin: Cell,
+    extras: set[tuple[str, Position, int]],
+) -> dict[str, Any]:
+    """The river graph: joints, the reaches between them, and what each joint is joined to."""
+    joint_keys: list[tuple[str, Position, int]] = []
+    for name in sorted(lines):
+        wl = lines[name]
+        total = Fraction(wl.line.total)
+        keys: set[tuple[Position, int]] = {(Fraction(0), 0), (total, 0)}
+        if wl.usable is not None:
+            keys.update({(wl.usable[0], 0), (wl.usable[1], 0)})
+        for position, _, _ in wl.breaks:
+            keys.update({(position, 0), (position, _SIDE_BELOW)})
+        for index, (cell, _, _) in enumerate(wl.runs):
+            part = wl.run_usable(index)
+            if part is not None and kinds[cell[1]][cell[0]] in _OPEN_KINDS:
+                keys.add((part[0], wl.side_of(index, part[0])))
+        keys.update((position, side) for stretch, position, side in extras if stretch == name)
+        joint_keys.extend((name, position, side) for position, side in sorted(keys))
+    # a joint at a break's position that is not the below side belongs to the part above it
+    joints: list[dict[str, Any]] = []
+    index_of: dict[tuple[str, Position, int], int] = {}
+    for key in joint_keys:
+        name, position, side = key
+        index_of[key] = len(joints)
+        joints.append(
+            {
+                "id": len(joints),
+                "stretch": name,
+                "cell": list(lines[name].cell_at(position)),
+                "position": position,
+                "side": side,
+            }
+        )
+    reaches: list[dict[str, Any]] = []
+    first_reach: dict[str, int] = {}
+    last_reach: dict[str, int] = {}
+    reach_from: dict[int, int] = {}
+    for name in sorted(lines):
+        wl = lines[name]
+        mine = [j for j in joints if j["stretch"] == name]
+        for left, right in pairwise(mine):
+            if left["position"] == right["position"]:
+                continue
+            start, end = left["position"], right["position"]
+            usable = wl.usable is not None and wl.usable[0] <= start and end <= wl.usable[1]
+            total = wl.line.total
+            entry = {
+                "id": len(reaches),
+                "stretch": name,
+                "from": left["id"],
+                "to": right["id"],
+                "usable": usable,
+                "length_mm": reach_length_mm(wl, start, end, origin),
+                "kind": wl.line.kind,
+                "begin": _micro(start, total),
+                "end": _micro(end, total),
+                "start": start,
+                "finish": end,
+            }
+            first_reach.setdefault(name, entry["id"])
+            last_reach[name] = entry["id"]
+            reach_from[left["id"]] = entry["id"]
+            reaches.append(entry)
+    joins: list[dict[str, Any]] = []
+    for name in sorted(lines):
+        target = lines[name].line.ends
+        if target in lines and name in last_reach and target in first_reach:
+            last, first = reaches[last_reach[name]], reaches[first_reach[target]]
+            if last["usable"] and first["usable"]:
+                joins.append({"reach": last["id"], "to_reach": first["id"]})
+        wl = lines[name]
+        for index, (cell, _, _) in enumerate(wl.runs):
+            part = wl.run_usable(index)
+            if part is None or kinds[cell[1]][cell[0]] not in _OPEN_KINDS:
+                continue
+            joint = index_of[(name, part[0], wl.side_of(index, part[0]))]
+            joins.append({"reach": reach_from[joint], "cell": list(cell)})
+    return {
+        "joints": joints,
+        "reaches": reaches,
+        "joins": joins,
+        "index": index_of,
+        "breaks": [
+            {
+                "name": entry_name,
+                "stretch": name,
+                "cell": list(cell),
+                "above": index_of[(name, position, 0)],
+                "below": index_of[(name, position, _SIDE_BELOW)],
+            }
+            for name in sorted(lines)
+            for position, entry_name, cell in lines[name].breaks
+        ],
+    }
+
+
+class _Sets:
+    """A small union-find over integers."""
+
+    def __init__(self, size: int) -> None:
+        self.parent = list(range(size))
+
+    def find(self, item: int) -> int:
+        while self.parent[item] != item:
+            self.parent[item] = self.parent[self.parent[item]]
+            item = self.parent[item]
+        return item
+
+    def union(self, a: int, b: int) -> None:
+        a, b = self.find(a), self.find(b)
+        if a != b:
+            self.parent[max(a, b)] = min(a, b)
+
+
+def class_cells(
+    kinds: list[list[str]], layer: list[list[int]], classes: list[dict[str, Any]]
+) -> list[set[Cell]]:
+    """For each class, the open cells it can use: every lake cell, and the sea within its reach."""
+    result: list[set[Cell]] = []
+    for item in classes:
+        cells: set[Cell] = set()
+        for y, row in enumerate(kinds):
+            for x, kind in enumerate(row):
+                if kind == "lake" or (kind == "sea" and layer[y][x] <= item["reach_m"]):
+                    cells.add((x, y))
+        result.append(cells)
+    return result
+
+
+def water_bodies(  # noqa: PLR0912  # Cells, reaches and joins are joined for each class in turn.
+    graph: dict[str, Any], usable: list[set[Cell]], width: int, height: int
+) -> list[dict[str, Any]]:
+    """The bodies of each class: its usable water joined by the three ways of rule 7."""
+    joints, reaches = graph["joints"], graph["reaches"]
+    members = {r["from"] for r in reaches if r["usable"]} | {
+        r["to"] for r in reaches if r["usable"]
+    }
+    result = []
+    for number, cells in enumerate(usable):
+        sets = _Sets(width * height + len(joints))
+        for x, y in cells:
+            if (x + 1, y) in cells:
+                sets.union(y * width + x, y * width + x + 1)
+            if (x, y + 1) in cells:
+                sets.union(y * width + x, (y + 1) * width + x)
+        for reach in reaches:
+            if reach["usable"]:
+                sets.union(width * height + reach["from"], width * height + reach["to"])
+        for join in graph["joins"]:
+            if "to_reach" in join:
+                a = reaches[join["reach"]]["to"]
+                b = reaches[join["to_reach"]]["from"]
+                sets.union(width * height + a, width * height + b)
+            elif tuple(join["cell"]) in cells:
+                joint = reaches[join["reach"]]["from"]
+                sets.union(width * height + joint, join["cell"][1] * width + join["cell"][0])
+        ids: dict[int, int] = {}
+        cell_body: dict[Cell, int] = {}
+        joint_body: dict[int, int] = {}
+        for x, y in sorted(cells, key=lambda c: (c[1], c[0])):
+            cell_body[x, y] = ids.setdefault(sets.find(y * width + x), len(ids))
+        for joint in sorted(members):
+            joint_body[joint] = ids.setdefault(sets.find(width * height + joint), len(ids))
+        sizes = [[0, 0] for _ in ids]
+        for body in cell_body.values():
+            sizes[body][0] += 1
+        for body in joint_body.values():
+            sizes[body][1] += 1
+        result.append(
+            {
+                "class": number,
+                "cells": cell_body,
+                "joints": joint_body,
+                "count": len(ids),
+                "sizes": sizes,
+            }
+        )
+    return result
+
+
+def _side(
+    direction: tuple[Fraction, Fraction],
+    origin: tuple[Fraction, Fraction],
+    point: tuple[Fraction, Fraction],
+) -> str:
+    """Which bank of a line facing downstream a point is on; left where it is on the line."""
+    cross = direction[0] * (point[1] - origin[1]) - direction[1] * (point[0] - origin[0])
+    return "right" if cross > 0 else "left"
+
+
+def _opposite(side: str) -> str:
+    return "left" if side == "right" else "right"
+
+
+def _nearest_point_on_run(wl: WaterLine, index: int, centre: tuple[Fraction, Fraction]) -> Position:
+    """The position on a run of the point nearest a cell's centre, the first when tied."""
+    _, start, end = wl.runs[index]
+    line = wl.line
+    spots = [start]
+    spots.extend(position for position in [*line.before, line.total] if start < position < end)
+    spots.append(end)
+    best: tuple[Fraction, Position] | None = None
+    for a, b in pairwise(spots):
+        pa, pb = line.point_at(a), line.point_at(b)
+        dx, dy = pb[0] - pa[0], pb[1] - pa[1]
+        length2 = dx * dx + dy * dy
+        t = Fraction(0)
+        if length2:
+            t = ((centre[0] - pa[0]) * dx + (centre[1] - pa[1]) * dy) / length2
+            t = min(Fraction(1), max(Fraction(0), t))
+        position = a + (b - a) * t
+        px, py = line.point_at(position)
+        distance = (px - centre[0]) ** 2 + (py - centre[1]) ** 2
+        if best is None or distance < best[0]:
+            best = (distance, position)
+    assert best is not None
+    return best[1]
+
+
+def run_bank(wl: WaterLine, index: int, shore: Cell) -> str:
+    """The bank of a run: the side of the line its shore cell's centre is on, nearest the run."""
+    centre = (Fraction(shore[0]) + Fraction(1, 2), Fraction(shore[1]) + Fraction(1, 2))
+    position = _nearest_point_on_run(wl, index, centre)
+    segment = wl.line.segment_at(position)
+    a, b = wl.line.points[segment], wl.line.points[segment + 1]
+    return _side((b[0] - a[0], b[1] - a[1]), wl.line.point_at(position), centre)
+
+
+def land_steps(land: Land, start: Cell, steps: int) -> dict[Cell, int]:
+    """Land cells reached from a cell in no more than so many steps over shared edges."""
+    found = {start: 0}
+    frontier = [start]
+    for depth in range(1, steps + 1):
+        following = []
+        for x, y in frontier:
+            for dx, dy in ((0, -1), (-1, 0), (1, 0), (0, 1)):
+                cell = (x + dx, y + dy)
+                if (
+                    cell not in found
+                    and 0 <= cell[1] < len(land)
+                    and 0 <= cell[0] < len(land[0])
+                    and land[cell[1]][cell[0]]
+                ):
+                    found[cell] = depth
+                    following.append(cell)
+        frontier = following
+    return found
+
+
+def water_settings(hand: dict[str, Any]) -> dict[str, Any]:
+    """The hand list's water: classes, the narrowest river, shore height, strait length, marks."""
+    water = {**_DEFAULT_WATER, **hand.get("water", {})}
+    return {
+        "river_width": Fraction(str(water["river_width_m"])),
+        "shore_height": Fraction(str(water["shore_height_m"])),
+        "strait_m": water["strait_m"],
+        "classes": [dict(item) for item in hand.get("water_class", [])],
+        "breaks": [dict(item) for item in hand.get("river_break", [])],
+        "marks": {item["place"] for item in hand.get("mark", [])},
+    }
+
+
+def landing_key(entry: dict[str, Any]) -> tuple[Any, ...]:
+    """What a landing keeps its id by: never a joint's number, and for a crossing end only its stretch and which end."""
+    if "crossing" in entry:
+        return ("crossing", entry["crossing"], entry["end"])
+    base = (entry["node"], entry.get("bank", ""))
+    if "survey" in entry:
+        return (*base, "river", entry["survey"], tuple(entry["shore"]), entry["run"])
+    return (*base, "open", entry["cell"][0], entry["cell"][1])
+
+
+def _node_search(node: dict[str, Any], accesses: set[str]) -> tuple[int, bool]:
+    """How many steps a node's search takes, and whether it takes any shore."""
+    if node["kind"] == "place":
+        return (_ACCESS_STEPS if node["place"] in accesses else _PLACE_STEPS), True
+    if node["kind"] == "landing":
+        return _ACCESS_STEPS, True
+    return 0, False
+
+
+def _reach_at(river: dict[str, Any], stretch: str, position: Position) -> dict[str, Any] | None:
+    """The usable reach of a stretch that holds a position, if any."""
+    for reach in river["reaches"]:
+        if (
+            reach["stretch"] == stretch
+            and reach["usable"]
+            and reach["start"] <= position <= reach["end"]
+        ):
+            return reach
+    return None
+
+
+def _centre(cell: Cell) -> tuple[Fraction, Fraction]:
+    return Fraction(cell[0]) + Fraction(1, 2), Fraction(cell[1]) + Fraction(1, 2)
+
+
+def _crossing_contact(  # Reads one crossing end's point, joint and bank together.
+    stretch: dict[str, Any],
+    members: list[dict[str, Any]],
+    end: str,
+    index: RiverIndex,
+    lines: dict[str, WaterLine],
+) -> tuple[str, Position, str]:
+    """The surveyed stretch, position and bank of a crossing end, from slice 3a's own scan."""
+    raw = [hit for item in members for hit in item["members"]]
+    pick = min if end == "from" else max
+    hit = pick(raw, key=lambda h: (h["distance"], h["river"]))
+    cells = [tuple(c) for c in stretch["cells"]]
+    offset = members[0]["span_start"]
+    local = hit["step"] - offset
+    found: tuple[str, Position] | None = None
+    step = local
+    for candidate in (local, local + 1):
+        if not 0 <= candidate < len(cells) - 1:
+            continue
+        a, b = cells[candidate], cells[candidate + 1]
+        for (river, t, _width), place in sorted(index.scan(a, b).items(), key=lambda i: i[1]):
+            spot = (a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1]))
+            if river == hit["river"] and spot == hit["point"] and found is None:
+                found, step = place, candidate
+    if found is None:
+        raise ValueError(f"crossing stretch {stretch['id']}: no surveyed point for its {end} end")
+    name, position = found
+    wl = lines[name]
+    segment = wl.line.segment_at(position)
+    a, b = wl.line.points[segment], wl.line.points[segment + 1]
+    direction = (b[0] - a[0], b[1] - a[1])
+    here = (hit["point"][0] + Fraction(1, 2), hit["point"][1] + Fraction(1, 2))
+
+    def cross(cell: Cell) -> Fraction:
+        spot = _centre(cell)
+        return direction[0] * (spot[1] - here[1]) - direction[1] * (spot[0] - here[0])
+
+    before = cells[step::-1] if end == "from" else cells[step + 1 :]
+    after = cells[step + 1 :] if end == "from" else cells[step::-1]
+    for cell in before:
+        if cross(cell):
+            return name, position, _side(direction, here, _centre(cell))
+    for cell in after:
+        if cross(cell):
+            return name, position, _opposite(_side(direction, here, _centre(cell)))
+    return name, position, "left"
+
+
+def _roadside(
+    graph: dict[str, Any],
+    context: dict[str, Any],
+    runs_at: dict[Cell, list[tuple[str, int, Position]]],
+    usable: list[set[Cell]],
+) -> list[dict[str, Any]]:
+    """Each road stretch with a cell away from any node that is beside usable water at an allowed shore.
+
+    The cell is a shore as a node's own cell is (rules 11 and 13): not marsh, with an open cell that some class can use sharing
+    an edge with it that is not too far below it, or with a run of a river's usable part in it. Nothing can embark there.
+    """
+    layers = context["layers"]
+    kinds, terrain, elevation = layers["kind"], layers["terrain"], layers["elevation"]
+    height, width = len(kinds), len(kinds[0])
+    limit = water_settings(context["hand"])["shore_height"]
+    node_cells = {(item["cell"][0], item["cell"][1]) for item in graph["node"]}
+
+    def embarks(cell: Cell) -> bool:
+        if terrain[cell[1]][cell[0]] == "marsh":
+            return False
+        if runs_at.get(cell):
+            return True
+        for dx, dy in ((0, -1), (-1, 0), (1, 0), (0, 1)):
+            spot = (cell[0] + dx, cell[1] + dy)
+            if not (
+                0 <= spot[0] < width
+                and 0 <= spot[1] < height
+                and kinds[spot[1]][spot[0]] in _OPEN_KINDS
+                and any(spot in cells for cells in usable)
+            ):
+                continue
+            water = elevation[spot[1]][spot[0]] if kinds[spot[1]][spot[0]] == "lake" else 0
+            if elevation[cell[1]][cell[0]] - water <= limit:
+                return True
+        return False
+
+    beside: list[dict[str, Any]] = []
+    for stretch in sorted(graph["stretch"], key=lambda s: s["id"]):
+        if stretch["tidal"]:
+            continue
+        for item in stretch["cells"]:
+            cell = (item[0], item[1])
+            if cell not in node_cells and embarks(cell):
+                beside.append({"stretch": stretch["id"], "cell": cell})
+                break
+    return beside
+
+
+def plan_water(  # noqa: PLR0912, PLR0915  # One pass turns the hand list's water into tables.
+    graph: dict[str, Any],
+    context: dict[str, Any],
+    crossing_hits: dict[int, list[dict[str, Any]]],
+    previous: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Work the water of a network once: the layer, bodies, landings, crossing ends and straits."""
+    layers = context["layers"]
+    origin, kinds, land = layers["origin"], layers["kind"], layers["land"]
+    height, width = len(kinds), len(kinds[0])
+    settings = water_settings(context["hand"])
+    classes: list[dict[str, Any]] = settings["classes"]
+    names = [item["id"] for item in classes]
+    layer = sea_distance_layer(kinds, origin)
+    png = sea_distance_png(layer)
+    usable = class_cells(kinds, layer, classes)
+    survey = {r["id"]: r for r in context["rivers"]}
+    breaks_by: dict[str, list[dict[str, Any]]] = {}
+    for entry in settings["breaks"]:
+        if entry["stretch"] not in survey:
+            raise ValueError(f"break {entry['name']}: unknown stretch {entry['stretch']}")
+        breaks_by.setdefault(entry["stretch"], []).append(entry)
+    lines = {
+        name: WaterLine(RiverLine(item, origin), settings["river_width"], breaks_by.get(name, []))
+        for name, item in survey.items()
+    }
+    base = build_river_graph(lines, kinds, origin, set())
+    first = water_bodies(base, usable, width, height)
+    by_stretch: dict[str, list[dict[str, Any]]] = {}
+    for reach in base["reaches"]:
+        if reach["usable"]:
+            by_stretch.setdefault(reach["stretch"], []).append(reach)
+
+    def river_body(stretch: str, position: Position, number: int, side: int = 0) -> int | None:
+        for reach in by_stretch.get(stretch, []):
+            if reach["start"] <= position <= reach["finish"] and not (
+                side == _SIDE_BELOW and reach["finish"] == position
+            ):
+                return first[number]["joints"].get(reach["from"])
+        return None
+
+    runs_at: dict[Cell, list[tuple[str, int, Position]]] = {}
+    for name in sorted(lines):
+        for number in range(len(lines[name].runs)):
+            part = lines[name].run_usable(number)
+            if part is not None:
+                runs_at.setdefault(lines[name].runs[number][0], []).append((name, number, part[0]))
+    nodes = {item["id"]: item for item in graph["node"]}
+    accesses = {item["place"]: item for item in graph.get("access", [])}
+    marked = settings["marks"]
+
+    def passes(item: dict[str, Any], number: int) -> bool:
+        return item["place"] not in marked or classes[number]["sea_going"]
+
+    landings: list[dict[str, Any]] = []
+    refused: list[dict[str, Any]] = []
+    seen_keys: set[tuple[Any, ...]] = set()
+
+    def add(entry: dict[str, Any], bodies: list[int | None]) -> None:
+        key = landing_key(entry)
+        if key not in seen_keys:
+            seen_keys.add(key)
+            landings.append({**entry, "bodies": bodies})
+
+    for node_id in sorted(nodes):
+        node = nodes[node_id]
+        steps, anywhere = _node_search(node, set(accesses))
+        cell = (node["cell"][0], node["cell"][1])
+        side_um = cell_side_um(cell[1], origin)
+        contacts: list[dict[str, Any]] = []
+        for shore, depth in sorted(
+            land_steps(land, cell, steps).items(), key=lambda i: (i[1], i[0][1], i[0][0])
+        ):
+            approach = (depth * side_um + _MICRO // 2) // _MICRO
+            reasons: set[str] = set()
+            for dx, dy in ((0, -1), (-1, 0), (1, 0), (0, 1)):
+                spot = (shore[0] + dx, shore[1] + dy)
+                if (
+                    0 <= spot[0] < width
+                    and 0 <= spot[1] < height
+                    and kinds[spot[1]][spot[0]] in _OPEN_KINDS
+                    and any(spot in cells for cells in usable)
+                ):
+                    refusal = None
+                    if not anywhere:
+                        if layers["terrain"][shore[1]][shore[0]] == "marsh":
+                            refusal = "marsh"
+                        else:
+                            water = (
+                                layers["elevation"][spot[1]][spot[0]]
+                                if kinds[spot[1]][spot[0]] == "lake"
+                                else 0
+                            )
+                            rise = layers["elevation"][shore[1]][shore[0]] - water
+                            if rise > settings["shore_height"]:
+                                refusal = f"{rise} m above the water"
+                    if refusal:
+                        reasons.add(refusal)
+                    else:
+                        contacts.append(
+                            {"type": "open", "cell": spot, "shore": shore, "approach": approach}
+                        )
+            for name, number, position in runs_at.get(shore, []):
+                if not anywhere and layers["terrain"][shore[1]][shore[0]] == "marsh":
+                    reasons.add("marsh")
+                    continue
+                contacts.append(
+                    {
+                        "type": "river",
+                        "stretch": name,
+                        "run": number,
+                        "position": position,
+                        "shore": shore,
+                        "approach": approach,
+                    }
+                )
+            refused.extend(
+                {"node": node_id, "shore": list(shore), "reason": reason}
+                for reason in sorted(reasons)
+            )
+        place_item = {"place": node.get("place")}
+        for number in range(len(classes)):
+            if node.get("place") and not passes(place_item, number):
+                continue
+            best: dict[int, tuple[Any, dict[str, Any]]] = {}
+            for contact in contacts:
+                if contact["type"] == "open":
+                    body = first[number]["cells"].get(contact["cell"])
+                    rank = (
+                        contact["approach"],
+                        0,
+                        contact["shore"][1],
+                        contact["shore"][0],
+                        contact["cell"][1],
+                        contact["cell"][0],
+                        "",
+                        Fraction(0),
+                    )
+                else:
+                    body = river_body(
+                        contact["stretch"],
+                        contact["position"],
+                        number,
+                        lines[contact["stretch"]].side_of(contact["run"], contact["position"]),
+                    )
+                    rank = (
+                        contact["approach"],
+                        1,
+                        contact["shore"][1],
+                        contact["shore"][0],
+                        0,
+                        0,
+                        contact["stretch"],
+                        contact["position"],
+                    )
+                if body is not None and (body not in best or rank < best[body][0]):
+                    best[body] = (rank, contact)
+            for _, contact in best.values():
+                entry: dict[str, Any] = {
+                    "node": node_id,
+                    "shore": list(contact["shore"]),
+                    "approach_m": contact["approach"],
+                }
+                if contact["type"] == "open":
+                    entry["cell"] = list(contact["cell"])
+                    bodies = [
+                        first[n]["cells"].get(contact["cell"])
+                        if passes(place_item, n) or not node.get("place")
+                        else None
+                        for n in range(len(classes))
+                    ]
+                else:
+                    wl = lines[contact["stretch"]]
+                    entry["bank"] = run_bank(wl, contact["run"], contact["shore"])
+                    entry["survey"] = contact["stretch"]
+                    entry["run"] = wl.run_index[contact["run"]]
+                    entry["_position"] = contact["position"]
+                    entry["_side"] = wl.side_of(contact["run"], contact["position"])
+                    bodies = [
+                        river_body(contact["stretch"], contact["position"], n, entry["_side"])
+                        if passes(place_item, n) or not node.get("place")
+                        else None
+                        for n in range(len(classes))
+                    ]
+                add(entry, bodies)
+    ends: dict[tuple[int, str], dict[str, Any] | None] = {}
+    for stretch in graph["stretch"]:
+        if not stretch.get("crossings"):
+            continue
+        for end in ("from", "to"):
+            name, position, bank = _crossing_contact(
+                stretch, crossing_hits[stretch["id"]], end, context["index"], lines
+            )
+            node = nodes[stretch[end]]
+            wl = lines[name]
+            cell = (node["cell"][0], node["cell"][1])
+            reason = None
+            if not wl.is_usable_at(position):
+                reason = "the river is not usable at the point"
+            elif position in wl.break_positions:
+                reason = "the point is a break"
+            elif layers["terrain"][cell[1]][cell[0]] == "marsh":
+                reason = "marsh"
+            if reason:
+                ends[stretch["id"], end] = None
+                refused.append(
+                    {
+                        "node": node["id"],
+                        "shore": list(cell),
+                        "reason": reason,
+                        "crossing": stretch["id"],
+                        "end": end,
+                    }
+                )
+                continue
+            entry = {
+                "node": node["id"],
+                "shore": list(cell),
+                "approach_m": 0,
+                "bank": bank,
+                "crossing": stretch["id"],
+                "end": end,
+                "_survey": name,
+                "_position": position,
+                "_side": 0,
+            }
+            bodies = [river_body(name, position, n) for n in range(len(classes))]
+            add(entry, bodies)
+            ends[stretch["id"], end] = entry
+    extras = {
+        (entry.get("survey", entry.get("_survey")), entry["_position"], entry["_side"])
+        for entry in landings
+        if "_position" in entry
+    }
+    river = build_river_graph(lines, kinds, origin, extras)
+    final = water_bodies(river, usable, width, height)
+    for entry in landings:
+        if "_position" in entry:
+            entry["joint"] = river["index"][
+                (entry.get("survey", entry.get("_survey")), entry["_position"], entry["_side"])
+            ]
+    return {
+        "layer": png,
+        "layer_values": layer,
+        "settings": settings,
+        "usable": usable,
+        "river": river,
+        "bodies": final,
+        "landings": landings,
+        "refused": refused,
+        "roadside": _roadside(graph, context, runs_at, usable),
+        "ends": ends,
+        "lines": lines,
+        "classes": classes,
+        "names": names,
+        "previous": previous,
+    }
+
+
+def _same_land(land: Land, start: Cell, goal: Cell) -> bool:
+    """Whether two land cells are joined through land cells sharing edges."""
+    seen = {start}
+    stack = [start]
+    while stack:
+        x, y = stack.pop()
+        if (x, y) == goal:
+            return True
+        for dx, dy in ((0, -1), (-1, 0), (1, 0), (0, 1)):
+            cell = (x + dx, y + dy)
+            if (
+                cell not in seen
+                and 0 <= cell[1] < len(land)
+                and 0 <= cell[0] < len(land[0])
+                and land[cell[1]][cell[0]]
+            ):
+                seen.add(cell)
+                stack.append(cell)
+    return False
+
+
+def store_water(
+    graph: dict[str, Any], plan: dict[str, Any], context: dict[str, Any], hashes: dict[str, str]
+) -> None:
+    """Put the water into the graph's tables, ready to be stored as format 3."""
+    layers = context["layers"]
+    land = layers["land"]
+    settings, classes, river = plan["settings"], plan["classes"], plan["river"]
+    names, bodies = plan["names"], plan["bodies"]
+    nodes = {item["id"]: item for item in graph["node"]}
+    previous = plan["previous"] or {}
+    keyed = [landing_key(entry) for entry in plan["landings"]]
+    old = {landing_key(entry): entry["id"] for entry in previous.get("landing", [])}
+    ids, following = allocate_ids(keyed, old, previous.get("next_landing_id", 1), "next_landing_id")
+    stored = []
+    for entry, key in zip(plan["landings"], keyed, strict=True):
+        item = {k: v for k, v in entry.items() if not k.startswith("_")}
+        item["id"] = ids[key]
+        item["bodies"] = [-1 if body is None else body for body in entry["bodies"]]
+        stored.append(item)
+    by_end = {(item["crossing"], item["end"]): item["id"] for item in stored if "crossing" in item}
+    for stretch in graph["stretch"]:
+        if stretch.get("crossings"):
+            for end in ("from", "to"):
+                if (stretch["id"], end) in by_end:
+                    stretch[f"landing_{end}"] = by_end[stretch["id"], end]
+    marked = settings["marks"]
+    straits = []
+    for access in sorted(graph.get("access", []), key=lambda item: item["place"]):
+        place_node = next(
+            n for n in graph["node"] if n["kind"] == "place" and n.get("place") == access["place"]
+        )
+        landing_node = nodes[access["landing"]]
+        if _same_land(land, tuple(place_node["cell"]), tuple(landing_node["cell"])):
+            straits.append(
+                {
+                    "place": access["place"],
+                    "from": place_node["id"],
+                    "to": landing_node["id"],
+                    "length_m": settings["strait_m"],
+                    "classes": [
+                        item["id"]
+                        for item in classes
+                        if access["place"] not in marked or item["sea_going"]
+                    ],
+                }
+            )
+    joins = []
+    for join in river["joins"]:
+        entry = dict(join)
+        if "to_reach" in join:
+            entry["classes"] = list(names)
+        else:
+            entry["classes"] = [
+                item["id"]
+                for item, cells in zip(classes, plan["usable"], strict=True)
+                if tuple(join["cell"]) in cells
+            ]
+        joins.append(entry)
+    graph.update(
+        {
+            "format": _ROADS_FORMAT,
+            "river_width_mm": round(settings["river_width"] * 1000),
+            "terrain_sha256": hashes["terrain"],
+            "rivers_sha256": hashes["rivers"],
+            "sea_distance": _SEA_LAYER,
+            "sea_distance_sha256": hashlib.sha256(plan["layer"]).hexdigest(),
+            "next_landing_id": following,
+            "water_class": [
+                {**item, "bodies": body["count"]}
+                for item, body in zip(classes, bodies, strict=True)
+            ],
+            "river_break": river["breaks"],
+            "mark": [{"place": place} for place in sorted(marked)],
+            "joint": [
+                {"id": j["id"], "stretch": j["stretch"], "cell": j["cell"]} for j in river["joints"]
+            ],
+            "reach": [
+                {k: v for k, v in r.items() if k not in {"start", "finish"}}
+                for r in river["reaches"]
+            ],
+            "water_join": joins,
+            "landing": stored,
+            "strait": straits,
+        }
+    )
+
+
+_MAX_REACH_M = 65_533
+
+
+def validate_water(data: dict[str, Any], locations: dict[str, Cell]) -> None:  # noqa: PLR0912
+    """Refuse a malformed water section of the hand list, naming the entry and the fault."""
+
+    def only(label: str, entry: object, allowed: set[str], required: set[str]) -> dict[str, Any]:
+        if not isinstance(entry, dict):
+            raise ValueError(f"{label}: expected a table")
+        unknown = set(entry) - allowed
+        if unknown:
+            raise ValueError(f"{label}: unknown key {sorted(unknown)[0]}")
+        missing = required - set(entry)
+        if missing:
+            raise ValueError(f"{label}: missing {sorted(missing)[0]}")
+        return entry
+
+    water = only("water", data.get("water", {}), set(_DEFAULT_WATER), set())
+    for name, value in water.items():
+        if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+            raise ValueError(f"water {name}: expected a nonnegative number")
+    if "strait_m" in water and not water["strait_m"]:
+        raise ValueError("water strait_m: expected a length above nothing")
+    seen: set[str] = set()
+    for item in data.get("water_class", []):
+        fields = {"id", "reach_m", "sea_going"}
+        entry = only("water_class", item, fields, fields)
+        name = entry["id"]
+        if not isinstance(name, str) or not name or name in seen:
+            raise ValueError(f"water_class {name}: id must be a new nonempty string")
+        seen.add(name)
+        reach = entry["reach_m"]
+        if type(reach) is not int or not 0 <= reach <= _MAX_REACH_M:
+            raise ValueError(f"water_class {name}: reach_m must be 0 to {_MAX_REACH_M}")
+        if type(entry["sea_going"]) is not bool:
+            raise ValueError(f"water_class {name}: sea_going must be true or false")
+    names: set[str] = set()
+    spots: set[tuple[str, tuple[int, int]]] = set()
+    for item in data.get("river_break", []):
+        entry = only("river_break", item, {"stretch", "cell", "name"}, {"stretch", "cell", "name"})
+        name = entry["name"]
+        cell = entry["cell"]
+        if not isinstance(name, str) or not name or name in names:
+            raise ValueError(f"river_break {name}: name must be a new nonempty string")
+        if not isinstance(entry["stretch"], str) or not entry["stretch"]:
+            raise ValueError(f"river_break {name}: stretch must be a nonempty string")
+        if (
+            not isinstance(cell, list)
+            or len(cell) != _TWO
+            or any(type(value) is not int for value in cell)
+        ):
+            raise ValueError(f"river_break {name}: cell must have two integers")
+        spot = (entry["stretch"], (cell[0], cell[1]))
+        if spot in spots:
+            raise ValueError(f"river_break {name}: another break is already in that cell")
+        names.add(name)
+        spots.add(spot)
+    marks: set[str] = set()
+    for item in data.get("mark", []):
+        entry = only("mark", item, {"place"}, {"place"})
+        if entry["place"] not in locations or entry["place"] in marks:
+            raise ValueError(f"mark {entry['place']}: repeated or unknown place")
+        marks.add(entry["place"])
+
+
+def water_report(graph: dict[str, Any], water: dict[str, Any]) -> list[str]:  # noqa: PLR0912, PLR0915
+    """The report's water: bodies, landings, crossings by boat, straits, marks and gaps."""
+    nodes = {item["id"]: item for item in graph["node"]}
+    classes, names = water["classes"], water["names"]
+    stored = {item["id"]: item for item in graph["landing"]}
+
+    def label(node_id: int) -> str:
+        node = nodes[node_id]
+        return f"{node.get('place', '')} {node['kind']} node {node_id}".strip()
+
+    lines = ["", "## Water classes"]
+    for item, body in zip(classes, water["bodies"], strict=True):
+        lines.append(
+            f"- {item['id']}: reach {item['reach_m']} m, "
+            f"{'sea-going' if item['sea_going'] else 'not sea-going'}, {body['count']} bodies"
+        )
+    if not classes:
+        lines.append("- none")
+    lines.extend(("", "## Bodies of water"))
+    for item, body in zip(classes, water["bodies"], strict=True):
+        for number, (cells, joints) in enumerate(body["sizes"]):
+            lines.append(f"- {item['id']} body {number}: {cells} cells, {joints} joints")
+    lines.extend(("", "## Landings"))
+    by_node: dict[int, list[dict[str, Any]]] = {}
+    for entry in sorted(graph["landing"], key=lambda e: e["id"]):
+        by_node.setdefault(entry["node"], []).append(entry)
+    for node_id in sorted(by_node):
+        for entry in by_node[node_id]:
+            if "crossing" in entry:
+                contact = (
+                    f"crossing stretch {entry['crossing']} {entry['end']} end, {entry['bank']} bank"
+                )
+            elif "survey" in entry:
+                contact = f"river {entry['survey']} run {entry['run']}, {entry['bank']} bank"
+            else:
+                contact = f"open cell {tuple(entry['cell'])}"
+            bodies = ", ".join(
+                f"{n} {'none' if b < 0 else b}" for n, b in zip(names, entry["bodies"], strict=True)
+            )
+            lines.append(
+                f"- {label(node_id)}: landing {entry['id']}, {contact}, shore {tuple(entry['shore'])}, "
+                f"approach {entry['approach_m']} m; {bodies}"
+            )
+    lines.extend(("", "## Places without a landing"))
+    strait_places = {item["place"] for item in graph["strait"]}
+    missing = []
+    for node in sorted(nodes.values(), key=lambda n: (n["kind"], n.get("place", ""), n["id"])):
+        if node["kind"] == "place" and node["id"] not in by_node:
+            missing.append(node)
+    for node in missing:
+        why = "a strait only" if node["place"] in strait_places else "no usable water reached"
+        lines.append(f"- {node['place']}: {why}")
+    if not missing:
+        lines.append("- none")
+    lines.extend(("", "## Shores refused"))
+    for item in sorted(water["refused"], key=lambda r: (r["node"], r["shore"], r["reason"])):
+        lines.append(f"- {label(item['node'])}: shore {tuple(item['shore'])}, {item['reason']}")
+    if not water["refused"]:
+        lines.append("- none")
+    lines.extend(("", "## Crossing stretches by boat"))
+    for stretch in sorted(graph["stretch"], key=lambda s: s["id"]):
+        if not stretch.get("crossings"):
+            continue
+        ends = [stretch.get("landing_from"), stretch.get("landing_to")]
+        verdicts = []
+        for number, name in enumerate(names):
+            bodies = [stored[e]["bodies"][number] if e is not None else -1 for e in ends]
+            ok = bodies[0] >= 0 and bodies[0] == bodies[1]
+            verdicts.append(f"{name} {'crosses' if ok else 'cannot cross'}")
+        shown = ", ".join("none" if e is None else str(e) for e in ends)
+        lines.append(f"- stretch {stretch['id']}: landings {shown}; {'; '.join(verdicts)}")
+    lines.extend(("", "## Straits"))
+    for item in graph["strait"]:
+        lines.append(
+            f"- {item['place']}: {item['length_m']} m, {label(item['from'])} to {label(item['to'])}; "
+            f"{', '.join(item['classes']) or 'no class'}"
+        )
+    if not graph["strait"]:
+        lines.append("- none")
+    lines.extend(("", "## Sea-going marks"))
+    lines.extend([f"- {item['place']}" for item in graph["mark"]] or ["- none"])
+    lines.extend(("", "## Roads beside usable water with no node"))
+    lines.extend(
+        [f"- stretch {item['stretch']}: cell {item['cell']}" for item in water["roadside"]]
+        or ["- none"]
+    )
+    lines.extend(("", "## Places joined by land and water"))
+    lines.extend(joined_places(graph, water, nodes))
+    return lines
+
+
+def joined_places(graph: dict[str, Any], water: dict[str, Any], nodes: dict[int, Any]) -> list[str]:
+    """For each class, the place nodes that land and water together join to the largest land piece."""
+    # The sets are indexed by the node's place in the order of the stable ids, not by the id: a legal id may be as large as
+    # the loader's u64 allows, and the connectivity here is bounded by the number of nodes.
+    order = {node_id: number for number, node_id in enumerate(sorted(nodes))}
+    sets = _Sets(len(order))
+    land = _Sets(len(order))
+    for stretch in graph["stretch"]:
+        if all(c["kind"] == "ford" for c in stretch.get("crossings", [])):
+            sets.union(order[stretch["from"]], order[stretch["to"]])
+            land.union(order[stretch["from"]], order[stretch["to"]])
+    accesses = {item["place"] for item in graph.get("access", [])}
+    eligible = [
+        i for i, n in nodes.items() if n["kind"] != "place" or n.get("place") not in accesses
+    ]
+    sizes: dict[int, int] = {}
+    for i in eligible:
+        sizes[land.find(order[i])] = sizes.get(land.find(order[i]), 0) + 1
+    largest = max(sizes, key=lambda r: (sizes[r], -r), default=None)
+    result = []
+    for number, name in enumerate(water["names"]):
+        joined = _Sets(len(sets.parent))
+        joined.parent = list(sets.parent)
+        members: dict[int, int] = {}
+        for entry in graph["landing"]:
+            body = entry["bodies"][number]
+            if body < 0:
+                continue
+            if body in members:
+                joined.union(order[members[body]], order[entry["node"]])
+            else:
+                members[body] = entry["node"]
+        for strait in graph["strait"]:
+            if name in strait["classes"]:
+                joined.union(order[strait["from"]], order[strait["to"]])
+        root = None if largest is None else joined.find(largest)
+        places = sorted(n["place"] for n in nodes.values() if n["kind"] == "place")
+        inside = [
+            n["place"]
+            for n in nodes.values()
+            if n["kind"] == "place" and joined.find(order[n["id"]]) == root
+        ]
+        result.append(f"- {name}: {len(inside)} of {len(places)} places")
+        result.append(f"  - joined: {', '.join(sorted(inside)) or 'none'}")
+        outside = sorted(set(places) - set(inside))
+        result.append(f"  - not joined: {', '.join(outside) or 'none'}")
+    return result or ["- none"]
 
 
 def json_bytes(value: Any) -> bytes:  # noqa: ANN401  # Proposal and graph records carry JSON tables.
@@ -1744,6 +3119,12 @@ def proposal_seal(proposal: dict[str, Any]) -> str:
     ).hexdigest()
 
 
+def layer_bytes(map_dir: Path) -> bytes:
+    """The encoded sea distance layer of a map's terrain."""
+    layers = read_rasters(map_dir)
+    return sea_distance_png(sea_distance_layer(layers["kind"], layers["origin"]))
+
+
 def accept_pending(
     pending: Path, files: dict[str, Path], report: Path, log: Path, record: str
 ) -> None:
@@ -1793,10 +3174,17 @@ def accept_pending(
         .encode("utf-8")
     )
     log_bytes = (log.read_bytes() if log.exists() else b"") + f"\nAccepted: {record}\n".encode()
+    layers: dict[Path, bytes | None] = {}
+    if "sea_distance_sha256" in graph:
+        layer = layer_bytes(files["map"].parent)
+        if hashlib.sha256(layer).hexdigest() != graph["sea_distance_sha256"]:
+            raise ValueError("proposal sea distance layer differs from the map; build again")
+        layers[files["sea_distance"]] = layer
     if not snapshot_matches(files, proposal["inputs"]):
         raise ValueError("proposal inputs changed during acceptance; build again")
     commit_files(
         {
+            **layers,
             files["baseline"]: baseline_bytes,
             files["stored"]: road_bytes,
             report: report_bytes,
@@ -1836,6 +3224,7 @@ def input_files(map_dir: Path, scenario: Path, *, include_seed: bool = False) ->
         "elevation": map_dir / "elevation.png",
         "fertility": map_dir / "fertility.png",
         "rivers": map_dir / "rivers.toml",
+        "sea_distance": scenario / _SEA_LAYER,
     }
     if include_seed:
         result["seed"] = scenario / "network-seed.json"
@@ -1883,6 +3272,10 @@ def load_context(map_dir: Path, scenario: Path) -> dict[str, Any]:
         "index": index,
         "costs": ground_costs,
         "options": options,
+        "hashes": {
+            "terrain": hashlib.sha256((map_dir / "terrain.png").read_bytes()).hexdigest(),
+            "rivers": hashlib.sha256((map_dir / "rivers.toml").read_bytes()).hexdigest(),
+        },
     }
 
 
@@ -2113,7 +3506,7 @@ def plan_network(
         hand_hash,
         baseline_hash,
         previous=uncut_previous(previous)
-        if previous and previous.get("format") == _ROADS_FORMAT
+        if previous and previous.get("format") in _CUT_FORMATS
         else previous,
     )
     course_graph = copy.deepcopy(graph)
@@ -2125,8 +3518,10 @@ def plan_network(
         {river["river"] for river in context["rivers"]},
         previous=previous,
     )
-    graph["format"] = _ROADS_FORMAT
     result["graph"] = graph
+    water = plan_water(graph, context, crossing_hits, previous)
+    store_water(graph, water, context, context["hashes"])
+    result["layer"] = water["layer"]
     result["report"] = network_report(
         graph,
         hand["link"],
@@ -2137,6 +3532,7 @@ def plan_network(
         course_graph=course_graph,
         crossing_entries=hand.get("crossing", []),
         crossing_hits=crossing_hits,
+        water=water,
     )
     return result
 
@@ -2341,6 +3737,8 @@ def build_network(  # noqa: PLR0912, PLR0915  # The command stages a proposal be
         if files["stored"].exists()
         else None
     )
+    if previous is not None:
+        check_stored_integers(previous)
     ids = {link["id"] for link in context["hand"]["link"]}
     if recalculate - ids:
         raise ValueError(f"unknown recalculate link {sorted(recalculate - ids)[0]}")
@@ -2348,6 +3746,7 @@ def build_network(  # noqa: PLR0912, PLR0915  # The command stages a proposal be
     if hand_hash is None:
         raise ValueError("hand list is missing")
     plan = plan_network(context, baseline, previous, hand_hash, recalculate=recalculate)
+    layer = plan.pop("layer", None)
     pending = scenario / "courses-pending.json"
     report = scenario / "network-report.md"
     log = scenario / "network-changes.md"
@@ -2363,11 +3762,16 @@ def build_network(  # noqa: PLR0912, PLR0915  # The command stages a proposal be
             replacement_baseline = None
             plan["graph"]["baseline_sha256"] = captured["baseline"]
         road_bytes = dump_roads(plan["graph"]).encode("utf-8")
+        outputs: dict[Path, bytes | None] = {
+            files["stored"]: road_bytes,
+            report: plan["report"].encode("utf-8"),
+            pending: None,
+        }
+        if layer is not None:
+            outputs[files["sea_distance"]] = layer
         if replacement_baseline is not None:
-            atomic_write(files["baseline"], replacement_baseline)
-        atomic_write(files["stored"], road_bytes)
-        atomic_write(report, plan["report"].encode("utf-8"))
-        pending.unlink(missing_ok=True)
+            outputs[files["baseline"]] = replacement_baseline
+        commit_files(outputs)
         return plan
     baseline_bytes = json_bytes(baseline)
     if importing:
@@ -2439,17 +3843,263 @@ def verify_stored_courses(graph: dict[str, Any], baseline: dict[str, Any]) -> No
             raise ValueError(f"stored network link {name}: course differs from baseline")
 
 
+# What the loader reads of a stored network, field by field (`crates/map/src/network.rs` and `water.rs`): a spec is ("int",),
+# ("str",), ("bool",), ("tuple", (specs...)), ("list", spec) or ("dict", {field: spec}).
+_STR, _BOOL = ("str",), ("bool",)
+_U8, _U32, _U64 = ("uint", 8), ("uint", 32), ("uint", 64)
+_I32, _I64 = ("sint", 32), ("sint", 64)
+_CELL = ("tuple", (_I32, _I32))
+_STORED_TOP: dict[str, tuple[Any, ...]] = {
+    "format": _U32,
+    "hand_list_sha256": _STR,
+    "baseline_sha256": _STR,
+    "next_node_id": _U64,
+    "next_stretch_id": _U64,
+    "river_width_mm": _I64,
+    "terrain_sha256": _STR,
+    "rivers_sha256": _STR,
+    "sea_distance": _STR,
+    "sea_distance_sha256": _STR,
+    "next_landing_id": _U64,
+}
+_STORED_TABLES: dict[str, dict[str, tuple[Any, ...]]] = {
+    "node": {"id": _U64, "kind": _STR, "cell": _CELL, "place": _STR},
+    "stretch": {
+        "id": _U64,
+        "from": _U64,
+        "to": _U64,
+        "cells": ("list", _CELL),
+        "length_m": _U64,
+        "category": _STR,
+        "level": _U8,
+        "tidal": _BOOL,
+        "crossings": (
+            "list",
+            ("dict", {"river": _STR, "width_tenths_m": _U64, "kind": _STR}),
+        ),
+        "wades": (
+            "list",
+            ("dict", {"river": _STR, "width_tenths_m": _U64, "along_m": _U64}),
+        ),
+        "landing_from": _U64,
+        "landing_to": _U64,
+    },
+    "link": {
+        "id": _STR,
+        "road": _STR,
+        "from_node": _U64,
+        "to_node": _U64,
+        "stretches": ("list", ("tuple", (_U64, _STR))),
+        "record": _STR,
+    },
+    "join": {"link": _STR, "end": _STR, "parent": _STR, "node": _U64, "along_m": _U64},
+    "road": {"id": _STR, "name": _STR, "links": ("list", _STR)},
+    "access": {"place": _STR, "quality": _STR, "landing": _U64},
+    "water_class": {"id": _STR, "reach_m": _U32, "sea_going": _BOOL, "bodies": _U64},
+    "river_break": {
+        "name": _STR,
+        "stretch": _STR,
+        "cell": _CELL,
+        "above": _U64,
+        "below": _U64,
+    },
+    "mark": {"place": _STR},
+    "joint": {"id": _U64, "stretch": _STR, "cell": _CELL},
+    "reach": {
+        "id": _U64,
+        "stretch": _STR,
+        "from": _U64,
+        "to": _U64,
+        "usable": _BOOL,
+        "length_mm": _U64,
+        "kind": _STR,
+        "begin": _U32,
+        "end": _U32,
+    },
+    "water_join": {
+        "reach": _U64,
+        "to_reach": _U64,
+        "cell": _CELL,
+        "classes": ("list", _STR),
+    },
+    "landing": {
+        "id": _U64,
+        "node": _U64,
+        "bank": _STR,
+        "survey": _STR,
+        "shore": _CELL,
+        "run": _U32,
+        "cell": _CELL,
+        "joint": _U64,
+        "crossing": _U64,
+        "end": _STR,
+        "approach_m": _U64,
+        "bodies": ("list", _I64),
+    },
+    "strait": {
+        "place": _STR,
+        "from": _U64,
+        "to": _U64,
+        "length_m": _U64,
+        "classes": ("list", _STR),
+    },
+}
+_KIND_NAMES = {"str": "a string", "bool": "a boolean"}
+
+
+def _spec_problem(  # noqa: PLR0911, PLR0912  # One walk over the kinds of stored value.
+    value: object, spec: tuple[Any, ...], path: str
+) -> str | None:
+    """Why a stored value is not what its spec says (naming the part and the type found), or None."""
+    found = type(value).__name__
+    kind = spec[0]
+    if kind in {"uint", "sint"}:
+        if not isinstance(value, int) or isinstance(value, bool):
+            return f"{path} is {found}, not an integer"
+        bits = spec[1]
+        low, high = (0, 2**bits) if kind == "uint" else (-(2 ** (bits - 1)), 2 ** (bits - 1))
+        if not low <= value < high:
+            name = f"{'an unsigned' if kind == 'uint' else 'a signed'} {bits}-bit integer"
+            return f"{path} is {value}, not {name}"
+        return None
+    if kind == "str":
+        ok = isinstance(value, str)
+    elif kind == "bool":
+        ok = isinstance(value, bool)
+    elif kind == "tuple":
+        if not isinstance(value, list) or len(value) != len(spec[1]):
+            return f"{path} is {found}, not a list of {len(spec[1])}"
+        for number, (item, part) in enumerate(zip(value, spec[1], strict=True)):
+            problem = _spec_problem(item, part, f"{path}[{number}]")
+            if problem:
+                return problem
+        return None
+    elif kind == "list":
+        if not isinstance(value, list):
+            return f"{path} is {found}, not a list"
+        for number, item in enumerate(value):
+            problem = _spec_problem(item, spec[1], f"{path}[{number}]")
+            if problem:
+                return problem
+        return None
+    else:
+        if not isinstance(value, dict):
+            return f"{path} is {found}, not a table"
+        for name, part in spec[1].items():
+            if name in value:
+                problem = _spec_problem(value[name], part, f"{path}.{name}")
+                if problem:
+                    return problem
+        for name in value:
+            if name not in spec[1]:
+                return f"{path}.{name} is not a stored field"
+        return None
+    return None if ok else f"{path} is {found}, not {_KIND_NAMES[kind]}"
+
+
+def check_stored_integers(graph: dict[str, Any]) -> None:
+    """Refuse a stored network whose values are not what the loader reads, naming the table, entry, field and type found.
+
+    Everything that reads the stored network afterwards (the id allocators, the keys that hash entries, the course checks, the
+    comparison of entries) can take its numbers as numbers and its lists as lists: a string, an array, a table, a date, a float
+    of a whole value or a boolean where an integer belongs stops here.
+    """
+    for field in graph:
+        if field not in _STORED_TOP and field not in _STORED_TABLES:
+            raise ValueError(f"stored network {field} is not a stored field")
+    for field, spec in _STORED_TOP.items():
+        if field in graph:
+            problem = _spec_problem(graph[field], spec, field)
+            if problem:
+                raise ValueError(f"stored network {problem}")
+    for table, fields in _STORED_TABLES.items():
+        entries = graph.get(table, [])
+        if not isinstance(entries, list):
+            raise ValueError(
+                f"stored network {table} is {type(entries).__name__}, not a table list"
+            )
+        for number, entry in enumerate(entries):
+            if not isinstance(entry, dict):
+                raise ValueError(f"stored network {table} entry {number} is not a table")
+            problem = _spec_problem(entry, ("dict", fields), "")
+            if problem:
+                raise ValueError(f"stored network {table} entry {number}: {problem.lstrip('.')}")
+    _refuse_dates(graph, "")
+
+
+def _refuse_dates(value: object, path: str) -> None:
+    """Refuse a TOML date or time anywhere in a stored network: the comparison and the writer carry plain values only."""
+    if isinstance(value, datetime.date | datetime.time):
+        raise ValueError(
+            f"stored network {path.lstrip('.')} is {type(value).__name__}, a date or time"
+        )
+    if isinstance(value, dict):
+        for name, item in value.items():
+            _refuse_dates(item, f"{path}.{name}")
+    elif isinstance(value, list):
+        for number, item in enumerate(value):
+            _refuse_dates(item, f"{path}[{number}]")
+
+
+_GRAPH_TABLES = (
+    "node",
+    "stretch",
+    "link",
+    "join",
+    "road",
+    "access",
+    "water_class",
+    "river_break",
+    "mark",
+    "joint",
+    "reach",
+    "water_join",
+    "landing",
+    "strait",
+)
+_IDENTITY = {
+    "join": ("link", "end"),
+    "access": ("place",),
+    "river_break": ("name",),
+    "mark": ("place",),
+    "water_class": ("id",),
+    "water_join": ("reach", "to_reach", "cell"),
+    "strait": ("from", "to"),
+}
+
+
+def _part_order(part: Any) -> tuple[Any, ...]:  # noqa: ANN401  # A stored identity part may be of any JSON type.
+    """A total order over the kinds of value a stored identity part can hold, so a malformed one still sorts."""
+    if part is None:
+        return (0, 0, "")
+    if isinstance(part, bool):
+        return (1, int(part), "")
+    if isinstance(part, int | float):
+        return (2, part, "")
+    if isinstance(part, str):
+        return (3, 0, part)
+    if isinstance(part, tuple):
+        return (4, 0, tuple(_part_order(item) for item in part))
+    return (5, 0, repr(part))
+
+
+def _identity_order(key: tuple[Any, ...]) -> tuple[Any, ...]:
+    """A stable order for identities: an absent part sorts first, and a part of the wrong type sorts after the right ones."""
+    return tuple(_part_order(part) for part in key)
+
+
 def graph_difference(expected: dict[str, Any], actual: dict[str, Any]) -> str:
     """Name the first changed table entry or top-level field."""
-    for table in ("node", "stretch", "link", "join", "road", "access"):
-        fields = (
-            ("link", "end") if table == "join" else (("place",) if table == "access" else ("id",))
-        )
+    for table in _GRAPH_TABLES:
+        fields = _IDENTITY.get(table, ("id",))
 
         def identity(
             item: dict[str, Any], field_names: tuple[str, ...] = fields
         ) -> tuple[Any, ...]:
-            return tuple(item[key] for key in field_names)
+            return tuple(
+                tuple(item[key]) if isinstance(item.get(key), list) else item.get(key)
+                for key in field_names
+            )
 
         try:
             left = {identity(item): item for item in expected.get(table, [])}
@@ -2458,15 +4108,42 @@ def graph_difference(expected: dict[str, Any], actual: dict[str, Any]) -> str:
             return f"stored network {table}: malformed entry ({error})"
         if len(right) != len(actual.get(table, [])):
             return f"stored network {table}: repeated identity"
-        for key in sorted(set(left) | set(right)):
-            if left.get(key) != right.get(key):
+        for key in sorted(set(left) | set(right), key=_identity_order):
+            if json_bytes(left.get(key)) != json_bytes(right.get(key)):
                 return f"stored network {table} {'/'.join(map(str, key))} differs"
     for field in sorted(set(expected) | set(actual)):
-        if field not in {"node", "stretch", "link", "join", "road", "access"} and expected.get(
-            field
-        ) != actual.get(field):
+        if field not in _GRAPH_TABLES and json_bytes(expected.get(field)) != json_bytes(
+            actual.get(field)
+        ):
             return f"stored network {field} differs"
     return "stored network serialization differs"
+
+
+def check_layer(
+    files: dict[str, Path], context: dict[str, Any], expected: bytes, stored: dict[str, Any]
+) -> None:
+    """Refuse a sea distance layer that is missing, stale, malformed or changed in any value."""
+    path = files["sea_distance"]
+    if not path.exists():
+        raise ValueError(f"sea distance layer {path.name} is missing")
+    actual = path.read_bytes()
+    layers = context["layers"]
+    height, width = len(layers["kind"]), len(layers["kind"][0])
+    values = read_sea_distance(actual, width, height)
+    wanted = sea_distance_layer(layers["kind"], layers["origin"])
+    for y, (left, right) in enumerate(zip(values, wanted, strict=True)):
+        for x, (a, b) in enumerate(zip(left, right, strict=True)):
+            if a != b:
+                raise ValueError(f"sea distance layer cell ({x}, {y}) is {a}, not {b}")
+    for field, name, digest in (
+        ("terrain_sha256", "terrain.png", context["hashes"]["terrain"]),
+        ("rivers_sha256", "rivers.toml", context["hashes"]["rivers"]),
+        ("sea_distance_sha256", path.name, hashlib.sha256(actual).hexdigest()),
+    ):
+        if stored.get(field) != digest:
+            raise ValueError(f"stored network {field} is not the sha256 of {name}")
+    if actual != expected:
+        raise ValueError("sea distance layer differs from the one built from the terrain")
 
 
 def check_network(map_dir: Path, scenario: Path) -> None:
@@ -2481,11 +4158,13 @@ def check_network(map_dir: Path, scenario: Path) -> None:
     context = load_context(map_dir, scenario)
     baseline = json.loads(files["baseline"].read_bytes())
     previous = tomllib.loads(files["stored"].read_text(encoding="utf-8"))
+    check_stored_integers(previous)
     verify_stored_courses(previous, baseline)
     hand_hash = captured["hand"]
     if hand_hash is None:
         raise ValueError("hand list is missing")
     plan = plan_network(context, baseline, previous, hand_hash)
+    check_layer(files, context, plan.pop("layer"), previous)
     if plan["baseline"] != baseline:
         raise ValueError("baseline contains obsolete entries")
     if plan["candidates"] or plan["blocked"]:

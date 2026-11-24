@@ -219,3 +219,47 @@ fn ireland_fertility_climate_glaciers_and_owner_pins_match_ck234() {
     assert!(edits.contains("glendalough-laragh-avonmore-pasture"));
     assert!(edits.contains("rahan-clodiagh-dry-ground-pasture"));
 }
+
+/// CK-401: Ireland's stored network carries the water a boat can use and its landings, and the loader works out the same bodies.
+#[test]
+fn the_shipped_network_has_the_water_of_the_design() {
+    let directory =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/scenarios/ireland-768");
+    let scenario = load_scenario(&directory).unwrap_or_else(|error| panic!("{error}"));
+    let network = scenario
+        .network
+        .as_ref()
+        .expect("Ireland has a stored network");
+    let classes: Vec<_> = network
+        .classes
+        .iter()
+        .map(|c| (c.id.as_str(), c.reach_m, c.sea_going))
+        .collect();
+    assert_eq!(classes, [("barge", 1000, false), ("currach", 5000, true)]);
+    assert_eq!(network.river_width_mm, 20_000);
+    assert_eq!(network.landings.len(), 213);
+    let landed: std::collections::BTreeSet<u64> = network.landings.iter().map(|l| l.node).collect();
+    assert_eq!(landed.len(), 147);
+    let places = network
+        .nodes
+        .iter()
+        .filter(|n| n.kind == ck_map::LandNodeKind::Place && landed.contains(&n.id))
+        .count();
+    assert_eq!(places, 39);
+    assert_eq!(network.straits.len(), 10);
+    assert_eq!(network.water().body_count(0), network.classes[0].bodies);
+    assert_eq!(network.water().body_count(1), network.classes[1].bodies);
+    let names: Vec<_> = network.breaks.iter().map(|b| b.name.as_str()).collect();
+    assert_eq!(names, ["Assaroe", "Doonass"]);
+    for item in &network.breaks {
+        // The part above a river's break and the part below it are different bodies for both classes.
+        for class in 0..2 {
+            assert_ne!(
+                network.water().joint_body(class, item.above),
+                network.water().joint_body(class, item.below),
+                "{} for class {class}",
+                item.name
+            );
+        }
+    }
+}

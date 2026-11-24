@@ -62,12 +62,13 @@ pub(crate) fn scenario_hash(directory: &Path) -> Result<String, String> {
     if directory.join("economy.toml").exists() {
         files.push(read(directory, "economy.toml")?);
     }
-    // Both network files are scenario content; a partial pair is an error.
+    // The network's three files are scenario content, the sea distance layer among them (CK-401); a partial set is an error.
     let hand_list = directory.join("network.toml").exists();
     let roads = directory.join("roads.toml").exists();
     if hand_list || roads {
         files.push(read(directory, "network.toml")?);
         files.push(read(directory, "roads.toml")?);
+        files.push(read(directory, "sea_distance.png")?);
     }
     // The real figures a scenario ships (CK-370) join its hash.
     for path in figure_files(directory)?.iter().flatten() {
