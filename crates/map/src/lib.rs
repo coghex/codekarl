@@ -490,6 +490,12 @@ pub struct MapData {
     pub fertility: Vec<u16>,
     /// Mean annual temperature in tenths of a degree Celsius.
     pub climate_temperature_tenths: Vec<i16>,
+    /// Seasonal temperature half range, in tenths of a degree.
+    pub climate_half_range: Vec<u16>,
+    /// Nearness to sea, in thousandths.
+    pub climate_sea_nearness: Vec<u16>,
+    /// Warmest month phase in hundredths.
+    pub climate_phase: u16,
     /// Growing degree-days above 5 °C, rounded to whole degree-days.
     pub climate_gdd: Vec<u16>,
     /// Annual rainfall in whole millimetres.
@@ -544,6 +550,8 @@ impl MapData {
         }
         if self.fertility.len() != expected
             || self.climate_temperature_tenths.len() != expected
+            || self.climate_half_range.len() != expected
+            || self.climate_sea_nearness.len() != expected
             || self.climate_gdd.len() != expected
             || self.climate_rainfall_mm.len() != expected
             || self.glacier.len() != expected

@@ -61,6 +61,8 @@ fn fixture() -> TempDir {
         "fertility.png",
         "elevation.png",
         "climate_temperature.png",
+        "climate_half_range.png",
+        "climate_sea_nearness.png",
         "climate_gdd.png",
         "climate_rainfall.png",
         "climate_glacier.png",
@@ -85,6 +87,8 @@ fn scenario_fixture() -> ScenarioFixture {
         "fertility.png",
         "elevation.png",
         "climate_temperature.png",
+        "climate_half_range.png",
+        "climate_sea_nearness.png",
         "climate_gdd.png",
         "climate_rainfall.png",
         "climate_glacier.png",
@@ -568,14 +572,17 @@ fn large_fixture(width: u32, height: u32) -> TempDir {
     );
     for name in [
         "climate_temperature.png",
+        "climate_half_range.png",
+        "climate_sea_nearness.png",
         "climate_gdd.png",
         "climate_rainfall.png",
     ] {
         let mut values = Vec::with_capacity(pixel_count * 2);
-        let sample = if name == "climate_temperature.png" {
-            1100_u16
-        } else {
-            1000_u16
+        let sample = match name {
+            "climate_temperature.png" => 1100_u16,
+            "climate_half_range.png" => 40,
+            "climate_sea_nearness.png" => 500,
+            _ => 1000,
         };
         for _ in 0..pixel_count {
             values.extend_from_slice(&sample.to_be_bytes());

@@ -674,7 +674,9 @@ class Levels(CheckFixture):
                 by_name[f"unittest-{group}"].commands(),
                 [
                     [
-                        sys.executable,
+                        check.hub_tool("python")
+                        if module == "test_map_weather"
+                        else sys.executable,
                         "-m",
                         "unittest",
                         "discover",
@@ -2004,6 +2006,7 @@ TOOLCHAIN_INPUTS = (
     "Cargo.lock",
     "Cargo.toml",
     "apps",
+    "assets",
     "clippy.toml",
     "crates",
     "pyproject.toml",
@@ -3475,6 +3478,10 @@ class RealToolchain(unittest.TestCase):
         # Only what the toolchain recipe needs: no docs/ and no top-level *.md (ordinary
         # documentation is not a test input, CK-33).
         for name in TOOLCHAIN_INPUTS:
+            if name == "assets":
+                (copy / "assets/game").mkdir(parents=True)
+                shutil.copy2(REPO / "assets/game/weather.toml", copy / "assets/game/weather.toml")
+                continue
             if name == ".ck-hub":  # only worker copies have a marker; the root is the hub
                 write_hub_marker(REPO, copy)
                 continue

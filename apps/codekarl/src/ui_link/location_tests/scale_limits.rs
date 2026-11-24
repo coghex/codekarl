@@ -268,3 +268,41 @@ tip.update({width = 1800, height = 900, dt = 1,
         "unmarked tooltip numbers remain green: {recorded:?}"
     );
 }
+
+#[test]
+fn temperature_lines_use_the_requested_view_and_cover_abandoned_places() {
+    let mut rig = rig(&[r"
+VIEWS[1].rowan.temperature = {mean=128, month=9, expected=135}
+VIEWS[2].rowan.temperature = {mean=-1, month=10, expected=117}
+local location = require('lib.location')
+for _, revision in ipairs({1, 2}) do
+  for _, line in ipairs(location.lines('location', game.place('rowan', revision), 800)) do
+    if type(line) == 'string' and line:find('temperature', 1, true) then note(line) end
+  end
+end
+local abandoned = {id='empty', state='abandoned', kind='fort', temperature={mean=127, month=10, expected=117}}
+for _, line in ipairs(location.lines('location', abandoned, 800)) do
+  if type(line) == 'string' and line:find('temperature', 1, true) then note(line) end
+end
+"]);
+    rig.opened();
+    let recorded = notes(&rig);
+    assert!(
+        recorded
+            .iter()
+            .any(|line| line == "temperature 12.8° · September 13.5°"),
+        "{recorded:?}"
+    );
+    assert!(
+        recorded
+            .iter()
+            .any(|line| line == "temperature -0.1° · October 11.7°"),
+        "{recorded:?}"
+    );
+    assert!(
+        recorded
+            .iter()
+            .any(|line| line == "temperature 12.7° · October 11.7°"),
+        "{recorded:?}"
+    );
+}

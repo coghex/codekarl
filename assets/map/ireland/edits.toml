@@ -542,6 +542,7 @@ zonal_rainfall_mm = [2000, 1000, 300, 700, 900, 900, 500, 200]
 ocean_effect_c = 4.2
 cell_metres = 839.0
 maritime_length_km = 1200.0
+sea_nearness_length_km = 40.0
 westerly_min_deg = 30.0
 westerly_max_deg = 60.0
 lapse_c_per_km = 6.5

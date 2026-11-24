@@ -35,6 +35,8 @@ impl Fixture {
             "fertility.png",
             "elevation.png",
             "climate_temperature.png",
+            "climate_half_range.png",
+            "climate_sea_nearness.png",
             "climate_gdd.png",
             "climate_rainfall.png",
             "climate_glacier.png",
@@ -102,6 +104,8 @@ dark = \"#2a2119\"
             "fertility.png",
             "elevation.png",
             "climate_temperature.png",
+            "climate_half_range.png",
+            "climate_sea_nearness.png",
             "climate_gdd.png",
             "climate_rainfall.png",
             "climate_glacier.png",
@@ -737,6 +741,9 @@ fn map_data(origin: Cell, width: u32, height: u32) -> MapData {
         elevations: vec![11_000; count],
         fertility: vec![500; count],
         climate_temperature_tenths: vec![100; count],
+        climate_half_range: vec![40; count],
+        climate_sea_nearness: vec![500; count],
+        climate_phase: 650,
         climate_gdd: vec![1000; count],
         climate_rainfall_mm: vec![1000; count],
         glacier: vec![false; count],
@@ -762,6 +769,8 @@ fn location(id: &str, cell: Cell, radius: Option<u32>) -> Location {
         id: id.to_owned(),
         name: id.to_owned(),
         cell,
+        latitude_e4: 530_000,
+        longitude_e4: -80_000,
         position: crate::FixedPoint {
             x: cell.x * 32_768,
             y: cell.y * 32_768,
@@ -1746,4 +1755,50 @@ fn ireland_abandoned_sites_give_overlapping_land_to_living_neighbours_and_use_pi
     let kind = &scenario.location_kinds.kinds[scenario.locations[emain].kind_index];
     assert_eq!(super::grey(kind.light), Rgba8::opaque(198, 198, 198));
     assert_eq!(super::grey(kind.dark), Rgba8::opaque(90, 90, 90));
+}
+
+#[test]
+fn weather_coordinates_are_authored_and_latitude_limit_is_named() {
+    let fixture = Fixture::new();
+    let loaded = load_scenario(fixture.path()).unwrap();
+    let (latitude, longitude) = lat_lon_for_cell(23_884, 23_883);
+    assert!(
+        (f64::from(loaded.locations[0].latitude_e4) - (latitude * 10_000.0).round()).abs()
+            < f64::EPSILON
+    );
+    assert!(
+        (f64::from(loaded.locations[0].longitude_e4) - (longitude * 10_000.0).round()).abs()
+            < f64::EPSILON
+    );
+    let original = fixture.text("locations.toml");
+    for latitude in [85.0001, -85.0001] {
+        let changed = original.replacen(
+            &format!("lat = {}", lat_lon_for_cell(23_884, 23_883).0),
+            &format!("lat = {latitude}"),
+            1,
+        );
+        fixture.write("locations.toml", &changed);
+        let error = load_scenario(fixture.path()).unwrap_err().to_string();
+        assert!(
+            error.contains("town_a") && error.contains("85 degrees"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn weather_latitude_endpoints_load() {
+    for latitude in [85.0, -85.0] {
+        let fixture = Fixture::new();
+        let cell = crate::cell_of(crate::project(latitude, 0.0).unwrap());
+        let manifest = fixture.map_text("map.toml").replace(
+            "origin = [23882, 23882]",
+            &format!("origin = [{}, {}]", cell.x - 2, cell.y - 1),
+        );
+        fixture.write_map("map.toml", &manifest);
+        fixture.write_map("rivers.toml", "river = []\n");
+        fixture.write("locations.toml", &format!("[[location]]\nid = \"endpoint\"\nname = \"Endpoint\"\nlat = {latitude}\nlon = 0.0\nkind = \"town\"\nsize = 1\nbuildings = []\nsource = \"test\"\nconfidence = \"high\"\n"));
+        let scenario = load_scenario(fixture.path()).unwrap();
+        assert_eq!(scenario.locations[0].latitude_e4.unsigned_abs(), 850_000);
+    }
 }

@@ -522,6 +522,8 @@ impl Fixture {
             "fertility.png",
             "elevation.png",
             "climate_temperature.png",
+            "climate_half_range.png",
+            "climate_sea_nearness.png",
             "climate_gdd.png",
             "climate_rainfall.png",
             "climate_glacier.png",

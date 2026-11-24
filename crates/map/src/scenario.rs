@@ -136,6 +136,10 @@ pub struct Location {
     pub cell: Cell,
     /// The authored point itself, projected: the anchor distances between places are measured from (CK-366).
     pub position: FixedPoint,
+    /// Authored latitude in ten-thousandths of a degree.
+    pub latitude_e4: i32,
+    /// Authored longitude in ten-thousandths of a degree.
+    pub longitude_e4: i32,
     /// Index into [`LocationKinds::kinds`].
     pub kind_index: usize,
     /// Authored size.
@@ -820,6 +824,13 @@ fn validate_locations(
                 "latitude and longitude must be finite and projectable",
             ));
         }
+        if (entry.lat * 10_000.0).round().abs() > 850_000.0 {
+            return Err(LoadError::at(
+                filename,
+                &path,
+                "latitude exceeds 85 degrees",
+            ));
+        }
         if let Some(radius) = entry.catchment_m
             && !(1..=MAX_CATCHMENT_METRES).contains(&radius)
         {
@@ -891,11 +902,17 @@ fn validate_locations(
                 })?;
             building_indices.push(index);
         }
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "projectable coordinates fit i32 in ten-thousandths after rounding"
+        )]
         locations.push(Location {
             id: entry.id.clone(),
             name: entry.name.clone(),
             cell,
             position,
+            latitude_e4: (entry.lat * 10_000.0).round() as i32,
+            longitude_e4: (entry.lon * 10_000.0).round() as i32,
             kind_index,
             size: u8::try_from(entry.size).unwrap_or_default(),
             building_indices,

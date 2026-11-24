@@ -119,6 +119,7 @@ pub(crate) struct BuildingView {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct PlaceView {
     pub(crate) id: String,
+    pub(crate) temperature: Option<(i64, u8, i64)>,
     pub(crate) workers: u64,
     pub(crate) dependents: u64,
     /// Whole days of food, the place's pops together.
@@ -668,6 +669,7 @@ fn place_view(
     };
     PlaceView {
         id: place.id.clone(),
+        temperature: None,
         workers,
         dependents,
         food_days: days_of(food, workers.saturating_add(dependents)),

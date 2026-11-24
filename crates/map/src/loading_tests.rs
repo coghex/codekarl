@@ -24,6 +24,8 @@ impl Fixture {
             "fertility.png",
             "elevation.png",
             "climate_temperature.png",
+            "climate_half_range.png",
+            "climate_sea_nearness.png",
             "climate_gdd.png",
             "climate_rainfall.png",
             "climate_glacier.png",
@@ -544,6 +546,8 @@ fn large_lough_fixture(include_lake: bool) -> (Fixture, String) {
     );
     for (name, sample) in [
         ("climate_temperature.png", 1_100_u16),
+        ("climate_half_range.png", 40),
+        ("climate_sea_nearness.png", 500),
         ("climate_gdd.png", 1_000),
         ("climate_rainfall.png", 1_000),
         ("elevation.png", 11_000),
@@ -1224,4 +1228,66 @@ fn insert_chunk(mut png: Vec<u8>, name: [u8; 4], data: &[u8]) -> Vec<u8> {
         offset += 12 + length;
     }
     panic!("PNG did not contain IDAT");
+}
+
+#[test]
+fn weather_layers_and_phase_are_required_and_bounded() {
+    let fixture = Fixture::copy();
+    let loaded = load_map(&fixture.0).unwrap();
+    assert_eq!(loaded.data.climate_half_range, [40; 16]);
+    assert_eq!(loaded.data.climate_sea_nearness, [500; 16]);
+    assert_eq!(loaded.data.climate_phase, 650);
+    for (name, sample, limit) in [
+        ("climate_half_range.png", 301_u16, "300"),
+        ("climate_sea_nearness.png", 1001, "1000"),
+    ] {
+        let fixture = Fixture::copy();
+        let bytes = [sample; 16]
+            .iter()
+            .flat_map(|n| n.to_be_bytes())
+            .collect::<Vec<_>>();
+        write_png_sized(
+            &fixture.0.join(name),
+            4,
+            4,
+            ColorType::Grayscale,
+            BitDepth::Sixteen,
+            &bytes,
+            None,
+        );
+        assert_error(&fixture, name, limit);
+    }
+    for key in ["climate_half_range", "climate_sea_nearness"] {
+        let fixture = Fixture::copy();
+        let text = fixture.text("map.toml");
+        let line = format!("{key} = \"{key}.png\"\n");
+        fs::write(fixture.0.join("map.toml"), text.replace(&line, "")).unwrap();
+        assert_error(&fixture, "map.toml", key);
+    }
+    for replacement in [
+        "warmest_month_phase_hundredths = 1200",
+        "warmest_month_phase_hundredths = 6.5",
+        "",
+    ] {
+        let fixture = Fixture::copy();
+        fixture.replace(
+            "map.toml",
+            "warmest_month_phase_hundredths = 650",
+            replacement,
+        );
+        assert_error(&fixture, "map.toml", "warmest_month_phase_hundredths");
+    }
+    for name in ["climate_half_range.png", "climate_sea_nearness.png"] {
+        let fixture = Fixture::copy();
+        write_png_sized(
+            &fixture.0.join(name),
+            3,
+            4,
+            ColorType::Grayscale,
+            BitDepth::Sixteen,
+            &[0; 24],
+            None,
+        );
+        assert_error(&fixture, name, "expected 4x4");
+    }
 }

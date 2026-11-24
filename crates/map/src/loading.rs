@@ -212,6 +212,25 @@ pub fn load_map(directory: impl AsRef<Path>) -> Result<LoadedMap, LoadError> {
         crop.width,
         crop.height,
     )?;
+    let half_range_image = decode_gray16_image(
+        directory,
+        &map_file.layers.climate_half_range,
+        crop.width,
+        crop.height,
+    )?;
+    let nearness_image = decode_gray16_image(
+        directory,
+        &map_file.layers.climate_sea_nearness,
+        crop.width,
+        crop.height,
+    )?;
+    if map_file.climate.warmest_month_phase_hundredths > 1199 {
+        return Err(LoadError::at(
+            "map.toml",
+            "climate.warmest_month_phase_hundredths",
+            "must be in 0..=1199",
+        ));
+    }
     let gdd_image = decode_gray16_image(
         directory,
         &map_file.layers.climate_gdd,
@@ -310,6 +329,26 @@ pub fn load_map(directory: impl AsRef<Path>) -> Result<LoadedMap, LoadError> {
                 format!("pixel ({x}, {y})"),
                 format!("stored temperature {temperature} is outside 400..=1500"),
             ));
+        }
+        for (name, value, limit) in [
+            (
+                &map_file.layers.climate_half_range,
+                half_range_image[pixel_index],
+                300,
+            ),
+            (
+                &map_file.layers.climate_sea_nearness,
+                nearness_image[pixel_index],
+                1000,
+            ),
+        ] {
+            if value > limit {
+                return Err(LoadError::at(
+                    name,
+                    format!("pixel ({x}, {y})"),
+                    format!("value {value} exceeds {limit}"),
+                ));
+            }
         }
         let gdd = gdd_image[pixel_index];
         if gdd > 12_000 {
@@ -450,6 +489,9 @@ pub fn load_map(directory: impl AsRef<Path>) -> Result<LoadedMap, LoadError> {
         elevations: elevation_image,
         fertility,
         climate_temperature_tenths,
+        climate_half_range: half_range_image,
+        climate_sea_nearness: nearness_image,
+        climate_phase: map_file.climate.warmest_month_phase_hundredths,
         climate_gdd: gdd_image,
         climate_rainfall_mm: rainfall_image,
         glacier,
@@ -1378,6 +1420,7 @@ struct MapFile {
     projection: String,
     cell_metres: f64,
     crop: CropFile,
+    climate: ClimateFile,
     layers: LayersFile,
 }
 #[derive(Deserialize)]
@@ -1388,11 +1431,17 @@ struct CropFile {
     height: u32,
 }
 #[derive(Deserialize)]
+struct ClimateFile {
+    warmest_month_phase_hundredths: u16,
+}
+#[derive(Deserialize)]
 struct LayersFile {
     terrain: String,
     fertility: String,
     elevation: String,
     climate_temperature: String,
+    climate_half_range: String,
+    climate_sea_nearness: String,
     climate_gdd: String,
     climate_rainfall: String,
     climate_glacier: String,

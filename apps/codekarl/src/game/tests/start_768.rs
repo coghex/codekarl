@@ -872,3 +872,50 @@ fn shipped_network_joins_the_new_paths_to_their_roads() {
         }));
     }
 }
+
+#[test]
+fn weather_is_present_for_every_shipped_place() {
+    let (_dir, prepared, _) = shipped(1);
+    let view = crate::game::setup::view_builder(prepared.view_wiring())(
+        prepared.simulation.state(),
+        prepared.simulation.date().unwrap(),
+    );
+    assert_eq!(view.places.len(), prepared.scenario.locations.len());
+    assert!(view.places.iter().all(|place| place.temperature.is_some()));
+}
+
+#[test]
+fn a_changed_weather_rule_refuses_an_existing_save() {
+    let dir = Dir::new();
+    let scenario = assets_with_scenario(&dir, "ireland-768");
+    let game = GameConfig {
+        scenario: scenario.clone(),
+        saves: dir.0.join("saves"),
+    };
+    let (save, _) = super::setup::write_save(&game, 0, 42);
+    let weather = scenario
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("game/weather.toml");
+    let source = fs::read_to_string(&weather).unwrap();
+    fs::write(
+        weather,
+        source.replace("swing_coast = 48", "swing_coast = 49"),
+    )
+    .unwrap();
+    let error = prepare(
+        &Request {
+            game: &game,
+            vms: &[],
+            load: Some(&save),
+            seed: None,
+        },
+        || Ok(0),
+        &mut |_, _| {},
+    )
+    .err()
+    .unwrap();
+    assert!(error.contains("rules_hash"), "{error}");
+}
