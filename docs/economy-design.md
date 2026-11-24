@@ -1229,14 +1229,21 @@ units, in near-equal value at the place's prices. Nothing crosses from one place
 - **One swap.** The *starter* gives whole units of one good and receives whole units of another from the *partner*. A pair is allowed
   only if the starter gives at least what it receives in value; the difference is at most `swap_loss_limit_pm` (100‰) of what it gives
   (owner, r78, r89); neither pop gives more than its spare or receives more than its want; both pops can take in what they receive,
-  tested together on a staged copy after both loads have left (the storehouse is one store with one volume for each kind, shared by
-  every account); and both loads fit in the starter's capacity left. Of the allowed pairs the swap receives the most units, then gives
+  against each receiving pop's own store as it stands before payment, with no room freed by a debit; and both loads fit in the starter's
+  capacity left. Receipts go into the pop's own store, never its storehouse account. Of the allowed pairs the swap receives the most units, then gives
   the fewest. It moves both loads or neither and spends only the starter's capacity (owner, r63, r80).
 - **The exchange.** Pops take one turn each as starter, in the place's order. In its turn a starter works through its wants, goods with
   a hunger value first and then the least bulky for its worth, and for each want tries the other pops in order and, with each, the goods
   that pop wants and the starter has to spare. A starter that holds less than 60 days of food when the exchange begins seeks only food
   that day; as a partner it trades as any pop does. Nothing keeps a good for a pop: a short good goes to whichever swap comes first
   (slice 3b adds shares and building stock).
+
+**Slice 3b (CK-394, implementation pending acceptance).** A pop may also give its part of each owned building's stock above the owners' food
+reserve; parts are apportioned by owner positions. The pop's own goods are tried first, then buildings in place order, with each pair
+of sources tried once. Receipts still go only to the pop's store. When claimants that can pay want more of a good than all pops can
+spare, they receive proportional shares, with leftover units in descending value held per person, ties in pop order. Unused supply is
+shared once more among claimants that used their first share and can still pay; there is no third pass. Wealth and initial shares are
+measured when the exchange begins. Storehouse communal stock with no owners is not part of a swap.
 
 **Prices (saved, per place and good; r14 representation):**
 - **Representation:** a price is a `u64` in **thousandths of a value unit** (`price_m`), always at least 1.
