@@ -192,6 +192,51 @@ mod tests {
     }
 
     #[test]
+    fn the_shipped_start_places_every_level_on_a_method_and_keeps_armaghs_demesne() {
+        let assets = ireland_assets();
+        let directory = assets.join("scenarios/ireland-768");
+        let scenario = ck_map::load_scenario(&directory).expect("the scenario loads");
+        let rules = Rules::load(assets.join("game/economy.toml")).unwrap();
+        let (state, report) = starting_economy(&assets, &directory, &scenario).unwrap();
+        for place in &state.places {
+            for building in &place.buildings {
+                let kind = rules
+                    .buildings
+                    .iter()
+                    .find(|item| item.id == building.kind)
+                    .unwrap();
+                if kind.methods.is_empty() {
+                    continue;
+                }
+                assert_eq!(
+                    building.levels,
+                    building.method_levels.iter().sum::<u32>(),
+                    "{}: every level of {} is on a method",
+                    place.id,
+                    building.kind
+                );
+            }
+        }
+        assert!(
+            report
+                .iter()
+                .any(|line| line.starts_with("glendalough farm: cut levels 30 -> 28")),
+            "a level no method has room for is cut and reported: {report:?}"
+        );
+        let armagh = state
+            .places
+            .iter()
+            .find(|place| place.id == "armagh")
+            .unwrap();
+        let demesne = armagh
+            .buildings
+            .iter()
+            .find(|building| building.kind == "demesne")
+            .expect("a shipped noble seat with a demesne");
+        assert_eq!(demesne.levels, 1, "the demesne levels Armagh keeps today");
+    }
+
+    #[test]
     fn shipped_places_with_no_sea_cell_open_no_sea_level_and_want_the_fish_they_lack() {
         let assets = ireland_assets();
         let directory = assets.join("scenarios/ireland-768");

@@ -10,12 +10,15 @@ use std::{collections::BTreeMap, error::Error, fmt, fs, path::Path};
 use ck_sim::{Canonical, CanonicalError, Date, Reader, days_in_month, encode_length};
 use serde::Deserialize;
 
+use start_levels::{Candidate, StartDemand};
+
 pub mod bigint;
 pub mod events;
 pub mod genetics;
 pub mod lifecycle;
 pub mod peoples;
 pub mod personality;
+mod start_levels;
 pub use events::{Epithet, EpithetScope, EpithetTrigger, EventRules};
 pub use genetics::{Genetics, PopGenetics};
 pub use lifecycle::LifeCycle;
@@ -96,6 +99,15 @@ impl Good {
         }
         Some((u128::from(amount) * 1000).div_ceil(supply))
     }
+
+    /// Thousandths of `category` that `units` of this good supply, if it belongs to it.
+    #[must_use]
+    pub fn category_supplied(&self, category: &str, units: u128) -> u128 {
+        if !self.tags.iter().any(|tag| tag == category) {
+            return 0;
+        }
+        units.saturating_mul(u128::from(*self.supplies.get(category).unwrap_or(&1000)))
+    }
 }
 
 /// A population type's startup and employment rules.
@@ -118,6 +130,9 @@ pub struct PopType {
     pub niceties_expectation_pm: u16,
     /// Luxuries expectation in ‰.
     pub luxuries_expectation_pm: u16,
+    /// Fuel each person needs a day, in thousandths of a fuel unit; nothing until data names it.
+    #[serde(default)]
+    pub fuel_need_milli_day: u64,
 }
 
 /// Data describing one production method available to a building.
@@ -134,7 +149,21 @@ pub struct Method {
     pub suitability: String,
     /// Output share in ‰ used to derive terrain land scores.
     pub score_share_pm: BTreeMap<String, u16>,
+    /// The need the opening serves with this method: `food` (the default) or `fuel`. A level is
+    /// placed on a method only for the need it serves.
+    #[serde(default = "default_serves")]
+    pub serves: String,
 }
+
+/// The need a method serves when its data names none.
+fn default_serves() -> String {
+    FOOD_NEED.to_owned()
+}
+
+/// The opening need that food methods serve.
+pub const FOOD_NEED: &str = "food";
+/// The opening need that fuel methods serve.
+pub const FUEL_NEED: &str = "fuel";
 
 /// One good received for each slaughtered animal.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -749,6 +778,12 @@ impl Rules {
                     return Err(refuse(
                         format!("buildings[{index}].methods.{}.resource", method.id),
                         "must be `usable_land` or `sea`".to_owned(),
+                    ));
+                }
+                if ![FOOD_NEED, FUEL_NEED].contains(&method.serves.as_str()) {
+                    return Err(refuse(
+                        format!("buildings[{index}].methods.{}.serves", method.id),
+                        "must be `food` or `fuel`".to_owned(),
                     ));
                 }
                 if method
@@ -1657,6 +1692,9 @@ pub fn starting_state(
         let mut buildings = Vec::new();
         let mut remaining_sea = land.sea;
         let mut production = BTreeMap::<String, u64>::new();
+        // The needs and orders are those of the pops counted now: a noble seat's nobles and its
+        // labourer household are added only after every level is placed.
+        let mut demand = StartDemand::new(rules, &pops)?;
         // Holdings take fertility before the lord's demesne, which takes it before the farm (the
         // lord's land before the free farmers). Fishing needs nearby sea but does not consume a
         // finite sea-cell budget.
@@ -1681,14 +1719,18 @@ pub fn starting_state(
                 wanted,
                 &mut land,
                 &mut remaining_sea,
-                &production,
-                &pops,
+                &mut demand,
                 mean_fertility(&location.land)?,
             )?;
             let actual = assignment.method_levels.iter().sum();
             if actual < wanted {
+                let reason = if assignment.cut_for_room == Some(false) {
+                    "a method has room, but none serves food or an unmet need"
+                } else {
+                    "no method has enough land or sea"
+                };
                 report.push(format!(
-                    "{} {kind}: cut levels {wanted} -> {actual} (no method has enough land or sea)",
+                    "{} {kind}: cut levels {wanted} -> {actual} ({reason})",
                     location.id
                 ));
             }
@@ -2193,15 +2235,74 @@ struct BuildingAssignment {
     used_land: u32,
     used_sea: u32,
     output: BTreeMap<String, u64>,
+    /// Why the building's levels were cut, when they were: no method had room (`Some(true)`), or a method had room and none
+    /// served food or an unmet need (`Some(false)`).
+    cut_for_room: Option<bool>,
 }
 
+/// The methods of `building` that have room for one more level, each with what that level makes.
+fn level_candidates(
+    rules: &Rules,
+    building: &BuildingType,
+    land: &LandCounts,
+    remaining_sea: u32,
+    quality_pm: u16,
+) -> Result<Vec<Candidate>, DataError> {
+    let mut candidates = Vec::new();
+    for (index, method) in building.methods.iter().enumerate() {
+        let terrain = if method.resource == "sea" {
+            if remaining_sea == 0 {
+                continue;
+            }
+            None
+        } else {
+            let Some(terrain) = choose_terrain(
+                rules,
+                method,
+                land,
+                u64::from(building.land_per_level) * 1000,
+            ) else {
+                continue;
+            };
+            Some(terrain)
+        };
+        let mut output = Vec::with_capacity(method.annual_output.len());
+        for (good_id, base_output) in &method.annual_output {
+            let good_index = rules
+                .goods
+                .iter()
+                .position(|good| &good.id == good_id)
+                .ok_or_else(|| {
+                    missing_data(
+                        format!("goods.{good_id}"),
+                        "method output references unknown good",
+                    )
+                })?;
+            let units = starting_method_output(
+                rules,
+                building,
+                method,
+                good_id,
+                *base_output,
+                terrain.as_deref(),
+                quality_pm,
+            )?;
+            output.push((good_index, units));
+        }
+        candidates.push(Candidate {
+            index,
+            terrain,
+            output,
+        });
+    }
+    Ok(candidates)
+}
+
+/// Give each of a building's `wanted` levels a method, one at a time, by the place's needs and then
+/// its empty orders (economy design §3.4); `demand` carries from building to building.
 #[expect(
     clippy::too_many_lines,
-    reason = "Each level must compare all currently eligible methods before mutating the shared land, sea, and supply budgets."
-)]
-#[expect(
-    clippy::too_many_arguments,
-    reason = "These references are the shared per-location startup budgets and fixed sell-side inputs for one sequential building assignment."
+    reason = "Each level is placed, raised for or cut in one pass over the shared land, sea and demand budgets."
 )]
 fn assign_building_levels(
     rules: &Rules,
@@ -2209,8 +2310,7 @@ fn assign_building_levels(
     wanted: u32,
     land: &mut LandCounts,
     remaining_sea: &mut u32,
-    prior_sell: &BTreeMap<String, u64>,
-    pops: &[PopState],
+    demand: &mut StartDemand,
     quality_pm: u16,
 ) -> Result<BuildingAssignment, DataError> {
     let mut assigned = vec![0_u32; building.methods.len()];
@@ -2219,83 +2319,36 @@ fn assign_building_levels(
     let mut used_land = 0_u32;
     let mut used_sea = 0_u32;
     let mut output = BTreeMap::<String, u64>::new();
+    let mut cut_for_room = None;
     for _ in 0..wanted {
-        let mut best: Option<(usize, u128, Option<String>)> = None;
-        for (index, method) in building.methods.iter().enumerate() {
-            let terrain = if method.resource == "sea" {
-                if *remaining_sea == 0 {
-                    continue;
-                }
-                None
-            } else {
-                choose_terrain(
-                    rules,
-                    method,
-                    land,
-                    u64::from(building.land_per_level) * 1000,
-                )
-            };
-            if method.resource != "sea" && terrain.is_none() {
-                continue;
-            }
-            let mut estimate = 0_u128;
-            for (good_id, base_output) in &method.annual_output {
-                let good = rules
-                    .goods
-                    .iter()
-                    .find(|good| &good.id == good_id)
-                    .ok_or_else(|| {
-                        missing_data(
-                            format!("goods.{good_id}"),
-                            "method output references unknown good",
-                        )
-                    })?;
-                let output_units = starting_method_output(
-                    rules,
-                    building,
-                    method,
-                    good_id,
-                    *base_output,
-                    terrain.as_deref(),
-                    quality_pm,
-                )?;
-                let sell_before = u128::from(prior_sell.get(good_id).copied().unwrap_or(0))
-                    .checked_add(u128::from(output.get(good_id).copied().unwrap_or(0)))
-                    .ok_or_else(|| missing_data("projection".to_owned(), "supply overflow"))?;
-                let buy_units = projected_buy_units(rules, pops, good_id)?;
-                let base_milli = good.base_price.checked_mul(1000).ok_or_else(|| {
-                    missing_data(
-                        format!("goods.{}.base_price", good.id),
-                        "base price in thousandths overflows u64",
-                    )
-                })?;
-                let buy_value = value_at_price(buy_units, base_milli)
-                    .map_err(|problem| missing_data("projection".to_owned(), problem))?;
-                let sell_value = value_at_price(sell_before, base_milli)
-                    .map_err(|problem| missing_data("projection".to_owned(), problem))?;
-                let price = target_price(good.base_price, buy_value, sell_value, rules.price_k_pm)
-                    .map_err(|problem| missing_data(format!("target_price.{good_id}"), problem))?;
-                let output_value = value_at_price(output_units, price)
-                    .map_err(|problem| missing_data("projection".to_owned(), problem))?;
-                estimate = estimate.checked_add(output_value).ok_or_else(|| {
-                    missing_data("projection".to_owned(), "method value sum overflow")
-                })?;
-            }
-            estimate = estimate
-                .checked_mul(u128::from(building.overhead_pm))
-                .ok_or_else(|| {
-                    missing_data("projection".to_owned(), "net method value overflow")
-                })?
-                / 1000;
-            if best.as_ref().is_none_or(|(_, value, _)| estimate > *value) {
-                best = Some((index, estimate, terrain));
+        let candidates = level_candidates(rules, building, land, *remaining_sea, quality_pm)?;
+        let mut chosen = demand.choose(rules, building, &candidates, &assigned);
+        let mut raised = None;
+        if chosen.is_none() {
+            raised = Some(demand.raise());
+            chosen = demand.choose(rules, building, &candidates, &assigned);
+            if chosen.is_none() {
+                chosen = StartDemand::fallback(building, &candidates);
             }
         }
-        let Some((index, _, terrain)) = best else {
+        let Some(position) = chosen else {
+            if let Some(before) = raised {
+                demand.undo(before);
+            }
+            cut_for_room = Some(candidates.is_empty());
             break;
         };
+        let Candidate {
+            index,
+            terrain,
+            output: level_output,
+        } = candidates
+            .into_iter()
+            .nth(position)
+            .expect("the chosen candidate exists");
         let method = &building.methods[index];
         assigned[index] += 1;
+        demand.provide(rules, &level_output);
         for good_id in method.annual_output.keys() {
             let good_index = rules
                 .goods
@@ -2342,19 +2395,12 @@ fn assign_building_levels(
             *fertility -= cost;
             used_land = used_land.saturating_add(u32::from(building.land_per_level));
         }
-        for (good_id, quantity) in &method.annual_output {
-            let produced = starting_method_output(
-                rules,
-                building,
-                method,
-                good_id,
-                *quantity,
-                terrain.as_deref(),
-                quality_pm,
-            )?;
-            let produced = u64::try_from(produced)
+        for (good_index, units) in level_output {
+            let produced = u64::try_from(units)
                 .map_err(|_| missing_data("projection".to_owned(), "annual output exceeds u64"))?;
-            let current = output.entry(good_id.clone()).or_default();
+            let current = output
+                .entry(rules.goods[good_index].id.clone())
+                .or_default();
             *current = (*current).checked_add(produced).ok_or_else(|| {
                 missing_data("projection".to_owned(), "annual output sum overflow")
             })?;
@@ -2367,6 +2413,7 @@ fn assign_building_levels(
         used_land,
         used_sea,
         output,
+        cut_for_room,
     })
 }
 
@@ -2690,47 +2737,77 @@ fn method_suitability_pm(
     u16::try_from(suitability).unwrap_or(0)
 }
 
+/// A place's yearly units of a food: the sum of its pops' amounts, which the start's orders
+/// (`projected_pop_order_units`) are built from.
+#[cfg(test)]
 fn projected_buy_units(rules: &Rules, pops: &[PopState], good_id: &str) -> Result<u128, DataError> {
-    let good = rules
+    let good_index = rules
         .goods
         .iter()
-        .find(|good| good.id == good_id)
+        .position(|good| good.id == good_id)
         .ok_or_else(|| missing_data(format!("goods.{good_id}"), "definition is missing"))?;
-    if good.hunger_centi == 0 {
-        return Ok(0);
-    }
     let mut total = 0_u128;
     for pop in pops {
-        let shares = rules.diet_profiles.get(&pop.kind).ok_or_else(|| {
-            missing_data(format!("diet_profiles.{}", pop.kind), "profile is missing")
-        })?;
-        let normalized = normalized_diet_shares(rules, shares)?;
-        let share = rules
-            .goods
-            .iter()
-            .position(|good| good.id == good_id)
-            .and_then(|index| normalized.get(index).copied())
-            .unwrap_or(0);
-        if share == 0 {
-            continue;
-        }
-        let people = pop
-            .workers
-            .checked_add(pop.dependents)
-            .ok_or_else(|| missing_data("projection".to_owned(), "population sum overflow"))?;
-        let numerator = u128::from(people)
-            .checked_mul(365)
-            .and_then(|value| value.checked_mul(100))
-            .and_then(|value| value.checked_mul(u128::from(share)))
-            .ok_or_else(|| missing_data("projection".to_owned(), "diet demand overflow"))?;
-        let denominator = 1000_u128
-            .checked_mul(u128::from(good.hunger_centi))
-            .ok_or_else(|| missing_data("projection".to_owned(), "diet denominator overflow"))?;
         total = total
-            .checked_add(numerator / denominator)
+            .checked_add(projected_pop_food_units(rules, pop, good_index)?)
             .ok_or_else(|| missing_data("projection".to_owned(), "diet demand sum overflow"))?;
     }
     Ok(total)
+}
+
+/// The whole units of a food one pop's diet asks for in a year, rounded down.
+fn projected_pop_food_units(
+    rules: &Rules,
+    pop: &PopState,
+    good_index: usize,
+) -> Result<u128, DataError> {
+    let good = rules
+        .goods
+        .get(good_index)
+        .ok_or_else(|| missing_data("projection".to_owned(), "good index is outside rules"))?;
+    if good.hunger_centi == 0 {
+        return Ok(0);
+    }
+    let shares = rules
+        .diet_profiles
+        .get(&pop.kind)
+        .ok_or_else(|| missing_data(format!("diet_profiles.{}", pop.kind), "profile is missing"))?;
+    let normalized = normalized_diet_shares(rules, shares)?;
+    let share = normalized.get(good_index).copied().unwrap_or(0);
+    if share == 0 {
+        return Ok(0);
+    }
+    let people = pop
+        .workers
+        .checked_add(pop.dependents)
+        .ok_or_else(|| missing_data("projection".to_owned(), "population sum overflow"))?;
+    let numerator = u128::from(people)
+        .checked_mul(365)
+        .and_then(|value| value.checked_mul(100))
+        .and_then(|value| value.checked_mul(u128::from(share)))
+        .ok_or_else(|| missing_data("projection".to_owned(), "diet demand overflow"))?;
+    let denominator = 1000_u128
+        .checked_mul(u128::from(good.hunger_centi))
+        .ok_or_else(|| missing_data("projection".to_owned(), "diet denominator overflow"))?;
+    Ok(numerator / denominator)
+}
+
+/// The whole units of a good one pop orders for a year when the opening places levels: the larger
+/// of its food amount and its comfort amount, as the live market takes the larger within a pop.
+fn projected_pop_order_units(
+    rules: &Rules,
+    pop: &PopState,
+    good_index: usize,
+) -> Result<u128, DataError> {
+    let people = pop
+        .workers
+        .checked_add(pop.dependents)
+        .ok_or_else(|| missing_data("projection".to_owned(), "population sum overflow"))?;
+    let food = projected_pop_food_units(rules, pop, good_index)?;
+    let comfort = tier_target_units_for_days(rules, &pop.kind, people, good_index, 1, 365)?.max(
+        tier_target_units_for_days(rules, &pop.kind, people, good_index, 2, 365)?,
+    );
+    Ok(food.max(comfort))
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -2795,6 +2872,18 @@ fn tier_target_units(
     good_index: usize,
     tier: usize,
 ) -> Result<u128, DataError> {
+    tier_target_units_for_days(rules, pop_kind, people, good_index, tier, 240)
+}
+
+/// A comfort tier's target units for `days` of the pop's need.
+fn tier_target_units_for_days(
+    rules: &Rules,
+    pop_kind: &str,
+    people: u64,
+    good_index: usize,
+    tier: usize,
+    days: u128,
+) -> Result<u128, DataError> {
     let good = rules
         .goods
         .get(good_index)
@@ -2842,7 +2931,7 @@ fn tier_target_units(
         .ok_or_else(|| missing_data("market.need".to_owned(), "daily need overflow"))?;
     let tier_target = u128::from(expectation)
         .checked_mul(need)
-        .and_then(|target| target.checked_mul(240))
+        .and_then(|target| target.checked_mul(days))
         .ok_or_else(|| missing_data("market.tier_target".to_owned(), "target overflow"))?
         / 1000;
     let numerator = u128::from(share)
@@ -9103,9 +9192,11 @@ mod lifecycle_tests;
 mod noble_tests;
 #[cfg(test)]
 mod personality_tests;
+#[cfg(test)]
+mod start_levels_tests;
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -9243,7 +9334,7 @@ mod tests {
         clippy::too_many_lines,
         reason = "The compact test rule fixture keeps the complete valid schema visible for every economy vector."
     )]
-    fn tiny_rules() -> Rules {
+    pub(crate) fn tiny_rules() -> Rules {
         Rules {
             herd_species: Vec::new(),
             goods: vec![Good {
@@ -9269,6 +9360,7 @@ mod tests {
                 necessities_expectation_pm: 1000,
                 niceties_expectation_pm: 0,
                 luxuries_expectation_pm: 0,
+                fuel_need_milli_day: 0,
             }],
             starting_needs_pm: BTreeMap::from([("peasant".to_owned(), [1000, 0, 0])]),
             peoples: Peoples {
@@ -9320,6 +9412,7 @@ mod tests {
                         annual_output: BTreeMap::from([("food".to_owned(), 1)]),
                         suitability: "crops".to_owned(),
                         score_share_pm: BTreeMap::from([("food".to_owned(), 1000)]),
+                        serves: "food".to_owned(),
                     }],
                     owner_kind: None,
                 },
@@ -13430,6 +13523,7 @@ mod tests {
                 necessities_expectation_pm: 1000,
                 niceties_expectation_pm: 0,
                 luxuries_expectation_pm: 0,
+                fuel_need_milli_day: 0,
             },
             PopType {
                 id: "labourer".to_owned(),
@@ -13440,6 +13534,7 @@ mod tests {
                 necessities_expectation_pm: 1000,
                 niceties_expectation_pm: 0,
                 luxuries_expectation_pm: 0,
+                fuel_need_milli_day: 0,
             },
         ]);
         add_empty_comfort_profile(&mut rules, "monk");
@@ -13761,8 +13856,7 @@ mod tests {
             1,
             &mut just_short,
             &mut remaining_sea,
-            &BTreeMap::new(),
-            &[],
+            &mut StartDemand::new(&rules, &[]).unwrap(),
             550,
         )
         .unwrap();
@@ -13782,8 +13876,7 @@ mod tests {
             1,
             &mut exact_room,
             &mut remaining_sea,
-            &BTreeMap::new(),
-            &[],
+            &mut StartDemand::new(&rules, &[]).unwrap(),
             550,
         )
         .unwrap();
@@ -13819,6 +13912,7 @@ mod tests {
             annual_output: BTreeMap::from([("fish".to_owned(), 1000)]),
             suitability: "sea".to_owned(),
             score_share_pm: BTreeMap::from([("fish".to_owned(), 1000)]),
+            serves: "food".to_owned(),
         });
         let mut data = tiny_start_data();
         data.defaults
@@ -13869,8 +13963,11 @@ mod tests {
             "one sea cell must not cap coastal levels: {report:?}"
         );
         let farm = &state.places[0].buildings[0];
+        // Field room is one level, farming first by method order; the fish and the crops both
+        // feed the unmet food need, so the first level farms and the two after it fish.
         assert_eq!(
-            farm.method_levels[1], 3,
+            farm.method_levels,
+            [1, 2],
             "fishing levels are not capped by sea/4"
         );
         assert_eq!(farm.levels, 3);
@@ -14503,7 +14600,7 @@ mod tests {
     }
 
     #[test]
-    fn close_startup_methods_match_the_accepted_projection() {
+    fn close_startup_methods_share_the_levels_by_need() {
         let mut rules = shipped_rules();
         let farm = rules.buildings.iter_mut().find(|b| b.id == "farm").unwrap();
         let mut second = farm.methods[0].clone();
@@ -14521,21 +14618,22 @@ mod tests {
             fertile_cells_by_terrain: BTreeMap::new(),
             sea: 0,
         };
+        let mut demand = StartDemand::new(&rules, &[pop]).unwrap();
         let result = assign_building_levels(
             &rules,
             &rules.buildings[0],
             6,
             &mut land,
             &mut 0,
-            &BTreeMap::new(),
-            &[pop],
+            &mut demand,
             550,
         )
         .unwrap();
-        assert_eq!(result.method_levels, [4, 2]);
+        // Both methods serve food and neither is worth more by an estimate any longer (CK-404): they share the six levels evenly.
+        assert_eq!(result.method_levels, [3, 3]);
         assert_eq!(
             result.output,
-            BTreeMap::from([("dairy".to_owned(), 2580), ("oats".to_owned(), 516)])
+            BTreeMap::from([("dairy".to_owned(), 1935), ("oats".to_owned(), 774)])
         );
     }
 
@@ -14841,6 +14939,7 @@ mod tests {
             annual_output: BTreeMap::from([("fish".to_owned(), 1000)]),
             suitability: "sea".to_owned(),
             score_share_pm: BTreeMap::from([("fish".to_owned(), 1000)]),
+            serves: "food".to_owned(),
         });
         let mut data = tiny_start_data();
         data.defaults
@@ -14918,6 +15017,7 @@ mod tests {
             necessities_expectation_pm: 1000,
             niceties_expectation_pm: 0,
             luxuries_expectation_pm: 0,
+            fuel_need_milli_day: 0,
         });
         add_empty_comfort_profile(&mut rules, "monk");
         rules
@@ -14936,6 +15036,7 @@ mod tests {
             necessities_expectation_pm: 1000,
             niceties_expectation_pm: 0,
             luxuries_expectation_pm: 0,
+            fuel_need_milli_day: 0,
         });
         add_empty_comfort_profile(&mut rules, "labourer");
         rules
@@ -15911,6 +16012,7 @@ mod tests {
                     necessities_expectation_pm: 1000,
                     niceties_expectation_pm: 0,
                     luxuries_expectation_pm: 0,
+                    fuel_need_milli_day: 0,
                 },
                 [400, 0, 0]
             ),
