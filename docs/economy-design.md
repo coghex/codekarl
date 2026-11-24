@@ -1186,7 +1186,11 @@ herd stays. These are counts, not individual animals, so livestock stays abstrac
 **Fuel orders (CK-398):** a pop targets 240 days of fuel, counting its hearth and all fuel loads. Its shortfall is ordered in the
 cheapest fuel per unit at the day's opening prices, rounded up to whole loads. Spare whole loads are offered dearest per fuel unit
 first only when their removal leaves the target covered. A building retains 60 days for its owner people using the same spare rule.
-Fuel remains in the price book but is excluded from both sides of the local swap until the follow-up slice.
+**Fuel in local swaps (CK-411):** the pop’s one fuel shortfall is expressed as a rounded-up load count for each fuel, and both
+counts are recalculated when a load moves. A pop offers its spare whole loads and its share of a building’s spare. Wants are visited
+in three groups: food, then fuel by opening price per fuel unit, then comforts. A hungry starter seeks only food. Fuel stacked outside
+is received up to its own per-person limit even in a full store; the swap’s capacity still counts each load’s volume. The ordinary
+price orders above remain unchanged.
 
 **Every day at noon, as steps 1 and 2 of the economy's daily system (§3.9),** before any output is registered:
 1. **orders** are computed, and **prices** move.
