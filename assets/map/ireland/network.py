@@ -2684,8 +2684,6 @@ def plan_water(  # noqa: PLR0912, PLR0915  # One pass turns the hand list's wate
                 reason = "the river is not usable at the point"
             elif position in wl.break_positions:
                 reason = "the point is a break"
-            elif layers["terrain"][cell[1]][cell[0]] == "marsh":
-                reason = "marsh"
             if reason:
                 ends[stretch["id"], end] = None
                 refused.append(

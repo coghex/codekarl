@@ -3309,17 +3309,22 @@ class CrossingEndTests(unittest.TestCase):
             (ends["from"]["node"], ends["to"]["node"]), (stretch["from"], stretch["to"])
         )
 
-    def test_a_bank_that_is_refused_means_no_boat_crosses(self) -> None:
+    def test_a_crossing_end_on_marsh_has_a_landing(self) -> None:
         river = survey("r-1", [(2.2, 0), (2.2, 3)])
         rows = ["......", "..m...", "......"]
         _, graph, plan = crossing_world(rows, [river], self.ROAD, [("r", (2, 1), "none")])
         [stretch] = crossing_stretches(graph)
         self.assertIn("landing_from", stretch)
-        self.assertNotIn("landing_to", stretch)
-        self.assertIn((stretch["to"], "marsh"), [(r["node"], r["reason"]) for r in plan["refused"]])
+        self.assertIn("landing_to", stretch)
+        ends = {x["end"]: x for x in graph["landing"] if x.get("crossing") == stretch["id"]}
+        self.assertEqual(ends["from"]["joint"], ends["to"]["joint"])
+        self.assertEqual((ends["from"]["bank"], ends["to"]["bank"]), ("right", "left"))
+        self.assertEqual(
+            [(r["node"], r["reason"]) for r in plan["refused"]], [(stretch["to"], "marsh")]
+        )
         report = network.water_report(graph, plan)
         self.assertIn(
-            f"stretch {stretch['id']}: landings {stretch['landing_from']}, none; barge cannot cross; currach cannot cross",
+            f"stretch {stretch['id']}: landings {stretch['landing_from']}, {stretch['landing_to']}; barge crosses; currach crosses",
             "\n".join(report),
         )
 
@@ -3335,6 +3340,10 @@ class CrossingEndTests(unittest.TestCase):
         self.assertEqual(
             sorted(r["reason"] for r in plan["refused"] if "crossing" in r),
             ["the point is a break", "the point is a break"],
+        )
+        self.assertIn(
+            f"stretch {stretch['id']}: landings none, none; barge cannot cross; currach cannot cross",
+            "\n".join(network.water_report(graph, plan)),
         )
 
     def test_a_stretch_over_two_rivers_that_do_not_meet_has_landings_and_no_boat_crosses(
@@ -3353,6 +3362,42 @@ class CrossingEndTests(unittest.TestCase):
         self.assertEqual(sorted(landings), ["from", "to"])
         self.assertNotEqual(landings["from"]["bodies"], landings["to"]["bodies"])
         self.assertIsNotNone(plan)
+
+    def test_marsh_end_adds_a_joint_without_joining_two_rivers(self) -> None:
+        rivers = [
+            survey("a-1", [(1.6, 0), (1.6, 3)]),
+            survey("b-1", [(2.3, 0), (2.3, 3)], ends="sea"),
+        ]
+        _, graph, plan = crossing_world(
+            ["......", "..m...", "......"],
+            rivers,
+            self.ROAD,
+            [("a", (1, 1), "none"), ("b", (2, 1), "none")],
+        )
+        # The accepted tool's graph for this same fixture had seven joints, five reaches,
+        # and these six landing keys and ids; the marsh crossing end had no landing.
+        old = {
+            (1, "right", "river", "a-1", (1, 1), 0): 1,
+            (1, "left", "river", "b-1", (2, 1), 0): 2,
+            (2, "left", "river", "b-1", (2, 1), 0): 3,
+            (2, "right", "river", "a-1", (1, 1), 0): 4,
+            (100, "right", "river", "a-1", (1, 1), 0): 5,
+            ("crossing", 100, "from"): 6,
+        }
+        self.assertEqual((len(graph["joint"]), len(graph["reach"])), (8, 6))
+        self.assertTrue(
+            old.items() <= {network.landing_key(x): x["id"] for x in graph["landing"]}.items()
+        )
+        [stretch] = crossing_stretches(graph)
+        ends = {x["end"]: x for x in graph["landing"] if x.get("crossing") == stretch["id"]}
+        self.assertEqual(
+            (ends["from"]["id"], ends["from"]["joint"], ends["from"]["bodies"]), (6, 2, [0, 0])
+        )
+        self.assertEqual(
+            (ends["to"]["id"], ends["to"]["joint"], ends["to"]["bodies"]), (7, 6, [1, 1])
+        )
+        report = "\n".join(network.water_report(graph, plan))
+        self.assertIn("barge cannot cross; currach cannot cross", report)
 
     def test_two_crossing_stretches_meeting_at_a_node_have_a_landing_for_each_end(self) -> None:
         rivers = [
@@ -3900,6 +3945,14 @@ class IrelandWaterTests(unittest.TestCase):
 
     def test_the_report_names_the_places_each_class_joins_and_those_it_does_not(self) -> None:
         report = (self.root / "assets/scenarios/ireland-768/network-report.md").read_text()
+        self.assertIn("## Shores refused\n- none\n", report)
+        self.assertIn(
+            "bank node 268: landing 214, crossing stretch 260 from end, right bank, shore (379, 522), approach 0 m; barge 20, currach 14",
+            report,
+        )
+        self.assertIn("stretch 260: landings 214, 163; barge crosses; currach crosses", report)
+        self.assertEqual(len(self.graph["landing"]), 214)
+        self.assertEqual(self.graph["next_landing_id"], 215)
         section = report.split("## Places joined by land and water\n")[1]
         lines = section.splitlines()
         self.assertEqual(lines[0], "- barge: 118 of 125 places")
