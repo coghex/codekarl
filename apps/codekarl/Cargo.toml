@@ -78,6 +78,7 @@ required-features = ["vulkan"]
 workspace = true
 
 [dev-dependencies]
+png = { version = "0.18", default-features = false }
 # `test-fixtures` gives the storage tests the state-only mutators; only [dev-dependencies] may enable it.
 ck-characters = { path = "../../crates/characters", features = ["test-fixtures"] }
 # `test-support` gives the headless driver's cases the resource service's `JobGate`; only [dev-dependencies] may enable it.

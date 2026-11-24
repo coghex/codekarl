@@ -832,6 +832,8 @@ fn weather_is_ignored_when_economy_rules_are_absent() {
     let empty_hash = hashes::rules_hash(root).unwrap();
     fs::create_dir_all(root.join("game")).unwrap();
     fs::write(root.join("game/weather.toml"), "not = [valid").unwrap();
+    fs::create_dir_all(root.join("map/backdrop")).unwrap();
+    fs::write(root.join("map/backdrop/backdrop.toml"), "not = [valid").unwrap();
     assert_eq!(hashes::rules_hash(root).unwrap(), empty_hash);
     let game = prepared(&game, None, Some(42)).0.unwrap();
     let view = crate::game::setup::view_builder(game.view_wiring())(

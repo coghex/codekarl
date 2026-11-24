@@ -218,6 +218,7 @@ dependencies = [
  "libc",
  "num-bigint",
  "num-rational",
+ "png",
  "serde",
  "serde_json",
  "toml",

@@ -12,6 +12,18 @@ pub struct WeatherRules {
     pub lag_minutes: i64,
     /// Day-length fade interval, in minutes.
     pub fade_minutes: i64,
+    /// Sea friction in thousand-millionths per second.
+    pub wind_sea_friction: i64,
+    /// Sea speed factor in thousandths.
+    pub wind_sea_factor: i64,
+    /// Land friction in thousand-millionths per second.
+    pub wind_land_friction: i64,
+    /// Land speed factor in thousandths.
+    pub wind_land_factor: i64,
+    /// Pressure slope radius in blocks.
+    pub wind_slope_blocks: i64,
+    /// Equatorial belt half width in ten-thousandths of a degree.
+    pub wind_belt_latitude: i64,
     /// Cosines in millionths at tenth-degree steps.
     pub cosine: Vec<i64>,
     /// Latitude tangents in millionths at tenth-degree steps.
@@ -59,6 +71,12 @@ impl WeatherRules {
             ("swing_inland", rules.swing_inland, 0, 300),
             ("lag_minutes", rules.lag_minutes, 0, 720),
             ("fade_minutes", rules.fade_minutes, 1, 720),
+            ("wind_sea_friction", rules.wind_sea_friction, 1, 1_000_000),
+            ("wind_sea_factor", rules.wind_sea_factor, 0, 2_000),
+            ("wind_land_friction", rules.wind_land_friction, 1, 1_000_000),
+            ("wind_land_factor", rules.wind_land_factor, 0, 2_000),
+            ("wind_slope_blocks", rules.wind_slope_blocks, 1, 8),
+            ("wind_belt_latitude", rules.wind_belt_latitude, 0, 300_000),
         ] {
             if !(lower..=upper).contains(&value) {
                 return Err(format!("weather.toml: {name} range"));
@@ -576,6 +594,31 @@ mod tests {
             let changed = source.replacen(from, to, 1);
             assert_ne!(changed, source);
             assert!(WeatherRules::parse(&changed).unwrap_err().contains(name));
+        }
+    }
+
+    #[test]
+    fn wind_settings_are_required_and_range_checked() {
+        let source = include_str!("../../../assets/game/weather.toml");
+        for (name, value, low, high) in [
+            ("wind_sea_friction", 15000, 1, 1_000_000),
+            ("wind_sea_factor", 690, 0, 2_000),
+            ("wind_land_friction", 70000, 1, 1_000_000),
+            ("wind_land_factor", 330, 0, 2_000),
+            ("wind_slope_blocks", 2, 1, 8),
+            ("wind_belt_latitude", 60000, 0, 300_000),
+        ] {
+            let line = format!("{name} = {value}\n");
+            assert!(source.contains(&line), "{name}");
+            assert!(
+                WeatherRules::parse(&source.replace(&line, ""))
+                    .unwrap_err()
+                    .contains(name)
+            );
+            for invalid in [low - 1, high + 1] {
+                let changed = source.replace(&line, &format!("{name} = {invalid}\n"));
+                assert!(WeatherRules::parse(&changed).unwrap_err().contains(name));
+            }
         }
     }
 

@@ -26,6 +26,12 @@ def generate() -> str:
         "swing_inland = 75",
         "lag_minutes = 150",
         "fade_minutes = 120",
+        "wind_sea_friction = 15000",
+        "wind_sea_factor = 690",
+        "wind_land_friction = 70000",
+        "wind_land_factor = 330",
+        "wind_slope_blocks = 2",
+        "wind_belt_latitude = 60000",
         "",
     ]
     for name, values in (

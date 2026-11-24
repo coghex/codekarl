@@ -36,6 +36,7 @@ mod stretch;
 pub(crate) mod tests;
 pub mod travel;
 pub(crate) mod view;
+mod wind;
 
 /// The simulation state. M9 slice 2 stores its deterministic starting economy.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

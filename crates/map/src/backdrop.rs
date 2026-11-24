@@ -17,6 +17,7 @@ struct Manifest {
     first_row: u32,
     rows: u32,
     columns: u32,
+    row_latitude_e4: Vec<i32>,
     layers: Layers,
 }
 #[derive(Deserialize)]
@@ -55,7 +56,7 @@ pub struct BackdropSample {
 /// Returns the source file and reason when a manifest or image is invalid.
 pub fn load_backdrop(directory: &Path) -> Result<Backdrop, LoadError> {
     let m: Manifest = read_toml(directory, "backdrop.toml")?;
-    if m.format != 1 || m.projection != "spherical_mercator" || m.cell_metres != crate::CELL_METRES
+    if m.format != 2 || m.projection != "spherical_mercator" || m.cell_metres != crate::CELL_METRES
     {
         return Err(LoadError::new(
             "backdrop.toml",
@@ -73,6 +74,23 @@ pub fn load_backdrop(directory: &Path) -> Result<Backdrop, LoadError> {
             .is_none_or(|end| end > world_blocks)
     {
         return Err(LoadError::new("backdrop.toml", "invalid columns or rows"));
+    }
+    if m.row_latitude_e4.len() != m.rows as usize {
+        return Err(LoadError::new("backdrop.toml", "row_latitude_e4 length"));
+    }
+    for (row, &latitude) in (m.first_row..m.first_row + m.rows).zip(&m.row_latitude_e4) {
+        let row = f64::from(row) + 0.5;
+        let y = row * f64::from(m.block_cells) * crate::CELL_METRES;
+        let radius = 6_378_137.0;
+        let expected = ((std::f64::consts::PI - y / radius)
+            .sinh()
+            .atan()
+            .to_degrees()
+            * 10_000.0)
+            .round();
+        if (f64::from(latitude) - expected).abs() > 2.0 {
+            return Err(LoadError::new("backdrop.toml", "row_latitude_e4 mismatch"));
+        }
     }
     let height = m.rows * MONTHS;
     let land = decode_gray8_image(directory, &m.layers.land, m.columns, m.rows)?;
@@ -144,6 +162,14 @@ impl Backdrop {
     #[must_use]
     pub fn rows(&self) -> u32 {
         self.manifest.rows
+    }
+    /// Stored latitude of a world block row, in ten-thousandths of a degree.
+    #[must_use]
+    pub fn row_latitude_e4(&self, row: u32) -> Option<i32> {
+        self.manifest
+            .row_latitude_e4
+            .get(row.checked_sub(self.first_row())? as usize)
+            .copied()
     }
     /// Block containing a world cell, if covered.
     #[must_use]

@@ -37,6 +37,20 @@ class WeatherGenerationTests(unittest.TestCase):
         text = (ROOT / "assets/game/weather.toml").read_text()
         self.assertEqual(generator.generate(), text)
         data = tomllib.loads(text)
+        self.assertEqual(
+            [
+                data[name]
+                for name in (
+                    "wind_sea_friction",
+                    "wind_sea_factor",
+                    "wind_land_friction",
+                    "wind_land_factor",
+                    "wind_slope_blocks",
+                    "wind_belt_latitude",
+                )
+            ],
+            [15000, 690, 70000, 330, 2, 60000],
+        )
         self.assertEqual(data["cosine"][630], 453990)
         self.assertEqual(data["tangent"][417], 890967)
         self.assertEqual(data["tangent"][850], 11430052)
