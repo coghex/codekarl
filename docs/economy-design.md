@@ -425,10 +425,18 @@ monastery's holdings, both, or neither. The kind-and-size tables of §3.12–3.1
     place, a raise that ends in a cut is undone); (4) the **fallback**: the first food method with room; (5) **cut**: the level is
     cut and reported, and so are the rest of the building's levels.
   - **The order:** places in file order; within a place, the holdings, then the demesne, then the farm; levels one at a time.
-- **The result** is a count of levels per method in each building, which is saved. Each farming level of the holdings has its herd
-  (§3.14), and fishing levels have none.
-- **Staffing per method (r14, exact):** there is no integer `staffed_m`. Each method's output takes its share of staffing exactly
-  inside the numerator, each month: `portion(annual_g × staffed × levels_m × season_pm_g[month], suitability_g × cov, levels × workers_per_level × 10⁹, carry_g)` (r17: by season, §3.19).
+- **The result (CK-406)** keeps each producing level in placement order, with its method, ground and completed paydays on that method.
+  The method counts, suitability and grazing sums and field room follow from those records. Storehouse levels are storage kinds, not
+  producing levels. Usable-land methods keep their chosen terrain (including forest and bog); wood and turf keep forest and bog
+  respectively; sea methods have no ground. Levels cut at the start have no record. Herds count every non-sea level (§3.14).
+- **Paydays:** every level starts mature at 13 completed paydays. A payday uses `min(completed + 1, 13)`, then stores that count;
+  seasonal output uses `(count − 1) / 12`. Herd products follow the herd and do not use this fraction. Nothing switches in this slice.
+- **Staffing per method (exact):** there is no integer `staffed_m`. Let `weighted_g` be the sum, over the method's levels, of each
+  level's own suitability for the good times its payday count less one. Each month's output is the quotient of
+  `annual_g × weighted_g × season_pm_g[month] × staffed × cov × quality + carry_g` over
+  `12 × levels × workers_per_level × 10⁹ × reference`, using the reduced quality/reference ratio for usable land and 1/1 otherwise.
+  The remainder is the exact carry, held in `u128`; its unit is twelve times finer than before CK-406. A zero-position building has
+  no denominator and a zero or absent carry. Mature levels preserve the old output exactly.
   - Staffing is conserved and never rounded; only whole goods are floored.
   - Coverage applies to the whole building.
 - **Chosen once in M9.** Changing a level's method mid-game is the vision's conversion, and comes with construction. It is out of
@@ -1740,8 +1748,8 @@ Sources: `small-gaps-r3.md` §3, `rent-r1.md`, `p1-noble-economy-r1.toml`, `p1-n
   - each drifting value has its own carry, in units of `1 / denominator`.
 - **Output arithmetic, per building and good.** `staffed = min(workers, limit)` (owners do not produce), and `cov` is the coverage
   multiplier in ‰:
-  - **every good, each month (r17):** as §3.4, `portion(annual × staffed × levels_m × season_pm_g[month], suitability_g × cov, levels × workers_per_level × 10⁹, carry_g)`.
-    The season shares sum to 1000, so a full year gives `annual` (r16's `season_months` is withdrawn);
+  - **each seasonal good, each month (CK-406):** use the per-level weighted suitability, payday count and exact quotient and remainder
+    in §3.4. The season shares sum to 1000; herd products have their own calculation and do not use level paydays;
   - each carry has a fixed unit for the building's life;
   - annual figures are data in each good's units (§3.12).
 - **Curves:**
