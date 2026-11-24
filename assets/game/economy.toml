@@ -1,3 +1,4 @@
+herd_start_share = [2, 3]
 # Shared M9 economy rules. Quantities are integer native units;
 # hunger/tier values are integer hundredths of a person-day.
 # are hundredths of a person-day, storage limits are thousandths of a unit/person.
@@ -402,7 +403,7 @@ noble=[1000,700,300]   # start content, at their expectations
 
 [[buildings]]
 id="farm"
-herds={ cattle={maximum=12,start=9}, pigs={maximum=8,start=6}, sheep={maximum=7,start=5} }
+herds={ cattle={maximum=12}, pigs={maximum=8}, sheep={maximum=7} }
 workers_per_level=10
 land_per_level=2
 owner_workers={ peasant=10 }
@@ -423,7 +424,7 @@ annual_output={ fish=8000, seabirds=1500 }
 score_share_pm={ fish=850, seabirds=150 }
 [[buildings]]
 id="holdings"
-herds={ cattle={maximum=12,start=9}, pigs={maximum=8,start=6}, sheep={maximum=7,start=5} }
+herds={ cattle={maximum=12}, pigs={maximum=8}, sheep={maximum=7} }
 workers_per_level=10
 land_per_level=2
 owner_workers={ monk=5, labourer=10 }
@@ -448,7 +449,7 @@ score_share_pm={ fish=800, seabirds=150, vegetables=30, herbs=20 }
 # jobs (one owner covers 10 of them) and `owner_kind` names the pop type that owns: one noble covers 10 labourers.
 [[buildings]]
 id="demesne"
-herds={ cattle={maximum=12,start=9}, pigs={maximum=8,start=6}, sheep={maximum=7,start=5} }
+herds={ cattle={maximum=12}, pigs={maximum=8}, sheep={maximum=7} }
 workers_per_level=10
 land_per_level=2
 owner_workers={ labourer=10 }

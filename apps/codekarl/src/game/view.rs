@@ -1934,13 +1934,9 @@ mod tests {
         });
         let farm_definition = rules.buildings.iter_mut().find(|b| b.id == "farm").unwrap();
         farm_definition.herds.retain(|id, _| id == "sheep");
-        farm_definition.herds.insert(
-            "goats".into(),
-            ck_economy::HerdCapacity {
-                maximum: 13,
-                start: 1,
-            },
-        );
+        farm_definition
+            .herds
+            .insert("goats".into(), ck_economy::HerdCapacity { maximum: 13 });
         farm_definition.methods[0].annual_output =
             BTreeMap::from([("dairy".into(), 860), ("oats".into(), 100)]);
         let mut place = fixture(&rules);

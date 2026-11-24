@@ -47,14 +47,14 @@ fn good(id: &str, hunger: u32, niceties: u32, base_price: u64, fuel: bool) -> Go
 
 /// A method whose yearly output, as the start works it out, is `outputs`. The fixture's land has
 /// quality 4/3 of the reference, so a land method authors three quarters of each crop, rounded up
-/// (herd goods already pay three quarters: the start's herds are three quarters full) and a sea
+/// (the startup estimate scales herd goods by three quarters) and a sea
 /// method its output as it is.
 fn method(id: &str, resource: &str, serves: &str, outputs: &[(&str, u64)]) -> Method {
     let land = resource == "usable_land";
     let annual_output = outputs
         .iter()
         .map(|(good, units)| {
-            // A herd good pays three quarters (the start's herds are three quarters full): on land the 4/3 of the fixture's quality
+            // The startup estimate scales a herd good by three quarters: on land the 4/3 of the fixture's quality
             // cancels it, so it is authored as it is; at sea it has no quality, so it is authored a third more.
             let authored = if land && *good != "beef" {
                 let authored = (units * 3).div_ceil(4);
@@ -115,17 +115,11 @@ fn building(id: &str, methods: Vec<Method>) -> BuildingType {
         penalty_pm: 500,
         overhead_pm: 100,
         recruit_range_m: Some(30_000),
-        // The land buildings keep cattle, so beef is a herd good there and pays the herd's three quarters.
+        // The land buildings keep cattle, so the startup estimate applies the herd-good factor to beef.
         herds: if id == "storehouse" {
             BTreeMap::new()
         } else {
-            BTreeMap::from([(
-                "cattle".to_owned(),
-                HerdCapacity {
-                    maximum: 1,
-                    start: 1,
-                },
-            )])
+            BTreeMap::from([("cattle".to_owned(), HerdCapacity { maximum: 1 })])
         },
         methods,
     }
