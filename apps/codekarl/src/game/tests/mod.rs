@@ -34,6 +34,7 @@ mod run;
 mod setup;
 mod start_768;
 mod storage;
+mod switch_run;
 mod trade_swap;
 mod views;
 

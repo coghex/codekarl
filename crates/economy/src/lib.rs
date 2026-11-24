@@ -2519,6 +2519,7 @@ fn assign_building_levels(
             ground: terrain.clone(),
             paydays: MATURE_PAYDAYS,
             unpaid_work: seasonal_accounts(rules, building, method),
+            last_switch_year: None,
         });
         demand.provide(rules, &level_output);
         if method.resource == "sea" {
@@ -2655,6 +2656,28 @@ pub fn validate_level_records(
             }
             check_level_records(rules, definition, building, &name)?;
             check_production_carries(rules, definition, building, quality_pm, &name)?;
+        }
+    }
+    Ok(())
+}
+
+/// Check that no level of a loaded economy last switched in a year after the game's own, before the economy is installed.
+///
+/// # Errors
+/// Returns a message naming the place, the building and the level whose year of last switch is after `year`.
+pub fn validate_switch_years(state: &EconomyState, year: u16) -> Result<(), String> {
+    for place in &state.places {
+        for building in &place.buildings {
+            for record in &building.level_records {
+                if let Some(switched) = record.last_switch_year
+                    && switched > year
+                {
+                    return Err(format!(
+                        "place {} building {} level {}: last switched in the year {switched}, after the game's year {year}",
+                        place.id, building.kind, record.number
+                    ));
+                }
+            }
         }
     }
     Ok(())
@@ -4473,6 +4496,9 @@ pub struct LevelRecord {
     pub paydays: u8,
     /// Unpaid seasonal work, in 144,000ths of a good, keyed by good ID.
     pub unpaid_work: BTreeMap<String, bigint::Big>,
+    /// The calendar year of the level's last switch of method, and none for a level that has never switched. A level that
+    /// switched in a year does not switch again in that year (owner, S6).
+    pub last_switch_year: Option<u16>,
 }
 
 /// A building in the initial economy state.
@@ -5664,6 +5690,8 @@ pub struct ProductionLedger {
     pub herd_deaths: Vec<u64>,
     /// Herds slaughtered, by cattle, pigs and sheep order.
     pub herd_slaughter: Vec<u64>,
+    /// Animals that arrived as founders of a herd, by cattle, pigs and sheep order. They are not births.
+    pub herd_arrivals: Vec<u64>,
     /// Whole goods held when the pass began, in good order.
     pub stock_before: Vec<u64>,
     /// Whole goods held after the pass, in good order.
@@ -5730,6 +5758,8 @@ pub struct PlaceProductionLedger {
     pub herd_deaths: Vec<u64>,
     /// Herd slaughter by cattle, pigs and sheep order.
     pub herd_slaughter: Vec<u64>,
+    /// Animals that arrived as founders of a herd, by cattle, pigs and sheep order. They are not births.
+    pub herd_arrivals: Vec<u64>,
     /// Whole goods held when the pass began, in good order.
     pub stock_before: Vec<u64>,
     /// Whole goods held after the pass, in good order.
@@ -5889,6 +5919,7 @@ impl ProductionLedger {
             herd_births: vec![0; species_count],
             herd_deaths: vec![0; species_count],
             herd_slaughter: vec![0; species_count],
+            herd_arrivals: vec![0; species_count],
             stock_before: vec![0; good_count],
             stock_after: vec![0; good_count],
             unpaid_wages: vec![0; good_count],
@@ -5911,6 +5942,7 @@ impl PlaceProductionLedger {
             herd_births: vec![0; species_count],
             herd_deaths: vec![0; species_count],
             herd_slaughter: vec![0; species_count],
+            herd_arrivals: vec![0; species_count],
             stock_before: vec![0; good_count],
             stock_after: vec![0; good_count],
             unpaid_wages: vec![0; good_count],
@@ -6968,9 +7000,113 @@ fn consume_pop_tracked(
     Ok(actual_intake_pm)
 }
 
+/// What one payday-style split of a building's output left to settle: the wages' worth, and for each good the amounts that did
+/// not fit where they were sent (a store the receiver had no room in, or the building's overhead), by building and good.
+type PendingOverflow = Vec<(usize, usize, Vec<(Option<usize>, u64)>)>;
+
+/// Splits `output` (whole units by good) into wages and overhead by the building's wage share, taking the wage carry on from where
+/// it stands, and pays the wages among the building's workers by their weights, as payday does; where the building has no workers
+/// they are added to its pay carry. The wages go into the workers' stores; what does not fit, and the overhead, are returned to be
+/// settled by [`settle_overflow`]. Returns the worth of the wages at the place's prices and what is to be settled.
+///
+/// # Errors
+/// Refuses missing prices or checked arithmetic overflow.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "A split reads the rules, the place's prices and pops, and the building with its index and output."
+)]
+fn split_and_pay(
+    rules: &Rules,
+    place_id: &str,
+    prices_milli: &[u64],
+    pops: &mut [PopState],
+    building: &mut BuildingState,
+    definition: &BuildingType,
+    building_index: usize,
+    output: &[u64],
+) -> Result<(u128, PendingOverflow), DataError> {
+    let mut overflow = PendingOverflow::new();
+    let wage_share_pm = u64::from(1000_u16.saturating_sub(definition.overhead_pm)) * 1000;
+    let worker_weights = building
+        .employment
+        .iter()
+        .map(|employment| employment.workers)
+        .collect::<Vec<_>>();
+    let mut wage_value = 0_u128;
+    for (good_index, output_units) in output.iter().copied().enumerate() {
+        let split_num = u128::from(output_units)
+            .checked_mul(u128::from(wage_share_pm))
+            .and_then(|value| value.checked_add(u128::from(building.wage_carries[good_index])))
+            .ok_or_else(|| missing_data("payday.split".to_owned(), "wage split overflow"))?;
+        let wage = u64::try_from(split_num / 1_000_000)
+            .map_err(|_| missing_data("payday.split".to_owned(), "wage units exceed u64"))?;
+        let price = prices_milli.get(good_index).copied().ok_or_else(|| {
+            missing_data(
+                format!("places.{place_id}.prices_milli"),
+                "saved prices do not match goods",
+            )
+        })?;
+        wage_value = wage_value
+            .checked_add(value_at_price(u128::from(wage), price).map_err(|problem| {
+                missing_data(
+                    format!(
+                        "places.{}.buildings.{}.wage_history",
+                        place_id, building.kind
+                    ),
+                    problem,
+                )
+            })?)
+            .ok_or_else(|| {
+                missing_data(
+                    format!(
+                        "places.{}.buildings.{}.wage_history",
+                        place_id, building.kind
+                    ),
+                    "payday wage value overflow",
+                )
+            })?;
+        building.wage_carries[good_index] = u64::try_from(split_num % 1_000_000)
+            .map_err(|_| missing_data("payday.split".to_owned(), "wage carry exceeds u64"))?;
+        let overhead = output_units
+            .checked_sub(wage)
+            .ok_or_else(|| missing_data("payday.split".to_owned(), "wage exceeds output"))?;
+        let unpaid = building.pay_carries[good_index]
+            .checked_add(wage)
+            .ok_or_else(|| missing_data("payday.carry".to_owned(), "pay carry overflow"))?;
+        let mut contributions = Vec::new();
+        if worker_weights.iter().all(|count| *count == 0) {
+            building.pay_carries[good_index] = unpaid;
+        } else {
+            building.pay_carries[good_index] = 0;
+            let shares = largest_remainder(unpaid, &worker_weights)
+                .map_err(|problem| missing_data("payday.distribution".to_owned(), problem))?;
+            for (pop_index, share) in shares.into_iter().enumerate() {
+                if share == 0 {
+                    continue;
+                }
+                let pop = pops.get_mut(pop_index).ok_or_else(|| {
+                    missing_data("payday.worker".to_owned(), "worker pop is missing")
+                })?;
+                let overflow = receive_pop(rules, pop, good_index, share)?;
+                if overflow > 0 {
+                    contributions.push((Some(pop_index), overflow));
+                }
+            }
+        }
+        if overhead > 0 {
+            contributions.insert(0, (None, overhead));
+        }
+        if !contributions.is_empty() {
+            overflow.push((building_index, good_index, contributions));
+        }
+    }
+    Ok((wage_value, overflow))
+}
+
 /// Run the first-of-month seasonal production phase, committing all places together.
 ///
-/// Production uses the method assignment and terrain suitability saved at startup.
+/// Production uses each level's record: its method and ground, which a switch of methods changes (see
+/// [`run_monthly_production_switching`]); the suitability sums are derived from them.
 /// Fractional output is retained in each building's canonical carry state.
 ///
 /// # Errors
@@ -6989,15 +7125,53 @@ pub fn run_monthly_production(
 /// # Errors
 /// Refuses malformed saved state, missing seasonal data, or checked arithmetic overflow;
 /// on refusal, `state` is unchanged.
-#[expect(
-    clippy::too_many_lines,
-    reason = "The monthly production and herd updates stay together inside the daily rollback boundary."
-)]
 pub fn run_monthly_production_with_quality(
     rules: &Rules,
     state: &mut EconomyState,
     date: Date,
     quality_by_place: &BTreeMap<String, u16>,
+) -> Result<ProductionLedger, DataError> {
+    monthly_production(rules, state, date, quality_by_place, None)
+}
+
+/// The land counts of each place by id, and the place's prices as the day began, in place order: what the month's switching looks
+/// at (the look's own inputs; none of it is saved).
+type SwitchInputs<'a> = (&'a BTreeMap<String, LandCounts>, &'a [Vec<u64>]);
+
+/// Monthly production followed, in each place with land counts, by the month's switching of methods: after the month's
+/// production, herds and payday, and before anything else of the day. The look's prices are `day_prices`, the places' prices as
+/// the day began, in place order.
+///
+/// # Errors
+/// Refuses malformed saved state, missing seasonal data, or checked arithmetic overflow;
+/// on refusal, `state` is unchanged.
+pub fn run_monthly_production_switching(
+    rules: &Rules,
+    state: &mut EconomyState,
+    date: Date,
+    quality_by_place: &BTreeMap<String, u16>,
+    land_by_place: &BTreeMap<String, LandCounts>,
+    day_prices: &[Vec<u64>],
+) -> Result<ProductionLedger, DataError> {
+    monthly_production(
+        rules,
+        state,
+        date,
+        quality_by_place,
+        Some((land_by_place, day_prices)),
+    )
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "The monthly production and herd updates stay together inside the daily rollback boundary."
+)]
+fn monthly_production(
+    rules: &Rules,
+    state: &mut EconomyState,
+    date: Date,
+    quality_by_place: &BTreeMap<String, u16>,
+    switch_inputs: Option<SwitchInputs<'_>>,
 ) -> Result<ProductionLedger, DataError> {
     if date.day != 1 {
         return Ok(ProductionLedger::new(
@@ -7014,7 +7188,7 @@ pub fn run_monthly_production_with_quality(
     rules.validate("economy rules")?;
     let mut next = state.clone();
     let mut ledger = ProductionLedger::new(rules.goods.len(), rules.herd_species.len());
-    for place in &mut next.places {
+    for (place_index, place) in next.places.iter_mut().enumerate() {
         let quality_pm = quality_by_place
             .get(&place.id)
             .copied()
@@ -7498,88 +7672,17 @@ pub fn run_monthly_production_with_quality(
                         missing_data("ledger.production".to_owned(), "production total overflow")
                     })?;
             }
-            let wage_share_pm = u64::from(1000_u16.saturating_sub(definition.overhead_pm)) * 1000;
-            let worker_weights = building
-                .employment
-                .iter()
-                .map(|employment| employment.workers)
-                .collect::<Vec<_>>();
-            let mut wage_value = 0_u128;
-            for (good_index, output_units) in monthly_output.iter().copied().enumerate() {
-                let split_num = u128::from(output_units)
-                    .checked_mul(u128::from(wage_share_pm))
-                    .and_then(|value| {
-                        value.checked_add(u128::from(building.wage_carries[good_index]))
-                    })
-                    .ok_or_else(|| {
-                        missing_data("payday.split".to_owned(), "wage split overflow")
-                    })?;
-                let wage = u64::try_from(split_num / 1_000_000).map_err(|_| {
-                    missing_data("payday.split".to_owned(), "wage units exceed u64")
-                })?;
-                let price = place.prices_milli.get(good_index).copied().ok_or_else(|| {
-                    missing_data(
-                        format!("places.{}.prices_milli", place.id),
-                        "saved prices do not match goods",
-                    )
-                })?;
-                wage_value = wage_value
-                    .checked_add(value_at_price(u128::from(wage), price).map_err(|problem| {
-                        missing_data(
-                            format!(
-                                "places.{}.buildings.{}.wage_history",
-                                place.id, building.kind
-                            ),
-                            problem,
-                        )
-                    })?)
-                    .ok_or_else(|| {
-                        missing_data(
-                            format!(
-                                "places.{}.buildings.{}.wage_history",
-                                place.id, building.kind
-                            ),
-                            "payday wage value overflow",
-                        )
-                    })?;
-                building.wage_carries[good_index] =
-                    u64::try_from(split_num % 1_000_000).map_err(|_| {
-                        missing_data("payday.split".to_owned(), "wage carry exceeds u64")
-                    })?;
-                let overhead = output_units.checked_sub(wage).ok_or_else(|| {
-                    missing_data("payday.split".to_owned(), "wage exceeds output")
-                })?;
-                let unpaid = building.pay_carries[good_index]
-                    .checked_add(wage)
-                    .ok_or_else(|| missing_data("payday.carry".to_owned(), "pay carry overflow"))?;
-                let mut contributions = Vec::new();
-                if worker_weights.iter().all(|count| *count == 0) {
-                    building.pay_carries[good_index] = unpaid;
-                } else {
-                    building.pay_carries[good_index] = 0;
-                    let shares = largest_remainder(unpaid, &worker_weights).map_err(|problem| {
-                        missing_data("payday.distribution".to_owned(), problem)
-                    })?;
-                    for (pop_index, share) in shares.into_iter().enumerate() {
-                        if share == 0 {
-                            continue;
-                        }
-                        let pop = place.pops.get_mut(pop_index).ok_or_else(|| {
-                            missing_data("payday.worker".to_owned(), "worker pop is missing")
-                        })?;
-                        let overflow = receive_pop(rules, pop, good_index, share)?;
-                        if overflow > 0 {
-                            contributions.push((Some(pop_index), overflow));
-                        }
-                    }
-                }
-                if overhead > 0 {
-                    contributions.insert(0, (None, overhead));
-                }
-                if !contributions.is_empty() {
-                    pending_overflow.push((building_index, good_index, contributions));
-                }
-            }
+            let (wage_value, overflow) = split_and_pay(
+                rules,
+                &place.id,
+                &place.prices_milli,
+                &mut place.pops,
+                building,
+                definition,
+                building_index,
+                &monthly_output,
+            )?;
+            pending_overflow.extend(overflow);
             if workers > 0 {
                 let posted = u64::try_from(wage_value / u128::from(workers)).map_err(|_| {
                     missing_data(
@@ -7606,6 +7709,17 @@ pub fn run_monthly_production_with_quality(
                 &mut place.counters,
                 &mut place_ledger,
             )?;
+        }
+        if let Some((land_by_place, day_prices)) = switch_inputs
+            && let Some(land) = land_by_place.get(&place.id)
+        {
+            let prices = day_prices.get(place_index).ok_or_else(|| {
+                missing_data(
+                    format!("places.{}.prices_milli", place.id),
+                    "the day's prices do not cover every place",
+                )
+            })?;
+            switching::run_place_switches(rules, place, land, date, prices, &mut place_ledger)?;
         }
         place_ledger.stock_after = total_stored_goods(rules, place)?;
         place_ledger.herds_after = total_herds(place, rules.herd_species.len())?;
@@ -7657,6 +7771,15 @@ pub fn run_monthly_production_with_quality(
             *total = total.checked_add(*part).ok_or_else(|| {
                 missing_data("ledger.herds".to_owned(), "slaughter total overflow")
             })?;
+        }
+        for (total, part) in ledger
+            .herd_arrivals
+            .iter_mut()
+            .zip(&place_ledger.herd_arrivals)
+        {
+            *total = total
+                .checked_add(*part)
+                .ok_or_else(|| missing_data("ledger.herds".to_owned(), "arrival total overflow"))?;
         }
         for (total, part) in ledger
             .stock_before
@@ -7769,6 +7892,36 @@ pub fn run_daily_economy_with_floors(
     nearby_by_place: &BTreeMap<String, Vec<NearbyPlace>>,
     floors: &BTreeMap<(String, usize), u64>,
 ) -> Result<ProductionLedger, DataError> {
+    run_daily_economy_with_land(
+        rules,
+        state,
+        date,
+        quality_by_place,
+        shelter_by_place,
+        nearby_by_place,
+        floors,
+        &BTreeMap::new(),
+    )
+}
+
+/// Daily economy with live-character floors and each place's land counts: where a place has them, its buildings look at their
+/// levels on the 1st and move at most one level a month (CK-409). A place with no land counts does not switch.
+/// # Errors
+/// Returns the first data error without changing the economy.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The daily step takes each place's map-derived inputs and the characters' floors."
+)]
+pub fn run_daily_economy_with_land(
+    rules: &Rules,
+    state: &mut EconomyState,
+    date: Date,
+    quality_by_place: &BTreeMap<String, u16>,
+    shelter_by_place: &BTreeMap<String, u64>,
+    nearby_by_place: &BTreeMap<String, Vec<NearbyPlace>>,
+    floors: &BTreeMap<(String, usize), u64>,
+    land_by_place: &BTreeMap<String, LandCounts>,
+) -> Result<ProductionLedger, DataError> {
     let day_prices: Vec<Vec<u64>> = state
         .places
         .iter()
@@ -7776,7 +7929,13 @@ pub fn run_daily_economy_with_floors(
         .collect();
     let mut next = state.clone();
     update_daily_prices(rules, &mut next)?;
-    let mut ledger = run_monthly_production_with_quality(rules, &mut next, date, quality_by_place)?;
+    let mut ledger = monthly_production(
+        rules,
+        &mut next,
+        date,
+        quality_by_place,
+        Some((land_by_place, &day_prices)),
+    )?;
     // The exchange uses moved prices; fuel uses the price as the day began.
     swap::run_daily_swaps_at_prices(rules, &mut next, &day_prices)?;
     let (intake_pm, daily_consumption) =
@@ -10230,6 +10389,13 @@ fn encode_level_records(records: &[LevelRecord], out: &mut Vec<u8>) -> Result<()
         }
         record.paydays.encode(out)?;
         record.unpaid_work.encode(out)?;
+        match record.last_switch_year {
+            Some(year) => {
+                true.encode(out)?;
+                year.encode(out)?;
+            }
+            None => false.encode(out)?,
+        }
     }
     Ok(())
 }
@@ -10248,6 +10414,11 @@ fn decode_level_records(input: &mut Reader<'_>) -> Result<Vec<LevelRecord>, Cano
             },
             paydays: u8::decode(input)?,
             unpaid_work: BTreeMap::decode(input)?,
+            last_switch_year: if bool::decode(input)? {
+                Some(u16::decode(input)?)
+            } else {
+                None
+            },
         });
     }
     Ok(records)
@@ -10789,6 +10960,7 @@ pub(crate) mod tests {
                 ground: Some("pasture".to_owned()),
                 paydays: MATURE_PAYDAYS,
                 unpaid_work: BTreeMap::new(),
+                last_switch_year: None,
             }],
             herds: vec![0, 1, 0],
             employment: vec![
@@ -10895,6 +11067,7 @@ pub(crate) mod tests {
                     ground: ground.clone(),
                     paydays: MATURE_PAYDAYS,
                     unpaid_work: seasonal_accounts(rules, definition, method),
+                    last_switch_year: None,
                 });
             }
         }
@@ -10998,6 +11171,7 @@ pub(crate) mod tests {
                             ground: Some("pasture".to_owned()),
                             paydays: MATURE_PAYDAYS,
                             unpaid_work: BTreeMap::new(),
+                            last_switch_year: None,
                         }],
                         herds: (0..rules.herd_species.len())
                             .map(|i| [9, 6, 5].get(i).copied().unwrap_or(0))
@@ -11500,6 +11674,7 @@ pub(crate) mod tests {
                 ground: Some("pasture".to_owned()),
                 paydays: MATURE_PAYDAYS,
                 unpaid_work: BTreeMap::new(),
+                last_switch_year: None,
             }],
             herds: Vec::new(),
             employment: vec![Employment {
@@ -11643,6 +11818,7 @@ pub(crate) mod tests {
                 ground: Some("pasture".to_owned()),
                 paydays: MATURE_PAYDAYS,
                 unpaid_work: BTreeMap::new(),
+                last_switch_year: None,
             }],
             herds: Vec::new(),
             employment: vec![
@@ -12236,6 +12412,7 @@ pub(crate) mod tests {
                 ground: Some("pasture".to_owned()),
                 paydays: MATURE_PAYDAYS,
                 unpaid_work: BTreeMap::new(),
+                last_switch_year: None,
             }],
             herds: vec![0; 3],
             employment: vec![Employment {
@@ -13873,6 +14050,7 @@ pub(crate) mod tests {
                                 "food".to_owned(),
                                 bigint::Big::default()
                             )]),
+                            last_switch_year: None,
                         }],
                         herds: Vec::new(),
                         employment: vec![Employment {
@@ -18088,6 +18266,7 @@ pub(crate) mod tests {
                             ground: Some("pasture".to_owned()),
                             paydays: MATURE_PAYDAYS,
                             unpaid_work: BTreeMap::new(),
+                            last_switch_year: None,
                         }],
                         herds: vec![9, 6, 5],
                         employment: vec![Employment {
@@ -18497,6 +18676,7 @@ pub(crate) mod tests {
                 ground: Some("pasture".to_owned()),
                 paydays: MATURE_PAYDAYS,
                 unpaid_work: BTreeMap::new(),
+                last_switch_year: None,
             }],
             herds: Vec::new(),
             employment: vec![
@@ -18645,6 +18825,7 @@ pub(crate) mod tests {
                         ground: Some("pasture".to_owned()),
                         paydays: MATURE_PAYDAYS,
                         unpaid_work: BTreeMap::new(),
+                        last_switch_year: None,
                     }],
                     herds: vec![20, 0, 0],
                     employment: vec![Employment::default()],
@@ -18806,6 +18987,7 @@ pub(crate) mod tests {
                 ground: Some("pasture".to_owned()),
                 paydays: MATURE_PAYDAYS,
                 unpaid_work: BTreeMap::new(),
+                last_switch_year: None,
             }],
             herds: Vec::new(),
             employment: vec![Employment {
@@ -19711,6 +19893,7 @@ pub(crate) mod tests {
                 ground: Some("pasture".to_owned()),
                 paydays: MATURE_PAYDAYS,
                 unpaid_work: BTreeMap::new(),
+                last_switch_year: None,
             }],
             herds: vec![0, 0, 0],
             employment: vec![Employment {
@@ -20009,6 +20192,7 @@ pub(crate) mod tests {
                     ground: Some("pasture".to_owned()),
                     paydays: MATURE_PAYDAYS,
                     unpaid_work: BTreeMap::new(),
+                    last_switch_year: None,
                 }],
                 herds: vec![0, 2, 0],
                 employment: vec![Employment {
@@ -20259,6 +20443,7 @@ pub(crate) mod tests {
                 ground: Some("pasture".to_owned()),
                 paydays: MATURE_PAYDAYS,
                 unpaid_work: BTreeMap::new(),
+                last_switch_year: None,
             }],
             herds: Vec::new(),
             employment: vec![Employment {
@@ -20334,6 +20519,7 @@ pub(crate) mod tests {
                 ground: Some("pasture".to_owned()),
                 paydays: MATURE_PAYDAYS,
                 unpaid_work: BTreeMap::new(),
+                last_switch_year: None,
             }],
             herds: Vec::new(),
             employment: vec![Employment::default()],
@@ -20808,6 +20994,7 @@ pub(crate) mod tests {
                 ground: Some("pasture".to_owned()),
                 paydays: MATURE_PAYDAYS,
                 unpaid_work: BTreeMap::new(),
+                last_switch_year: None,
             }],
             herds: Vec::new(),
             employment: vec![Employment::default()],
@@ -22172,6 +22359,7 @@ pub(crate) mod tests {
                 ground: Some("pasture".to_owned()),
                 paydays: MATURE_PAYDAYS,
                 unpaid_work: BTreeMap::new(),
+                last_switch_year: None,
             }],
             herds: Vec::new(),
             employment: vec![Employment::default(); 3],
@@ -22407,6 +22595,7 @@ pub(crate) mod tests {
             ground: ground.map(str::to_owned),
             paydays,
             unpaid_work: BTreeMap::new(),
+            last_switch_year: None,
         }
     }
 

@@ -238,6 +238,7 @@ fn fuel_levels_and_stacks_survive_saves_before_and_after_noon() {
             ground: Some(ground.to_owned()),
             paydays: ck_economy::MATURE_PAYDAYS,
             unpaid_work: BTreeMap::new(),
+            last_switch_year: None,
         })
         .collect();
     let definition = rules.buildings.iter().find(|b| b.id == "farm").unwrap();
