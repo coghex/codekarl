@@ -1,6 +1,7 @@
 //! Starting a game: the scenario, the seed, the start date, `--load`, the content hashes and the build id.
 
 use std::{
+    fmt::Write as _,
     fs,
     path::{Path, PathBuf},
 };
@@ -351,7 +352,7 @@ fn a_network_changes_the_content_hash_but_not_the_simulation() {
     let crop = before.scenario.map.data.crop;
     // The fixture map's own files, as the stored network binds them (CK-401): terrain.png, rivers.toml and the layer beside the network.
     let mut roads = String::from(
-        "format = 3\nhand_list_sha256 = \"cadb7f67e609caf88b363089d58964a35c2621a970915dc72fbd70449f1c4c4d\"\nbaseline_sha256 = \"unused\"\nnext_node_id = 3\nnext_stretch_id = 1\n\
+        "format = 4\nhand_list_sha256 = \"cadb7f67e609caf88b363089d58964a35c2621a970915dc72fbd70449f1c4c4d\"\nbaseline_sha256 = \"unused\"\nnext_node_id = 3\nnext_stretch_id = 1\n\
          river_width_mm = 20000\n\
          terrain_sha256 = \"d11fe559195ce7d790dfd644e2bf9d8e82e9820e6564d710a694f0c0d1372b2f\"\n\
          rivers_sha256 = \"8898158a7e77c6ae6f7db850f2489486ed3b41dcc5153ac82fcdcdb1b5a819ff\"\n\
@@ -359,8 +360,13 @@ fn a_network_changes_the_content_hash_but_not_the_simulation() {
          sea_distance_sha256 = \"562db3788353cd656baca1ba6e8533ccf8e5fde34d7170ab7ca56d1d3e13567e\"\n\
          next_landing_id = 1\n",
     );
+    writeln!(
+        roads,
+        "cell_side_mm = {:?}",
+        vec![475_000_u64; usize::try_from(crop.height).unwrap()]
+    )
+    .unwrap();
     for (index, location) in before.scenario.locations.iter().enumerate() {
-        use std::fmt::Write as _;
         writeln!(
             roads,
             "[[node]]\nid = {}\nkind = \"place\"\ncell = [{}, {}]\nplace = \"{}\"",

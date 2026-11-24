@@ -165,6 +165,15 @@ class TopologyTests(unittest.TestCase):
 
 
 class CoordinateTests(unittest.TestCase):
+    def test_side_table_is_written_with_the_network_header(self) -> None:
+        graph = {"format": 4, "cell_side_mm": [475671, 475723]}
+        stored = tomllib.loads(network.dump_roads(graph))
+        self.assertEqual(stored["cell_side_mm"], [475671, 475723])
+
+    def test_ground_cell_sides_use_row_midpoint_and_millimetres(self) -> None:
+        self.assertEqual(network.cell_side_lengths_mm(15000, 3), [475671, 475723, 475774])
+        self.assertEqual(network.cell_side_lengths_mm(15001, 2), [475723, 475774])
+
     def test_cell_centres_give_ground_length_and_tidal_zero(self) -> None:
         origin = (20000, 15000)
         self.assertEqual(network.ground_length([(0, 0)], origin), 0)
@@ -1216,6 +1225,18 @@ class CommandTests(unittest.TestCase):
             self.assertEqual((scenario / "roads.toml").read_bytes(), before)
             self.assertEqual((scenario / "network-changes.md").read_bytes(), log)
             network.check_network(map_dir, scenario)
+            roads = scenario / "roads.toml"
+            graph = tomllib.loads(before.decode())
+            self.assertEqual(graph["cell_side_mm"], network.cell_side_lengths_mm(14979, 3))
+            for table in (
+                graph["cell_side_mm"][:-1],
+                [graph["cell_side_mm"][0] + 1, *graph["cell_side_mm"][1:]],
+            ):
+                changed = dict(graph, cell_side_mm=table)
+                roads.write_text(network.dump_roads(changed))
+                with self.assertRaisesRegex(ValueError, "cell_side_mm"):
+                    network.check_network(map_dir, scenario)
+            roads.write_bytes(before)
 
     def test_removing_highest_stretch_never_reuses_its_id(self) -> None:
         import tomllib  # noqa: PLC0415  # Inspect the stored IDs in the disposable fixture.
@@ -3443,7 +3464,7 @@ class WaterFormatTests(unittest.TestCase):
             self.assertEqual({n: (scenario / n).read_bytes() for n in first}, first)
             network.check_network(map_dir, scenario)
             stored = tomllib.loads(first["roads.toml"].decode())
-            self.assertEqual(stored["format"], 3)
+            self.assertEqual(stored["format"], 4)
             self.assertEqual(
                 [(c["id"], c["bodies"]) for c in stored["water_class"]],
                 [("barge", 3), ("currach", 3)],
@@ -3897,7 +3918,7 @@ class IrelandWaterTests(unittest.TestCase):
             ids |= set(missing.split(": ", 1)[1].split(", ")) - {"none"}
             self.assertEqual(ids, places)
 
-    def test_the_stored_network_is_format_3_and_binds_the_files_it_was_built_from(self) -> None:
+    def test_the_stored_network_is_format_4_and_binds_the_files_it_was_built_from(self) -> None:
         import hashlib  # noqa: PLC0415  # The recorded hashes are of the files themselves.
 
         scenario = self.root / "assets/scenarios/ireland-768"
@@ -3907,7 +3928,7 @@ class IrelandWaterTests(unittest.TestCase):
             ("sea_distance_sha256", scenario / "sea_distance.png"),
         ):
             self.assertEqual(self.graph[field], hashlib.sha256(path.read_bytes()).hexdigest())
-        self.assertEqual(self.graph["format"], 3)
+        self.assertEqual(self.graph["format"], 4)
         self.assertEqual([c["id"] for c in self.graph["water_class"]], ["barge", "currach"])
         self.assertEqual([b["name"] for b in self.graph["river_break"]], ["Assaroe", "Doonass"])
         self.assertEqual(self.graph.get("mark", []), [])

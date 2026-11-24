@@ -60,6 +60,7 @@ RUST_STEPS = (
     "metal.window-scene",
     "metal.window-compat",
     "metal.window-instanced",
+    "travel.scale",
     "input.core",
     "map.core",
     "sim.core",
@@ -336,7 +337,11 @@ class Levels(CheckFixture):
                 "doctor.graphics",
                 "clippy",
                 "doc",
-                *(name for name in RUST_STEPS if name not in VULKAN_OPTIONAL_STEPS),
+                *(
+                    name
+                    for name in RUST_STEPS
+                    if name not in (*VULKAN_OPTIONAL_STEPS, "travel.scale")
+                ),
                 *UNITTEST_STEPS,
                 "mypy",
                 "chat-ci",
@@ -439,6 +444,8 @@ class Levels(CheckFixture):
                     # The headless economy soak's binary: a thin `main` over the library, whose tests run with it.
                     "--bin",
                     "economy-soak",
+                    "--bin",
+                    "travel-times",
                     "--test",
                     "cli_spec_unit",
                     "--test",

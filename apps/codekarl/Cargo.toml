@@ -14,6 +14,8 @@ metal = ["dep:ck-gpu-metal", "dep:ck-window-cocoa", "ck-render-2d/metal"]
 vulkan = ["dep:ck-gpu-vulkan", "dep:ck-window-glfw", "ck-render-2d/vulkan"]
 
 [dependencies]
+num-bigint = "0.4"
+num-rational = "0.4"
 ck-gpu-metal = { path = "../../crates/gpu-metal", optional = true }
 ck-gpu-vulkan = { path = "../../crates/gpu-vulkan", optional = true }
 ck-characters = { path = "../../crates/characters" }
@@ -39,6 +41,10 @@ harness = false  # per-case results and skips appear in plain `cargo test` outpu
 [[bin]]
 name = "economy-soak"
 path = "src/bin/economy_soak.rs"
+
+[[bin]]
+name = "travel-times"
+path = "src/bin/travel_times.rs"
 
 # The windowed cases run the program in process behind a test-only keyboard filter: AppKit needs the process's main
 # thread, so the executable is a supervisor and a worker (`harness = false`), like `ck-render-2d`'s `metal_window`.
