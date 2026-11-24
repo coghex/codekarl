@@ -371,7 +371,7 @@ monastery's holdings, both, or neither. The kind-and-size tables of §3.12–3.1
 
 **The subsistence farm.**
 - **At most one per place,** as map-design §5.5 has it: all of a location's labourers work one farm.
-- **Four methods, chosen per level by value (Firm, r17):** mixed farming, wood focus, turf cutting, and **coastal subsistence** (fish and
+- **Four methods, chosen per level by need at the start (CK-404):** mixed farming, wood focus, turf cutting, and **coastal subsistence** (fish and
   seabirds, worked by peasants). Coastal levels draw on the same fish pool as the holdings' fishing (below). Mixed farming's outputs per
   level are data:
   - oats and barley at harvest;
@@ -594,6 +594,12 @@ monks die").
 
 ### 3.7 Eating and needs, daily at noon
 
+**Fuel (CK-398).** Every person needs 20 thousandths of a fuel unit each day, from the pop type's data. Hardwood supplies 1,000 per
+load and peat 700. Fuel is drawn from owned buildings when holdings fall below 60 days, then opened and burned at noon. Both drawing
+and opening rank loads by price per fuel unit at the beginning of the day, with goods order breaking ties. A saved hearth balance holds
+fuel already opened; a missed day's need is not owed later. The month's need and burned totals include the first day's burning before
+the monthly death step, which clears them. The variable temperature-related need is deferred.
+
 - **Four benefit balances** (Proposal, owner: no objection; review r7 Q2): hunger, necessities, niceties and luxuries. Opening one unit of
   a good adds **all** of its values to the balances, and nothing left over is lost.
 - **The scale (r11: hundredths, replacing r9's tenths).** Every benefit balance, good value, need and reserve test is in **hundredths
@@ -687,6 +693,10 @@ monks die").
 - **Standard of living** is derived from the tiers and satisfaction, never stored (vision, Firm).
 
 ### 3.8 Births and deaths, monthly (Firm separate rates; Proposal curves)
+
+**Fuel shortage (CK-398):** the month's unmet share is `(need − burned) × 1000 / need`, floored, or zero when need is zero. It
+scales an annual 100‰ dependent-death rate using its own saved carry. Fuel and ordinary dependent deaths are combined and capped once
+before pending deaths and the living-character floor are applied; fuel does not kill workers directly.
 
 Every factor is a small **response curve** in data: about five points, read by integer linear interpolation. So a pop costs about six
 lookups and a few multiplications a month, and every curve can be tuned without code.
@@ -1159,6 +1169,11 @@ herd stays. These are counts, not individual animals, so livestock stays abstrac
 
 **Each place is its own market** in M9. No goods move between places until merchants exist.
 
+**Fuel orders (CK-398):** a pop targets 240 days of fuel, counting its hearth and all fuel loads. Its shortfall is ordered in the
+cheapest fuel per unit at the day's opening prices, rounded up to whole loads. Spare whole loads are offered dearest per fuel unit
+first only when their removal leaves the target covered. A building retains 60 days for its owner people using the same spare rule.
+Fuel remains in the price book but is excluded from both sides of the local swap until the follow-up slice.
+
 **Every day at noon, as steps 1 and 2 of the economy's daily system (§3.9),** before any output is registered:
 1. **orders** are computed, and **prices** move.
 
@@ -1563,7 +1578,7 @@ fields cut. The engine's load report is the authority.
   - farming output is multiplied by `quality ÷ 550` inside the exact production `portion`, so an average place yields what the earlier
     tuning gave;
   - the per-crop suitability (§3.21) is unchanged: it says which crops suit the ground, and fertility says how good the ground is;
-  - fishing is unaffected.
+  - fishing, wood focus and turf cutting are unaffected by farmland quality; the latter two use forest and bog suitability.
 - **Glaciers:** fertility 0 and building land 0 (`b_ice = 0`, §3.23).
 - **Expected on the Ireland map** (prototype):
   - farmland quality runs from 14% to 78% across places, with a median of 51%;
