@@ -2336,6 +2336,20 @@ fn a_full_store_makes_no_swap_though_the_bushels_given_would_free_room() {
     for (free_ml, bushels, pounds) in [(5_000, 0, 0), (10_000, 3, 10)] {
         let (mut rules, mut place) = example_a(PEASANT, 10_000_000);
         leave_free(&mut rules, &mut place, PEASANT, free_ml);
+        let mut hungry = self::place(&rules, 3).pops.remove(2);
+        hungry.workers = 1;
+        hungry.dependents = 0;
+        hungry.employment = vec![Employment::default(); place.buildings.len()];
+        for building in &mut place.buildings {
+            building.employment.push(Employment::default());
+        }
+        place.pops.push(hungry);
+        let _house = storehouse(&rules, &mut place);
+        let church = add_building(&rules, &mut place, "holdings", 1);
+        place.buildings[church].employment[THIRD].workers = 1;
+        place.pops[THIRD].employment[church].workers = 1;
+        let buildings_before = place.buildings.clone();
+        let hungry_before = place.pops[THIRD].stock.clone();
         let (oats, fish) = (
             stock(&rules, &place, PEASANT, "oats"),
             stock(&rules, &place, PEASANT, "fish"),
@@ -2343,6 +2357,8 @@ fn a_full_store_makes_no_swap_though_the_bushels_given_would_free_room() {
         exchange(&rules, &mut place);
         assert_eq!(stock(&rules, &place, PEASANT, "oats"), oats - bushels);
         assert_eq!(stock(&rules, &place, PEASANT, "fish"), fish + pounds);
+        assert_eq!(place.buildings, buildings_before);
+        assert_eq!(place.pops[THIRD].stock, hungry_before);
     }
 }
 

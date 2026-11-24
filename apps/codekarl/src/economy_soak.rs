@@ -106,6 +106,33 @@ pub(super) fn run(arguments: impl IntoIterator<Item = String>) -> Result<String,
 )]
 fn simulate(
     rules: &Rules,
+    state: EconomyState,
+    date: Date,
+    seed: u64,
+    years: u16,
+    quality_by_place: &BTreeMap<String, u16>,
+    shelter_by_place: &BTreeMap<String, u64>,
+    nearby_by_place: &BTreeMap<String, Vec<ck_economy::NearbyPlace>>,
+) -> Result<String, String> {
+    simulate_with_supply(
+        rules,
+        state,
+        date,
+        seed,
+        years,
+        quality_by_place,
+        shelter_by_place,
+        nearby_by_place,
+        |_, _| {},
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The test supply is applied at each noon alongside the normal soak inputs."
+)]
+fn simulate_with_supply(
+    rules: &Rules,
     mut state: EconomyState,
     mut date: Date,
     seed: u64,
@@ -113,6 +140,7 @@ fn simulate(
     quality_by_place: &BTreeMap<String, u16>,
     shelter_by_place: &BTreeMap<String, u64>,
     nearby_by_place: &BTreeMap<String, Vec<ck_economy::NearbyPlace>>,
+    mut supply: impl FnMut(&Rules, &mut EconomyState),
 ) -> Result<String, String> {
     let mut csv = String::from(
         "seed,year,month,place,pop,pop_type,size,workers,dependents,needs_pm,intake_pm,food_days_milli,births,deaths,employed_workers,moved_people,crowding_pm,prices,production,stores,herds,posted_wages,losses\n",
@@ -121,6 +149,7 @@ fn simulate(
         let days = days_in_month(date.year, date.month).map_err(|error| error.to_string())?;
         for day in 1..=days {
             date.day = day;
+            supply(rules, &mut state);
             let ledger = ck_economy::run_daily_economy_with_context(
                 rules,
                 &mut state,
@@ -543,7 +572,7 @@ mod tests {
         let assets = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
         let scenario_directory = assets.join("scenarios/ireland-768");
         let map = ck_map::load_scenario(&scenario_directory).expect("Ireland scenario loads");
-        let mut rules = Rules::load(assets.join("game/economy.toml")).expect("economy rules load");
+        let rules = Rules::load(assets.join("game/economy.toml")).expect("economy rules load");
         let (mut state, report) =
             crate::game::economy::starting_economy(&assets, &scenario_directory, &map)
                 .expect("island starting economy loads");
@@ -648,13 +677,6 @@ mod tests {
             .iter()
             .position(|good| good.id == "oats")
             .expect("oats are a food good");
-        // This controlled test gives each pop a durable food reserve; the shipped rates stay unchanged.
-        rules.goods[oats].pop_limit_milli = 1_000_000_000;
-        for place in &mut state.places {
-            for pop in &mut place.pops {
-                pop.stock[oats] = 1_000_000_000;
-            }
-        }
         let land = crate::game::economy::land_counts(&map, &rules.terrain_order)
             .expect("Ireland catchments load");
         let mut quality_by_place = BTreeMap::new();
@@ -690,7 +712,7 @@ mod tests {
         if map.start.day > 1 {
             advance_month(&mut date).expect("scenario date advances");
         }
-        let output = simulate(
+        let output = simulate_with_supply(
             &rules,
             state,
             date,
@@ -699,6 +721,33 @@ mod tests {
             &quality_by_place,
             &shelter_by_place,
             &nearby,
+            |rules, state| {
+                // Explicit daily provisions replace the old impossible billion-bushel reserve. Each
+                // pop receives the same target of 100 bushels, bounded by its ordinary cap and
+                // remaining volume. Population sizes still determine the food available per head.
+                for place in &mut state.places {
+                    for pop in &mut place.pops {
+                        let people = u128::from(pop.workers) + u128::from(pop.dependents);
+                        let target = 100_u128;
+                        let used: u128 = rules
+                            .goods
+                            .iter()
+                            .zip(&pop.stock)
+                            .filter(|(good, _)| !good.stacked_outside)
+                            .map(|(good, units)| u128::from(*units) * u128::from(good.volume_ml))
+                            .sum();
+                        let volume_room = (people * 720_000).saturating_sub(used);
+                        let cap = people * u128::from(rules.goods[oats].pop_limit_milli) / 1000;
+                        let held = u128::from(pop.stock[oats]);
+                        let offered = target
+                            .saturating_sub(held)
+                            .min(cap.saturating_sub(held))
+                            .min(volume_room / u128::from(rules.goods[oats].volume_ml));
+                        pop.stock[oats] +=
+                            u64::try_from(offered).expect("fixture supply fits in u64");
+                    }
+                }
+            },
         )
         .expect("the deterministic 50-year island soak runs");
         let mut monks = BTreeMap::<String, u64>::new();

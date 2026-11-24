@@ -251,6 +251,9 @@ pub struct BuildingType {
     /// Market capacity one level gives to the building's owners, in millilitres a day (CK-391). Nothing when left out.
     #[serde(default)]
     pub market_capacity_ml_per_level: u64,
+    /// Whether this building receives local surplus as a church building.
+    #[serde(default)]
+    pub church: bool,
     /// Species kept by this building, keyed by animal good.
     #[serde(default)]
     pub herds: BTreeMap<String, HerdCapacity>,
@@ -1440,6 +1443,38 @@ pub fn largest_remainder(total: u64, weights: &[u64]) -> Result<Vec<u64>, &'stat
         .take(usize::try_from(total - assigned).map_err(|_| "remainder too large")?)
     {
         result[index] += 1;
+    }
+    Ok(result)
+}
+
+// Split a receipt by weight, repeatedly redistributing shares that do not fit.
+fn split_with_caps(total: u64, weights: &[u64], caps: &[u64]) -> Result<Vec<u64>, &'static str> {
+    if weights.len() != caps.len() {
+        return Err("weight and capacity dimensions differ");
+    }
+    let mut result = vec![0_u64; weights.len()];
+    let mut remaining = total;
+    while remaining > 0 {
+        let active: Vec<u64> = weights
+            .iter()
+            .zip(caps)
+            .zip(&result)
+            .map(|((&weight, &cap), &used)| if used < cap { weight } else { 0 })
+            .collect();
+        if active.iter().all(|weight| *weight == 0) {
+            break;
+        }
+        let shares = largest_remainder(remaining, &active)?;
+        let mut accepted = 0_u64;
+        for (index, share) in shares.into_iter().enumerate() {
+            let take = share.min(caps[index] - result[index]);
+            result[index] += take;
+            accepted += take;
+        }
+        if accepted == 0 {
+            break;
+        }
+        remaining -= accepted;
     }
     Ok(result)
 }
@@ -4435,6 +4470,91 @@ fn receive_storehouse_at(
     receive_storehouse(rules, building, account_pop, good_index, offered)
 }
 
+// Pass a pop's surplus to its account, eligible buildings and other pops.
+fn route_pop_surplus(
+    rules: &Rules,
+    pops: &mut [PopState],
+    buildings: &mut [BuildingState],
+    giver: usize,
+    good: usize,
+    mut remaining: u64,
+) -> Result<u64, DataError> {
+    if remaining == 0 {
+        return Ok(0);
+    }
+    let storehouse = buildings
+        .iter()
+        .position(|b| b.storehouse_accounts.is_some());
+    if let Some(index) = storehouse {
+        remaining = receive_storehouse_at(rules, buildings, index, Some(giver), good, remaining)?;
+    }
+    let owns = buildings
+        .iter()
+        .any(|b| b.employment.get(giver).is_some_and(|e| e.owners > 0));
+    let mut tried = vec![false; buildings.len()];
+    for church in [false, true] {
+        if remaining == 0 {
+            return Ok(0);
+        }
+        let mut indexes = Vec::new();
+        let mut weights = Vec::new();
+        let mut caps = Vec::new();
+        for (index, building) in buildings.iter().enumerate() {
+            let weight = if church {
+                if tried[index]
+                    || !rules
+                        .buildings
+                        .iter()
+                        .any(|b| b.id == building.kind && b.church)
+                {
+                    0
+                } else {
+                    u64::from(building.levels)
+                }
+            } else {
+                building
+                    .employment
+                    .get(giver)
+                    .map_or(0, |e| if owns { e.owners } else { e.workers })
+            };
+            if weight == 0 {
+                continue;
+            }
+            tried[index] = true;
+            let mut copy = building.clone();
+            let left = if copy.storehouse_accounts.is_some() {
+                receive_storehouse(rules, &mut copy, None, good, remaining)?
+            } else {
+                receive_building(rules, &mut copy, good, remaining)?
+            };
+            indexes.push(index);
+            weights.push(weight);
+            caps.push(remaining - left);
+        }
+        let shares = split_with_caps(remaining, &weights, &caps)
+            .map_err(|error| missing_data("surplus.split".to_owned(), error))?;
+        for (index, share) in indexes.into_iter().zip(shares) {
+            let building = &mut buildings[index];
+            let left = if building.storehouse_accounts.is_some() {
+                receive_storehouse(rules, building, None, good, share)?
+            } else {
+                receive_building(rules, building, good, share)?
+            };
+            remaining -= share - left;
+        }
+    }
+    if remaining == 0 {
+        return Ok(0);
+    }
+    let order = alms_order(rules, pops, storehouse.and_then(|i| buildings.get(i)))?;
+    for index in order {
+        if index != giver {
+            remaining = receive_pop(rules, &mut pops[index], good, remaining)?;
+        }
+    }
+    Ok(remaining)
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "The overflow route updates the source, receipts, counters and returned ledger atomically."
@@ -4454,41 +4574,45 @@ fn settle_overflow(
         .position(|building| building.storehouse_accounts.is_some());
     for (account_pop, amount) in contributions {
         let mut remaining = *amount;
-        {
-            let source = buildings.get_mut(source_building).ok_or_else(|| {
-                missing_data("payday.building".to_owned(), "source building is missing")
-            })?;
-            remaining = receive_building(rules, source, good_index, remaining)?;
-        }
-        if remaining == 0 {
-            continue;
-        }
-        let priorities = alms_order(
-            rules,
-            pops,
-            storehouse_index.and_then(|index| buildings.get(index)),
-        )?;
-        for pop_index in priorities {
-            if remaining == 0 {
-                break;
+        if let Some(giver) = account_pop {
+            remaining = route_pop_surplus(rules, pops, buildings, *giver, good_index, remaining)?;
+        } else {
+            {
+                let source = buildings.get_mut(source_building).ok_or_else(|| {
+                    missing_data("payday.building".to_owned(), "source building is missing")
+                })?;
+                remaining = receive_building(rules, source, good_index, remaining)?;
             }
-            let pop = pops.get_mut(pop_index).ok_or_else(|| {
-                missing_data("alms.population".to_owned(), "pop index is missing")
-            })?;
-            remaining = receive_pop(rules, pop, good_index, remaining)?;
-        }
-        if remaining == 0 {
-            continue;
-        }
-        if let Some(index) = storehouse_index {
-            remaining = receive_storehouse_at(
+            if remaining == 0 {
+                continue;
+            }
+            let priorities = alms_order(
                 rules,
-                buildings,
-                index,
-                *account_pop,
-                good_index,
-                remaining,
+                pops,
+                storehouse_index.and_then(|index| buildings.get(index)),
             )?;
+            for pop_index in priorities {
+                if remaining == 0 {
+                    break;
+                }
+                let pop = pops.get_mut(pop_index).ok_or_else(|| {
+                    missing_data("alms.population".to_owned(), "pop index is missing")
+                })?;
+                remaining = receive_pop(rules, pop, good_index, remaining)?;
+            }
+            if remaining == 0 {
+                continue;
+            }
+            if let Some(index) = storehouse_index {
+                remaining = receive_storehouse_at(
+                    rules,
+                    buildings,
+                    index,
+                    *account_pop,
+                    good_index,
+                    remaining,
+                )?;
+            }
         }
         if remaining > 0 {
             place_counters.current.losses = place_counters
@@ -5723,8 +5847,16 @@ fn butcher_emergency(
                         item.units,
                         "ledger.daily.butchered",
                     )?;
-                    let lost =
+                    let extra =
                         receive_pop(rules, &mut place.pops[pop_index], good_index, item.units)?;
+                    let lost = route_pop_surplus(
+                        rules,
+                        &mut place.pops,
+                        &mut place.buildings,
+                        pop_index,
+                        good_index,
+                        extra,
+                    )?;
                     if lost != 0 {
                         add_daily_good(&mut ledger.lost, good_index, lost, "ledger.daily.lost")?;
                         add_counter_units(
@@ -5854,6 +5986,92 @@ pub fn run_daily_consumption(
     run_daily_consumption_with_ledger(rules, state, date).map(|(intake, _)| intake)
 }
 
+fn shed_pop_surplus(
+    rules: &Rules,
+    place: &mut PlaceState,
+    giver: usize,
+    ledger: &mut DailyConsumptionLedger,
+) -> Result<(), DataError> {
+    let people = place.pops[giver]
+        .workers
+        .checked_add(place.pops[giver].dependents)
+        .ok_or_else(|| missing_data("pop.size".to_owned(), "population size overflow"))?;
+    let mut shed = Vec::new();
+    for good in 0..rules.goods.len() {
+        let (cap, _) = pop_store_limits(rules, people, good)?;
+        let extra = place.pops[giver].stock[good].saturating_sub(cap);
+        if extra > 0 {
+            place.pops[giver].stock[good] -= extra;
+            shed.push((good, extra));
+        }
+    }
+    let (_, capacity) = pop_store_limits(rules, people, 0)?;
+    while volume_used(rules, &place.pops[giver].stock, None)? > capacity {
+        let good = (0..rules.goods.len())
+            .filter(|&i| {
+                place.pops[giver].stock[i] > 0
+                    && !rules.goods[i].stacked_outside
+                    && rules.goods[i].volume_ml > 0
+            })
+            .min_by(|&a, &b| {
+                (u128::from(place.prices_milli[a]) * u128::from(rules.goods[b].volume_ml))
+                    .cmp(
+                        &(u128::from(place.prices_milli[b]) * u128::from(rules.goods[a].volume_ml)),
+                    )
+                    .then(a.cmp(&b))
+            })
+            .ok_or_else(|| {
+                missing_data(
+                    "surplus.volume".to_owned(),
+                    "over capacity without a stored good",
+                )
+            })?;
+        let over = volume_used(rules, &place.pops[giver].stock, None)? - capacity;
+        let volume = u128::from(rules.goods[good].volume_ml);
+        let units = u64::try_from(
+            over.div_ceil(volume)
+                .min(u128::from(place.pops[giver].stock[good])),
+        )
+        .expect("bounded by stock");
+        place.pops[giver].stock[good] -= units;
+        shed.push((good, units));
+    }
+    for (good, amount) in shed {
+        let lost = route_pop_surplus(
+            rules,
+            &mut place.pops,
+            &mut place.buildings,
+            giver,
+            good,
+            amount,
+        )?;
+        if lost == 0 {
+            continue;
+        }
+        add_daily_good(&mut ledger.lost, good, lost, "ledger.daily.lost")?;
+        add_counter_units(
+            &mut place.counters.current.lost,
+            rules.goods.len(),
+            good,
+            lost,
+            "counters.lost",
+        )?;
+        place.counters.current.losses = place
+            .counters
+            .current
+            .losses
+            .checked_add(lost)
+            .ok_or_else(|| missing_data("counters.losses".to_owned(), "place loss overflow"))?;
+        place.pops[giver].counters.current.losses = place.pops[giver]
+            .counters
+            .current
+            .losses
+            .checked_add(lost)
+            .ok_or_else(|| missing_data("counters.losses".to_owned(), "pop loss overflow"))?;
+    }
+    Ok(())
+}
+
 fn run_daily_consumption_with_ledger(
     rules: &Rules,
     state: &mut EconomyState,
@@ -5899,6 +6117,9 @@ fn run_daily_consumption_at_prices(
             let intake_pm = consume_pop_tracked(rules, place, index, &mut ledger)?;
             place_intake.push(intake_pm);
             index += 1;
+        }
+        for giver in 0..place.pops.len() {
+            shed_pop_surplus(rules, place, giver, &mut ledger)?;
         }
         for good_index in 0..rules.goods.len() {
             let opened = ledger.opened[good_index] - opened_before[good_index];
@@ -9673,6 +9894,7 @@ pub(crate) mod tests {
             buildings: vec![
                 BuildingType {
                     id: "farm".to_owned(),
+                    church: false,
                     herds: BTreeMap::new(),
                     workers_per_level: 10,
                     land_per_level: 2,
@@ -9694,6 +9916,7 @@ pub(crate) mod tests {
                 },
                 BuildingType {
                     id: "storehouse".to_owned(),
+                    church: false,
                     herds: BTreeMap::new(),
                     workers_per_level: 2,
                     land_per_level: 0,
@@ -10181,6 +10404,269 @@ pub(crate) mod tests {
         place.buildings[1].employment[2].workers = 4;
         place.pops[2].employment[1].workers = 4;
         (rules, state)
+    }
+
+    #[test]
+    fn production_payday_fills_all_worker_stores_before_alms() {
+        let (mut rules, mut state) = daily_accounting_fixture();
+        let early = 0;
+        let later = rules.goods.iter().position(|g| g.id == "beef").unwrap();
+        let filler = rules.goods.iter().position(|g| g.id == "hides").unwrap();
+        for good in [early, later, filler] {
+            rules.goods[good].volume_ml = 720_000;
+            rules.goods[good].pop_limit_milli = 1_000;
+        }
+        let place = &mut state.places[0];
+        place.buildings.remove(0);
+        let mut first = place.buildings[0].clone();
+        first.herds.clear();
+        first.method_levels.fill(0);
+        first.production_carries = vec![vec![0; rules.goods.len()]];
+        first.method_suitability = vec![vec![1_000; rules.goods.len()]];
+        first.wage_carries = vec![0; rules.goods.len()];
+        first.pay_carries = vec![0; rules.goods.len()];
+        first.pay_carries[early] = 1;
+        first.employment = vec![
+            Employment {
+                owners: 0,
+                workers: 1,
+            },
+            Employment::default(),
+        ];
+        let mut second = first.clone();
+        second.pay_carries[early] = 0;
+        second.pay_carries[later] = 1;
+        second.employment = vec![
+            Employment::default(),
+            Employment {
+                owners: 0,
+                workers: 1,
+            },
+        ];
+        place.buildings = vec![first, second];
+        for pop in &mut place.pops {
+            pop.workers = 1;
+            pop.dependents = 0;
+            pop.stock.fill(0);
+            pop.employment = vec![Employment::default(); 2];
+        }
+        place.pops[0].stock[filler] = 1;
+        place.pops[0].employment[0].workers = 1;
+        place.pops[1].employment[1].workers = 1;
+        let ledger = run_monthly_production(
+            &rules,
+            &mut state,
+            Date {
+                year: 768,
+                month: 1,
+                day: 1,
+                hour: 12,
+            },
+        )
+        .unwrap();
+        let place = &state.places[0];
+        assert_eq!(place.pops[1].stock[early], 0);
+        assert_eq!(
+            place.pops[1].stock[later], 1,
+            "the later wage takes its own store first"
+        );
+        assert_eq!(ledger.lost[early], 1);
+        assert_eq!(place.pops[0].counters.current.losses, 1);
+    }
+
+    #[test]
+    fn production_payday_gives_last_building_room_to_earlier_pop() {
+        let (mut rules, mut state) = daily_accounting_fixture();
+        let good = 0;
+        rules.goods[good].pop_limit_milli = 450_000;
+        rules.goods[good].volume_ml = 1;
+        let place = &mut state.places[0];
+        place.buildings.remove(0);
+        let mut source = place.buildings[0].clone();
+        source.herds.clear();
+        source.method_levels.fill(0);
+        source.production_carries = vec![vec![0; rules.goods.len()]];
+        source.method_suitability = vec![vec![1_000; rules.goods.len()]];
+        source.wage_carries = vec![0; rules.goods.len()];
+        source.pay_carries = vec![0; rules.goods.len()];
+        source.pay_carries[good] = 2;
+        source.stock[good] = 120;
+        source.employment = vec![
+            Employment {
+                owners: 0,
+                workers: 1
+            };
+            2
+        ];
+        let mut target = source.clone();
+        target.pay_carries[good] = 0;
+        target.stock[good] = 59;
+        target.employment = vec![
+            Employment {
+                owners: 1,
+                workers: 1,
+            },
+            Employment {
+                owners: 1,
+                workers: 0,
+            },
+        ];
+        place.buildings = vec![source, target];
+        for pop in &mut place.pops {
+            pop.kind = "labourer".to_owned();
+            pop.workers = 1;
+            pop.dependents = 0;
+            pop.stock.fill(0);
+            pop.stock[good] = 450;
+            pop.employment = vec![Employment::default(); 2];
+        }
+        let mut two_goods_rules = rules.clone();
+        let later = two_goods_rules
+            .goods
+            .iter()
+            .position(|g| g.id == "hides")
+            .unwrap();
+        two_goods_rules.goods[good].volume_ml = 100_000;
+        two_goods_rules.goods[later].volume_ml = 100_000;
+        two_goods_rules.goods[later].pop_limit_milli = 450_000;
+        let mut two_goods = state.clone();
+        let place = &mut two_goods.places[0];
+        place.buildings[0].stock[good] = 2;
+        place.buildings[0].pay_carries[good] = 1;
+        place.buildings[0].pay_carries[later] = 1;
+        place.buildings[0].employment[1].workers = 0;
+        place.buildings[1].stock[good] = 0;
+        let date = Date {
+            year: 768,
+            month: 1,
+            day: 1,
+            hour: 12,
+        };
+        let ledger = run_monthly_production(&rules, &mut state, date).unwrap();
+        let place = &state.places[0];
+        assert_eq!(place.buildings[1].stock[good], 60);
+        assert_eq!(place.pops[0].counters.current.losses, 0);
+        assert_eq!(place.pops[1].counters.current.losses, 1);
+        assert_eq!(ledger.lost[good], 1);
+        let ledger = run_monthly_production(&two_goods_rules, &mut two_goods, date).unwrap();
+        let place = &two_goods.places[0];
+        assert_eq!(place.buildings[1].stock[good], 1);
+        assert_eq!(place.buildings[1].stock[later], 0);
+        assert_eq!(ledger.lost[later], 1);
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "The same fixture checks the fee both directly and through the monthly step."
+    )]
+    fn fee_payday_settles_each_good_before_paying_the_next() {
+        let (mut rules, mut state) = daily_accounting_fixture();
+        let early = 0; // Fixture food is not accepted by a storehouse.
+        let later = rules.goods.iter().position(|g| g.id == "beef").unwrap();
+        let filler = rules.goods.iter().position(|g| g.id == "hides").unwrap();
+        for good in [early, later, filler] {
+            rules.goods[good].volume_ml = 720_000;
+            rules.goods[good].pop_limit_milli = 1_000;
+        }
+        let place = &mut state.places[0];
+        place.buildings.truncate(1);
+        for pop in &mut place.pops {
+            pop.kind = "peasant".to_owned();
+            pop.workers = 1;
+            pop.dependents = 0;
+            pop.stock.fill(0);
+            pop.employment = vec![Employment {
+                owners: 0,
+                workers: 1,
+            }];
+        }
+        place.pops[0].stock[filler] = 1;
+        let building = &mut place.buildings[0];
+        building.method_levels = vec![0, 1, 0];
+        building.employment = vec![
+            Employment {
+                owners: 0,
+                workers: 1
+            };
+            2
+        ];
+        building.stock.fill(0);
+        let accounts = building.storehouse_accounts.as_mut().unwrap();
+        for account in &mut accounts.pops {
+            account.fill(0);
+        }
+        accounts.communal.fill(0);
+        building.fee_carries = vec![vec![0; rules.goods.len()]; 3];
+        building.pay_carries = vec![0; rules.goods.len()];
+        building.pay_carries[early] = 1;
+        building.pay_carries[later] = 2;
+        let mut monthly = EconomyState {
+            places: vec![place.clone()],
+        };
+        let mut monthly_ledger = ProductionLedger::new(rules.goods.len(), rules.herd_species.len());
+        monthly_ledger.places.push(PlaceProductionLedger::new(
+            &monthly.places[0].id,
+            rules.goods.len(),
+            rules.herd_species.len(),
+        ));
+        monthly_ledger.places[0].stock_after =
+            total_stored_goods(&rules, &monthly.places[0]).unwrap();
+        monthly_ledger.stock_after = monthly_ledger.places[0].stock_after.clone();
+        run_monthly_demography_with_floors(
+            &rules,
+            &mut monthly,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            Some((0, 768, &mut monthly_ledger)),
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        assert_eq!(monthly.places[0].pops[1].stock[early], 1);
+        assert_eq!(
+            monthly.places[0].buildings[0]
+                .storehouse_accounts
+                .as_ref()
+                .unwrap()
+                .pops[1][later],
+            1
+        );
+        let mut ledger =
+            PlaceProductionLedger::new("fee", rules.goods.len(), rules.herd_species.len());
+        pay_storehouse_fee(
+            &rules,
+            "fee",
+            &place.prices_milli,
+            0,
+            768,
+            &mut place.pops,
+            &mut place.buildings,
+            0,
+            &mut place.counters,
+            &mut ledger,
+        )
+        .unwrap();
+        assert_eq!(
+            place.pops[1].stock[early], 1,
+            "earlier good reaches B as alms"
+        );
+        assert_eq!(place.pops[1].stock[later], 0);
+        let accounts = place.buildings[0].storehouse_accounts.as_ref().unwrap();
+        assert_eq!(accounts.pops[0][later], 1);
+        assert_eq!(
+            accounts.pops[1][later], 1,
+            "B's later wage goes to its account"
+        );
+        assert_eq!(
+            place.buildings[0].stock,
+            storehouse_physical_stock(&rules, accounts)
+        );
+        assert_eq!(ledger.lost.iter().sum::<u64>(), 0);
+        assert_eq!(place.buildings[0].paid_history[0], 2);
+        assert_eq!(
+            place.buildings[0].wage_history[0], 0,
+            "old carries are not new fee value"
+        );
     }
 
     #[test]
@@ -11711,6 +12197,18 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn shipped_holdings_alone_are_marked_as_church_buildings() {
+        let rules = shipped_rules();
+        let church = rules
+            .buildings
+            .iter()
+            .filter(|building| building.church)
+            .map(|building| building.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(church, ["holdings"]);
+    }
+
+    #[test]
     fn shipped_building_recruitment_ranges_match_slice_contract() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
         let rules = Rules::load(root.join("game/economy.toml")).unwrap();
@@ -11786,6 +12284,157 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn noon_sheds_stock_after_a_person_is_already_gone() {
+        let (rules, mut state) = daily_accounting_fixture();
+        let hides = rules.goods.iter().position(|g| g.id == "hides").unwrap();
+        let place = &mut state.places[0];
+        place.buildings.clear();
+        for pop in &mut place.pops {
+            pop.employment.clear();
+            pop.stock.fill(0);
+            pop.stock[hides] = 1;
+        }
+        // The first pop had two people's allowance before one left.
+        place.pops[0].stock[hides] = 2;
+        let ledger = run_daily_economy(
+            &rules,
+            &mut state,
+            Date {
+                year: 768,
+                month: 1,
+                day: 2,
+                hour: 12,
+            },
+        )
+        .unwrap();
+        assert_eq!(state.places[0].pops[0].stock[hides], 1);
+        assert_eq!(state.places[0].pops[1].stock[hides], 1);
+        assert_eq!(ledger.daily_consumption.unwrap().lost[hides], 1);
+        assert_eq!(state.places[0].pops[0].counters.current.losses, 1);
+    }
+
+    #[test]
+    fn noon_shedding_gives_the_earlier_pop_the_last_building_room() {
+        let (mut rules, mut state) = daily_accounting_fixture();
+        let hides = rules.goods.iter().position(|g| g.id == "hides").unwrap();
+        rules.goods[hides].pop_limit_milli = 450_000;
+        let place = &mut state.places[0];
+        place.buildings.remove(0);
+        let building = &mut place.buildings[0];
+        building.herds.fill(0);
+        building.stock[hides] = 59;
+        building.employment[0] = Employment {
+            owners: 1,
+            workers: 1,
+        };
+        building.employment[1] = Employment {
+            owners: 1,
+            workers: 0,
+        };
+        for pop in &mut place.pops {
+            pop.employment = vec![Employment::default()];
+            pop.stock.fill(0);
+            pop.stock[hides] = 451;
+        }
+        let ledger = run_daily_economy(
+            &rules,
+            &mut state,
+            Date {
+                year: 768,
+                month: 1,
+                day: 2,
+                hour: 12,
+            },
+        )
+        .unwrap();
+        let place = &state.places[0];
+        assert_eq!(place.buildings[0].stock[hides], 60);
+        assert_eq!(place.pops[0].counters.current.losses, 0);
+        assert_eq!(place.pops[1].counters.current.losses, 1);
+        assert_eq!(ledger.daily_consumption.unwrap().lost[hides], 1);
+    }
+
+    #[test]
+    fn noon_sheds_per_good_limits_before_cheapest_volume() {
+        let (mut rules, mut state) = daily_accounting_fixture();
+        let cheap = rules.goods.iter().position(|g| g.id == "hides").unwrap();
+        let dear = rules.goods.iter().position(|g| g.id == "beeswax").unwrap();
+        rules.goods[cheap].volume_ml = 720_000;
+        rules.goods[cheap].pop_limit_milli = 2_000;
+        rules.goods[dear].volume_ml = 720_000;
+        rules.goods[dear].pop_limit_milli = 1_000;
+        rules.goods[dear].base_price = 10;
+        rules
+            .ticking_rates_million
+            .get_mut("beeswax")
+            .unwrap()
+            .insert("peasant".to_owned(), 0);
+        let place = &mut state.places[0];
+        place.buildings.clear();
+        place.pops.truncate(1);
+        place.pops[0].employment.clear();
+        place.pops[0].stock.fill(0);
+        place.pops[0].stock[cheap] = 1;
+        place.pops[0].stock[dear] = 2;
+        place.prices_milli[cheap] = 1_000;
+        place.prices_milli[dear] = 10_000;
+        let mut per_good_rules = rules.clone();
+        per_good_rules.goods[cheap].volume_ml = 360_000;
+        per_good_rules.goods[dear].volume_ml = 360_000;
+        let mut per_good_state = state.clone();
+        let mut outside_rules = rules.clone();
+        outside_rules.goods[cheap].stacked_outside = true;
+        outside_rules.goods[cheap].pop_limit_milli = 1_000;
+        outside_rules.goods[dear].pop_limit_milli = 2_000;
+        let mut outside_state = state.clone();
+        outside_state.places[0].pops[0].stock[cheap] = 2;
+        let outside = run_daily_economy(
+            &outside_rules,
+            &mut outside_state,
+            Date {
+                year: 768,
+                month: 1,
+                day: 2,
+                hour: 12,
+            },
+        )
+        .unwrap();
+        assert_eq!(outside_state.places[0].pops[0].stock[cheap], 1);
+        assert_eq!(outside_state.places[0].pops[0].stock[dear], 1);
+        let outside_lost = outside.daily_consumption.unwrap().lost;
+        assert_eq!((outside_lost[cheap], outside_lost[dear]), (1, 1));
+        let first = run_daily_economy(
+            &per_good_rules,
+            &mut per_good_state,
+            Date {
+                year: 768,
+                month: 1,
+                day: 2,
+                hour: 12,
+            },
+        )
+        .unwrap();
+        assert_eq!(per_good_state.places[0].pops[0].stock[cheap], 1);
+        assert_eq!(per_good_state.places[0].pops[0].stock[dear], 1);
+        assert_eq!(first.daily_consumption.unwrap().lost[dear], 1);
+        let ledger = run_daily_economy(
+            &rules,
+            &mut state,
+            Date {
+                year: 768,
+                month: 1,
+                day: 2,
+                hour: 12,
+            },
+        )
+        .unwrap();
+        let pop = &state.places[0].pops[0];
+        assert_eq!((pop.stock[cheap], pop.stock[dear]), (0, 1));
+        let lost = ledger.daily_consumption.unwrap().lost;
+        assert_eq!((lost[cheap], lost[dear]), (1, 1));
+    }
+
+    #[test]
     fn daily_ledger_conserves_drawing_butchering_opening_ticking_and_benefits() {
         let (rules, mut state) = daily_accounting_fixture();
         let system_ledger = run_daily_economy(
@@ -11808,10 +12457,10 @@ pub(crate) mod tests {
         );
         assert_eq!(
             ledger.lost[rules.goods.iter().position(|g| g.id == "pork").unwrap()],
-            87
+            86
         );
-        assert_eq!(state.places[0].counters.current.losses, 87);
-        assert_eq!(state.places[0].pops[1].counters.current.losses, 87);
+        assert_eq!(state.places[0].counters.current.losses, 86);
+        assert_eq!(state.places[0].pops[1].counters.current.losses, 86);
         let pork = rules
             .goods
             .iter()
@@ -11829,7 +12478,7 @@ pub(crate) mod tests {
             "zero-hunger ticking is use"
         );
         assert_eq!(
-            counters.lost[pork], 87,
+            counters.lost[pork], 86,
             "overflow loss is attributed by good"
         );
         assert_eq!(counters.lost.iter().sum::<u64>(), counters.losses);
@@ -13037,6 +13686,8 @@ pub(crate) mod tests {
             .iter()
             .position(|good| good.id == "oats")
             .unwrap();
+        rules.goods[oats].pop_limit_milli = 1_000_000_000;
+        rules.goods[oats].volume_ml = 1;
         let place = &mut state.places[0];
         place.pops.truncate(1);
         place.pops[0].workers = 20;
@@ -13908,6 +14559,7 @@ pub(crate) mod tests {
             1,
             BuildingType {
                 id: "holdings".to_owned(),
+                church: false,
                 herds: BTreeMap::new(),
                 workers_per_level: 10,
                 land_per_level: 2,
@@ -16335,6 +16987,7 @@ pub(crate) mod tests {
             1,
             BuildingType {
                 id: "holdings".to_owned(),
+                church: false,
                 herds: BTreeMap::new(),
                 workers_per_level: 10,
                 land_per_level: 2,
@@ -16463,6 +17116,19 @@ pub(crate) mod tests {
         ]);
         assert_eq!(storehouse_kinds(&rules, &production, 2), [1, 0, 1]);
         assert_eq!(storehouse_kinds(&rules, &BTreeMap::new(), 2), [2, 0, 0]);
+    }
+
+    #[test]
+    fn overflow_split_redistributes_full_buildings_in_order() {
+        assert_eq!(
+            split_with_caps(12, &[1, 1, 1], &[1, 20, 20]).unwrap(),
+            vec![1, 6, 5]
+        );
+        assert_eq!(
+            split_with_caps(2, &[1, 1, 1], &[10, 10, 10]).unwrap(),
+            vec![1, 1, 0]
+        );
+        assert_eq!(split_with_caps(12, &[1, 1], &[1, 2]).unwrap(), vec![1, 2]);
     }
 
     #[test]
@@ -17220,7 +17886,11 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn overflow_pays_alms_then_records_source_and_place_loss() {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "The shared fixture checks both pop and building routes."
+    )]
+    fn overflow_route_order_and_alms_full_store_with_account_room() {
         let mut rules = tiny_rules();
         rules.goods[0].id = "oats".to_owned();
         rules.goods[0].volume_ml = 1;
@@ -17290,6 +17960,342 @@ pub(crate) mod tests {
             paid_history: vec![0; WAGE_HISTORY_MONTHS],
             paid_years: vec![0; WAGE_HISTORY_MONTHS],
         };
+        // The account takes first, followed by the giver's workplace, the church and alms.
+        let mut route_rules = rules.clone();
+        route_rules.goods[0].pop_limit_milli = 450_000;
+        let mut church_type = route_rules.buildings[0].clone();
+        church_type.id = "holdings".to_owned();
+        church_type.church = true;
+        route_rules.buildings.push(church_type);
+        let mut workplace = farm.clone();
+        workplace.stock[0] = 58;
+        let mut church = farm.clone();
+        church.kind = "holdings".to_owned();
+        church.stock[0] = 728;
+        church.employment = vec![
+            Employment::default(),
+            Employment {
+                owners: 0,
+                workers: 1,
+            },
+        ];
+        let mut account = storehouse.clone();
+        account.stock[0] = 22_498;
+        account.storehouse_accounts.as_mut().unwrap().communal[0] = 22_498;
+        let mut route_pops = vec![pop("labourer", 450), pop("peasant", 0)];
+        let mut route_buildings = vec![workplace, church, account];
+        let lost = route_pop_surplus(&route_rules, &mut route_pops, &mut route_buildings, 0, 0, 8)
+            .unwrap();
+        assert_eq!(lost, 0);
+        assert_eq!(
+            route_buildings[2]
+                .storehouse_accounts
+                .as_ref()
+                .unwrap()
+                .pops[0][0],
+            2
+        );
+        assert_eq!(route_buildings[0].stock[0], 60);
+        assert_eq!(route_buildings[1].stock[0], 730);
+        assert_eq!(route_pops[1].stock[0], 2);
+
+        // Building overhead retains its old alms-then-communal route, skipping the church.
+        let mut source = farm.clone();
+        source.stock[0] = 60;
+        let mut church = farm.clone();
+        church.kind = "holdings".to_owned();
+        church.stock[0] = 728;
+        let mut empty_storehouse = storehouse.clone();
+        empty_storehouse.stock[0] = 0;
+        empty_storehouse
+            .storehouse_accounts
+            .as_mut()
+            .unwrap()
+            .communal[0] = 0;
+        let mut overhead_pops = vec![pop("labourer", 450), pop("labourer", 449)];
+        let mut overhead_buildings = vec![source, church, empty_storehouse];
+        let mut overhead_counters = CounterBuckets::default();
+        let mut overhead_ledger = PlaceProductionLedger::new("fort", 1, 3);
+        settle_overflow(
+            &route_rules,
+            &mut overhead_pops,
+            &mut overhead_buildings,
+            0,
+            0,
+            &[(None, 2)],
+            &mut overhead_counters,
+            &mut overhead_ledger,
+        )
+        .unwrap();
+        assert_eq!(overhead_pops[1].stock[0], 450);
+        assert_eq!(overhead_buildings[1].stock[0], 728);
+        assert_eq!(
+            overhead_buildings[2]
+                .storehouse_accounts
+                .as_ref()
+                .unwrap()
+                .communal[0],
+            1
+        );
+
+        // Ownership takes precedence over a workplace, even when the workplace has room.
+        let mut owned = farm.clone();
+        owned.stock[0] = 58;
+        owned.employment[0] = Employment {
+            owners: 1,
+            workers: 1,
+        };
+        let mut work_only = farm.clone();
+        work_only.stock[0] = 0;
+        let mut owner_pops = vec![pop("labourer", 450), pop("peasant", 450)];
+        let mut owned_buildings = vec![owned, work_only];
+        assert_eq!(
+            route_pop_surplus(&route_rules, &mut owner_pops, &mut owned_buildings, 0, 0, 4)
+                .unwrap(),
+            2
+        );
+        assert_eq!(owned_buildings[0].stock[0], 60);
+        assert_eq!(owned_buildings[1].stock[0], 0);
+
+        let mut split_pops = vec![pop("peasant", 450), pop("peasant", 450)];
+        let mut split_buildings = vec![farm.clone(), farm.clone(), farm.clone()];
+        for (building, initial) in split_buildings.iter_mut().zip([59, 40, 40]) {
+            building.stock[0] = initial;
+            building.employment[0].owners = 1;
+        }
+        assert_eq!(
+            route_pop_surplus(
+                &route_rules,
+                &mut split_pops,
+                &mut split_buildings,
+                0,
+                0,
+                12
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            split_buildings
+                .iter()
+                .map(|b| b.stock[0])
+                .collect::<Vec<_>>(),
+            [60, 46, 45]
+        );
+        let mut weighted = vec![farm.clone(), farm.clone()];
+        for building in &mut weighted {
+            building.stock[0] = 0;
+        }
+        weighted[0].employment[0].owners = 2;
+        weighted[1].employment[0].owners = 1;
+        assert_eq!(
+            route_pop_surplus(&route_rules, &mut split_pops, &mut weighted, 0, 0, 6).unwrap(),
+            0
+        );
+        assert_eq!((weighted[0].stock[0], weighted[1].stock[0]), (4, 2));
+
+        // A worker with no ownership splits by workers; no church is present.
+        let mut workplaces = vec![farm.clone(), farm.clone()];
+        for (building, workers) in workplaces.iter_mut().zip([2, 1]) {
+            building.stock[0] = 0;
+            building.employment[0] = Employment { owners: 0, workers };
+        }
+        let mut full_pops = vec![pop("labourer", 450), pop("peasant", 450)];
+        assert_eq!(
+            route_pop_surplus(&route_rules, &mut full_pops, &mut workplaces, 0, 0, 6).unwrap(),
+            0
+        );
+        assert_eq!((workplaces[0].stock[0], workplaces[1].stock[0]), (4, 2));
+
+        // A worker at another storehouse gives to its communal account after the first is full.
+        let mut worker_store = storehouse.clone();
+        worker_store.stock[0] = 0;
+        worker_store.storehouse_accounts.as_mut().unwrap().communal[0] = 0;
+        worker_store.employment[0].workers = 1;
+        let mut full_store = storehouse.clone();
+        full_store.stock[0] = 22_500;
+        full_store.storehouse_accounts.as_mut().unwrap().communal[0] = 22_500;
+        let mut stores = vec![full_store, worker_store];
+        assert_eq!(
+            route_pop_surplus(&route_rules, &mut full_pops, &mut stores, 0, 0, 3).unwrap(),
+            0
+        );
+        let accounts = stores[1].storehouse_accounts.as_ref().unwrap();
+        assert_eq!((accounts.pops[0][0], accounts.communal[0]), (0, 3));
+
+        // With no job or ownership, two church buildings share by levels.
+        let mut churches = vec![farm.clone(), farm.clone()];
+        for (building, levels) in churches.iter_mut().zip([1, 2]) {
+            building.kind = "holdings".to_owned();
+            building.levels = levels;
+            building.stock[0] = 0;
+            building.employment = vec![
+                Employment::default(),
+                Employment {
+                    owners: 0,
+                    workers: 1,
+                },
+            ];
+        }
+        assert_eq!(
+            route_pop_surplus(&route_rules, &mut full_pops, &mut churches, 0, 0, 6).unwrap(),
+            0
+        );
+        assert_eq!((churches[0].stock[0], churches[1].stock[0]), (2, 4));
+
+        // An unemployed giver fills the church before giving the balance as alms.
+        let mut church = farm.clone();
+        church.kind = "holdings".to_owned();
+        church.stock[0] = 729;
+        church.employment = vec![
+            Employment::default(),
+            Employment {
+                owners: 0,
+                workers: 1,
+            },
+        ];
+        let mut unemployed = vec![pop("labourer", 450), pop("labourer", 448)];
+        assert_eq!(
+            route_pop_surplus(
+                &route_rules,
+                &mut unemployed,
+                std::slice::from_mut(&mut church),
+                0,
+                0,
+                3
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(church.stock[0], 730);
+        assert_eq!(unemployed[1].stock[0], 450);
+
+        // A church already filled as the giver's workplace is not retried; alms follows.
+        let mut church = farm.clone();
+        church.kind = "holdings".to_owned();
+        church.stock[0] = 729;
+        let mut church_pops = vec![pop("labourer", 450), pop("labourer", 449)];
+        assert_eq!(
+            route_pop_surplus(
+                &route_rules,
+                &mut church_pops,
+                std::slice::from_mut(&mut church),
+                0,
+                0,
+                3
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(church.stock[0], 730);
+        assert_eq!(church_pops[1].stock[0], 450);
+
+        // A full recipient's empty account is not a destination for alms.
+        let mut empty_store = storehouse.clone();
+        empty_store.stock[0] = 0;
+        empty_store.storehouse_accounts.as_mut().unwrap().communal[0] = 0;
+        let mut alms_pops = vec![pop("labourer", 450), pop("labourer", 450)];
+        // Fill the giver's account to leave space only in the recipient's account.
+        empty_store.stock[0] = 22_500;
+        empty_store.storehouse_accounts.as_mut().unwrap().pops[0][0] = 22_500;
+        assert_eq!(
+            route_pop_surplus(
+                &route_rules,
+                &mut alms_pops,
+                std::slice::from_mut(&mut empty_store),
+                0,
+                0,
+                1
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            empty_store.storehouse_accounts.as_ref().unwrap().pops[1][0],
+            0
+        );
+
+        // In the alms path, a full recipient is skipped even though an account has room.
+        let mut source = farm.clone();
+        source.stock[0] = 60;
+        let mut room = storehouse.clone();
+        room.stock[0] = 0;
+        room.storehouse_accounts.as_mut().unwrap().communal[0] = 0;
+        let mut probe = room.clone();
+        assert_eq!(
+            receive_storehouse(&route_rules, &mut probe, Some(1), 0, 1).unwrap(),
+            0
+        );
+        let mut destinations = vec![source, room];
+        let mut alms_pops = vec![pop("labourer", 450), pop("labourer", 450)];
+        let mut counters = CounterBuckets::default();
+        let mut ledger = PlaceProductionLedger::new("fort", 1, 2);
+        settle_overflow(
+            &route_rules,
+            &mut alms_pops,
+            &mut destinations,
+            0,
+            0,
+            &[(None, 1)],
+            &mut counters,
+            &mut ledger,
+        )
+        .unwrap();
+        let accounts = destinations[1].storehouse_accounts.as_ref().unwrap();
+        assert_eq!(accounts.pops[1][0], 0);
+        assert_eq!(accounts.communal[0], 1);
+
+        // Exercise each destination with two units of room, then make each one full in turn.
+        for full in 0..=5 {
+            let mut ordered_pops = vec![
+                pop("labourer", if full == 1 { 450 } else { 448 }),
+                pop("labourer", if full == 4 { 450 } else { 448 }),
+            ];
+            let mut owned = farm.clone();
+            owned.stock[0] = if full == 2 { 60 } else { 58 };
+            owned.employment[0].owners = 1;
+            let mut church = farm.clone();
+            church.kind = "holdings".to_owned();
+            church.stock[0] = if full == 3 { 730 } else { 728 };
+            church.employment = vec![
+                Employment::default(),
+                Employment {
+                    owners: 0,
+                    workers: 1,
+                },
+            ];
+            let mut account = storehouse.clone();
+            account.stock[0] = if full == 0 { 22_500 } else { 22_498 };
+            account.storehouse_accounts.as_mut().unwrap().communal[0] = account.stock[0];
+            let mut ordered = vec![owned, church, account];
+            let extra = receive_pop(&route_rules, &mut ordered_pops[0], 0, 12).unwrap();
+            let mut losses = CounterBuckets::default();
+            let mut ledger = PlaceProductionLedger::new("fort", 1, 3);
+            settle_overflow(
+                &route_rules,
+                &mut ordered_pops,
+                &mut ordered,
+                0,
+                0,
+                &[(Some(0), extra)],
+                &mut losses,
+                &mut ledger,
+            )
+            .unwrap();
+            assert_eq!(ordered_pops[0].stock[0], 450);
+            assert_eq!(ordered[0].stock[0], 60);
+            assert_eq!(ordered[1].stock[0], 730);
+            assert_eq!(ordered_pops[1].stock[0], 450);
+            assert_eq!(
+                ordered[2].storehouse_accounts.as_ref().unwrap().pops[0][0],
+                if full == 0 { 0 } else { 2 }
+            );
+            let lost = if full == 5 { 2 } else { 4 };
+            assert_eq!(ledger.lost[0], lost);
+            assert_eq!(losses.current.losses, lost);
+            assert_eq!(ordered_pops[0].counters.current.losses, lost);
+        }
+
         let mut pops = vec![pop("labourer", 1), pop("peasant", 0)];
         let mut buildings = vec![farm, storehouse];
         let mut counters = CounterBuckets::default();
@@ -17673,7 +18679,7 @@ pub(crate) mod tests {
         )
         .unwrap();
         let pop = &state.places[0].pops[0];
-        assert_eq!(pop.stock[1], 1);
+        assert_eq!(pop.stock[1], 0);
         assert_eq!(pop.consumption.niceties_pm, 1000);
     }
 
@@ -18172,6 +19178,78 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn butchering_surplus_reaches_a_later_owner_before_its_meal() {
+        let (mut rules, mut state) = daily_accounting_fixture();
+        let pork = rules.goods.iter().position(|g| g.id == "pork").unwrap();
+        rules.goods[pork].volume_ml = 720_000;
+        let herbs = rules.goods.iter().position(|g| g.id == "herbs").unwrap();
+        rules
+            .herd_species
+            .iter_mut()
+            .find(|s| s.animal == "pigs")
+            .unwrap()
+            .yields
+            .push(HerdYield {
+                good: "herbs".to_owned(),
+                units: 1,
+            });
+        let place = &mut state.places[0];
+        place.buildings.remove(0);
+        let mut staff = place.pops[0].clone();
+        staff.workers = 1_000;
+        staff.stock.fill(0);
+        staff.employment = vec![Employment {
+            owners: 0,
+            workers: 1_000,
+        }];
+        for pop in &mut place.pops {
+            pop.stock.fill(0);
+            pop.consumption.necessities_pm = 200;
+            pop.employment = vec![Employment {
+                owners: 1,
+                workers: 0,
+            }];
+        }
+        place.pops.push(staff);
+        let farm = &mut place.buildings[0];
+        farm.herds = vec![0, 2, 0];
+        farm.employment = vec![
+            Employment {
+                owners: 1,
+                workers: 0,
+            },
+            Employment {
+                owners: 1,
+                workers: 0,
+            },
+            Employment {
+                owners: 0,
+                workers: 1_000,
+            },
+        ];
+        let (_, ledger) = run_daily_consumption_with_ledger(
+            &rules,
+            &mut state,
+            Date {
+                year: 768,
+                month: 1,
+                day: 2,
+                hour: 12,
+            },
+        )
+        .unwrap();
+        assert_eq!(ledger.herd_slaughter, [0, 1, 0]);
+        assert_eq!(ledger.butchered[pork], 88);
+        assert_eq!(ledger.butchered[herbs], 1);
+        assert_eq!(ledger.lost[herbs], 0);
+        assert_eq!(state.places[0].buildings[0].herds[1], 1);
+        assert!(
+            ledger.opened[pork] >= 2,
+            "both owners ate pork from the one slaughter"
+        );
+    }
+
+    #[test]
     fn emergency_butchering_uses_pig_then_sheep_order_and_stops_at_threshold() {
         let (mut rules, mut state) = daily_accounting_fixture();
         let pork = rules
@@ -18200,7 +19278,7 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(place.pops[1].stock[mutton], 0);
         assert_eq!(ledger.butchered[pork], 176);
-        assert_eq!(ledger.lost[pork], 76);
+        assert_eq!(ledger.lost[pork], 0);
     }
 
     #[test]
@@ -18233,7 +19311,7 @@ pub(crate) mod tests {
         assert_eq!(place.pops[1].stock[hides], 1);
         assert_eq!(ledger.butchered[beef], 220);
         assert_eq!(ledger.butchered[hides], 1);
-        assert_eq!(ledger.lost[beef], 120);
+        assert_eq!(ledger.lost[beef], 20);
     }
 
     #[test]
@@ -19731,6 +20809,7 @@ pub(crate) mod tests {
         rules.hire_pm = 100;
         rules.buildings.push(BuildingType {
             id: "holdings".to_owned(),
+            church: false,
             herds: BTreeMap::new(),
             workers_per_level: 10,
             land_per_level: 1,
