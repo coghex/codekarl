@@ -467,3 +467,7 @@ text = "The old {religion} of the Norse."
 [term.anglo_saxon_paganism]
 title = "Anglo-Saxon paganism"
 text = "The old {religion} of the Anglo-Saxons."
+
+[term.horses]
+title = "horses"
+text = "Live horses, bred at the nobles' demesne."

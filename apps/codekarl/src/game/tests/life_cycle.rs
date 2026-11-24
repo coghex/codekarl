@@ -260,14 +260,15 @@ fn herds_and_product_carries_survive_saves_on_both_sides_of_noon() {
         place
             .buildings
             .iter()
-            .any(|building| !building.herds.is_empty())
+            .any(|building| building.kind == "demesne" && building.herds[3] > 0)
     });
     economy.places.truncate(1);
     let herd = economy.places[0]
         .buildings
         .iter_mut()
-        .find(|building| !building.herds.is_empty())
+        .find(|building| building.kind == "demesne" && building.herds[3] > 0)
         .unwrap();
+    assert!(herd.herds[3] > 0);
     herd.herd_product_carries[0] = 123_456;
     for hour in [11, 13] {
         let from = at(768, 2, 1, hour);

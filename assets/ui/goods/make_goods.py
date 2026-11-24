@@ -320,6 +320,18 @@ ART = {
         ".PPqqqPP.",
         "..PPPPP..",
     ],
+    # Original horse head and neck, drawn from plain shapes for CK-396.
+    "horses": [
+        "...bB....",
+        "..bbBB...",
+        "..bBBBk..",
+        ".bbBBBBB.",
+        ".bbBBkBB.",
+        ".bbBBBBB.",
+        ".bbBBB...",
+        ".bbBBB...",
+        ".BBBBBB..",
+    ],
     "sheep": [
         "..WWWWW..",
         "WWWWWWWWW",

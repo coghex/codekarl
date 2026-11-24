@@ -106,6 +106,7 @@ fn shipped_herds_start_at_two_thirds_of_their_maximum() {
     let (economy, _) = starting_economy(&assets(), &directory, &scenario).unwrap();
     let rules = ck_economy::Rules::load(assets().join("game/economy.toml")).unwrap();
     let mut checked = 0;
+    let mut demesnes = 0;
     for building in economy.places.iter().flat_map(|place| &place.buildings) {
         let definition = rules
             .buildings
@@ -119,6 +120,19 @@ fn shipped_herds_start_at_two_thirds_of_their_maximum() {
             .filter(|(method, _)| method.resource != "sea")
             .map(|(_, levels)| u64::from(*levels))
             .sum();
+        let horses = rules
+            .herd_species
+            .iter()
+            .position(|s| s.animal == "horses")
+            .unwrap();
+        if building.kind == "demesne" {
+            demesnes += 1;
+            assert_eq!(definition.herds["horses"].maximum, 3);
+            assert_eq!(building.herds[horses], levels * 3 * 2 / 3);
+        } else {
+            assert_eq!(building.herds.get(horses).copied().unwrap_or(0), 0);
+            assert!(!definition.herds.contains_key("horses"));
+        }
         for (species, head) in rules.herd_species.iter().zip(&building.herds) {
             let maximum = definition
                 .herds
@@ -135,6 +149,7 @@ fn shipped_herds_start_at_two_thirds_of_their_maximum() {
         }
     }
     assert!(checked > 0);
+    assert!(demesnes > 0);
 }
 
 #[test]
