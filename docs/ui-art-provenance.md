@@ -172,6 +172,12 @@ author's record, moved here from the design round's notes; the files, hashes and
 - **Who and how:** ck-worker-1 (Codex), 2026-11-23, drew the icons from plain pixel shapes using the existing palette. No other game's or icon set's artwork was viewed, copied or traced.
 - **Review:** the owner judges their appearance in the running game; the generator's `--check` verifies the images.
 
+## Horses (CK-396)
+
+- **What:** the 9 × 9 horse head and neck in `assets/ui/goods/make_goods.py` and its generated PNG.
+- **Who and how:** ck-worker-3 (Codex), 2026-11-23, drew it from plain pixel shapes using the existing palette. No other game or icon artwork was viewed, copied or traced.
+- **Review:** the owner judges its appearance in the running game; the generator’s `--check` verifies the image.
+
 ## Elsewhere
 
 - **The goods icons** (CK-267): `.pipeline/coordination/ui-polish-design/goods-icons-provenance-r1.md`; `docs/ui-design.md` describes

@@ -115,6 +115,7 @@ fn building(id: &str, methods: Vec<Method>) -> BuildingType {
         penalty_pm: 500,
         overhead_pm: 100,
         recruit_range_m: Some(30_000),
+        market_capacity_ml_per_level: 0,
         // The land buildings keep cattle, so the startup estimate applies the herd-good factor to beef.
         herds: if id == "storehouse" {
             BTreeMap::new()
