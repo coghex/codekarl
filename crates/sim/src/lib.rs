@@ -13,6 +13,7 @@ mod random;
 mod save;
 mod scheduler;
 mod simulation;
+pub mod travel;
 pub mod weather;
 
 pub use calendar::{

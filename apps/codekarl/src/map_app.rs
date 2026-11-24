@@ -1054,6 +1054,7 @@ pub(crate) mod tests {
                 shallow_threshold: 1,
             },
             terrain_types: vec![ck_map::LoadedTerrain {
+                name: "sea".into(),
                 key: [0, 0, 0],
                 kind: TerrainKind::Sea,
                 palette_colour: water,

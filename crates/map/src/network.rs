@@ -20,6 +20,9 @@ pub struct LandNetwork {
     baseline_sha256: String,
     next_node_id: u64,
     next_stretch_id: u64,
+    /// Ground length of a cell side at each crop row, in millimetres.
+    #[serde(default)]
+    pub cell_side_mm: Vec<u64>,
     /// Network nodes.
     #[serde(default, rename = "node")]
     pub nodes: Vec<LandNode>,
@@ -333,8 +336,16 @@ pub(crate) fn load(
     let hand_bytes = fs::read(&hand).map_err(|e| LoadError::at("network.toml", "file", e))?;
     let source = fs::read_to_string(&roads).map_err(|e| LoadError::at("roads.toml", "file", e))?;
     let mut network: LandNetwork = toml::from_str(&source).map_err(|e| parse_error(&source, &e))?;
-    if network.format != 3 {
-        return Err(error("format", "must be 3"));
+    if network.format != 4 {
+        return Err(error("format", "must be 4"));
+    }
+    if usize::try_from(crop.height).ok() != Some(network.cell_side_mm.len())
+        || network.cell_side_mm.contains(&0)
+    {
+        return Err(error(
+            "cell_side_mm",
+            "must contain one positive side length per crop row",
+        ));
     }
     // The layer is read, hashed and covered by the scenario hash under one name (CK-401 rules 3, 18): a stored name that differs would
     // load a file the application's hash never reads.
@@ -777,13 +788,23 @@ mod tests {
             .lines()
             .find(|line| line.starts_with("record = "))
             .unwrap();
+        let sides = roads
+            .lines()
+            .find(|line| line.starts_with("cell_side_mm = "))
+            .unwrap();
         fs::write(dir.join("roads.toml"), &roads).unwrap();
         assert!(load_in(&dir, &scenario).unwrap().is_some());
         for (bad, name) in [
-            (roads.replacen("format = 3", "format = 1", 1), "format"),
-            (roads.replacen("format = 3", "format = 'one'", 1), "format"),
+            (roads.replacen("format = 4", "format = 1", 1), "format"),
+            (roads.replacen("format = 4", "format = 3", 1), "format"),
+            (roads.replacen(sides, "", 1), "cell_side_mm"),
             (
-                roads.replacen("format = 3", "format = 3\nunknown = 2", 1),
+                roads.replacen(sides, "cell_side_mm = [1]", 1),
+                "cell_side_mm",
+            ),
+            (roads.replacen("format = 4", "format = 'one'", 1), "format"),
+            (
+                roads.replacen("format = 4", "format = 4\nunknown = 2", 1),
                 "unknown",
             ),
             (
@@ -942,14 +963,14 @@ mod tests {
         );
         fs::write(
             dir.join("roads.toml"),
-            roads.replacen("format = 3", "format = 2", 1),
+            roads.replacen("format = 4", "format = 3", 1),
         )
         .unwrap();
         assert!(
             load_in(&dir, &scenario)
                 .unwrap_err()
                 .to_string()
-                .contains("must be 3")
+                .contains("must be 4")
         );
         fs::remove_dir_all(dir).unwrap();
     }
@@ -958,6 +979,8 @@ mod tests {
     fn shared_fixture_keeps_links_joins_and_access() {
         let scenario = fixture();
         let n = scenario.network.unwrap();
+        assert_eq!(n.cell_side_mm.len(), 10);
+        assert!(n.cell_side_mm.iter().all(|side| *side > 0));
         let singleton = n.links.iter().find(|l| l.id == "singleton").unwrap();
         assert_eq!(singleton.from_node, singleton.to_node);
         assert!(singleton.stretches.is_empty());

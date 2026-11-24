@@ -244,7 +244,7 @@ mod tests {
                     .unwrap();
                 assert_eq!(
                     building.levels,
-                    building.method_levels.iter().sum(),
+                    building.method_levels.iter().sum::<u32>(),
                     "{} {}",
                     place.id,
                     building.kind

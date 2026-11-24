@@ -452,6 +452,10 @@ pub fn location_scenario() -> LoadedScenario {
                     ),
                 };
                 LoadedTerrain {
+                    name: [
+                        "sea", "lake", "pasture", "forest", "bog", "marsh", "mountain",
+                    ][index]
+                        .into(),
                     key: [u8::try_from(index).expect("fixture terrain index fits"); 3],
                     kind,
                     palette_colour,

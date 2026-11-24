@@ -34,6 +34,8 @@ pub enum TerrainKind {
 /// Terrain metadata aligned with the index stored in packed grid A.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LoadedTerrain {
+    /// Terrain name from the map rules.
+    pub name: String,
     /// The six-digit RGB key used by terrain.png.
     pub key: [u8; 3],
     /// Water or land classification for this terrain index.
@@ -675,6 +677,7 @@ fn parse_terrain_types(
             let palette_colour = style.map_or(Rgba8::opaque(0, 0, 0), |s| s.solid);
             Ok(ParsedTerrain {
                 loaded: LoadedTerrain {
+                    name: entry.name.clone(),
                     key,
                     kind,
                     palette_colour,

@@ -1149,6 +1149,8 @@ STEPS = [
                     # The headless economy soak's binary: a thin `main` over the library, whose tests run with it.
                     "--bin",
                     "economy-soak",
+                    "--bin",
+                    "travel-times",
                     "--test",
                     "cli_spec_unit",
                     "--test",
@@ -1397,6 +1399,24 @@ STEPS = [
         "(the checker's start-up contract, batching, the instance buffer and the bindless frames).",
         paths=("crates/gpu-metal/",),
     ),
+    Step(
+        "travel.scale",
+        FULL,
+        lambda: [
+            cargo_test(
+                ["-p", "codekarl", "--test", "travel_scale"],
+                ["--ignored"],
+            )
+        ],
+        category="optional",
+        description="Exhaustive Ireland travel reachability from every place, for milestone full checks or explicit runs.",
+        paths=(
+            "apps/codekarl/tests/travel_scale.rs",
+            "apps/codekarl/src/game/travel.rs",
+            "crates/sim/src/travel.rs",
+            "assets/scenarios/ireland-768/",
+        ),
+    ),
     # CK-130: each optional scale group owns one crate. Both stay outside every level and run only when named.
     Step(
         "metal.scale",
@@ -1486,7 +1506,7 @@ STEPS = [
         ],
         description="The backend-neutral simulation core: the Julian calendar, the tick scheduler, command timing and the "
         "real-time clock under a fake time (no GPU or window).",
-        paths=("crates/sim/", "assets/game/weather.toml"),
+        paths=("crates/sim/", "assets/game/weather.toml", "assets/game/travel.toml"),
     ),
     # CK-225: the starting economy is backend-neutral and owns only its crate's unit and doc tests.
     Step(

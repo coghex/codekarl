@@ -87,6 +87,8 @@ mod fakes;
 mod font;
 mod frame_api;
 mod game;
+/// Travel-time and itinerary calculations on a loaded scenario.
+pub use game::travel as travel_network;
 mod game_api;
 mod glossary;
 mod go_to;
@@ -141,6 +143,14 @@ mod window_api;
 /// Returns a message for invalid arguments, scenario/setup failures, or economy arithmetic refusal.
 pub fn economy_soak_main(arguments: impl IntoIterator<Item = String>) -> Result<String, String> {
     economy_soak::run(arguments)
+}
+
+/// Run the headless travel-time command.
+///
+/// # Errors
+/// Returns a message for invalid input or a scenario that cannot be loaded.
+pub fn travel_times_main(arguments: impl IntoIterator<Item = String>) -> Result<String, String> {
+    game::travel::command(arguments)
 }
 #[cfg_attr(
     all(

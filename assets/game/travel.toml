@@ -1,0 +1,36 @@
+climb_thousandths = 20
+wade_thousandths = 250
+ford_thousandths = 500
+ford_per_metre_thousandths = 10
+transfer_thousandths = 2000
+tide_thousandths = 6000
+
+[ground]
+pasture = 0
+forest = 200
+mountain = 400
+marsh = 500
+bog = 600
+
+[profiles.cart]
+path = [600, 1000, 1150, 1300, 1450, 1600]
+road = [1200, 1400, 1600, 1800, 2000, 2200]
+slowing = 1000
+
+[profiles.barge]
+path = [600, 1000, 1150, 1300, 1450, 1600]
+road = [1200, 1400, 1600, 1800, 2000, 2200]
+water_class = "barge"
+river = 1500
+lough = 1500
+sea = 1200
+slowing = 1000
+
+[profiles.currach]
+path = [600, 1000, 1150, 1300, 1450, 1600]
+road = [1200, 1400, 1600, 1800, 2000, 2200]
+water_class = "currach"
+river = 1700
+lough = 1700
+sea = 2000
+slowing = 1000

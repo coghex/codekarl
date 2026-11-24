@@ -112,6 +112,14 @@ fn valid_fixture_loads_climate_fertility_and_preserves_packed_bytes() {
             TerrainKind::Mountain,
         ]
     );
+    assert_eq!(
+        loaded
+            .terrain_types
+            .iter()
+            .map(|terrain| terrain.name.as_str())
+            .collect::<Vec<_>>(),
+        ["sea", "lake", "plains", "mountain"]
+    );
     // Grid A: the terrain index, fertility ÷ 4 (255 for a glacier) and the hillside strength + 128.
     assert_eq!(loaded.grid_a.pixels[6], [2, 124, 128, 255]);
     // The mountain below a 1000 m neighbour to its north faces away from the light: the strongest shadow, -15.

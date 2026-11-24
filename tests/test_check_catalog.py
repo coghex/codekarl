@@ -140,7 +140,10 @@ def parse_cargo_test(
             raise AssertionError(f"unrecognised cargo test argument {word!r} in {command}")
     chosen_set: str | None = None
     name_filters: tuple[str, ...] = ()
-    if after:
+    assert after != ["--ignored"] or (
+        packages == ["codekarl"] and explicit == [("test", "travel_scale")]
+    ), command
+    if after and after != ["--ignored"]:
         if after[0] == "--set":
             chosen_set = after[1]
             assert after == ["--set", chosen_set], after
@@ -754,6 +757,26 @@ class Planner(unittest.TestCase):
         self.assertTrue(names["rust.app"])
         self.assertFalse(names["native.window"] or names["metal.gpu"])
         self.assertTrue(names["app.native-window"] or names["app.metal-gpu"])
+
+
+class TravelScaleGroup(unittest.TestCase):
+    def test_exhaustive_travel_is_named_or_full_but_not_planned(self) -> None:
+        group = next(step for step in check.STEPS if step.name == "travel.scale")
+        self.assertEqual(
+            (group.category, group.needs, group.levels), ("optional", "plain", check.FULL)
+        )
+        self.assertIn("travel.scale", check.select("full"))
+        self.assertNotIn("travel.scale", check.select("fast"))
+        ordinary = check.plan(check.STEPS, ["apps/codekarl/src/game/travel.rs"])
+        choice = next(choice for choice in ordinary.choices if choice.step.name == "travel.scale")
+        self.assertFalse(choice.selected)
+        named = check.plan(check.STEPS, None, ["travel.scale"])
+        self.assertTrue(
+            next(choice for choice in named.choices if choice.step.name == "travel.scale").selected
+        )
+        command = group.commands()[0]
+        self.assertIn("--ignored", command)
+        self.assertIn("travel_scale", command)
 
 
 class CK263Links(unittest.TestCase):
@@ -2399,6 +2422,7 @@ GUARDS: tuple[Guard, ...] = (
         ("assets/map/ireland/", "assets/game/weather.toml", "tools/generate_weather.py"),
     ),
     Guard("crates/sim/src/weather.rs", "sim.core", ("assets/game/weather.toml",)),
+    Guard("crates/sim/src/travel.rs", "sim.core", ("assets/game/travel.toml",)),
     # CK-105: the renderer's re-export test checks its window fixture against the resource component's copy.
     Guard(
         "crates/render-2d/src/tests/resources.rs",
@@ -2430,6 +2454,16 @@ GUARDS: tuple[Guard, ...] = (
         ),
     ),
     # The application tests that read shipped files or hash workspace inputs belong to rust.app.
+    Guard(
+        "apps/codekarl/src/game/travel.rs",
+        "rust.app",
+        ("assets/game/travel.toml", "assets/scenarios/ireland-768/", "crates/map/tests/network/"),
+    ),
+    Guard(
+        "apps/codekarl/tests/travel_scale.rs",
+        "travel.scale",
+        ("assets/game/travel.toml", "assets/scenarios/ireland-768/"),
+    ),
     Guard("apps/codekarl/src/font.rs", "rust.app", ("assets/ui/font/",)),
     # CK-335: the debug layer's headless rendering tests load the shipped font.
     Guard("apps/codekarl/src/debug_layer.rs", "rust.app", ("assets/ui/font/",)),
@@ -3869,7 +3903,9 @@ class GraphicsDoctor(unittest.TestCase):
 class Quick(unittest.TestCase):
     def test_01_quick_and_fast_keep_their_meaning_through_the_catalog(self) -> None:
         self.assertEqual(check.select("quick"), ["fmt", "ruff", "shellcheck"])
-        self.assertEqual(check.select("fast"), check.select("full"))
+        self.assertEqual(
+            check.select("fast"), [name for name in check.select("full") if name != "travel.scale"]
+        )
         # CK-130: an optional step (`metal.scale`) has no level, so no level selects it.
         everything = [step.name for step in check.STEPS if step.levels]
         self.assertEqual(check.select("full"), everything)
