@@ -296,6 +296,524 @@ fn settle_the_rest(rules: &Rules, place: &mut PlaceState, set: &[&str]) {
     }
 }
 
+#[test]
+fn scarce_fish_is_shared_between_both_buyers() {
+    for reverse in [false, true] {
+        let mut rules = rules();
+        let mut place = place(&rules, 3);
+        set_price(&rules, &mut place, "oats", 1);
+        set_price(&rules, &mut place, "fish", 1);
+        for buyer in [PEASANT, THIRD] {
+            spare(&rules, &mut place, buyer, "oats", 4);
+            want(&rules, &mut place, buyer, "fish", 4);
+            capacity(&mut rules, &mut place, buyer, 1_000_000);
+        }
+        spare(&rules, &mut place, MONK, "fish", 4);
+        want(&rules, &mut place, MONK, "oats", 4);
+        settle_the_rest(&rules, &mut place, &["oats", "fish"]);
+        if reverse {
+            place.pops.swap(PEASANT, THIRD);
+            for building in &mut place.buildings {
+                building.employment.swap(PEASANT, THIRD);
+            }
+        }
+        let before = total(&rules, &place);
+        let peasants = stock(&rules, &place, PEASANT, "fish");
+        let labourers = stock(&rules, &place, THIRD, "fish");
+        exchange(&rules, &mut place);
+        assert_eq!(stock(&rules, &place, PEASANT, "fish"), peasants + 2);
+        assert_eq!(stock(&rules, &place, THIRD, "fish"), labourers + 2);
+        assert_eq!(total(&rules, &place), before);
+    }
+}
+
+#[test]
+fn personal_source_is_followed_by_building_source() {
+    let mut rules = rules();
+    let mut place = place(&rules, 2);
+    set_price(&rules, &mut place, "oats", 1);
+    set_price(&rules, &mut place, "fish", 1);
+    spare(&rules, &mut place, PEASANT, "oats", 5);
+    want(&rules, &mut place, PEASANT, "fish", 5);
+    spare(&rules, &mut place, MONK, "fish", 2);
+    want(&rules, &mut place, MONK, "oats", 5);
+    settle_the_rest(&rules, &mut place, &["oats", "fish"]);
+    capacity(&mut rules, &mut place, PEASANT, 1_000_000);
+    let building = add_building(&rules, &mut place, "holdings", 1);
+    own(&mut place, building, MONK, 1);
+    let fish = good(&rules, "fish");
+    let people = place.pops[MONK].workers + place.pops[MONK].dependents;
+    let reserve = food_target_units(&rules, &place.pops[MONK].kind, people, fish, 60).unwrap();
+    place.buildings[building].stock[fish] = u64::try_from(reserve).unwrap() + 10;
+    let before = total(&rules, &place);
+    let monk_fish = stock(&rules, &place, MONK, "fish");
+    let building_fish = place.buildings[building].stock[fish];
+    let buyer_fish = stock(&rules, &place, PEASANT, "fish");
+    exchange(&rules, &mut place);
+    assert_eq!(stock(&rules, &place, PEASANT, "fish"), buyer_fish + 5);
+    assert_eq!(stock(&rules, &place, MONK, "fish"), monk_fish - 2);
+    assert_eq!(place.buildings[building].stock[fish], building_fish - 3);
+    assert_eq!(total(&rules, &place), before);
+}
+
+#[test]
+fn building_fish_pays_for_six_oats_at_the_example_prices() {
+    let (rules, mut place) = example_a(PEASANT, 10_000_000);
+    spare(&rules, &mut place, MONK, "fish", 0);
+    let building = add_building(&rules, &mut place, "holdings", 1);
+    own(&mut place, building, MONK, 1);
+    let fish = good(&rules, "fish");
+    let people = place.pops[MONK].workers + place.pops[MONK].dependents;
+    let reserve =
+        u64::try_from(food_target_units(&rules, &place.pops[MONK].kind, people, fish, 60).unwrap())
+            .unwrap();
+    place.buildings[building].stock[fish] = reserve + 100;
+    let before = total(&rules, &place);
+    let monk_oats = stock(&rules, &place, MONK, "oats");
+    let buyer_fish = stock(&rules, &place, PEASANT, "fish");
+    exchange(&rules, &mut place);
+    assert_eq!(stock(&rules, &place, MONK, "oats"), monk_oats + 6);
+    assert_eq!(stock(&rules, &place, PEASANT, "fish"), buyer_fish + 20);
+    assert_eq!(place.buildings[building].stock[fish], reserve + 80);
+    assert_eq!(total(&rules, &place), before);
+}
+
+/// C1--C6 share the same holder and two buyers.
+fn sharing_case() -> (Rules, PlaceState) {
+    let rules = rules();
+    let mut place = place(&rules, 3);
+    set_price(&rules, &mut place, "oats", 1);
+    set_price(&rules, &mut place, "fish", 1);
+    for pop in [PEASANT, THIRD] {
+        spare(&rules, &mut place, pop, "oats", 4);
+        want(&rules, &mut place, pop, "fish", 4);
+    }
+    spare(&rules, &mut place, MONK, "fish", 4);
+    want(&rules, &mut place, MONK, "oats", 4);
+    settle_the_rest(&rules, &mut place, &["oats", "fish"]);
+    (rules, place)
+}
+
+#[test]
+fn a_buyer_without_payment_gets_no_share() {
+    let (mut rules, mut place) = sharing_case();
+    want(&rules, &mut place, THIRD, "oats", 1);
+    capacity(&mut rules, &mut place, PEASANT, 1_000_000);
+    capacity(&mut rules, &mut place, THIRD, 1_000_000);
+    let before = total(&rules, &place);
+    let first = stock(&rules, &place, PEASANT, "fish");
+    let third = stock(&rules, &place, THIRD, "fish");
+    exchange(&rules, &mut place);
+    assert_eq!(stock(&rules, &place, PEASANT, "fish"), first + 4);
+    assert_eq!(stock(&rules, &place, THIRD, "fish"), third);
+    assert_eq!(total(&rules, &place), before);
+}
+
+#[test]
+fn second_pass_redistributes_only_to_a_buyer_who_used_its_share() {
+    let (mut rules, mut place) = sharing_case();
+    capacity(&mut rules, &mut place, PEASANT, 1_000_000);
+    capacity(&mut rules, &mut place, THIRD, 1_000_000);
+    // Wool takes one ml and fills the third pop's store to one fish unit of room.
+    let wool = good(&rules, "wool");
+    rules.goods[wool].volume_ml = 1;
+    let people = place.pops[THIRD].workers + place.pops[THIRD].dependents;
+    let (_, limit) = pop_store_limits(&rules, people, good(&rules, "fish")).unwrap();
+    let used = volume_used(&rules, &place.pops[THIRD].stock, None).unwrap();
+    let fish_volume = u128::from(rules.goods[good(&rules, "fish")].volume_ml);
+    place.pops[THIRD].stock[wool] = u64::try_from(limit - used - fish_volume).unwrap();
+    let before = total(&rules, &place);
+    let first = stock(&rules, &place, PEASANT, "fish");
+    let third = stock(&rules, &place, THIRD, "fish");
+    exchange(&rules, &mut place);
+    assert_eq!(stock(&rules, &place, PEASANT, "fish"), first + 3);
+    assert_eq!(stock(&rules, &place, THIRD, "fish"), third + 1);
+    assert_eq!(total(&rules, &place), before);
+}
+
+#[test]
+fn second_share_is_capped_at_the_remaining_want_even_with_plenty_left() {
+    let (mut rules, mut place) = sharing_case();
+    spare(&rules, &mut place, MONK, "fish", 6);
+    want(&rules, &mut place, MONK, "oats", 6);
+    want(&rules, &mut place, PEASANT, "fish", 2);
+    spare(&rules, &mut place, PEASANT, "oats", 2);
+    want(&rules, &mut place, THIRD, "fish", 10);
+    spare(&rules, &mut place, THIRD, "oats", 10);
+    capacity(&mut rules, &mut place, PEASANT, 1_000_000);
+    capacity(&mut rules, &mut place, THIRD, 1_000_000);
+    let wool = good(&rules, "wool");
+    rules.goods[wool].volume_ml = 1;
+    let people = place.pops[THIRD].workers + place.pops[THIRD].dependents;
+    let (_, limit) = pop_store_limits(&rules, people, good(&rules, "fish")).unwrap();
+    let used = volume_used(&rules, &place.pops[THIRD].stock, None).unwrap();
+    place.pops[THIRD].stock[wool] = u64::try_from(limit - used).unwrap();
+    let before = total(&rules, &place);
+    let first = stock(&rules, &place, PEASANT, "fish");
+    let third = stock(&rules, &place, THIRD, "fish");
+    exchange(&rules, &mut place);
+    assert_eq!(stock(&rules, &place, PEASANT, "fish"), first + 2);
+    assert_eq!(stock(&rules, &place, THIRD, "fish"), third);
+    assert_eq!(total(&rules, &place), before);
+}
+
+#[test]
+fn holder_can_deliver_a_second_share_to_a_buyer_without_capacity() {
+    let (mut rules, mut place) = sharing_case();
+    capacity(&mut rules, &mut place, MONK, 1_000_000);
+    let wool = good(&rules, "wool");
+    rules.goods[wool].volume_ml = 1;
+    let people = place.pops[THIRD].workers + place.pops[THIRD].dependents;
+    let (_, limit) = pop_store_limits(&rules, people, good(&rules, "fish")).unwrap();
+    let used = volume_used(&rules, &place.pops[THIRD].stock, None).unwrap();
+    let fish_volume = u128::from(rules.goods[good(&rules, "fish")].volume_ml);
+    place.pops[THIRD].stock[wool] = u64::try_from(limit - used - fish_volume).unwrap();
+    let before = total(&rules, &place);
+    let first = stock(&rules, &place, PEASANT, "fish");
+    let third = stock(&rules, &place, THIRD, "fish");
+    exchange(&rules, &mut place);
+    assert_eq!(stock(&rules, &place, PEASANT, "fish"), first + 3);
+    assert_eq!(stock(&rules, &place, THIRD, "fish"), third + 1);
+    assert_eq!(total(&rules, &place), before);
+}
+
+#[test]
+fn holder_spends_its_capacity_for_buyers_without_turns() {
+    let (mut rules, mut place) = sharing_case();
+    capacity(&mut rules, &mut place, MONK, 1_000_000);
+    let before = total(&rules, &place);
+    let first = stock(&rules, &place, PEASANT, "fish");
+    let third = stock(&rules, &place, THIRD, "fish");
+    exchange(&rules, &mut place);
+    assert_eq!(stock(&rules, &place, PEASANT, "fish"), first + 2);
+    assert_eq!(stock(&rules, &place, THIRD, "fish"), third + 2);
+    assert_eq!(total(&rules, &place), before);
+}
+
+#[test]
+fn indivisible_fish_goes_to_the_wealthier_buyer() {
+    for wealthy in [PEASANT, THIRD] {
+        let (mut rules, mut place) = sharing_case();
+        spare(&rules, &mut place, MONK, "fish", 1);
+        place.pops[wealthy].stock[good(&rules, "wool")] = 1_000;
+        capacity(&mut rules, &mut place, PEASANT, 1_000_000);
+        capacity(&mut rules, &mut place, THIRD, 1_000_000);
+        let before = total(&rules, &place);
+        let fish = [PEASANT, THIRD].map(|p| stock(&rules, &place, p, "fish"));
+        exchange(&rules, &mut place);
+        for (index, pop) in [PEASANT, THIRD].into_iter().enumerate() {
+            assert_eq!(
+                stock(&rules, &place, pop, "fish"),
+                fish[index] + u64::from(pop == wealthy)
+            );
+        }
+        assert_eq!(total(&rules, &place), before);
+    }
+}
+
+#[test]
+fn ownerless_communal_stock_is_in_orders_but_not_shares() {
+    let (mut rules, mut place) = sharing_case();
+    capacity(&mut rules, &mut place, PEASANT, 1_000_000);
+    capacity(&mut rules, &mut place, THIRD, 1_000_000);
+    let house = storehouse(&rules, &mut place);
+    let fish = good(&rules, "fish");
+    place.buildings[house]
+        .storehouse_accounts
+        .as_mut()
+        .unwrap()
+        .communal[fish] = 4;
+    place.buildings[house].stock[fish] = 4;
+    assert_eq!(
+        daily_market_orders(&rules, &place).unwrap().sell_units[fish],
+        8
+    );
+    let before = total(&rules, &place);
+    let first = stock(&rules, &place, PEASANT, "fish");
+    let third = stock(&rules, &place, THIRD, "fish");
+    exchange(&rules, &mut place);
+    assert_eq!(stock(&rules, &place, PEASANT, "fish"), first + 2);
+    assert_eq!(stock(&rules, &place, THIRD, "fish"), third + 2);
+    assert_eq!(place.buildings[house].stock[fish], 4);
+    assert_eq!(total(&rules, &place), before);
+}
+
+#[test]
+fn each_owner_can_only_give_its_part_of_a_building() {
+    let mut rules = rules();
+    let mut place = place(&rules, 3);
+    for id in ["oats", "fish"] {
+        set_price(&rules, &mut place, id, 1);
+    }
+    settle_the_rest(&rules, &mut place, &[]);
+    spare(&rules, &mut place, THIRD, "oats", 30);
+    want(&rules, &mut place, THIRD, "fish", 30);
+    want(&rules, &mut place, PEASANT, "oats", 20);
+    capacity(&mut rules, &mut place, THIRD, 10_000_000);
+    let building = add_building(&rules, &mut place, "holdings", 1);
+    own(&mut place, building, PEASANT, 2);
+    own(&mut place, building, MONK, 1);
+    let fish = good(&rules, "fish");
+    let reserve = [PEASANT, MONK]
+        .into_iter()
+        .map(|p| {
+            let people = place.pops[p].workers + place.pops[p].dependents;
+            food_target_units(&rules, &place.pops[p].kind, people, fish, 60).unwrap()
+        })
+        .sum::<u128>();
+    place.buildings[building].stock[fish] = u64::try_from(reserve).unwrap() + 30;
+    let before = total(&rules, &place);
+    let buyer = stock(&rules, &place, THIRD, "fish");
+    exchange(&rules, &mut place);
+    assert_eq!(stock(&rules, &place, THIRD, "fish"), buyer + 20);
+    assert_eq!(
+        place.buildings[building].stock[fish],
+        u64::try_from(reserve).unwrap() + 10
+    );
+    assert_eq!(total(&rules, &place), before);
+}
+
+#[test]
+fn food_below_the_owners_reserve_has_no_tradable_part() {
+    let mut rules = rules();
+    let mut place = place(&rules, 2);
+    for id in ["oats", "fish"] {
+        set_price(&rules, &mut place, id, 1);
+    }
+    settle_the_rest(&rules, &mut place, &[]);
+    spare(&rules, &mut place, PEASANT, "oats", 4);
+    want(&rules, &mut place, PEASANT, "fish", 4);
+    want(&rules, &mut place, MONK, "oats", 4);
+    capacity(&mut rules, &mut place, PEASANT, 1_000_000);
+    let building = add_building(&rules, &mut place, "holdings", 1);
+    own(&mut place, building, MONK, 1);
+    let fish = good(&rules, "fish");
+    let people = place.pops[MONK].workers + place.pops[MONK].dependents;
+    let reserve = food_target_units(&rules, &place.pops[MONK].kind, people, fish, 60).unwrap();
+    place.buildings[building].stock[fish] = u64::try_from(reserve - 1).unwrap();
+    let before = goods_everywhere(&place);
+    exchange(&rules, &mut place);
+    assert_eq!(goods_everywhere(&place), before);
+}
+
+#[test]
+fn source_pair_is_not_retried_when_payment_reopens_room() {
+    let mut rules = rules();
+    let mut place = place(&rules, 2);
+    for pop in &mut place.pops {
+        pop.workers = 100_000_000;
+        pop.dependents = 0;
+    }
+    for id in ["oats", "fish", "wool"] {
+        let index = good(&rules, id);
+        rules.goods[index].volume_ml = 1;
+    }
+    set_price(&rules, &mut place, "oats", 1);
+    set_price(&rules, &mut place, "fish", 1);
+    spare(&rules, &mut place, PEASANT, "oats", 10_000_000);
+    want(&rules, &mut place, PEASANT, "fish", 10_000_000);
+    spare(&rules, &mut place, MONK, "fish", 10_000_000);
+    want(&rules, &mut place, MONK, "oats", 10_000_000);
+    settle_the_rest(&rules, &mut place, &["oats", "fish"]);
+    for pop in [PEASANT, MONK] {
+        let people = place.pops[pop].workers;
+        let (_, limit) = pop_store_limits(&rules, people, good(&rules, "fish")).unwrap();
+        let used = volume_used(&rules, &place.pops[pop].stock, None).unwrap();
+        place.pops[pop].stock[good(&rules, "wool")] = u64::try_from(limit - used - 1).unwrap();
+    }
+    capacity(&mut rules, &mut place, PEASANT, 20_000_001);
+    let before = total(&rules, &place);
+    let oats = stock(&rules, &place, PEASANT, "oats");
+    let fish = stock(&rules, &place, PEASANT, "fish");
+    exchange(&rules, &mut place);
+    assert_eq!(stock(&rules, &place, PEASANT, "oats"), oats - 1);
+    assert_eq!(stock(&rules, &place, PEASANT, "fish"), fish + 1);
+    assert_eq!(total(&rules, &place), before);
+}
+
+#[test]
+fn a_storehouse_owner_trades_communal_stock_without_touching_pop_accounts() {
+    let mut rules = rules();
+    let mut place = place(&rules, 2);
+    for id in ["oats", "fish"] {
+        set_price(&rules, &mut place, id, 1);
+    }
+    settle_the_rest(&rules, &mut place, &[]);
+    spare(&rules, &mut place, PEASANT, "oats", 4);
+    want(&rules, &mut place, PEASANT, "fish", 4);
+    want(&rules, &mut place, MONK, "oats", 4);
+    capacity(&mut rules, &mut place, PEASANT, 1_000_000);
+    let house = storehouse(&rules, &mut place);
+    own(&mut place, house, MONK, 1);
+    let fish = good(&rules, "fish");
+    let people = place.pops[MONK].workers + place.pops[MONK].dependents;
+    let reserve =
+        u64::try_from(food_target_units(&rules, &place.pops[MONK].kind, people, fish, 60).unwrap())
+            .unwrap();
+    place.pops[MONK].stock[fish] -= 5;
+    let accounts = place.buildings[house].storehouse_accounts.as_mut().unwrap();
+    accounts.pops[MONK][fish] = 5;
+    accounts.communal[fish] = reserve + 10;
+    place.buildings[house].stock[fish] = reserve + 15;
+    fill_grain_room_to(&mut rules, &mut place, house, 0);
+    for room in [true, false] {
+        let mut trial_rules = rules.clone();
+        let mut trial = place.clone();
+        if !room {
+            at_its_limit(&mut trial_rules, &trial, MONK, "oats");
+        }
+        let before = total(&trial_rules, &trial);
+        let everywhere = goods_everywhere(&trial);
+        let oats = stock(&trial_rules, &trial, MONK, "oats");
+        exchange(&trial_rules, &mut trial);
+        let accounts = trial.buildings[house].storehouse_accounts.as_ref().unwrap();
+        assert_eq!(accounts.pops[MONK][fish], 5);
+        if room {
+            assert_eq!(accounts.communal[fish], reserve + 6);
+            assert_eq!(trial.buildings[house].stock[fish], reserve + 11);
+            assert_eq!(stock(&trial_rules, &trial, MONK, "oats"), oats + 4);
+        } else {
+            assert_eq!(goods_everywhere(&trial), everywhere);
+        }
+        assert_eq!(total(&trial_rules, &trial), before);
+    }
+}
+
+#[test]
+fn both_personal_sources_precede_both_communal_parts() {
+    let mut rules = rules();
+    let mut place = place(&rules, 2);
+    for id in ["oats", "fish"] {
+        set_price(&rules, &mut place, id, 1);
+    }
+    settle_the_rest(&rules, &mut place, &[]);
+    spare(&rules, &mut place, PEASANT, "oats", 1);
+    want(&rules, &mut place, PEASANT, "fish", 1);
+    spare(&rules, &mut place, MONK, "fish", 1);
+    want(&rules, &mut place, MONK, "oats", 1);
+    capacity(&mut rules, &mut place, PEASANT, 1_000_000);
+    let house = storehouse(&rules, &mut place);
+    own(&mut place, house, PEASANT, 1);
+    own(&mut place, house, MONK, 1);
+    for id in ["oats", "fish"] {
+        let good = good(&rules, id);
+        place.buildings[house].stock[good] = 100_000;
+        place.buildings[house]
+            .storehouse_accounts
+            .as_mut()
+            .unwrap()
+            .communal[good] = 100_000;
+    }
+    let before = goods_everywhere(&place);
+    let total_before = total(&rules, &place);
+    exchange(&rules, &mut place);
+    assert_eq!(
+        place.pops[PEASANT].stock[good(&rules, "oats")],
+        before[PEASANT][good(&rules, "oats")] - 1
+    );
+    assert_eq!(
+        place.pops[PEASANT].stock[good(&rules, "fish")],
+        before[PEASANT][good(&rules, "fish")] + 1
+    );
+    assert_eq!(
+        place.pops[MONK].stock[good(&rules, "oats")],
+        before[MONK][good(&rules, "oats")] + 1
+    );
+    assert_eq!(
+        place.pops[MONK].stock[good(&rules, "fish")],
+        before[MONK][good(&rules, "fish")] - 1
+    );
+    assert_eq!(&goods_everywhere(&place)[2..], &before[2..]);
+    assert_eq!(total(&rules, &place), total_before);
+}
+
+#[test]
+fn a_receipt_does_not_spill_into_a_storehouse_or_building() {
+    let mut rules = rules();
+    let mut place = place(&rules, 2);
+    for id in ["oats", "fish"] {
+        set_price(&rules, &mut place, id, 1);
+    }
+    settle_the_rest(&rules, &mut place, &[]);
+    spare(&rules, &mut place, PEASANT, "oats", 2);
+    want(&rules, &mut place, PEASANT, "fish", 2);
+    want(&rules, &mut place, MONK, "oats", 2);
+    capacity(&mut rules, &mut place, PEASANT, 1_000_000);
+    let house = storehouse(&rules, &mut place);
+    own(&mut place, house, MONK, 1);
+    let fish = good(&rules, "fish");
+    let oats = good(&rules, "oats");
+    let people = place.pops[MONK].workers + place.pops[MONK].dependents;
+    let reserve =
+        u64::try_from(food_target_units(&rules, &place.pops[MONK].kind, people, fish, 60).unwrap())
+            .unwrap();
+    place.buildings[house].stock[fish] = reserve + 10;
+    place.buildings[house]
+        .storehouse_accounts
+        .as_mut()
+        .unwrap()
+        .communal[fish] = reserve + 10;
+    rules.goods[oats].pop_limit_milli = (place.pops[MONK].stock[oats] + 1) * 1000 / people;
+    let before = total(&rules, &place);
+    let monk_oats = place.pops[MONK].stock[oats];
+    exchange(&rules, &mut place);
+    assert_eq!(place.pops[MONK].stock[oats], monk_oats + 1);
+    let accounts = place.buildings[house].storehouse_accounts.as_ref().unwrap();
+    assert_eq!(accounts.communal[fish], reserve + 9);
+    assert_eq!(accounts.communal[oats], 0);
+    assert_eq!(accounts.pops[MONK][oats], 0);
+    assert_eq!(place.buildings[house].stock[oats], 0);
+    assert_eq!(total(&rules, &place), before);
+}
+
+#[test]
+fn second_share_excludes_a_buyer_that_has_run_out_of_payment() {
+    let mut rules = rules();
+    let mut place = place(&rules, 3);
+    place.pops.push(place.pops[THIRD].clone());
+    for id in ["oats", "fish"] {
+        set_price(&rules, &mut place, id, 1);
+    }
+    settle_the_rest(&rules, &mut place, &[]);
+    for pop in [PEASANT, THIRD, 3] {
+        want(&rules, &mut place, pop, "fish", 4);
+        spare(
+            &rules,
+            &mut place,
+            pop,
+            "oats",
+            if pop == PEASANT { 2 } else { 4 },
+        );
+    }
+    spare(&rules, &mut place, MONK, "fish", 6);
+    want(&rules, &mut place, MONK, "oats", 6);
+    capacity(&mut rules, &mut place, PEASANT, 1_000_000);
+    capacity(&mut rules, &mut place, THIRD, 1_000_000);
+    let wool = good(&rules, "wool");
+    rules.goods[wool].volume_ml = 1;
+    let people = place.pops[3].workers + place.pops[3].dependents;
+    let (_, limit) = pop_store_limits(&rules, people, good(&rules, "fish")).unwrap();
+    let used = volume_used(&rules, &place.pops[3].stock, None).unwrap();
+    place.pops[3].stock[wool] = u64::try_from(limit - used).unwrap();
+    let before = total(&rules, &place);
+    let fish: Vec<_> = [PEASANT, THIRD, 3]
+        .into_iter()
+        .map(|p| stock(&rules, &place, p, "fish"))
+        .collect();
+    exchange(&rules, &mut place);
+    for (pop, gained) in [(PEASANT, 2), (THIRD, 4), (3, 0)] {
+        let index = if pop == PEASANT {
+            0
+        } else if pop == THIRD {
+            1
+        } else {
+            2
+        };
+        assert_eq!(stock(&rules, &place, pop, "fish"), fish[index] + gained);
+    }
+    assert_eq!(total(&rules, &place), before);
+}
+
 // ---------------------------------------------------------------- rules 1 to 3: spare, want and the orders
 
 #[test]
@@ -938,16 +1456,16 @@ fn at_its_limit(rules: &mut Rules, place: &PlaceState, pop: usize, id: &str) {
 // ---------------------------------------------------------------- the exchange: order, turns and wants
 
 #[test]
-fn order_not_priority_the_third_pop_receives_the_fish_in_the_holders_turn() {
-    // A holder is first in the order with one fish to spare and wants for barley and oats, barley first. The second pop wants the
-    // fish and has oats; the third wants it and has barley. In the holder's turn the third pop receives the fish, before the second
-    // pop has a turn.
+fn scarce_fish_goes_to_the_wealthier_claimant_before_want_order() {
+    // A holder wants barley first and oats second. Both buyers want its one fish and can pay; equal wealth gives it to the earlier buyer.
     for third_has_capacity in [false, true] {
         let mut rules = rules();
         let mut place = place(&rules, 3);
-        set_price(&rules, &mut place, "oats", 90);
+        set_price(&rules, &mut place, "oats", 100);
         set_price(&rules, &mut place, "barley", 100);
         set_price(&rules, &mut place, "fish", 100);
+        let barley = good(&rules, "barley");
+        rules.goods[barley].volume_ml = 1;
         spare(&rules, &mut place, PEASANT, "fish", 1);
         want(&rules, &mut place, PEASANT, "barley", 1);
         want(&rules, &mut place, PEASANT, "oats", 1);
@@ -965,13 +1483,11 @@ fn order_not_priority_the_third_pop_receives_the_fish_in_the_holders_turn() {
         let rank = |id: &str| order.iter().position(|i| *i == good(&rules, id)).unwrap();
         assert!(rank("barley") < rank("oats"));
         exchange(&rules, &mut place);
-        // The holder's fish went to the third pop, for its barley; the second pop is left wanting it.
-        assert_eq!(position(&rules, &place, THIRD, "fish"), (0, 0));
-        assert_eq!(position(&rules, &place, THIRD, "barley"), (0, 0));
-        assert_eq!(position(&rules, &place, PEASANT, "barley"), (0, 0));
-        assert_eq!(position(&rules, &place, PEASANT, "fish"), (0, 0));
-        assert_eq!(position(&rules, &place, MONK, "fish"), (0, 1));
-        assert_eq!(position(&rules, &place, PEASANT, "oats"), (0, 1));
+        // Equal wealth is decided by pop order, so the oats holder receives the fish.
+        assert_eq!(position(&rules, &place, MONK, "fish"), (0, 0));
+        assert_eq!(position(&rules, &place, THIRD, "fish"), (0, 1));
+        assert_eq!(position(&rules, &place, PEASANT, "oats"), (0, 0));
+        assert_eq!(position(&rules, &place, PEASANT, "barley"), (0, 1));
     }
 }
 
@@ -1020,8 +1536,7 @@ fn wants_go_food_first_then_the_least_bulky_for_its_worth_then_the_goods_order()
 
 #[test]
 fn a_starter_tries_the_partners_in_the_places_order_and_each_try_makes_the_swap() {
-    // The first pop wants fish; the second and the third each have fish to spare and want oats. The first pop starts: it takes the
-    // fish from the second pop, which comes first in the order, and only then from the third for what is still wanted.
+    // The first pop wants fish, and both others want its oats. The scarce oats are shared even though it tries partners in order.
     let mut rules = rules();
     let mut place = place(&rules, 3);
     set_price(&rules, &mut place, "oats", 100);
@@ -1036,11 +1551,11 @@ fn a_starter_tries_the_partners_in_the_places_order_and_each_try_makes_the_swap(
     capacity(&mut rules, &mut place, PEASANT, 10_000_000);
     exchange(&rules, &mut place);
     assert_eq!(position(&rules, &place, PEASANT, "fish"), (0, 0));
-    assert_eq!(position(&rules, &place, MONK, "fish"), (0, 0));
-    assert_eq!(position(&rules, &place, THIRD, "fish"), (2, 0));
+    assert_eq!(position(&rules, &place, MONK, "fish"), (1, 0));
+    assert_eq!(position(&rules, &place, THIRD, "fish"), (1, 0));
     assert_eq!(position(&rules, &place, PEASANT, "oats"), (0, 0));
-    assert_eq!(position(&rules, &place, MONK, "oats"), (0, 0));
-    assert_eq!(position(&rules, &place, THIRD, "oats"), (0, 2));
+    assert_eq!(position(&rules, &place, MONK, "oats"), (0, 1));
+    assert_eq!(position(&rules, &place, THIRD, "oats"), (0, 1));
 }
 
 // ---------------------------------------------------------------- hunger
@@ -1450,9 +1965,8 @@ fn rule_20_the_price_after_the_first_noon_is_the_literal_the_formula_gives_for_t
 }
 
 #[test]
-fn the_order_of_turns_decides_who_gets_a_good_that_is_short() {
-    // The first two pops each want 5 fish and have oats to give; the third has only 5 fish and wants oats. Whichever pop has the
-    // earlier turn gets the fish.
+fn a_short_good_is_shared_across_turns() {
+    // The first two pops each want 5 fish and have oats to give; the third has only 5 fish. The indivisible unit goes to the earlier equal-wealth buyer.
     for (first, second) in [(PEASANT, MONK), (MONK, PEASANT)] {
         let mut rules = rules();
         let mut place = place(&rules, 3);
@@ -1467,12 +1981,12 @@ fn the_order_of_turns_decides_who_gets_a_good_that_is_short() {
         settle_the_rest(&rules, &mut place, &["oats", "fish"]);
         capacity(&mut rules, &mut place, first, 10_000_000);
         capacity(&mut rules, &mut place, second, 10_000_000);
-        // Only the earlier pop in the order of pops has the turn first; the fish are gone before the other is tried.
+        // Both receive their share regardless of which capacity building was added first.
         exchange(&rules, &mut place);
         let earlier = first.min(second);
         let later = first.max(second);
-        assert_eq!(position(&rules, &place, earlier, "fish"), (0, 0));
-        assert_eq!(position(&rules, &place, later, "fish"), (0, 5));
+        assert_eq!(position(&rules, &place, earlier, "fish"), (0, 2));
+        assert_eq!(position(&rules, &place, later, "fish"), (0, 3));
     }
 }
 

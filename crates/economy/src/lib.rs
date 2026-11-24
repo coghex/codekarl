@@ -3085,22 +3085,16 @@ fn pop_target_units(
     Ok(target.max(comfort_target))
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "The order book combines food, fuel and owner reserves in one pass."
-)]
 fn daily_market_orders(rules: &Rules, place: &PlaceState) -> Result<DailyMarketOrders, DataError> {
     let goods = rules.goods.len();
     let mut orders = DailyMarketOrders {
         buy_units: vec![0; goods],
         sell_units: vec![0; goods],
     };
-    let mut pop_sizes = Vec::with_capacity(place.pops.len());
     for (pop_index, pop) in place.pops.iter().enumerate() {
         let people = pop.workers.checked_add(pop.dependents).ok_or_else(|| {
             missing_data("market.pop.size".to_owned(), "population size overflow")
         })?;
-        pop_sizes.push(people);
         let daily = fuel::fuel_daily_need(rules, pop)?;
         let target = daily
             .checked_mul(240)
@@ -3145,6 +3139,27 @@ fn daily_market_orders(rules: &Rules, place: &PlaceState) -> Result<DailyMarketO
                 .ok_or_else(|| missing_data("market.sell".to_owned(), "sell order overflow"))?;
         }
     }
+    for building in building_market_sells(rules, place)? {
+        for (good, sell) in building.into_iter().enumerate() {
+            orders.sell_units[good] = orders.sell_units[good]
+                .checked_add(sell)
+                .ok_or_else(|| missing_data("market.sell".to_owned(), "sell order overflow"))?;
+        }
+    }
+    Ok(orders)
+}
+
+/// Each building's offer above its owners' food reserve, also used by the exchange.
+fn building_market_sells(rules: &Rules, place: &PlaceState) -> Result<Vec<Vec<u128>>, DataError> {
+    let pop_sizes = place
+        .pops
+        .iter()
+        .map(|pop| {
+            pop.workers.checked_add(pop.dependents).ok_or_else(|| {
+                missing_data("market.pop.size".to_owned(), "population size overflow")
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let mut owner_people_by_building = vec![vec![0_u64; place.pops.len()]; place.buildings.len()];
     for building in &place.buildings {
         if building.employment.len() != place.pops.len() {
@@ -3166,6 +3181,7 @@ fn daily_market_orders(rules: &Rules, place: &PlaceState) -> Result<DailyMarketO
             owner_people_by_building[building_index][pop_index] = people;
         }
     }
+    let mut sells = vec![vec![0_u128; rules.goods.len()]; place.buildings.len()];
     for (building_index, building) in place.buildings.iter().enumerate() {
         let mut reserve = 0_u128;
         for (pop_index, people) in owner_people_by_building[building_index]
@@ -3188,7 +3204,7 @@ fn daily_market_orders(rules: &Rules, place: &PlaceState) -> Result<DailyMarketO
         }
         let spare = fuel::fuel_spare(rules, &building.stock, 0, reserve, &place.prices_milli)?;
         for (index, units) in spare.into_iter().enumerate() {
-            orders.sell_units[index] = orders.sell_units[index]
+            sells[building_index][index] = sells[building_index][index]
                 .checked_add(u128::from(units))
                 .ok_or_else(|| missing_data("fuel.sell".to_owned(), "sell overflow"))?;
         }
@@ -3212,19 +3228,14 @@ fn daily_market_orders(rules: &Rules, place: &PlaceState) -> Result<DailyMarketO
                     missing_data("market.owner_reserve".to_owned(), "owner reserve overflow")
                 })?;
             }
-            if good.hunger_centi > 0 {
-                let sell = holding.saturating_sub(owner_reserve);
-                orders.sell_units[good_index] = orders.sell_units[good_index]
-                    .checked_add(sell)
-                    .ok_or_else(|| missing_data("market.sell".to_owned(), "sell order overflow"))?;
+            sells[building_index][good_index] = if good.hunger_centi > 0 {
+                holding.saturating_sub(owner_reserve)
             } else {
-                orders.sell_units[good_index] = orders.sell_units[good_index]
-                    .checked_add(holding)
-                    .ok_or_else(|| missing_data("market.sell".to_owned(), "sell order overflow"))?;
-            }
+                holding
+            };
         }
     }
-    Ok(orders)
+    Ok(sells)
 }
 
 fn daily_price_target(

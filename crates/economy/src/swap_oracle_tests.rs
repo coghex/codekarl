@@ -8,7 +8,7 @@
 
 use std::fmt::Write as _;
 
-use super::swap::{Book, Exchange, best_pair};
+use super::swap::{Book, Exchange, best_pair, best_pair_capped};
 use super::*;
 use crate::swap_tests;
 
@@ -164,19 +164,21 @@ fn room(case: &Case, pop: usize, good: usize) -> u128 {
 }
 
 /// Rules 10, 11 and 13 stated plainly: every pair, the most received and of those the fewest given.
-fn exhaustive(case: &Case) -> Option<(u64, u64)> {
+fn exhaustive_capped(case: &Case, [give_cap, get_cap]: [u128; 2]) -> Option<(u64, u64)> {
     let (rules, place, book) = (&case.rules, &case.place, &case.book);
     let (give_good, get_good) = (case.give_good, case.get_good);
     let most_get = book
         .position(0, get_good)
         .want
         .min(book.position(1, get_good).spare)
-        .min(room(case, 0, get_good));
+        .min(room(case, 0, get_good))
+        .min(get_cap);
     let most_give = book
         .position(0, give_good)
         .spare
         .min(book.position(1, give_good).want)
-        .min(room(case, 1, give_good));
+        .min(room(case, 1, give_good))
+        .min(give_cap);
     let give_price = u128::from(place.prices_milli[give_good]);
     let get_price = u128::from(place.prices_milli[get_good]);
     let limit = u128::from(rules.swap_loss_limit_pm);
@@ -212,7 +214,7 @@ fn compare(seed: u64, count: u64) -> u64 {
             rules: &case.rules,
             house: None,
         };
-        let expected = exhaustive(&case);
+        let expected = exhaustive_capped(&case, [u128::MAX; 2]);
         let found = best_pair(
             &exchange,
             &case.place,
@@ -240,6 +242,40 @@ fn the_size_of_a_swap_is_the_best_pair_found_by_trying_every_pair() {
     }
     // The cases are drawn to be hard, but a good share must still end in a swap, or the comparison proves little.
     assert!(swaps > 600, "only {swaps} of 5,000 cases made a swap");
+}
+
+#[test]
+fn share_limits_on_both_legs_match_exhaustive_pairs() {
+    let mut rng = Rng(0x6384_9751);
+    for index in 0..5_000 {
+        let case = draw(&mut rng);
+        let caps = [u128::from(rng.below(40)), u128::from(rng.below(40))];
+        let exchange = Exchange {
+            rules: &case.rules,
+            house: None,
+        };
+        let found = best_pair_capped(
+            &exchange,
+            &case.place,
+            &case.book,
+            [0, 1],
+            [case.give_good, case.get_good],
+            case.capacity_left,
+            [
+                case.book.position(0, case.give_good).spare,
+                case.book.position(1, case.get_good).spare,
+                caps[0],
+                caps[1],
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            found,
+            exhaustive_capped(&case, caps),
+            "case {index}: {}, caps {caps:?}",
+            case.summary
+        );
+    }
 }
 
 /// A case of two pops of 100 million people (room for any amount below) with the prices, volumes, loss limit, amounts and capacity
@@ -308,7 +344,7 @@ fn a_full_store_takes_nothing_so_no_pair_is_found_even_for_a_good_of_no_volume()
     // The starter gives oats (a millilitre a unit) for fish that take no room (0 ml): 20 spare, 40 wanted, prices 101 and 30.
     let open = explicit([101, 30], [1, 0], 100, [20, 40], 10_000_000);
     assert!(size_of(&open).is_some());
-    assert_eq!(size_of(&open), exhaustive(&open));
+    assert_eq!(size_of(&open), exhaustive_capped(&open, [u128::MAX; 2]));
     // The same case with the starter's store exactly at its volume limit (rule 13): nothing moves, as the trying of every pair finds.
     let mut full = explicit([101, 30], [1, 0], 100, [20, 40], 10_000_000);
     let wool = swap_tests::good(&full.rules, "wool");
@@ -319,7 +355,7 @@ fn a_full_store_takes_nothing_so_no_pair_is_found_even_for_a_good_of_no_volume()
         volume_used(&full.rules, &full.place.pops[0].stock, None).unwrap(),
         people * 720_000
     );
-    assert_eq!(exhaustive(&full), None);
+    assert_eq!(exhaustive_capped(&full, [u128::MAX; 2]), None);
     assert_eq!(size_of(&full), None);
 }
 
