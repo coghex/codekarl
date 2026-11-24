@@ -1189,6 +1189,7 @@ mod tests {
             characters: ck_characters::CharacterStore::default(),
             economy: state.clone(),
             stretches: std::collections::BTreeMap::new(),
+            lows: crate::game::lows::Lows::default(),
         };
         let time = GameTime::from_date(start).expect("the save date is valid");
         let identity = crate::game::saves::Identity {

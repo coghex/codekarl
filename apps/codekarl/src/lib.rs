@@ -1150,6 +1150,14 @@ pub fn main_entry(args: Vec<OsString>) -> ExitCode {
     )
 }
 
+/// Run the headless weather trial.
+///
+/// # Errors
+/// Returns a description of invalid input or an I/O failure.
+pub fn weather_trial_main(arguments: impl IntoIterator<Item = String>) -> Result<String, String> {
+    game::weather_trial::command(arguments)
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;

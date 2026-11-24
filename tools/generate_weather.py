@@ -32,6 +32,9 @@ def generate() -> str:
         "wind_land_factor = 330",
         "wind_slope_blocks = 2",
         "wind_belt_latitude = 60000",
+        "steer_friction = 1000",
+        "steer_factor = 1000",
+        "meet_share = 500",
         "",
     ]
     for name, values in (

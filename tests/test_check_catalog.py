@@ -2486,6 +2486,11 @@ GUARDS: tuple[Guard, ...] = (
         "rust.app",
         ("assets/map/backdrop/", "assets/game/weather.toml", "crates/map/tests/fixtures/backdrop/"),
     ),
+    Guard(
+        "apps/codekarl/src/game/weather_trial.rs",
+        "rust.app",
+        ("assets/map/backdrop/", "assets/game/weather.toml"),
+    ),
     Guard("crates/sim/src/travel.rs", "sim.core", ("assets/game/travel.toml",)),
     # CK-105: the renderer's re-export test checks its window fixture against the resource component's copy.
     Guard(

@@ -24,6 +24,12 @@ pub struct WeatherRules {
     pub wind_slope_blocks: i64,
     /// Equatorial belt half width in ten-thousandths of a degree.
     pub wind_belt_latitude: i64,
+    /// Friction used to steer lows.
+    pub steer_friction: i64,
+    /// Speed factor used to steer lows.
+    pub steer_factor: i64,
+    /// Meeting distance as thousandths of the larger radius.
+    pub meet_share: i64,
     /// Cosines in millionths at tenth-degree steps.
     pub cosine: Vec<i64>,
     /// Latitude tangents in millionths at tenth-degree steps.
@@ -77,6 +83,9 @@ impl WeatherRules {
             ("wind_land_factor", rules.wind_land_factor, 0, 2_000),
             ("wind_slope_blocks", rules.wind_slope_blocks, 1, 8),
             ("wind_belt_latitude", rules.wind_belt_latitude, 0, 300_000),
+            ("steer_friction", rules.steer_friction, 1, 1_000_000),
+            ("steer_factor", rules.steer_factor, 0, 10_000),
+            ("meet_share", rules.meet_share, 1, 2_000),
         ] {
             if !(lower..=upper).contains(&value) {
                 return Err(format!("weather.toml: {name} range"));
@@ -607,6 +616,9 @@ mod tests {
             ("wind_land_factor", 330, 0, 2_000),
             ("wind_slope_blocks", 2, 1, 8),
             ("wind_belt_latitude", 60000, 0, 300_000),
+            ("steer_friction", 1000, 1, 1_000_000),
+            ("steer_factor", 1000, 0, 10_000),
+            ("meet_share", 500, 1, 2_000),
         ] {
             let line = format!("{name} = {value}\n");
             assert!(source.contains(&line), "{name}");

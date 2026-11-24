@@ -554,6 +554,7 @@ fn same_build_saves_and_digests_ignore_derived_daily_market_orders() {
                 economy,
                 characters: ck_characters::CharacterStore::default(),
                 stretches: std::collections::BTreeMap::new(),
+                lows: crate::game::lows::Lows::default(),
             },
             Scheduler::new(),
             crate::game::apply,

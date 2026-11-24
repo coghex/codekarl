@@ -135,6 +135,7 @@ fn game(
             economy,
             characters: ck_characters::CharacterStore::default(),
             stretches: BTreeMap::new(),
+            lows: crate::game::lows::Lows::default(),
         },
         scheduler(rules),
         apply,

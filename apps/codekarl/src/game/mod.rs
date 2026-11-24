@@ -27,6 +27,7 @@ pub(crate) mod core;
 pub(crate) mod economy;
 pub(crate) mod gameplay;
 pub(crate) mod hashes;
+mod lows;
 pub(crate) mod owner;
 pub(crate) mod saves;
 pub(crate) mod setup;
@@ -36,6 +37,7 @@ mod stretch;
 pub(crate) mod tests;
 pub mod travel;
 pub(crate) mod view;
+pub(crate) mod weather_trial;
 mod wind;
 
 /// The simulation state. M9 slice 2 stores its deterministic starting economy.
@@ -45,6 +47,8 @@ pub(crate) struct GameState {
     pub(crate) economy: ck_economy::EconomyState,
     /// State of each physical land stretch, keyed by its stable id.
     pub(crate) stretches: std::collections::BTreeMap<u64, stretch::StretchState>,
+    /// The list of manually placed lows and its next identifier.
+    pub(crate) lows: lows::Lows,
     /// Live characters and their next identifier.
     pub(crate) characters: ck_characters::CharacterStore,
 }
@@ -53,7 +57,8 @@ impl Canonical for GameState {
     fn encode(&self, out: &mut Vec<u8>) -> Result<(), CanonicalError> {
         self.economy.encode(out)?;
         self.characters.encode(out)?;
-        self.stretches.encode(out)
+        self.stretches.encode(out)?;
+        self.lows.encode(out)
     }
 
     fn decode(input: &mut Reader<'_>) -> Result<Self, CanonicalError> {
@@ -61,6 +66,7 @@ impl Canonical for GameState {
             economy: ck_economy::EconomyState::decode(input)?,
             characters: ck_characters::CharacterStore::decode(input)?,
             stretches: std::collections::BTreeMap::decode(input)?,
+            lows: lows::Lows::decode(input)?,
         })
     }
 }

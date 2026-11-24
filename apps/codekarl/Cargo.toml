@@ -14,6 +14,7 @@ metal = ["dep:ck-gpu-metal", "dep:ck-window-cocoa", "ck-render-2d/metal"]
 vulkan = ["dep:ck-gpu-vulkan", "dep:ck-window-glfw", "ck-render-2d/vulkan"]
 
 [dependencies]
+png = { version = "0.18", default-features = false }
 num-bigint = "0.4"
 num-rational = "0.4"
 ck-gpu-metal = { path = "../../crates/gpu-metal", optional = true }
@@ -41,6 +42,10 @@ harness = false  # per-case results and skips appear in plain `cargo test` outpu
 [[bin]]
 name = "economy-soak"
 path = "src/bin/economy_soak.rs"
+
+[[bin]]
+name = "weather-trial"
+path = "src/bin/weather_trial.rs"
 
 [[bin]]
 name = "travel-times"
@@ -78,7 +83,6 @@ required-features = ["vulkan"]
 workspace = true
 
 [dev-dependencies]
-png = { version = "0.18", default-features = false }
 # `test-fixtures` gives the storage tests the state-only mutators; only [dev-dependencies] may enable it.
 ck-characters = { path = "../../crates/characters", features = ["test-fixtures"] }
 # `test-support` gives the headless driver's cases the resource service's `JobGate`; only [dev-dependencies] may enable it.

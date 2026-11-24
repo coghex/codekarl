@@ -447,6 +447,8 @@ class Levels(CheckFixture):
                     "economy-soak",
                     "--bin",
                     "travel-times",
+                    "--bin",
+                    "weather-trial",
                     "--test",
                     "cli_spec_unit",
                     "--test",
