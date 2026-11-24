@@ -478,7 +478,7 @@ fn the_fixture_people_need_and_order_what_the_spec_states() {
 }
 
 #[test]
-fn no_fuel_need_exists_until_data_names_one() {
+fn fuel_need_is_zero_without_data_and_shipped_at_twenty() {
     let rules = farm_of(vec![farming("farming")], 0);
     let demand = StartDemand::new(&rules, &peasants(&rules, 50)).unwrap();
     assert_eq!(demand.fuel_need(), 0);
@@ -489,7 +489,7 @@ fn no_fuel_need_exists_until_data_names_one() {
         shipped
             .pop_types
             .iter()
-            .all(|kind| kind.fuel_need_milli_day == 0)
+            .all(|kind| kind.fuel_need_milli_day == 20)
     );
     let fuel_methods: Vec<_> = shipped
         .buildings

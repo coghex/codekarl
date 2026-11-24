@@ -218,6 +218,10 @@ pub(crate) fn prepare(
         )
         .map_err(|e| format!("save {}: {e}", path.display()))?;
         let storage = super::character_storage::Storage::at(staging, None, None, None);
+        if let Some(rules) = economy_rules.as_deref() {
+            ck_economy::validate_fuel_state(rules, &save.state.economy)
+                .map_err(|e| e.to_string())?;
+        }
         let expected = super::stretch::starting(scenario.network.as_ref())
             .into_keys()
             .collect();
@@ -486,6 +490,7 @@ pub(super) fn test_core(
     outputs: Outputs,
 ) -> Core<GameState, GameCommand> {
     let wiring = prepared.view_wiring();
+    let fuel_rules = prepared.economy_rules.clone();
     let stretch_ids = prepared
         .simulation
         .state()
@@ -514,7 +519,11 @@ pub(super) fn test_core(
         layers,
     )
     .with_state_validation(move |state: &GameState| {
-        super::stretch::validate(&state.stretches, &stretch_ids)
+        super::stretch::validate(&state.stretches, &stretch_ids)?;
+        if let Some(rules) = fuel_rules.as_deref() {
+            ck_economy::validate_fuel_state(rules, &state.economy).map_err(|e| e.to_string())?;
+        }
+        Ok(())
     })
     .with_character_storage(storage, super::character_storage::Storage::validate)
 }
@@ -580,6 +589,7 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
     let place_names = place_names(&scenario);
     let wiring_gameplay = gameplay.clone();
     let wiring_rules = economy_rules.clone();
+    let fuel_rules = economy_rules.clone();
     let (sender, receiver) = channel();
     let controls = SimControls::with_wake(sender.clone(), Arc::clone(&wake));
     let slot = SimSlot::new(wake);
@@ -634,7 +644,12 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
                 layers,
             )
             .with_state_validation(move |state: &GameState| {
-                super::stretch::validate(&state.stretches, &stretch_ids)
+                super::stretch::validate(&state.stretches, &stretch_ids)?;
+                if let Some(rules) = fuel_rules.as_deref() {
+                    ck_economy::validate_fuel_state(rules, &state.economy)
+                        .map_err(|e| e.to_string())?;
+                }
+                Ok(())
             })
             .with_character_storage(storage, super::character_storage::Storage::validate)
             .with_terminal_probe(move || {
@@ -1634,6 +1649,118 @@ mod stretch_save_tests {
             logs.lock().unwrap().as_ref().unwrap(),
             &original_logs
         ));
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Each invalid fuel field is checked through both real load paths and their storage readers."
+    )]
+    fn both_load_paths_refuse_invalid_saved_fuel_without_installing_storage() {
+        let dir = crate::testing::Dir::new();
+        let game = GameConfig {
+            scenario: Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../assets/scenarios/ireland-768"),
+            saves: dir.0.join("saves"),
+        };
+        let new_game = || {
+            prepare(
+                &Request {
+                    game: &game,
+                    vms: &[],
+                    load: None,
+                    seed: Some(42),
+                },
+                || Ok(42),
+                &mut |_, _| {},
+            )
+            .unwrap()
+        };
+        let source = new_game();
+        let path = super::super::saves::quicksave_path(&game.saves);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        for (case, expected) in [(0, "hearth"), (1, "burned"), (2, "death_carry")] {
+            let mut save = source.simulation.save(source.identity.meta(42));
+            let pop = save
+                .state
+                .economy
+                .places
+                .iter_mut()
+                .flat_map(|place| &mut place.pops)
+                .next()
+                .unwrap();
+            match case {
+                0 => pop.consumption.hearth_milli = 1000,
+                1 => {
+                    pop.consumption.fuel_need_month = 1;
+                    pop.consumption.fuel_burned_month = 2;
+                }
+                _ => pop.consumption.fuel_death_carry = 12_000_000,
+            }
+            let mut archive = fs::File::open(source.storage.path.join("ARCH")).unwrap();
+            let mut logs = fs::File::open(source.storage.path.join("LOGS")).unwrap();
+            let lengths = (
+                archive.metadata().unwrap().len(),
+                logs.metadata().unwrap().len(),
+            );
+            let mut file = fs::File::create(&path).unwrap();
+            save.write_with_sections(
+                &mut file,
+                &mut [
+                    (*b"ARCH", lengths.0, &mut archive),
+                    (*b"LOGS", lengths.1, &mut logs),
+                ],
+            )
+            .unwrap();
+            let result = prepare(
+                &Request {
+                    game: &game,
+                    vms: &[],
+                    load: Some(&path),
+                    seed: None,
+                },
+                || Ok(42),
+                &mut |_, _| {},
+            );
+            assert!(result.err().unwrap().contains(expected));
+            let running = new_game();
+            let handle = Arc::clone(running.storage.handle.as_ref().unwrap());
+            let archive = Arc::clone(running.storage.cell.as_ref().unwrap());
+            let logs = Arc::clone(running.storage.log_cell.as_ref().unwrap());
+            let before_path = handle.lock().unwrap().clone();
+            let before_archive = archive.lock().unwrap().clone().unwrap();
+            let before_logs = logs.lock().unwrap().clone().unwrap();
+            let records = Arc::new(Mutex::new(Vec::new()));
+            let output = Arc::clone(&records);
+            let mut core = test_core(
+                running,
+                game.saves.clone(),
+                Outputs {
+                    log: Box::new(move |_, line| output.lock().unwrap().push(line)),
+                    publish: Box::new(|_| {}),
+                    fail: Box::new(|e| panic!("{e}")),
+                },
+            );
+            let before = core.digest();
+            core.dispatch(Message::Control(Control::Quickload), Duration::ZERO);
+            assert!(
+                records
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|line| line.contains(expected))
+            );
+            assert_eq!(core.digest(), before);
+            assert_eq!(*handle.lock().unwrap(), before_path);
+            assert!(Arc::ptr_eq(
+                archive.lock().unwrap().as_ref().unwrap(),
+                &before_archive
+            ));
+            assert!(Arc::ptr_eq(
+                logs.lock().unwrap().as_ref().unwrap(),
+                &before_logs
+            ));
+        }
     }
 
     #[test]

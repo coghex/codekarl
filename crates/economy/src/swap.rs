@@ -38,6 +38,13 @@ pub(crate) fn pop_position(
     pop_index: usize,
     good_index: usize,
 ) -> Result<Position, DataError> {
+    let good = rules
+        .goods
+        .get(good_index)
+        .ok_or_else(|| missing_data("swap.good".to_owned(), "good index is outside rules"))?;
+    if good.category_supplied("fuel", 1) > 0 {
+        return Ok(Position { spare: 0, want: 0 });
+    }
     let pop = place
         .pops
         .get(pop_index)
@@ -171,9 +178,14 @@ impl Book {
             // The alms rule's count: less than 60 days of food, the store and the account, the pantry left out.
             let mut food = 0_u128;
             for (good_index, good) in rules.goods.iter().enumerate() {
-                target.push(pop_target_units(rules, &pop.kind, people, good_index)?);
                 let held = pop_market_holding(place, pop_index, good_index)?;
-                holding.push(held);
+                if good.category_supplied("fuel", 1) > 0 {
+                    target.push(0);
+                    holding.push(0);
+                } else {
+                    target.push(pop_target_units(rules, &pop.kind, people, good_index)?);
+                    holding.push(held);
+                }
                 food = held
                     .checked_mul(u128::from(good.hunger_centi))
                     .and_then(|value| food.checked_add(value))
