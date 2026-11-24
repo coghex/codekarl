@@ -1,7 +1,9 @@
 """Contract tests for the travel network tool."""
 
+import copy
 import importlib.util
 import tempfile
+import tomllib
 import unittest
 from collections import defaultdict
 from fractions import Fraction
@@ -859,6 +861,7 @@ class ReportTests(unittest.TestCase):
                     "category": "road",
                     "level": 1,
                     "tidal": False,
+                    "crossings": [{"river": "wide", "width_tenths_m": 200, "kind": "ford"}],
                 }
             ],
             "link": [
@@ -885,7 +888,16 @@ class ReportTests(unittest.TestCase):
             {"id": "a", "category": "road", "level": 1},
             {"id": "b", "category": "path", "level": 1},
         ]
-        text = network.network_report(graph, links, [], Index(), (20000, 15000), proposed=True)
+        text = network.network_report(
+            graph,
+            links,
+            [],
+            Index(),
+            (20000, 15000),
+            proposed=True,
+            crossing_entries=[{"river": "wide", "at": [1, 0], "kind": "ford", "note": "approved"}],
+            crossing_hits={1: [{"point": (Fraction(1, 2), Fraction(0))}]},
+        )
         self.assertIn("proposed", text.lower())
         self.assertEqual(text.count("wide,"), 1)
         self.assertNotIn("narrow", text)
@@ -950,31 +962,10 @@ class ReportTests(unittest.TestCase):
                     ("river", Fraction(1, 2), Fraction(21)),
                 ]
 
-        graph = {
-            "node": [
-                {"id": 1, "kind": "place", "place": "a", "cell": [0, 0]},
-                {"id": 2, "kind": "place", "place": "b", "cell": [1, 0]},
-            ],
-            "stretch": [
-                {
-                    "id": 1,
-                    "from": 1,
-                    "to": 2,
-                    "cells": [[0, 0], [1, 0]],
-                    "length_m": 500,
-                    "category": "road",
-                    "level": 1,
-                    "tidal": False,
-                }
-            ],
-            "link": [{"id": "a", "stretches": [[1, "forward"]], "record": "seed"}],
-            "join": [],
-            "access": [],
-        }
-        text = network.network_report(
-            graph, [{"id": "a", "category": "road", "level": 1}], [], Index(), (20000, 15000)
-        )
-        self.assertEqual(text.count("river,"), 1)
+        hits, touches = network.group_river_hits([(0, 0), (1, 0)], Index(), (20000, 15000))
+        self.assertEqual(len(hits), 1)
+        self.assertEqual(hits[0]["width"], 21)
+        self.assertEqual(touches, [])
 
     def test_crossing_at_one_line_endpoint_without_shared_cell_is_reported(self) -> None:
         stretches = [
@@ -2157,3 +2148,582 @@ class OverrideTests(unittest.TestCase):
         distance, position = network.furthest_from_course(new, old)
         self.assertAlmostEqual(distance, 1.0)
         self.assertEqual(position, (5.0, 1.0))
+
+
+class CrossingGroupingTests(unittest.TestCase):
+    def test_groups_from_first_hit_and_deduplicates_cell_centres(self) -> None:
+        class Index:
+            def crossings(
+                self, start: tuple[int, int], end: tuple[int, int]
+            ) -> list[tuple[str, Fraction, Fraction]]:
+                return {
+                    ((0, 0), (1, 0)): [("r", Fraction(1), Fraction(20))],
+                    ((1, 0), (2, 0)): [
+                        ("r", Fraction(0), Fraction(21)),
+                        ("r", Fraction(1, 2), Fraction(19)),
+                    ],
+                }.get((start, end), [])
+
+        with mock.patch.object(network, "ground_length", return_value=400):
+            crossings, touches = network.group_river_hits([(0, 0), (1, 0), (2, 0)], Index(), (0, 0))
+        self.assertEqual(crossings, [])
+        self.assertEqual(len(touches), 1)
+        self.assertEqual(touches[0]["width"], 21)
+        self.assertEqual(touches[0]["first_step"], 0)
+        self.assertEqual(touches[0]["last_step"], 1)
+
+    def test_exact_500_metres_starts_new_group(self) -> None:
+        class Index:
+            def crossings(
+                self, start: tuple[int, int], end: tuple[int, int]
+            ) -> list[tuple[str, Fraction, Fraction]]:
+                return [("r", Fraction(0), Fraction(20))] if start[0] in (0, 1) else []
+
+        with mock.patch.object(network, "ground_length", return_value=500):
+            crossings, touches = network.group_river_hits([(0, 0), (1, 0), (2, 0)], Index(), (0, 0))
+        self.assertEqual(len(crossings), 2)
+        self.assertEqual(touches, [])
+
+    def test_groups_are_measured_from_the_first_hit(self) -> None:
+        class Index:
+            def crossings(
+                self, start: tuple[int, int], end: tuple[int, int]
+            ) -> list[tuple[str, Fraction, Fraction]]:
+                return [("r", Fraction(0), Fraction(20))]
+
+        with mock.patch.object(network, "ground_length", return_value=400):
+            crossings, touches = network.group_river_hits(
+                [(0, 0), (1, 0), (2, 0), (3, 0)], Index(), (0, 0)
+            )
+        self.assertEqual([h["distance"] for h in touches], [0])
+        self.assertEqual([h["distance"] for h in crossings], [800])
+
+
+class CrossingHandListTests(unittest.TestCase):
+    def test_matches_only_unambiguous_wide_crossings(self) -> None:
+        hits = [{"river": "r", "cell": (5, 5), "width": Fraction(20), "stretch": 7, "distance": 30}]
+        entries = [{"river": "r", "at": [8, 5], "kind": "ford", "note": "approved"}]
+        self.assertEqual(network.match_crossings(hits, entries, {"r"}), ["ford"])
+        with self.assertRaisesRegex(ValueError, "two entries"):
+            network.match_crossings(hits, entries * 2, {"r"})
+        with self.assertRaisesRegex(ValueError, "two crossings"):
+            network.match_crossings(hits * 2, entries, {"r"})
+        with self.assertRaisesRegex(ValueError, "no entry"):
+            network.match_crossings(hits, [], {"r"})
+        with self.assertRaisesRegex(ValueError, "no wide crossing"):
+            network.match_crossings([], entries, {"r"})
+        with self.assertRaisesRegex(ValueError, "unknown river"):
+            network.match_crossings([], entries, set())
+        with self.assertRaisesRegex(ValueError, "invalid kind"):
+            network.match_crossings(hits, [{**entries[0], "kind": "bridge"}], {"r"})
+
+
+class CrossingSplitTests(unittest.TestCase):
+    def test_wide_step_is_cut_and_link_order_preserved(self) -> None:
+        graph: dict[str, Any] = {
+            "node": [
+                {"id": 1, "kind": "place", "cell": [0, 0], "place": "a"},
+                {"id": 2, "kind": "place", "cell": [3, 0], "place": "b"},
+            ],
+            "stretch": [
+                {
+                    "id": 3,
+                    "from": 1,
+                    "to": 2,
+                    "cells": [[0, 0], [1, 0], [2, 0], [3, 0]],
+                    "length_m": 1500,
+                    "category": "road",
+                    "level": 1,
+                    "tidal": False,
+                }
+            ],
+            "link": [{"id": "x", "stretches": [[3, "forward"]]}],
+            "next_node_id": 3,
+            "next_stretch_id": 4,
+        }
+
+        class Index:
+            def crossings(
+                self, start: tuple[int, int], end: tuple[int, int]
+            ) -> list[tuple[str, Fraction, Fraction]]:
+                return [("r", Fraction(1, 2), Fraction(20))] if start == (1, 0) else []
+
+        with mock.patch.object(
+            network, "ground_length", side_effect=lambda cells, origin: 500 * (len(cells) - 1)
+        ):
+            network.apply_crossings(
+                graph,
+                Index(),
+                [{"river": "r", "at": [2, 0], "kind": "none", "note": "approved"}],
+                (0, 0),
+                {"r"},
+            )
+        self.assertEqual(
+            [s["cells"] for s in graph["stretch"]],
+            [[[0, 0], [1, 0]], [[1, 0], [2, 0]], [[2, 0], [3, 0]]],
+        )
+        self.assertEqual([n["kind"] for n in graph["node"]], ["place", "place", "bank", "bank"])
+        self.assertEqual(graph["stretch"][1]["crossings"][0]["kind"], "none")
+        self.assertEqual([item[0] for item in graph["link"][0]["stretches"]], [3, 4, 5])
+
+    def test_node_centre_is_refused_before_cutting(self) -> None:
+        graph: dict[str, Any] = {
+            "node": [{"id": 1, "kind": "junction", "cell": [1, 0]}],
+            "stretch": [{"id": 3, "from": 1, "to": 2, "cells": [[1, 0], [2, 0]], "tidal": False}],
+            "link": [],
+            "next_node_id": 4,
+            "next_stretch_id": 4,
+        }
+
+        class Index:
+            def crossings(
+                self, start: tuple[int, int], end: tuple[int, int]
+            ) -> list[tuple[str, Fraction, Fraction]]:
+                return [("r", Fraction(0), Fraction(20))]
+
+        with self.assertRaisesRegex(ValueError, r"river r.*node 1.*stretches \[3\]"):
+            network.apply_crossings(graph, Index(), [], (0, 0), {"r"})
+        self.assertEqual(graph["next_node_id"], 4)
+
+    def test_none_breaks_report_land_connectivity(self) -> None:
+        graph: dict[str, Any] = {
+            "node": [
+                {"id": 1, "kind": "place", "cell": [0, 0], "place": "a"},
+                {"id": 2, "kind": "place", "cell": [1, 0], "place": "b"},
+            ],
+            "stretch": [
+                {
+                    "id": 3,
+                    "from": 1,
+                    "to": 2,
+                    "cells": [[0, 0], [1, 0]],
+                    "length_m": 500,
+                    "category": "road",
+                    "level": 1,
+                    "tidal": False,
+                    "crossings": [{"river": "r", "width_tenths_m": 200, "kind": "none"}],
+                }
+            ],
+            "link": [{"id": "x", "stretches": [[3, "forward"]], "record": "seed"}],
+            "join": [],
+            "access": [],
+        }
+
+        class Index:
+            def crossings(
+                self, start: tuple[int, int], end: tuple[int, int]
+            ) -> list[tuple[str, Fraction, Fraction]]:
+                return [("r", Fraction(1, 2), Fraction(20))]
+
+        entries = [{"river": "r", "at": [1, 0], "kind": "none", "note": "owner"}]
+        report = network.network_report(
+            graph,
+            [{"id": "x", "category": "road", "level": 1}],
+            [],
+            Index(),
+            (0, 0),
+            crossing_entries=entries,
+            crossing_hits={3: [{"point": (Fraction(1, 2), Fraction(0))}]},
+        )
+        self.assertIn("## Places outside the largest land piece\n- b", report)
+        self.assertIn("r, 20.0 m, none; owner", report)
+
+    def test_junction_centre_refuses_every_approach_without_mutation(self) -> None:
+        graph: dict[str, Any] = {
+            "node": [{"id": 1, "kind": "junction", "cell": [1, 1]}],
+            "stretch": [
+                {"id": i + 1, "from": i + 2, "to": 1, "cells": [cell, [1, 1]], "tidal": False}
+                for i, cell in enumerate([[0, 0], [0, 1], [2, 1], [2, 2]])
+            ],
+            "link": [],
+            "next_node_id": 6,
+            "next_stretch_id": 5,
+        }
+
+        class Index:
+            def crossings(
+                self, start: tuple[int, int], end: tuple[int, int]
+            ) -> list[tuple[str, Fraction, Fraction]]:
+                return [("r", Fraction(1), Fraction(20))]
+
+        for kind in ("ford", "none"):
+            before = copy.deepcopy(graph)
+            with self.assertRaisesRegex(ValueError, r"river r.*node 1.*stretches \[1, 2, 3, 4\]"):
+                network.apply_crossings(
+                    graph,
+                    Index(),
+                    [{"river": "r", "at": [1, 1], "kind": kind, "note": "owner"}],
+                    (0, 0),
+                    {"r"},
+                )
+            self.assertEqual(graph, before)
+
+    def test_overlapping_spans_merge_and_touching_spans_do_not(self) -> None:
+        graph: dict[str, Any] = {
+            "node": [
+                {"id": 1, "kind": "place", "cell": [0, 0]},
+                {"id": 2, "kind": "place", "cell": [4, 0]},
+            ],
+            "stretch": [
+                {
+                    "id": 3,
+                    "from": 1,
+                    "to": 2,
+                    "cells": [[i, 0] for i in range(5)],
+                    "length_m": 400,
+                    "category": "road",
+                    "level": 1,
+                    "tidal": False,
+                }
+            ],
+            "link": [{"id": "x", "stretches": [[3, "backward"]]}],
+            "next_node_id": 3,
+            "next_stretch_id": 4,
+        }
+
+        class Index:
+            def crossings(
+                self, start: tuple[int, int], end: tuple[int, int]
+            ) -> list[tuple[str, Fraction, Fraction]]:
+                return {
+                    0: [("a", Fraction(1, 2), Fraction(20))],
+                    1: [
+                        ("a", Fraction(1, 3), Fraction(20)),
+                        ("a", Fraction(2, 3), Fraction(20)),
+                        ("b", Fraction(1, 2), Fraction(20)),
+                    ],
+                    2: [("c", Fraction(1, 2), Fraction(20))],
+                }.get(start[0], [])
+
+        entries = [
+            {"river": r, "at": [x, 0], "kind": "none" if r == "b" else "ford", "note": "approved"}
+            for r, x in [("a", 1), ("b", 2), ("c", 3)]
+        ]
+        with mock.patch.object(
+            network, "ground_length", side_effect=lambda cells, origin: 100 * (len(cells) - 1)
+        ):
+            network.apply_crossings(graph, Index(), entries, (0, 0), {"a", "b", "c"})
+        self.assertEqual(
+            [s["cells"] for s in graph["stretch"]],
+            [[[0, 0], [1, 0], [2, 0]], [[2, 0], [3, 0]], [[3, 0], [4, 0]]],
+        )
+        self.assertEqual([h["river"] for h in graph["stretch"][0]["crossings"]], ["a", "b"])
+        self.assertEqual([item[0] for item in graph["link"][0]["stretches"]], [5, 4, 3])
+
+    def test_narrow_crossing_is_a_wade_without_a_cut(self) -> None:
+        graph: dict[str, Any] = {
+            "node": [
+                {"id": 1, "kind": "place", "cell": [0, 0]},
+                {"id": 2, "kind": "place", "cell": [1, 0]},
+            ],
+            "stretch": [
+                {
+                    "id": 3,
+                    "from": 1,
+                    "to": 2,
+                    "cells": [[0, 0], [1, 0]],
+                    "length_m": 500,
+                    "category": "road",
+                    "level": 1,
+                    "tidal": False,
+                }
+            ],
+            "link": [{"id": "x", "stretches": [[3, "forward"]]}],
+            "next_node_id": 3,
+            "next_stretch_id": 4,
+        }
+
+        class Index:
+            def crossings(
+                self, start: tuple[int, int], end: tuple[int, int]
+            ) -> list[tuple[str, Fraction, Fraction]]:
+                return [("r", Fraction(1, 2), Fraction(199, 10))]
+
+        with mock.patch.object(
+            network, "ground_length", side_effect=lambda cells, origin: 500 * (len(cells) - 1)
+        ):
+            network.apply_crossings(graph, Index(), [], (0, 0), {"r"})
+        self.assertEqual(
+            graph["stretch"][0]["wades"], [{"river": "r", "width_tenths_m": 199, "along_m": 250}]
+        )
+        self.assertEqual(len(graph["stretch"]), 1)
+
+    def test_centre_hit_belongs_to_preceding_step_and_merges(self) -> None:
+        graph: dict[str, Any] = {
+            "node": [
+                {"id": 1, "kind": "place", "cell": [0, 0]},
+                {"id": 2, "kind": "place", "cell": [3, 0]},
+            ],
+            "stretch": [
+                {
+                    "id": 3,
+                    "from": 1,
+                    "to": 2,
+                    "cells": [[i, 0] for i in range(4)],
+                    "length_m": 1500,
+                    "category": "road",
+                    "level": 1,
+                    "tidal": False,
+                }
+            ],
+            "link": [{"id": "x", "stretches": [[3, "forward"]]}],
+            "next_node_id": 3,
+            "next_stretch_id": 4,
+        }
+
+        class Index:
+            def crossings(
+                self, start: tuple[int, int], end: tuple[int, int]
+            ) -> list[tuple[str, Fraction, Fraction]]:
+                return {
+                    0: [("a", Fraction(1, 2), Fraction(20)), ("b", Fraction(1), Fraction(20))],
+                    1: [("b", Fraction(0), Fraction(20))],
+                }.get(start[0], [])
+
+        entries = [
+            {"river": r, "at": [1, 0], "kind": kind, "note": "approved"}
+            for r, kind in [("a", "ford"), ("b", "none")]
+        ]
+        with mock.patch.object(
+            network, "ground_length", side_effect=lambda cells, origin: 500 * (len(cells) - 1)
+        ):
+            network.apply_crossings(graph, Index(), entries, (0, 0), {"a", "b"})
+        self.assertEqual(graph["stretch"][0]["cells"], [[0, 0], [1, 0]])
+        self.assertEqual([c["river"] for c in graph["stretch"][0]["crossings"]], ["a", "b"])
+        self.assertEqual(graph["stretch"][0]["crossings"][1]["kind"], "none")
+        self.assertNotIn("crossings", graph["stretch"][1])
+
+    def test_report_uses_crossings_assigned_to_each_cut_span(self) -> None:
+        graph: dict[str, Any] = {
+            "node": [
+                {"id": 1, "kind": "place", "cell": [0, 0], "place": "a"},
+                {"id": 2, "kind": "place", "cell": [3, 0], "place": "b"},
+            ],
+            "stretch": [
+                {
+                    "id": 3,
+                    "from": 1,
+                    "to": 2,
+                    "cells": [[i, 0] for i in range(4)],
+                    "length_m": 1500,
+                    "category": "road",
+                    "level": 1,
+                    "tidal": False,
+                }
+            ],
+            "link": [{"id": "x", "stretches": [[3, "forward"]], "record": "seed"}],
+            "join": [],
+            "access": [],
+            "next_node_id": 3,
+            "next_stretch_id": 4,
+        }
+
+        class Index:
+            def crossings(
+                self, start: tuple[int, int], end: tuple[int, int]
+            ) -> list[tuple[str, Fraction, Fraction]]:
+                return {
+                    0: [("x", Fraction(1), Fraction(20))],
+                    1: [("x", Fraction(0), Fraction(20)), ("y", Fraction(1, 2), Fraction(20))],
+                }.get(start[0], [])
+
+        entries = [{"river": r, "at": [1, 0], "kind": "ford", "note": r} for r in ("x", "y")]
+        with mock.patch.object(
+            network, "ground_length", side_effect=lambda cells, origin: 500 * (len(cells) - 1)
+        ):
+            hits = network.apply_crossings(graph, Index(), entries, (0, 0), {"x", "y"})
+            report = network.network_report(
+                graph,
+                [{"id": "x", "category": "road", "level": 1}],
+                [],
+                Index(),
+                (0, 0),
+                crossing_entries=entries,
+                crossing_hits=hits,
+            )
+        self.assertIn("stretch 3: x, 20.0 m, ford; x", report)
+        self.assertIn("stretch 4: y, 20.0 m, ford; y", report)
+
+    def test_real_river_index_merges_three_hit_span_with_another_river(self) -> None:
+        graph: dict[str, Any] = {
+            "node": [
+                {"id": 1, "kind": "place", "cell": [0, 0]},
+                {"id": 2, "kind": "place", "cell": [4, 0]},
+            ],
+            "stretch": [
+                {
+                    "id": 3,
+                    "from": 1,
+                    "to": 2,
+                    "cells": [[x, 0] for x in range(5)],
+                    "length_m": 2000,
+                    "category": "road",
+                    "level": 1,
+                    "tidal": False,
+                }
+            ],
+            "link": [{"id": "x", "stretches": [[3, "forward"]]}],
+            "next_node_id": 3,
+            "next_stretch_id": 4,
+        }
+        rivers = [
+            {
+                "river": "weave",
+                "points": [(1000000, 0), (1000000, 1000000), (1600000, 0), (1600000, 1000000)],
+                "width_m": [20, 20],
+            },
+            {"river": "other", "points": [(1750000, 0), (1750000, 1000000)], "width_m": [25, 25]},
+        ]
+        with mock.patch.object(
+            network, "project_point", side_effect=lambda lat, lon, origin: (lat, lon)
+        ):
+            index = network.RiverIndex(rivers, (22436, 14979))
+        entries = [
+            {"river": "weave", "at": [1, 0], "kind": "ford", "note": "test"},
+            {"river": "other", "at": [2, 0], "kind": "none", "note": "test"},
+        ]
+        network.apply_crossings(graph, index, entries, (22436, 14979), {"weave", "other"})
+        crossing = next(s for s in graph["stretch"] if "crossings" in s)
+        self.assertEqual(crossing["cells"], [[0, 0], [1, 0], [2, 0]])
+        self.assertEqual([c["river"] for c in crossing["crossings"]], ["weave", "other"])
+        self.assertEqual(crossing["crossings"][1]["kind"], "none")
+
+    def test_shared_crossing_fixture_rebuilds_and_keeps_shared_links(self) -> None:
+        scenario = (
+            Path(__file__).resolve().parents[1] / "crates/map/tests/network/scenarios/fixture"
+        )
+        graph = tomllib.loads((scenario / "roads.toml").read_text())
+
+        class Index:
+            def crossings(
+                self, start: tuple[int, int], end: tuple[int, int]
+            ) -> list[tuple[str, Fraction, Fraction]]:
+                return {
+                    ((1, 3), (2, 3)): [
+                        ("wide-a", Fraction(1, 3), Fraction(20)),
+                        ("wide-b", Fraction(2, 3), Fraction(30)),
+                    ],
+                    ((4, 6), (5, 5)): [("blocked", Fraction(1, 2), Fraction(25))],
+                    ((6, 4), (6, 5)): [("narrow", Fraction(1, 2), Fraction(199, 10))],
+                }.get((start, end), [])
+
+        entries = [
+            {"river": river, "at": cell, "kind": kind, "note": "test"}
+            for river, cell, kind in [
+                ("wide-a", [1, 3], "ford"),
+                ("wide-b", [2, 3], "ford"),
+                ("blocked", [5, 6], "none"),
+            ]
+        ]
+        network.apply_crossings(
+            graph, Index(), entries, (22436, 14979), {"wide-a", "wide-b", "blocked", "narrow"}
+        )
+        self.assertEqual(network.dump_roads(graph), (scenario / "crossings-roads.toml").read_text())
+        links = {link["id"]: link for link in graph["link"]}
+        self.assertEqual(
+            [x[0] for x in links["parent"]["stretches"]],
+            [x[0] for x in reversed(links["reverse"]["stretches"])],
+        )
+
+    def test_rebuilding_reuses_bank_and_piece_ids(self) -> None:
+        base: dict[str, Any] = {
+            "node": [
+                {"id": 1, "kind": "place", "cell": [0, 0]},
+                {"id": 2, "kind": "place", "cell": [3, 0]},
+            ],
+            "stretch": [
+                {
+                    "id": 3,
+                    "from": 1,
+                    "to": 2,
+                    "cells": [[i, 0] for i in range(4)],
+                    "length_m": 1500,
+                    "category": "road",
+                    "level": 1,
+                    "tidal": False,
+                }
+            ],
+            "link": [{"id": "x", "stretches": [[3, "forward"]]}],
+            "next_node_id": 3,
+            "next_stretch_id": 4,
+        }
+
+        class Index:
+            def crossings(
+                self, start: tuple[int, int], end: tuple[int, int]
+            ) -> list[tuple[str, Fraction, Fraction]]:
+                return [("r", Fraction(1, 2), Fraction(20))] if start == (1, 0) else []
+
+        entries = [{"river": "r", "at": [2, 0], "kind": "ford", "note": "approved"}]
+        first = copy.deepcopy(base)
+        with mock.patch.object(
+            network, "ground_length", side_effect=lambda cells, origin: 500 * (len(cells) - 1)
+        ):
+            network.apply_crossings(first, Index(), entries, (0, 0), {"r"})
+            uncut = network.uncut_previous(first)
+            self.assertEqual(uncut["stretch"][0]["cells"], base["stretch"][0]["cells"])
+            rebuilt = copy.deepcopy(base)
+            rebuilt["next_node_id"] = first["next_node_id"]
+            rebuilt["next_stretch_id"] = first["next_stretch_id"]
+            network.apply_crossings(rebuilt, Index(), entries, (0, 0), {"r"}, previous=first)
+        self.assertEqual(first, rebuilt)
+        changed = copy.deepcopy(base)
+        changed["next_node_id"] = first["next_node_id"]
+        changed["next_stretch_id"] = first["next_stretch_id"]
+        entries[0]["kind"] = "none"
+        with mock.patch.object(
+            network, "ground_length", side_effect=lambda cells, origin: 500 * (len(cells) - 1)
+        ):
+            network.apply_crossings(changed, Index(), entries, (0, 0), {"r"}, previous=first)
+        self.assertEqual(changed["node"], first["node"])
+        self.assertEqual(changed["link"], first["link"])
+        self.assertEqual(
+            [(s["id"], s["cells"]) for s in changed["stretch"]],
+            [(s["id"], s["cells"]) for s in first["stretch"]],
+        )
+        self.assertEqual(changed["stretch"][1]["crossings"][0]["kind"], "none")
+
+    def test_format_two_crossings_round_trip_as_toml(self) -> None:
+        graph: dict[str, Any] = {
+            "format": 2,
+            "hand_list_sha256": "a",
+            "baseline_sha256": "b",
+            "next_node_id": 3,
+            "next_stretch_id": 4,
+            "stretch": [
+                {
+                    "id": 3,
+                    "from": 1,
+                    "to": 2,
+                    "cells": [[0, 0], [1, 0]],
+                    "length_m": 500,
+                    "category": "road",
+                    "level": 1,
+                    "tidal": False,
+                    "crossings": [{"river": "r", "width_tenths_m": 200, "kind": "ford"}],
+                    "wades": [{"river": "s", "width_tenths_m": 199, "along_m": 200}],
+                }
+            ],
+        }
+        loaded = tomllib.loads(network.dump_roads(graph))
+        self.assertEqual(loaded["stretch"], graph["stretch"])
+
+
+class IrelandCrossingTests(unittest.TestCase):
+    def test_stored_crossings_and_courses(self) -> None:
+        import json  # noqa: PLC0415  # Read the stored baseline for this scenario.
+
+        root = Path(__file__).resolve().parents[1]
+        scenario = root / "assets/scenarios/ireland-768"
+        graph = tomllib.loads((scenario / "roads.toml").read_text())
+        baseline = json.loads((scenario / "courses-approved.json").read_text())
+        network.verify_stored_courses(graph, baseline)
+        crossing = [s for s in graph["stretch"] if "crossings" in s]
+        self.assertEqual(len(crossing), 45)
+        self.assertEqual(sum(len(s["crossings"]) for s in crossing), 47)
+        self.assertEqual(sum(any(c["kind"] == "none" for c in s["crossings"]) for s in crossing), 2)
+        self.assertEqual(sum(len(s["crossings"]) == network._TWO for s in crossing), 2)
+        report = (scenario / "network-report.md").read_text()
+        self.assertIn("## Places outside the largest land piece\n- none", report)
+        self.assertIn("owenmore-sligo", report)
+        self.assertIn("robe", report)

@@ -16,8 +16,9 @@ mod network;
 mod scenario;
 
 pub use network::{
-    LandAccess, LandAccessQuality, LandCategory, LandDirection, LandEnd, LandJoin, LandLink,
-    LandNetwork, LandNode, LandNodeKind, LandRoad, LandStretch,
+    LandAccess, LandAccessQuality, LandCategory, LandCrossing, LandCrossingKind, LandDirection,
+    LandEnd, LandJoin, LandLink, LandNetwork, LandNode, LandNodeKind, LandRoad, LandStretch,
+    LandWade,
 };
 
 pub use loading::{
