@@ -356,6 +356,36 @@ luxuries_centi=0
 base_price=300
 pop_limit_milli=0
 
+
+[[goods]]
+id="hardwood"
+tags=["wood", "fuel"]
+supplies={wood=1000, fuel=1000}
+unit="load"
+weight_g=50000
+volume_ml=100000
+stacked_outside=true
+hunger_centi=0
+necessities_centi=0
+niceties_centi=0
+luxuries_centi=0
+base_price=10
+pop_limit_milli=30000
+[[goods]]
+id="peat"
+tags=["fuel"]
+supplies={fuel=700}
+unit="load"
+weight_g=50000
+volume_ml=150000
+stacked_outside=true
+hunger_centi=0
+necessities_centi=0
+niceties_centi=0
+luxuries_centi=0
+base_price=6
+pop_limit_milli=40000
+
 [[pop_types]]
 id="peasant"
 dependent_pm=400
@@ -424,6 +454,22 @@ resource="sea"
 suitability="sea"
 annual_output={ fish=8000, seabirds=1500 }
 score_share_pm={ fish=850, seabirds=150 }
+[[buildings.methods]]
+id="wood_focus"
+serves="fuel"
+resource="forest"
+cells_per_level=4
+suitability="hardwood"
+annual_output={ hardwood=3000, beef=1100, pork=970, mutton=165, dairy=860, wool=10, hides=5 }
+score_share_pm={ hardwood=930, beef=25, pork=20, mutton=5, dairy=10, wool=5, hides=5 }
+[[buildings.methods]]
+id="turf_cutting"
+serves="fuel"
+resource="bog"
+cells_per_level=2
+suitability="peat"
+annual_output={ peat=4000, beef=1100, pork=970, mutton=165, dairy=860, wool=10, hides=5 }
+score_share_pm={ peat=930, beef=25, pork=20, mutton=5, dairy=10, wool=5, hides=5 }
 [[buildings]]
 id="holdings"
 herds={ cattle={maximum=12}, pigs={maximum=8}, sheep={maximum=7} }
@@ -478,6 +524,8 @@ overhead_pm=0
 recruit_range_m=0
 
 [seasons]
+hardwood=[250,250,0,0,0,0,0,0,0,0,250,250]
+peat=[0,0,0,0,0,0,0,500,500,0,0,0]
 hemp=[0,0,0,0,0,0,0,0,1000,0,0,0]
 linen=[0,0,0,0,0,0,0,0,0,500,500,0]
 grain=[0,0,0,0,0,0,0,0,1000,0,0,0]
@@ -589,12 +637,14 @@ sheep=1000
 pigs=400
 sea=0
 [suitability.forest]
+hardwood=1000
 crops=300
 cattle=300
 sheep=300
 pigs=1000
 sea=0
 [suitability.bog]
+peat=1000
 crops=150
 cattle=400
 sheep=400

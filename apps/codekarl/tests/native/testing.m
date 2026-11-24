@@ -643,6 +643,10 @@ void ck_app_t_schedule_map_select(void) {
                 stage = 2;
             } else if (stage == 2 && ck_app_marker(ck_app_map_select_dir, "place-ready")) {
                 result = ck_app_t_ui_drag(window, 200.0, 120.0, 220.0, 130.0);
+                /* The UI sees this move only after the preceding map release has been handled. */
+                NSPoint barrier_view = NSMakePoint(10.0, window.contentView.bounds.size.height - 10.0);
+                NSPoint barrier = [window.contentView convertPoint:barrier_view toView:nil];
+                if (result == 1) result = ck_app_t_send_ui_mouse(window, NSEventTypeMouseMoved, barrier);
                 ck_app_write_marker(ck_app_map_select_dir, "map-marker-drag-injected");
                 ck_app_ui_pointer_line("map-marker-drag-injected");
                 ck_app_map_select_transition(stage, 3, "place-ready");

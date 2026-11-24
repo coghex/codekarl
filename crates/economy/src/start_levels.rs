@@ -113,6 +113,20 @@ impl StartDemand {
         })
     }
 
+    #[cfg(test)]
+    pub(super) fn fixture(rules: &Rules, food: u128, fuel: u128) -> Self {
+        let need = [food, fuel];
+        let order = vec![0; rules.goods.len()];
+        Self {
+            need,
+            target_need: need,
+            target_order: order.clone(),
+            order,
+            provided_need: [0; 2],
+            provided_goods: vec![0; rules.goods.len()],
+        }
+    }
+
     /// One year's food need, in hundredths of a person-day.
     #[cfg(test)]
     pub(super) fn food_need(&self) -> u128 {

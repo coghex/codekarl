@@ -25,6 +25,8 @@ local help = nil
 local selection_count = 0
 local frame_ready = false
 local scroll_frame_observed = false
+local title_released = false
+local map_drag_barrier_seen = false
 local place_closed_pending, help_closed_pending = false, false
 -- The place is the location panel (the left third from y = 60); its Location tab's first line is logged as its list is created.
 local panel = location.new{
@@ -85,12 +87,23 @@ frame.on_update(function(f)
     touch(directory .. '/scroll-frame-observed')
     scroll_frame_observed = true
   end
+  -- The next frame is queued after answer intake has posted any selection from the barrier tick.
+  local map_drag_check_ready = map_drag_barrier_seen
   pointer.dispatch(f.pointer)
+  for _, event in ipairs((f.pointer and f.pointer.events) or {}) do
+    -- This unpressed move is over Help but cannot click it; it follows the map release in the same input tick.
+    if event.kind == 'move' and event.x == 10 and event.y == 10 then
+      map_drag_barrier_seen = true
+    end
+    if panel.window ~= nil and event.kind == 'up' and event.key == panel.window.title_key and event.x == 42 and event.y == 95 then
+      title_released = true
+    end
+  end
   if f.pointer ~= nil and #(f.pointer.events or {}) > 0 then
     touch(directory .. '/fixture-frame-pointer-events')
   end
   local place = panel.window
-  if place ~= nil and exists(directory .. '/map-marker-drag-injected') and not exists(directory .. '/drag-verified') then
+  if place ~= nil and map_drag_check_ready and exists(directory .. '/map-marker-drag-injected') and not exists(directory .. '/drag-verified') then
     assert(selection_count == 1 and windows.top() == place, 'dragging a marker opens no additional place window')
     log.info('map marker drag opened nothing')
     touch(directory .. '/drag-verified')
@@ -99,7 +112,7 @@ frame.on_update(function(f)
     log.info('place window raised')
     touch(directory .. '/place-raised')
   end
-  if place ~= nil and exists(directory .. '/title-drag-injected') and not exists(directory .. '/title-moved') then
+  if place ~= nil and title_released and exists(directory .. '/title-drag-injected') and not exists(directory .. '/title-moved') then
     local x, y = place:position()
     assert(x == 30 and y == 80, string.format('title drag moves the place window by its pointer delta: %g %g', x, y))
     log.info('place window moved')
