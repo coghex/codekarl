@@ -770,7 +770,7 @@ def cargo_test(selection: Sequence[str], after: Sequence[str] = ()) -> list[str]
 UNITTEST_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     # CK-351: the production drainage helper is deliberately stdlib-only so its valley-flow rule can
     # be checked whenever either the map scripts or this retained contract changes.
-    ("map", ("test_map_drainage", "test_map_weather")),
+    ("map", ("test_map_drainage", "test_map_weather", "test_map_backdrop")),
     (
         "batch",
         (
@@ -834,7 +834,9 @@ def unittest_step(group: str, modules: Sequence[str]) -> Step:
         FAST,
         lambda: [
             [
-                hub_tool("python") if module == "test_map_weather" else sys.executable,
+                hub_tool("python")
+                if module in {"test_map_weather", "test_map_backdrop"}
+                else sys.executable,
                 "-m",
                 "unittest",
                 "discover",
@@ -907,6 +909,9 @@ UNITTEST_PATHS = {
         "tools/generate_weather.py",
         "tests/test_map_drainage.py",
         "tests/test_map_weather.py",
+        "tests/test_map_backdrop.py",
+        "crates/map/tests/fixtures/",
+        "assets/scenarios/ireland-768/locations.toml",
     ),
     # `.rgignore` and `.ignore` are read by `test_rgignore` and copied into the real-toolchain workload;
     # `test_rgignore` also runs ripgrep over the real `docs/` tree. Registering it selects the test when a

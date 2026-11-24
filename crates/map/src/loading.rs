@@ -577,7 +577,7 @@ fn validate_crop(crop: Crop) -> Result<usize, LoadError> {
         .ok_or_else(|| LoadError::at("map.toml", "crop", "pixel count overflows address space"))
 }
 
-fn read_toml<T: for<'de> Deserialize<'de>>(
+pub(crate) fn read_toml<T: for<'de> Deserialize<'de>>(
     directory: &Path,
     relative_name: &str,
 ) -> Result<T, LoadError> {
@@ -994,7 +994,7 @@ pub(crate) fn decode_layer_image(
         .collect())
 }
 
-fn decode_gray8_image(
+pub(crate) fn decode_gray8_image(
     directory: &Path,
     filename: &str,
     width: u32,
@@ -1030,7 +1030,7 @@ fn decode_gray8_image(
     Ok(output[..frame.buffer_size()].to_vec())
 }
 
-fn decode_gray16_image(
+pub(crate) fn decode_gray16_image(
     directory: &Path,
     filename: &str,
     width: u32,

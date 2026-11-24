@@ -683,7 +683,7 @@ class Levels(CheckFixture):
                 [
                     [
                         check.hub_tool("python")
-                        if module == "test_map_weather"
+                        if module in {"test_map_weather", "test_map_backdrop"}
                         else sys.executable,
                         "-m",
                         "unittest",

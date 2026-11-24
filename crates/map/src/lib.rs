@@ -7,6 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+mod backdrop;
 #[cfg(feature = "test-support")]
 pub mod fixture;
 mod loading;
@@ -15,6 +16,8 @@ mod mode;
 mod network;
 mod scenario;
 mod water;
+
+pub use backdrop::{Backdrop, BackdropSample, load_backdrop};
 
 pub use network::{
     LandAccess, LandAccessQuality, LandCategory, LandCrossing, LandCrossingKind, LandDirection,

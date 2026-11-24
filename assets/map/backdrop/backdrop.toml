@@ -1,0 +1,13 @@
+format = 1
+projection = "spherical_mercator"
+cell_metres = 839.0
+block_cells = 64
+first_row = 132
+rows = 398
+columns = 747
+
+[layers]
+land = "land.png"
+pressure = "pressure.png"
+air_temperature = "air_temperature.png"
+sea_temperature = "sea_temperature.png"
