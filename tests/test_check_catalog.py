@@ -1184,6 +1184,7 @@ class MapGroup(unittest.TestCase):
                 ("bin", "map-preview"),
                 ("test", "preview"),
                 ("test", "ireland"),
+                ("test", "backdrop"),
                 ("test", "rules_fixture"),
                 ("doc", "ck_map"),
             },
@@ -2462,6 +2463,17 @@ GUARDS: tuple[Guard, ...] = (
         "unittest-map",
         ("assets/map/ireland/", "assets/game/weather.toml", "tools/generate_weather.py"),
     ),
+    Guard(
+        "tests/test_map_backdrop.py",
+        "unittest-map",
+        (
+            "assets/map/backdrop/",
+            "assets/map/ireland/",
+            "assets/scenarios/ireland-768/locations.toml",
+            "crates/map/tests/fixtures/",
+        ),
+    ),
+    Guard("crates/map/tests/backdrop.rs", "map.core", ("assets/map/backdrop/",)),
     Guard("crates/sim/src/weather.rs", "sim.core", ("assets/game/weather.toml",)),
     Guard("crates/sim/src/travel.rs", "sim.core", ("assets/game/travel.toml",)),
     # CK-105: the renderer's re-export test checks its window fixture against the resource component's copy.
