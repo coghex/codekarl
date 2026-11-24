@@ -1,6 +1,8 @@
 //! Loading and validating the scenario's stored land network.
 
+use crate::water::{self, Inputs};
 use crate::{Cell, Crop, LoadError, Location};
+use crate::{Joint, Landing, Reach, RiverBreak, SeaMark, Strait, Water, WaterClass, WaterJoin};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{
@@ -36,6 +38,40 @@ pub struct LandNetwork {
     /// Access qualities for offshore places.
     #[serde(default)]
     pub access: Vec<LandAccess>,
+    /// The narrowest river a boat can use, in millimetres: the same for every class.
+    pub river_width_mm: i64,
+    terrain_sha256: String,
+    rivers_sha256: String,
+    sea_distance: String,
+    sea_distance_sha256: String,
+    /// The next landing ID to give.
+    pub next_landing_id: u64,
+    /// The classes of boat and what water each can use.
+    #[serde(default, rename = "water_class")]
+    pub classes: Vec<WaterClass>,
+    /// Hand-listed breaks in rivers.
+    #[serde(default, rename = "river_break")]
+    pub breaks: Vec<RiverBreak>,
+    /// Places that need a sea-going boat.
+    #[serde(default, rename = "mark")]
+    pub marks: Vec<SeaMark>,
+    /// The joints of the river graph.
+    #[serde(default, rename = "joint")]
+    pub joints: Vec<Joint>,
+    /// The reaches of the river graph.
+    #[serde(default, rename = "reach")]
+    pub reaches: Vec<Reach>,
+    /// What the river graph is joined to.
+    #[serde(default, rename = "water_join")]
+    pub water_joins: Vec<WaterJoin>,
+    /// Where nodes meet water.
+    #[serde(default, rename = "landing")]
+    pub landings: Vec<Landing>,
+    /// Water links between island places and their mainland landing nodes.
+    #[serde(default, rename = "strait")]
+    pub straits: Vec<Strait>,
+    #[serde(skip)]
+    water: Water,
     #[serde(skip)]
     incident: BTreeMap<u64, Vec<usize>>,
 }
@@ -99,6 +135,10 @@ pub struct LandStretch {
     /// Narrow crossings along this stretch.
     #[serde(default)]
     pub wades: Vec<LandWade>,
+    /// The landing of a crossing stretch's first end, when it has one.
+    pub landing_from: Option<u64>,
+    /// The landing of a crossing stretch's last end, when it has one.
+    pub landing_to: Option<u64>,
 }
 /// An approved wide crossing.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -233,6 +273,12 @@ impl LandNetwork {
             .flatten()
             .map(|&index| &self.stretches[index])
     }
+    /// The worked water of the network: bodies of each class, moves and positions along reaches.
+    #[must_use]
+    pub fn water(&self) -> &Water {
+        &self.water
+    }
+
     /// The place node for a scenario location.
     #[must_use]
     pub fn place_node(&self, place: &str) -> Option<&LandNode> {
@@ -242,15 +288,43 @@ impl LandNetwork {
     }
 }
 
+/// The name of the sea distance layer beside the stored network, the one name the loader and the scenario hash both read.
+const SEA_DISTANCE_FILE: &str = "sea_distance.png";
+
 fn error(entry: impl std::fmt::Display, fault: impl std::fmt::Display) -> LoadError {
     LoadError::at("roads.toml", entry, fault)
+}
+
+/// The files a stored network is worked from, besides the scenario's own.
+pub(crate) struct MapFiles<'a> {
+    /// The map's directory.
+    pub directory: &'a Path,
+    /// The loaded map.
+    pub map: &'a crate::LoadedMap,
+}
+
+#[derive(Deserialize)]
+struct MapLayers {
+    terrain: String,
+    rivers: String,
+}
+
+#[derive(Deserialize)]
+struct MapNames {
+    layers: MapLayers,
+}
+
+fn sha_of(directory: &Path, file: &str, label: &str) -> Result<String, LoadError> {
+    let bytes = fs::read(directory.join(file)).map_err(|e| LoadError::at(label, "file", e))?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
 pub(crate) fn load(
     directory: &Path,
     locations: &[Location],
-    crop: Crop,
+    files: &MapFiles<'_>,
 ) -> Result<Option<LandNetwork>, LoadError> {
+    let crop = files.map.data.crop;
     let hand = directory.join("network.toml");
     let roads = directory.join("roads.toml");
     if !hand.exists() && !roads.exists() {
@@ -259,13 +333,54 @@ pub(crate) fn load(
     let hand_bytes = fs::read(&hand).map_err(|e| LoadError::at("network.toml", "file", e))?;
     let source = fs::read_to_string(&roads).map_err(|e| LoadError::at("roads.toml", "file", e))?;
     let mut network: LandNetwork = toml::from_str(&source).map_err(|e| parse_error(&source, &e))?;
-    if network.format != 2 {
-        return Err(error("format", "must be 2"));
+    if network.format != 3 {
+        return Err(error("format", "must be 3"));
+    }
+    // The layer is read, hashed and covered by the scenario hash under one name (CK-401 rules 3, 18): a stored name that differs would
+    // load a file the application's hash never reads.
+    if network.sea_distance != SEA_DISTANCE_FILE {
+        return Err(error(
+            "sea_distance",
+            format!("must be {SEA_DISTANCE_FILE}"),
+        ));
     }
     if network.hand_list_sha256 != format!("{:x}", Sha256::digest(hand_bytes)) {
         return Err(error("hand_list_sha256", "does not match network.toml"));
     }
+    let map_source = fs::read_to_string(files.directory.join("map.toml"))
+        .map_err(|e| LoadError::at("map.toml", "file", e))?;
+    let names: MapNames =
+        toml::from_str(&map_source).map_err(|e| LoadError::at("map.toml", "layers", e))?;
+    if network.terrain_sha256 != sha_of(files.directory, &names.layers.terrain, "terrain.png")? {
+        return Err(error("terrain_sha256", "does not match the map's terrain"));
+    }
+    if network.rivers_sha256 != sha_of(files.directory, &names.layers.rivers, "rivers.toml")? {
+        return Err(error("rivers_sha256", "does not match the map's rivers"));
+    }
+    if network.sea_distance_sha256
+        != sha_of(directory, &network.sea_distance, &network.sea_distance)?
+    {
+        return Err(error(
+            "sea_distance_sha256",
+            "does not match the sea distance layer",
+        ));
+    }
+    let layer = crate::loading::decode_layer_image(
+        directory,
+        &network.sea_distance,
+        crop.width,
+        crop.height,
+    )?;
     validate(&network, locations, crop)?;
+    network.water = water::build(
+        &network,
+        &Inputs {
+            crop,
+            cells: &files.map.data.cells,
+            layer: &layer,
+            rivers: files.map.river_network.as_ref(),
+        },
+    )?;
     for (index, stretch) in network.stretches.iter().enumerate() {
         network
             .incident
@@ -615,6 +730,18 @@ mod tests {
 
     static NEXT: AtomicU64 = AtomicU64::new(0);
 
+    fn load_in(dir: &Path, scenario: &crate::Scenario) -> Result<Option<LandNetwork>, LoadError> {
+        let map = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/network/map/fixture");
+        load(
+            dir,
+            &scenario.locations,
+            &MapFiles {
+                directory: &map,
+                map: &scenario.map,
+            },
+        )
+    }
+
     fn fixture() -> crate::Scenario {
         let path =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/network/scenarios/fixture");
@@ -624,7 +751,6 @@ mod tests {
     #[test]
     fn optional_pair_and_file_format_refusals_name_the_fault() {
         let scenario = fixture();
-        let crop = scenario.map.data.crop;
         let source =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/network/scenarios/fixture");
         let dir = std::env::temp_dir().join(format!(
@@ -633,10 +759,15 @@ mod tests {
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         fs::create_dir_all(&dir).unwrap();
-        assert!(load(&dir, &scenario.locations, crop).unwrap().is_none());
+        fs::copy(
+            source.join("sea_distance.png"),
+            dir.join("sea_distance.png"),
+        )
+        .unwrap();
+        assert!(load_in(&dir, &scenario).unwrap().is_none());
         fs::copy(source.join("network.toml"), dir.join("network.toml")).unwrap();
         assert!(
-            load(&dir, &scenario.locations, crop)
+            load_in(&dir, &scenario)
                 .unwrap_err()
                 .to_string()
                 .contains("roads.toml")
@@ -647,12 +778,12 @@ mod tests {
             .find(|line| line.starts_with("record = "))
             .unwrap();
         fs::write(dir.join("roads.toml"), &roads).unwrap();
-        assert!(load(&dir, &scenario.locations, crop).unwrap().is_some());
+        assert!(load_in(&dir, &scenario).unwrap().is_some());
         for (bad, name) in [
-            (roads.replacen("format = 2", "format = 1", 1), "format"),
-            (roads.replacen("format = 2", "format = 'one'", 1), "format"),
+            (roads.replacen("format = 3", "format = 1", 1), "format"),
+            (roads.replacen("format = 3", "format = 'one'", 1), "format"),
             (
-                roads.replacen("format = 2", "format = 2\nunknown = 2", 1),
+                roads.replacen("format = 3", "format = 3\nunknown = 2", 1),
                 "unknown",
             ),
             (
@@ -675,9 +806,7 @@ mod tests {
             ),
         ] {
             fs::write(dir.join("roads.toml"), bad).unwrap();
-            let message = load(&dir, &scenario.locations, crop)
-                .unwrap_err()
-                .to_string();
+            let message = load_in(&dir, &scenario).unwrap_err().to_string();
             assert!(
                 message.contains("roads.toml") && message.contains(name),
                 "{message}"
@@ -686,17 +815,141 @@ mod tests {
         fs::write(dir.join("roads.toml"), roads).unwrap();
         fs::write(dir.join("network.toml"), "changed").unwrap();
         assert!(
-            load(&dir, &scenario.locations, crop)
+            load_in(&dir, &scenario)
                 .unwrap_err()
                 .to_string()
                 .contains("hand_list_sha256")
         );
         fs::remove_file(dir.join("network.toml")).unwrap();
         assert!(
-            load(&dir, &scenario.locations, crop)
+            load_in(&dir, &scenario)
                 .unwrap_err()
                 .to_string()
                 .contains("network.toml")
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn png_of(width: u32, height: u32, depth: png::BitDepth) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        let mut encoder = png::Encoder::new(&mut bytes, width, height);
+        encoder.set_color(png::ColorType::Grayscale);
+        encoder.set_depth(depth);
+        let samples = usize::try_from(width * height).unwrap()
+            * if depth == png::BitDepth::Sixteen {
+                2
+            } else {
+                1
+            };
+        encoder
+            .write_header()
+            .unwrap()
+            .write_image_data(&vec![0; samples])
+            .unwrap();
+        bytes
+    }
+
+    #[test]
+    fn a_recorded_hash_that_is_not_its_files_and_a_layer_of_the_wrong_shape_are_refused() {
+        let scenario = fixture();
+        let source =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/network/scenarios/fixture");
+        let dir = std::env::temp_dir().join(format!(
+            "ck-network-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        for name in ["network.toml", "roads.toml", "sea_distance.png"] {
+            fs::copy(source.join(name), dir.join(name)).unwrap();
+        }
+        let roads = fs::read_to_string(source.join("roads.toml")).unwrap();
+        assert!(load_in(&dir, &scenario).unwrap().is_some());
+        // Each recorded sha256 must be that of the file it names.
+        for field in ["terrain_sha256", "rivers_sha256", "sea_distance_sha256"] {
+            let start = roads.find(&format!("{field} = \"")).unwrap() + field.len() + 4;
+            let mut bad = roads.clone();
+            bad.replace_range(
+                start..=start,
+                if &roads[start..=start] == "0" {
+                    "1"
+                } else {
+                    "0"
+                },
+            );
+            fs::write(dir.join("roads.toml"), bad).unwrap();
+            let message = load_in(&dir, &scenario).unwrap_err().to_string();
+            assert!(
+                message.contains("roads.toml") && message.contains(field),
+                "{message}"
+            );
+        }
+        // A layer that is not one channel of 16 bits at the map's size is refused even with the right sha256.
+        let recorded = roads
+            .lines()
+            .find(|line| line.starts_with("sea_distance_sha256 = "))
+            .unwrap()
+            .to_owned();
+        for (layer, fault) in [
+            (png_of(14, 10, png::BitDepth::Eight), "16-bit"),
+            (png_of(13, 10, png::BitDepth::Sixteen), "dimensions"),
+        ] {
+            let digest = format!("{:x}", Sha256::digest(&layer));
+            fs::write(dir.join("sea_distance.png"), &layer).unwrap();
+            fs::write(
+                dir.join("roads.toml"),
+                roads.replacen(&recorded, &format!("sea_distance_sha256 = \"{digest}\""), 1),
+            )
+            .unwrap();
+            let message = load_in(&dir, &scenario).unwrap_err().to_string();
+            assert!(
+                message.contains("sea_distance.png") && message.contains(fault),
+                "{message}"
+            );
+        }
+        // A stored layer name other than the one the scenario hash reads is refused, though the renamed file is the right bytes with the
+        // right sha256: the loader would otherwise accept a network whose hashed file is absent.
+        fs::copy(
+            source.join("sea_distance.png"),
+            dir.join("sea_distance.png"),
+        )
+        .unwrap();
+        fs::rename(dir.join("sea_distance.png"), dir.join("alternate.png")).unwrap();
+        fs::write(
+            dir.join("roads.toml"),
+            roads.replacen(
+                "sea_distance = \"sea_distance.png\"",
+                "sea_distance = \"alternate.png\"",
+                1,
+            ),
+        )
+        .unwrap();
+        let message = load_in(&dir, &scenario).unwrap_err().to_string();
+        assert!(
+            message.contains("roads.toml")
+                && message.contains("sea_distance")
+                && message.contains("must be sea_distance.png"),
+            "{message}"
+        );
+        fs::write(dir.join("roads.toml"), &roads).unwrap();
+        fs::remove_file(dir.join("alternate.png")).unwrap();
+        assert!(!dir.join("sea_distance.png").exists());
+        assert!(
+            load_in(&dir, &scenario)
+                .unwrap_err()
+                .to_string()
+                .contains("sea_distance.png")
+        );
+        fs::write(
+            dir.join("roads.toml"),
+            roads.replacen("format = 3", "format = 2", 1),
+        )
+        .unwrap();
+        assert!(
+            load_in(&dir, &scenario)
+                .unwrap_err()
+                .to_string()
+                .contains("must be 3")
         );
         fs::remove_dir_all(dir).unwrap();
     }

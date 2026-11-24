@@ -1507,3 +1507,28 @@ river = "blackwater-munster"
 at = [393, 767]
 kind = "ford"
 note = "owner direction r43; munster-2"
+
+[water]
+river_width_m = 20
+shore_height_m = 10
+strait_m = 500
+
+[[water_class]]
+id = "barge"
+reach_m = 1000
+sea_going = false
+
+[[water_class]]
+id = "currach"
+reach_m = 5000
+sea_going = true
+
+[[river_break]]
+stretch = "erne-44"
+cell = [360, 243]
+name = "Assaroe"
+
+[[river_break]]
+stretch = "shannon-18"
+cell = [318, 642]
+name = "Doonass"

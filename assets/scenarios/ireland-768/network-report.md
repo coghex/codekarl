@@ -308,3 +308,599 @@
 - stretch 202, 54504 m: swilly, 13.5 m
 - stretch 206, 6089 m: bann, 14.6 m
 - stretch 207, 1410 m: suck, 16.2 m
+
+## Water classes
+- barge: reach 1000 m, not sea-going, 90 bodies
+- currach: reach 5000 m, sea-going, 69 bodies
+
+## Bodies of water
+- barge body 0: 26 cells, 0 joints
+- barge body 1: 13462 cells, 1481 joints
+- barge body 2: 99 cells, 0 joints
+- barge body 3: 49 cells, 0 joints
+- barge body 4: 5 cells, 3 joints
+- barge body 5: 2 cells, 0 joints
+- barge body 6: 1 cells, 0 joints
+- barge body 7: 2 cells, 0 joints
+- barge body 8: 2 cells, 0 joints
+- barge body 9: 16 cells, 0 joints
+- barge body 10: 613 cells, 314 joints
+- barge body 11: 1 cells, 0 joints
+- barge body 12: 1 cells, 0 joints
+- barge body 13: 89 cells, 58 joints
+- barge body 14: 22 cells, 0 joints
+- barge body 15: 1 cells, 0 joints
+- barge body 16: 16 cells, 0 joints
+- barge body 17: 2 cells, 0 joints
+- barge body 18: 1 cells, 0 joints
+- barge body 19: 67 cells, 0 joints
+- barge body 20: 1096 cells, 364 joints
+- barge body 21: 4 cells, 0 joints
+- barge body 22: 1 cells, 0 joints
+- barge body 23: 1 cells, 0 joints
+- barge body 24: 1 cells, 0 joints
+- barge body 25: 16 cells, 0 joints
+- barge body 26: 16 cells, 0 joints
+- barge body 27: 2 cells, 0 joints
+- barge body 28: 1 cells, 0 joints
+- barge body 29: 13 cells, 0 joints
+- barge body 30: 1 cells, 0 joints
+- barge body 31: 1 cells, 0 joints
+- barge body 32: 1 cells, 0 joints
+- barge body 33: 2 cells, 0 joints
+- barge body 34: 1 cells, 0 joints
+- barge body 35: 2 cells, 0 joints
+- barge body 36: 1 cells, 0 joints
+- barge body 37: 1 cells, 0 joints
+- barge body 38: 1 cells, 0 joints
+- barge body 39: 1 cells, 0 joints
+- barge body 40: 29 cells, 0 joints
+- barge body 41: 1 cells, 0 joints
+- barge body 42: 2 cells, 0 joints
+- barge body 43: 1 cells, 0 joints
+- barge body 44: 10 cells, 0 joints
+- barge body 45: 12 cells, 0 joints
+- barge body 46: 1 cells, 0 joints
+- barge body 47: 1 cells, 0 joints
+- barge body 48: 2 cells, 0 joints
+- barge body 49: 6 cells, 0 joints
+- barge body 50: 2 cells, 0 joints
+- barge body 51: 1 cells, 0 joints
+- barge body 52: 1 cells, 0 joints
+- barge body 53: 11 cells, 0 joints
+- barge body 54: 2 cells, 3 joints
+- barge body 55: 2 cells, 0 joints
+- barge body 56: 30 cells, 14 joints
+- barge body 57: 72 cells, 0 joints
+- barge body 58: 18 cells, 0 joints
+- barge body 59: 67 cells, 0 joints
+- barge body 60: 1 cells, 0 joints
+- barge body 61: 120 cells, 0 joints
+- barge body 62: 1 cells, 0 joints
+- barge body 63: 1 cells, 0 joints
+- barge body 64: 1 cells, 0 joints
+- barge body 65: 1 cells, 0 joints
+- barge body 66: 4 cells, 0 joints
+- barge body 67: 4 cells, 0 joints
+- barge body 68: 1 cells, 0 joints
+- barge body 69: 40 cells, 0 joints
+- barge body 70: 18 cells, 0 joints
+- barge body 71: 45 cells, 20 joints
+- barge body 72: 8 cells, 0 joints
+- barge body 73: 1 cells, 0 joints
+- barge body 74: 27 cells, 0 joints
+- barge body 75: 8 cells, 0 joints
+- barge body 76: 10 cells, 0 joints
+- barge body 77: 170 cells, 0 joints
+- barge body 78: 3 cells, 4 joints
+- barge body 79: 1 cells, 0 joints
+- barge body 80: 1 cells, 0 joints
+- barge body 81: 3 cells, 4 joints
+- barge body 82: 32 cells, 0 joints
+- barge body 83: 16 cells, 0 joints
+- barge body 84: 1 cells, 0 joints
+- barge body 85: 2 cells, 4 joints
+- barge body 86: 8 cells, 0 joints
+- barge body 87: 8 cells, 0 joints
+- barge body 88: 30 cells, 0 joints
+- barge body 89: 8 cells, 0 joints
+- currach body 0: 55447 cells, 1481 joints
+- currach body 1: 5 cells, 3 joints
+- currach body 2: 2 cells, 0 joints
+- currach body 3: 1 cells, 0 joints
+- currach body 4: 2 cells, 0 joints
+- currach body 5: 2 cells, 0 joints
+- currach body 6: 613 cells, 314 joints
+- currach body 7: 1 cells, 0 joints
+- currach body 8: 1 cells, 0 joints
+- currach body 9: 89 cells, 58 joints
+- currach body 10: 1 cells, 0 joints
+- currach body 11: 16 cells, 0 joints
+- currach body 12: 2 cells, 0 joints
+- currach body 13: 1 cells, 0 joints
+- currach body 14: 1096 cells, 364 joints
+- currach body 15: 4 cells, 0 joints
+- currach body 16: 1 cells, 0 joints
+- currach body 17: 1 cells, 0 joints
+- currach body 18: 1 cells, 0 joints
+- currach body 19: 16 cells, 0 joints
+- currach body 20: 2 cells, 0 joints
+- currach body 21: 1 cells, 0 joints
+- currach body 22: 13 cells, 0 joints
+- currach body 23: 1 cells, 0 joints
+- currach body 24: 1 cells, 0 joints
+- currach body 25: 1 cells, 0 joints
+- currach body 26: 2 cells, 0 joints
+- currach body 27: 1 cells, 0 joints
+- currach body 28: 2 cells, 0 joints
+- currach body 29: 1 cells, 0 joints
+- currach body 30: 1 cells, 0 joints
+- currach body 31: 1 cells, 0 joints
+- currach body 32: 1 cells, 0 joints
+- currach body 33: 29 cells, 0 joints
+- currach body 34: 1 cells, 0 joints
+- currach body 35: 2 cells, 0 joints
+- currach body 36: 1 cells, 0 joints
+- currach body 37: 10 cells, 0 joints
+- currach body 38: 1 cells, 0 joints
+- currach body 39: 1 cells, 0 joints
+- currach body 40: 2 cells, 0 joints
+- currach body 41: 6 cells, 0 joints
+- currach body 42: 2 cells, 0 joints
+- currach body 43: 1 cells, 0 joints
+- currach body 44: 1 cells, 0 joints
+- currach body 45: 11 cells, 0 joints
+- currach body 46: 2 cells, 3 joints
+- currach body 47: 2 cells, 0 joints
+- currach body 48: 30 cells, 14 joints
+- currach body 49: 72 cells, 0 joints
+- currach body 50: 1 cells, 0 joints
+- currach body 51: 1 cells, 0 joints
+- currach body 52: 1 cells, 0 joints
+- currach body 53: 1 cells, 0 joints
+- currach body 54: 1 cells, 0 joints
+- currach body 55: 4 cells, 0 joints
+- currach body 56: 4 cells, 0 joints
+- currach body 57: 1 cells, 0 joints
+- currach body 58: 18 cells, 0 joints
+- currach body 59: 45 cells, 20 joints
+- currach body 60: 8 cells, 0 joints
+- currach body 61: 1 cells, 0 joints
+- currach body 62: 3 cells, 4 joints
+- currach body 63: 1 cells, 0 joints
+- currach body 64: 1 cells, 0 joints
+- currach body 65: 3 cells, 4 joints
+- currach body 66: 1 cells, 0 joints
+- currach body 67: 2 cells, 4 joints
+- currach body 68: 292 cells, 0 joints
+
+## Landings
+- annaghdown place node 5: landing 1, open cell (242, 495), shore (242, 494), approach 0 m; barge 1, currach 0
+- ardmore place node 9: landing 2, open cell (424, 809), shore (423, 809), approach 1034 m; barge 1, currach 0
+- ardstraw place node 10: landing 3, river mourne-01 run 0, right bank, shore (461, 189), approach 484 m; barge 1, currach 0
+- clonard place node 25: landing 4, river boyne-01 run 0, left bank, shore (522, 480), approach 0 m; barge 1, currach 0
+- clonard place node 25: landing 157, crossing stretch 68 from end, left bank, shore (522, 480), approach 0 m; barge 1, currach 0
+- clonmacnoise place node 30: landing 5, river shannon-13 run 0, left bank, shore (386, 508), approach 0 m; barge 20, currach 14
+- cong place node 32: landing 6, river cong-01 run 0, left bank, shore (214, 460), approach 0 m; barge 1, currach 0
+- connor place node 33: landing 7, river main-05 run 0, left bank, shore (610, 175), approach 484 m; barge 1, currach 0
+- cork place node 35: landing 8, river lee-11 run 0, right bank, shore (321, 820), approach 518 m; barge 1, currach 0
+- derry place node 37: landing 9, river foyle-02 run 0, left bank, shore (475, 130), approach 0 m; barge 1, currach 0
+- devenish place node 38: landing 10, open cell (429, 272), shore (429, 273), approach 0 m; barge 10, currach 6
+- devenish landing node 39: landing 11, open cell (429, 272), shore (429, 273), approach 0 m; barge 10, currach 6
+- fahan place node 52: landing 12, open cell (455, 109), shore (456, 109), approach 0 m; barge 1, currach 0
+- hare_island place node 59: landing 13, open cell (393, 476), shore (394, 476), approach 0 m; barge 20, currach 14
+- hare_island place node 59: landing 14, open cell (395, 477), shore (395, 476), approach 499 m; barge 73, currach 61
+- hare_island place node 59: landing 15, open cell (396, 478), shore (396, 477), approach 1498 m; barge 72, currach 60
+- hare_island landing node 60: landing 16, open cell (393, 476), shore (394, 476), approach 0 m; barge 20, currach 14
+- hare_island landing node 60: landing 17, open cell (395, 477), shore (395, 476), approach 499 m; barge 73, currach 61
+- hare_island landing node 60: landing 18, open cell (396, 478), shore (396, 477), approach 1498 m; barge 72, currach 60
+- inchbofin place node 63: landing 19, open cell (396, 459), shore (396, 460), approach 0 m; barge 20, currach 14
+- inchbofin landing node 64: landing 20, open cell (398, 460), shore (398, 461), approach 0 m; barge 20, currach 14
+- inchcleraun place node 65: landing 21, open cell (384, 450), shore (384, 451), approach 0 m; barge 20, currach 14
+- inchcleraun landing node 66: landing 22, open cell (385, 449), shore (386, 449), approach 0 m; barge 20, currach 14
+- inis_patraic place node 67: landing 23, open cell (640, 449), shore (640, 450), approach 0 m; barge 1, currach 0
+- inis_patraic landing node 68: landing 24, open cell (638, 451), shore (638, 452), approach 0 m; barge 1, currach 0
+- iniscealtra place node 69: landing 25, open cell (325, 598), shore (325, 599), approach 0 m; barge 20, currach 14
+- iniscealtra landing node 70: landing 26, open cell (325, 597), shore (324, 597), approach 0 m; barge 20, currach 14
+- inisfallen place node 71: landing 27, open cell (180, 788), shore (181, 788), approach 0 m; barge 1, currach 0
+- inisfallen place node 71: landing 28, open cell (181, 789), shore (181, 788), approach 0 m; barge 84, currach 66
+- inisfallen landing node 72: landing 29, open cell (180, 788), shore (181, 788), approach 0 m; barge 1, currach 0
+- inisfallen landing node 72: landing 30, open cell (181, 789), shore (181, 788), approach 0 m; barge 84, currach 66
+- inishbofin place node 73: landing 31, open cell (95, 445), shore (95, 444), approach 995 m; barge 61, currach 0
+- inishbofin landing node 74: landing 32, open cell (103, 449), shore (103, 450), approach 0 m; barge 1, currach 0
+- inishglora place node 75: landing 33, open cell (101, 310), shore (102, 310), approach 0 m; barge 1, currach 0
+- inishglora landing node 76: landing 34, open cell (107, 311), shore (107, 312), approach 0 m; barge 1, currach 0
+- inishkea_north place node 77: landing 35, open cell (94, 325), shore (93, 325), approach 983 m; barge 19, currach 0
+- inishkea_north landing node 78: landing 36, open cell (101, 329), shore (101, 330), approach 0 m; barge 1, currach 0
+- inishkeel place node 79: landing 37, open cell (326, 164), shore (325, 164), approach 0 m; barge 1, currach 0
+- inishkeel landing node 80: landing 38, open cell (326, 164), shore (325, 164), approach 0 m; barge 1, currach 0
+- inishmacsaint place node 81: landing 39, open cell (418, 257), shore (418, 258), approach 0 m; barge 10, currach 6
+- inishmacsaint landing node 82: landing 40, open cell (418, 257), shore (418, 258), approach 488 m; barge 10, currach 6
+- inishmurray place node 83: landing 41, open cell (297, 260), shore (297, 259), approach 0 m; barge 14, currach 0
+- inishmurray landing node 84: landing 42, open cell (304, 269), shore (304, 270), approach 0 m; barge 1, currach 0
+- killeany place node 87: landing 43, open cell (164, 560), shore (164, 559), approach 1007 m; barge 77, currach 0
+- killeany landing node 88: landing 44, open cell (162, 531), shore (163, 531), approach 0 m; barge 1, currach 0
+- knowth place node 92: landing 45, river boyne-02 run 0, left bank, shore (583, 424), approach 993 m; barge 1, currach 0
+- lismore place node 95: landing 46, river blackwater-munster-02 run 0, right bank, shore (394, 768), approach 515 m; barge 1, currach 0
+- lismore place node 95: landing 167, crossing stretch 223 to end, right bank, shore (394, 769), approach 0 m; barge 1, currach 0
+- locha_lein place node 96: landing 47, open cell (181, 789), shore (182, 789), approach 0 m; barge 84, currach 66
+- locha_lein place node 96: landing 48, open cell (182, 790), shore (182, 789), approach 0 m; barge 1, currach 0
+- loegaire_seat place node 97: landing 49, river boyne-01 run 0, right bank, shore (545, 457), approach 498 m; barge 1, currach 0
+- nendrum place node 110: landing 50, open cell (697, 240), shore (696, 240), approach 1462 m; barge 1, currach 0
+- nendrum landing node 111: landing 51, open cell (697, 240), shore (696, 240), approach 1462 m; barge 1, currach 0
+- rechru place node 118: landing 52, open cell (648, 468), shore (648, 469), approach 998 m; barge 69, currach 0
+- rechru landing node 119: landing 53, open cell (640, 464), shore (640, 465), approach 0 m; barge 1, currach 0
+- scattery place node 124: landing 54, open cell (182, 665), shore (183, 665), approach 0 m; barge 1, currach 0
+- scattery landing node 125: landing 55, open cell (182, 665), shore (183, 665), approach 0 m; barge 1, currach 0
+- skellig_michael place node 127: landing 56, open cell (48, 846), shore (48, 847), approach 0 m; barge 87, currach 0
+- skellig_michael landing node 128: landing 57, open cell (64, 834), shore (65, 834), approach 0 m; barge 1, currach 0
+- slane place node 129: landing 58, river boyne-02 run 0, left bank, shore (577, 422), approach 497 m; barge 1, currach 0
+- slane place node 129: landing 150, crossing stretch 248 to end, left bank, shore (578, 422), approach 0 m; barge 1, currach 0
+- spike_island place node 130: landing 59, open cell (347, 833), shore (347, 834), approach 0 m; barge 1, currach 0
+- spike_island landing node 131: landing 60, open cell (344, 833), shore (344, 834), approach 0 m; barge 1, currach 0
+- st_mullins place node 132: landing 61, river barrow-02 run 0, right bank, shore (527, 693), approach 0 m; barge 1, currach 0
+- tailtiu place node 135: landing 62, river blackwater-kells-05 run 0, left bank, shore (549, 425), approach 0 m; barge 1, currach 0
+- tory place node 140: landing 63, open cell (354, 65), shore (354, 66), approach 478 m; barge 3, currach 0
+- tory landing node 141: landing 64, open cell (353, 90), shore (353, 91), approach 0 m; barge 1, currach 0
+- trim place node 142: landing 65, river boyne-01 run 0, right bank, shore (545, 457), approach 0 m; barge 1, currach 0
+- trim place node 142: landing 205, crossing stretch 203 to end, right bank, shore (545, 457), approach 0 m; barge 1, currach 0
+- white_island place node 148: landing 66, open cell (420, 245), shore (420, 246), approach 0 m; barge 11, currach 7
+- white_island place node 148: landing 67, open cell (419, 246), shore (420, 246), approach 0 m; barge 10, currach 6
+- white_island landing node 149: landing 68, open cell (420, 245), shore (419, 245), approach 0 m; barge 11, currach 7
+- white_island landing node 149: landing 69, open cell (419, 246), shore (419, 245), approach 0 m; barge 10, currach 6
+- junction node 151: landing 70, open cell (106, 313), shore (107, 313), approach 0 m; barge 1, currach 0
+- junction node 166: landing 71, river lee-10 run 0, right bank, shore (317, 821), approach 0 m; barge 1, currach 0
+- junction node 166: landing 168, crossing stretch 84 from end, right bank, shore (317, 821), approach 0 m; barge 1, currach 0
+- junction node 191: landing 72, river finn-donegal-03 run 0, left bank, shore (452, 170), approach 0 m; barge 1, currach 0
+- junction node 191: landing 178, crossing stretch 95 from end, left bank, shore (452, 170), approach 0 m; barge 1, currach 0
+- junction node 197: landing 209, crossing stretch 300 to end, right bank, shore (480, 224), approach 0 m; barge 1, currach 0
+- junction node 206: landing 204, crossing stretch 203 from end, left bank, shore (545, 456), approach 0 m; barge 1, currach 0
+- junction node 223: landing 131, crossing stretch 12 from end, right bank, shore (602, 503), approach 0 m; barge 1, currach 0
+- junction node 225: landing 73, river main-05 run 0, left bank, shore (610, 175), approach 0 m; barge 1, currach 0
+- junction node 232: landing 74, river blackwater-munster-02 run 0, left bank, shore (393, 767), approach 0 m; barge 1, currach 0
+- junction node 232: landing 166, crossing stretch 223 from end, left bank, shore (393, 767), approach 0 m; barge 1, currach 0
+- junction node 233: landing 75, river slaney-03 run 0, right bank, shore (560, 652), approach 0 m; barge 1, currach 0
+- junction node 233: landing 135, crossing stretch 221 from end, right bank, shore (560, 652), approach 0 m; barge 1, currach 0
+- bank node 234: landing 76, river boyne-01 run 0, left bank, shore (552, 455), approach 0 m; barge 1, currach 0
+- bank node 234: landing 125, crossing stretch 226 from end, left bank, shore (552, 455), approach 0 m; barge 1, currach 0
+- bank node 235: landing 126, crossing stretch 226 to end, right bank, shore (554, 454), approach 0 m; barge 1, currach 0
+- bank node 236: landing 127, crossing stretch 228 from end, right bank, shore (425, 451), approach 0 m; barge 20, currach 14
+- bank node 237: landing 128, crossing stretch 228 to end, left bank, shore (426, 453), approach 0 m; barge 20, currach 14
+- bank node 238: landing 77, open cell (382, 431), shore (383, 431), approach 0 m; barge 20, currach 14
+- bank node 238: landing 129, crossing stretch 230 from end, right bank, shore (383, 431), approach 0 m; barge 20, currach 14
+- bank node 239: landing 78, open cell (385, 431), shore (385, 432), approach 0 m; barge 20, currach 14
+- bank node 239: landing 130, crossing stretch 230 to end, left bank, shore (385, 432), approach 0 m; barge 20, currach 14
+- bank node 240: landing 132, crossing stretch 12 to end, left bank, shore (603, 501), approach 0 m; barge 1, currach 0
+- bank node 241: landing 79, river liffey-03 run 0, left bank, shore (555, 551), approach 0 m; barge 1, currach 0
+- bank node 241: landing 133, crossing stretch 233 from end, left bank, shore (555, 551), approach 0 m; barge 1, currach 0
+- bank node 242: landing 134, crossing stretch 233 to end, right bank, shore (556, 549), approach 0 m; barge 1, currach 0
+- bank node 243: landing 80, river slaney-03 run 0, left bank, shore (562, 653), approach 0 m; barge 1, currach 0
+- bank node 243: landing 136, crossing stretch 221 to end, left bank, shore (562, 653), approach 0 m; barge 1, currach 0
+- bank node 244: landing 137, crossing stretch 236 from end, right bank, shore (253, 503), approach 0 m; barge 1, currach 0
+- bank node 245: landing 81, river clare-01 run 0, left bank, shore (253, 504), approach 0 m; barge 1, currach 0
+- bank node 245: landing 138, crossing stretch 236 to end, left bank, shore (253, 504), approach 0 m; barge 1, currach 0
+- bank node 246: landing 82, river shannon-16 run 0, left bank, shore (369, 545), approach 0 m; barge 20, currach 14
+- bank node 246: landing 139, crossing stretch 238 from end, left bank, shore (369, 545), approach 0 m; barge 20, currach 14
+- bank node 247: landing 140, crossing stretch 238 to end, right bank, shore (370, 543), approach 0 m; barge 20, currach 14
+- bank node 248: landing 141, crossing stretch 240 from end, right bank, shore (444, 502), approach 0 m; barge 20, currach 14
+- bank node 249: landing 83, river brosna-03 run 0, left bank, shore (443, 504), approach 0 m; barge 20, currach 14
+- bank node 249: landing 142, crossing stretch 240 to end, left bank, shore (443, 504), approach 0 m; barge 20, currach 14
+- bank node 250: landing 143, crossing stretch 242 from end, left bank, shore (544, 540), approach 0 m; barge 1, currach 0
+- bank node 251: landing 144, crossing stretch 242 to end, right bank, shore (546, 539), approach 0 m; barge 1, currach 0
+- bank node 252: landing 84, river mulkear-01 run 0, left bank, shore (314, 652), approach 0 m; barge 1, currach 0
+- bank node 252: landing 145, crossing stretch 244 from end, left bank, shore (314, 652), approach 0 m; barge 1, currach 0
+- bank node 253: landing 146, crossing stretch 244 to end, right bank, shore (315, 652), approach 0 m; barge 1, currach 0
+- bank node 254: landing 85, river barrow-01 run 0, right bank, shore (522, 629), approach 0 m; barge 1, currach 0
+- bank node 254: landing 147, crossing stretch 246 from end, right bank, shore (522, 629), approach 0 m; barge 1, currach 0
+- bank node 255: landing 86, river barrow-01 run 0, left bank, shore (522, 628), approach 0 m; barge 1, currach 0
+- bank node 255: landing 148, crossing stretch 246 to end, left bank, shore (522, 628), approach 0 m; barge 1, currach 0
+- bank node 256: landing 87, river boyne-02 run 0, right bank, shore (576, 423), approach 0 m; barge 1, currach 0
+- bank node 256: landing 149, crossing stretch 248 from end, right bank, shore (576, 423), approach 0 m; barge 1, currach 0
+- bank node 257: landing 88, river dee-01 run 0, left bank, shore (595, 389), approach 0 m; barge 1, currach 0
+- bank node 257: landing 151, crossing stretch 249 from end, left bank, shore (595, 389), approach 0 m; barge 1, currach 0
+- bank node 258: landing 89, river dee-01 run 0, right bank, shore (595, 390), approach 0 m; barge 1, currach 0
+- bank node 258: landing 152, crossing stretch 249 to end, right bank, shore (595, 390), approach 0 m; barge 1, currach 0
+- bank node 259: landing 90, river cusher-01 run 0, left bank, shore (594, 266), approach 0 m; barge 1, currach 0
+- bank node 259: landing 153, crossing stretch 251 from end, left bank, shore (594, 266), approach 0 m; barge 1, currach 0
+- bank node 260: landing 91, river bann-01 run 0, right bank, shore (594, 265), approach 0 m; barge 1, currach 0
+- bank node 260: landing 154, crossing stretch 251 to end, right bank, shore (594, 265), approach 0 m; barge 1, currach 0
+- bank node 261: landing 155, crossing stretch 253 from end, right bank, shore (609, 171), approach 0 m; barge 1, currach 0
+- bank node 262: landing 92, river main-05 run 0, left bank, shore (610, 173), approach 0 m; barge 1, currach 0
+- bank node 262: landing 156, crossing stretch 253 to end, left bank, shore (610, 173), approach 0 m; barge 1, currach 0
+- bank node 263: landing 158, crossing stretch 68 to end, right bank, shore (524, 481), approach 0 m; barge 1, currach 0
+- bank node 264: landing 159, crossing stretch 256 from end, left bank, shore (584, 499), approach 0 m; barge 1, currach 0
+- bank node 265: landing 93, river liffey-05 run 0, right bank, shore (586, 500), approach 0 m; barge 1, currach 0
+- bank node 265: landing 160, crossing stretch 256 to end, right bank, shore (586, 500), approach 0 m; barge 1, currach 0
+- bank node 266: landing 161, crossing stretch 258 from end, right bank, shore (425, 507), approach 0 m; barge 20, currach 14
+- bank node 267: landing 94, river brosna-03 run 0, left bank, shore (427, 508), approach 0 m; barge 20, currach 14
+- bank node 267: landing 162, crossing stretch 258 to end, left bank, shore (427, 508), approach 0 m; barge 20, currach 14
+- bank node 269: landing 163, crossing stretch 260 to end, left bank, shore (380, 520), approach 0 m; barge 20, currach 14
+- bank node 270: landing 95, river suir-02 run 0, right bank, shore (395, 721), approach 0 m; barge 1, currach 0
+- bank node 270: landing 164, crossing stretch 262 from end, right bank, shore (395, 721), approach 0 m; barge 1, currach 0
+- bank node 271: landing 96, river suir-02 run 0, left bank, shore (395, 720), approach 0 m; barge 1, currach 0
+- bank node 271: landing 165, crossing stretch 262 to end, left bank, shore (395, 720), approach 0 m; barge 1, currach 0
+- bank node 272: landing 97, river lee-11 run 0, left bank, shore (318, 820), approach 0 m; barge 1, currach 0
+- bank node 272: landing 169, crossing stretch 84 to end, left bank, shore (318, 820), approach 0 m; barge 1, currach 0
+- bank node 273: landing 98, river suir-01 run 0, right bank, shore (392, 685), approach 0 m; barge 1, currach 0
+- bank node 273: landing 170, crossing stretch 265 from end, right bank, shore (392, 685), approach 0 m; barge 1, currach 0
+- bank node 274: landing 99, river suir-01 run 0, left bank, shore (393, 685), approach 0 m; barge 1, currach 0
+- bank node 274: landing 171, crossing stretch 265 to end, left bank, shore (393, 685), approach 0 m; barge 1, currach 0
+- bank node 275: landing 100, river blackwater-ulster-04 run 0, left bank, shore (542, 273), approach 0 m; barge 1, currach 0
+- bank node 275: landing 172, crossing stretch 267 from end, left bank, shore (542, 273), approach 0 m; barge 1, currach 0
+- bank node 276: landing 101, river blackwater-ulster-04 run 0, right bank, shore (543, 273), approach 0 m; barge 1, currach 0
+- bank node 276: landing 173, crossing stretch 267 to end, right bank, shore (543, 273), approach 0 m; barge 1, currach 0
+- bank node 277: landing 174, crossing stretch 269 from end, right bank, shore (468, 192), approach 0 m; barge 1, currach 0
+- bank node 278: landing 175, crossing stretch 269 to end, left bank, shore (470, 193), approach 0 m; barge 1, currach 0
+- bank node 279: landing 176, crossing stretch 271 from end, right bank, shore (478, 219), approach 0 m; barge 1, currach 0
+- bank node 280: landing 102, river drumragh-01 run 0, right bank, shore (479, 221), approach 0 m; barge 1, currach 0
+- bank node 280: landing 177, crossing stretch 271 to end, left bank, shore (479, 221), approach 0 m; barge 1, currach 0
+- bank node 281: landing 179, crossing stretch 95 to end, right bank, shore (452, 171), approach 0 m; barge 1, currach 0
+- bank node 282: landing 103, river derg-01 run 0, left bank, shore (460, 189), approach 0 m; barge 1, currach 0
+- bank node 282: landing 180, crossing stretch 274 from end, left bank, shore (460, 189), approach 0 m; barge 1, currach 0
+- bank node 283: landing 104, river mourne-01 run 0, right bank, shore (461, 189), approach 0 m; barge 1, currach 0
+- bank node 283: landing 181, crossing stretch 274 to end, right bank, shore (461, 189), approach 0 m; barge 1, currach 0
+- bank node 284: landing 182, crossing stretch 276 from end, left bank, shore (599, 270), approach 0 m; barge 1, currach 0
+- bank node 285: landing 105, river bann-01 run 0, right bank, shore (600, 270), approach 0 m; barge 1, currach 0
+- bank node 285: landing 183, crossing stretch 276 to end, right bank, shore (600, 270), approach 0 m; barge 1, currach 0
+- bank node 286: landing 106, river laune-01 run 0, left bank, shore (151, 777), approach 0 m; barge 1, currach 0
+- bank node 286: landing 184, crossing stretch 278 from end, left bank, shore (151, 777), approach 0 m; barge 1, currach 0
+- bank node 287: landing 107, river laune-01 run 0, right bank, shore (152, 777), approach 0 m; barge 1, currach 0
+- bank node 287: landing 185, crossing stretch 278 to end, right bank, shore (152, 777), approach 0 m; barge 1, currach 0
+- bank node 288: landing 108, river feale-02 run 0, left bank, shore (180, 705), approach 0 m; barge 1, currach 0
+- bank node 288: landing 186, crossing stretch 280 from end, left bank, shore (180, 705), approach 0 m; barge 1, currach 0
+- bank node 289: landing 109, river feale-02 run 0, right bank, shore (181, 704), approach 0 m; barge 1, currach 0
+- bank node 289: landing 187, crossing stretch 280 to end, right bank, shore (181, 704), approach 0 m; barge 1, currach 0
+- bank node 290: landing 110, river deel-limerick-01 run 0, left bank, shore (255, 677), approach 0 m; barge 1, currach 0
+- bank node 290: landing 188, crossing stretch 282 from end, left bank, shore (255, 677), approach 0 m; barge 1, currach 0
+- bank node 291: landing 189, crossing stretch 282 to end, right bank, shore (256, 677), approach 0 m; barge 1, currach 0
+- bank node 292: landing 190, crossing stretch 284 from end, left bank, shore (280, 677), approach 0 m; barge 1, currach 0
+- bank node 293: landing 111, river maigue-02 run 0, right bank, shore (282, 676), approach 0 m; barge 1, currach 0
+- bank node 293: landing 191, crossing stretch 284 to end, right bank, shore (282, 676), approach 0 m; barge 1, currach 0
+- bank node 294: landing 112, open cell (430, 274), shore (430, 275), approach 0 m; barge 10, currach 6
+- bank node 294: landing 192, crossing stretch 286 from end, right bank, shore (430, 275), approach 0 m; barge 10, currach 6
+- bank node 295: landing 113, river erne-29 run 0, left bank, shore (429, 275), approach 0 m; barge 10, currach 6
+- bank node 295: landing 193, crossing stretch 286 to end, left bank, shore (429, 275), approach 0 m; barge 10, currach 6
+- bank node 296: landing 114, river shannon-18 run 0, left bank, shore (324, 629), approach 0 m; barge 20, currach 14
+- bank node 296: landing 194, crossing stretch 288 from end, left bank, shore (324, 629), approach 0 m; barge 20, currach 14
+- bank node 297: landing 115, river shannon-18 run 0, right bank, shore (325, 627), approach 0 m; barge 20, currach 14
+- bank node 297: landing 195, crossing stretch 288 to end, right bank, shore (325, 627), approach 0 m; barge 20, currach 14
+- bank node 298: landing 196, crossing stretch 290 from end, right bank, shore (244, 520), approach 0 m; barge 1, currach 0
+- bank node 299: landing 116, river corrib-01 run 0, left bank, shore (245, 520), approach 0 m; barge 1, currach 0
+- bank node 299: landing 197, crossing stretch 290 to end, left bank, shore (245, 520), approach 0 m; barge 1, currach 0
+- bank node 300: landing 198, crossing stretch 292 from end, left bank, shore (393, 560), approach 0 m; barge 20, currach 14
+- bank node 301: landing 199, crossing stretch 292 to end, right bank, shore (395, 559), approach 0 m; barge 20, currach 14
+- bank node 302: landing 117, river bandon-01 run 0, right bank, shore (274, 855), approach 0 m; barge 1, currach 0
+- bank node 302: landing 200, crossing stretch 294 from end, right bank, shore (274, 855), approach 0 m; barge 1, currach 0
+- bank node 303: landing 118, river bandon-01 run 0, left bank, shore (275, 853), approach 0 m; barge 1, currach 0
+- bank node 303: landing 201, crossing stretch 294 to end, left bank, shore (275, 853), approach 0 m; barge 1, currach 0
+- bank node 304: landing 119, river blackwater-kells-05 run 0, left bank, shore (558, 434), approach 0 m; barge 1, currach 0
+- bank node 304: landing 202, crossing stretch 296 from end, left bank, shore (558, 434), approach 0 m; barge 1, currach 0
+- bank node 305: landing 120, river blackwater-kells-05 run 0, left bank, shore (560, 435), approach 0 m; barge 1, currach 0
+- bank node 305: landing 203, crossing stretch 296 to end, right bank, shore (560, 435), approach 0 m; barge 1, currach 0
+- bank node 306: landing 121, river clare-01 run 0, right bank, shore (267, 464), approach 0 m; barge 1, currach 0
+- bank node 306: landing 206, crossing stretch 298 from end, right bank, shore (267, 464), approach 0 m; barge 1, currach 0
+- bank node 307: landing 207, crossing stretch 298 to end, left bank, shore (269, 465), approach 0 m; barge 1, currach 0
+- bank node 308: landing 122, river drumragh-01 run 0, left bank, shore (479, 223), approach 0 m; barge 1, currach 0
+- bank node 308: landing 208, crossing stretch 300 from end, left bank, shore (479, 223), approach 0 m; barge 1, currach 0
+- bank node 309: landing 210, crossing stretch 301 from end, left bank, shore (234, 364), approach 0 m; barge 1, currach 0
+- bank node 310: landing 123, open cell (233, 365), shore (234, 365), approach 0 m; barge 1, currach 0
+- bank node 310: landing 211, crossing stretch 301 to end, right bank, shore (234, 365), approach 0 m; barge 1, currach 0
+- bank node 311: landing 212, crossing stretch 303 from end, right bank, shore (324, 294), approach 0 m; barge 1, currach 0
+- bank node 312: landing 124, river garavogue-01 run 0, left bank, shore (323, 296), approach 0 m; barge 1, currach 0
+- bank node 312: landing 213, crossing stretch 303 to end, left bank, shore (323, 296), approach 0 m; barge 1, currach 0
+
+## Places without a landing
+- aghaboe: no usable water reached
+- ahenny: no usable water reached
+- aidne_seat: no usable water reached
+- ailech: no usable water reached
+- antrim: no usable water reached
+- ardagh: no usable water reached
+- ardfert: no usable water reached
+- armagh: no usable water reached
+- bangor: no usable water reached
+- birr: no usable water reached
+- bruree: no usable water reached
+- cairpre_seat: no usable water reached
+- carndonagh: no usable water reached
+- carraig_aille: no usable water reached
+- cashel: no usable water reached
+- church_island_currane: a strait only
+- church_island_valentia: a strait only
+- ciarraige_seat: no usable water reached
+- clogher: no usable water reached
+- clondalkin: no usable water reached
+- clonenagh: no usable water reached
+- clones: no usable water reached
+- clonfert: no usable water reached
+- cloyne: no usable water reached
+- corco_modruad: no usable water reached
+- croaghan_hill: no usable water reached
+- downpatrick: no usable water reached
+- dromiskin: no usable water reached
+- dromore: no usable water reached
+- drumcliff: no usable water reached
+- duleek: no usable water reached
+- dun_ailinne: no usable water reached
+- dunleer: no usable water reached
+- dunseverick: no usable water reached
+- durrow: no usable water reached
+- elphin: no usable water reached
+- emain_macha: no usable water reached
+- emly: no usable water reached
+- ferns: no usable water reached
+- finglas: no usable water reached
+- fore: no usable water reached
+- glendalough: no usable water reached
+- gowran: no usable water reached
+- granard: no usable water reached
+- illaunloughan: a strait only
+- kildare: no usable water reached
+- killala: no usable water reached
+- killeigh: no usable water reached
+- kilmacduagh: no usable water reached
+- knockainey: no usable water reached
+- lagore: no usable water reached
+- lemanaghan: no usable water reached
+- lorrha: no usable water reached
+- louth: no usable water reached
+- lusk: no usable water reached
+- lyons_hill: no usable water reached
+- mayo: no usable water reached
+- monaincha: no usable water reached
+- monasterboice: no usable water reached
+- movilla: no usable water reached
+- moynagh: no usable water reached
+- mullaghmast: no usable water reached
+- mungret: no usable water reached
+- naas: no usable water reached
+- old_leighlin: no usable water reached
+- rahan: no usable water reached
+- raphoe: no usable water reached
+- rathangan: no usable water reached
+- rathcroghan: no usable water reached
+- rathmore: no usable water reached
+- roscommon: no usable water reached
+- roscrea: no usable water reached
+- ross_carbery: no usable water reached
+- saul: no usable water reached
+- seirkieran: no usable water reached
+- swords: no usable water reached
+- taghmon: no usable water reached
+- tara: no usable water reached
+- terryglass: no usable water reached
+- tethbae_seat: no usable water reached
+- tir_amalgaid: no usable water reached
+- tuam: no usable water reached
+- ui_echach_seat: no usable water reached
+- ui_maine_seat: no usable water reached
+- uisneach: no usable water reached
+- uliathain_seat: no usable water reached
+
+## Shores refused
+- bank node 268: shore (379, 522), marsh
+
+## Crossing stretches by boat
+- stretch 12: landings 131, 132; barge crosses; currach crosses
+- stretch 68: landings 157, 158; barge crosses; currach crosses
+- stretch 84: landings 168, 169; barge crosses; currach crosses
+- stretch 95: landings 178, 179; barge crosses; currach crosses
+- stretch 203: landings 204, 205; barge crosses; currach crosses
+- stretch 221: landings 135, 136; barge crosses; currach crosses
+- stretch 223: landings 166, 167; barge crosses; currach crosses
+- stretch 226: landings 125, 126; barge crosses; currach crosses
+- stretch 228: landings 127, 128; barge crosses; currach crosses
+- stretch 230: landings 129, 130; barge crosses; currach crosses
+- stretch 233: landings 133, 134; barge crosses; currach crosses
+- stretch 236: landings 137, 138; barge crosses; currach crosses
+- stretch 238: landings 139, 140; barge crosses; currach crosses
+- stretch 240: landings 141, 142; barge crosses; currach crosses
+- stretch 242: landings 143, 144; barge crosses; currach crosses
+- stretch 244: landings 145, 146; barge crosses; currach crosses
+- stretch 246: landings 147, 148; barge crosses; currach crosses
+- stretch 248: landings 149, 150; barge crosses; currach crosses
+- stretch 249: landings 151, 152; barge crosses; currach crosses
+- stretch 251: landings 153, 154; barge crosses; currach crosses
+- stretch 253: landings 155, 156; barge crosses; currach crosses
+- stretch 256: landings 159, 160; barge crosses; currach crosses
+- stretch 258: landings 161, 162; barge crosses; currach crosses
+- stretch 260: landings none, 163; barge cannot cross; currach cannot cross
+- stretch 262: landings 164, 165; barge crosses; currach crosses
+- stretch 265: landings 170, 171; barge crosses; currach crosses
+- stretch 267: landings 172, 173; barge crosses; currach crosses
+- stretch 269: landings 174, 175; barge crosses; currach crosses
+- stretch 271: landings 176, 177; barge crosses; currach crosses
+- stretch 274: landings 180, 181; barge crosses; currach crosses
+- stretch 276: landings 182, 183; barge crosses; currach crosses
+- stretch 278: landings 184, 185; barge crosses; currach crosses
+- stretch 280: landings 186, 187; barge crosses; currach crosses
+- stretch 282: landings 188, 189; barge crosses; currach crosses
+- stretch 284: landings 190, 191; barge crosses; currach crosses
+- stretch 286: landings 192, 193; barge crosses; currach crosses
+- stretch 288: landings 194, 195; barge crosses; currach crosses
+- stretch 290: landings 196, 197; barge crosses; currach crosses
+- stretch 292: landings 198, 199; barge crosses; currach crosses
+- stretch 294: landings 200, 201; barge crosses; currach crosses
+- stretch 296: landings 202, 203; barge crosses; currach crosses
+- stretch 298: landings 206, 207; barge crosses; currach crosses
+- stretch 300: landings 208, 209; barge crosses; currach crosses
+- stretch 301: landings 210, 211; barge crosses; currach crosses
+- stretch 303: landings 212, 213; barge crosses; currach crosses
+
+## Straits
+- church_island_currane: 500 m, church_island_currane place node 19 to church_island_currane landing node 20; barge, currach
+- church_island_valentia: 500 m, church_island_valentia place node 21 to church_island_valentia landing node 22; barge, currach
+- devenish: 500 m, devenish place node 38 to devenish landing node 39; barge, currach
+- hare_island: 500 m, hare_island place node 59 to hare_island landing node 60; barge, currach
+- illaunloughan: 500 m, illaunloughan place node 61 to illaunloughan landing node 62; barge, currach
+- inisfallen: 500 m, inisfallen place node 71 to inisfallen landing node 72; barge, currach
+- inishkeel: 500 m, inishkeel place node 79 to inishkeel landing node 80; barge, currach
+- inishmacsaint: 500 m, inishmacsaint place node 81 to inishmacsaint landing node 82; barge, currach
+- nendrum: 500 m, nendrum place node 110 to nendrum landing node 111; barge, currach
+- scattery: 500 m, scattery place node 124 to scattery landing node 125; barge, currach
+
+## Sea-going marks
+- none
+
+## Roads beside usable water with no node
+- stretch 2: cell (544, 456)
+- stretch 31: cell (395, 476)
+- stretch 49: cell (522, 630)
+- stretch 53: cell (575, 425)
+- stretch 65: cell (602, 143)
+- stretch 71: cell (442, 506)
+- stretch 85: cell (318, 821)
+- stretch 97: cell (456, 162)
+- stretch 114: cell (94, 834)
+- stretch 115: cell (106, 789)
+- stretch 116: cell (177, 707)
+- stretch 120: cell (342, 820)
+- stretch 126: cell (450, 171)
+- stretch 127: cell (472, 132)
+- stretch 137: cell (475, 128)
+- stretch 139: cell (605, 504)
+- stretch 142: cell (394, 477)
+- stretch 145: cell (399, 461)
+- stretch 153: cell (104, 450)
+- stretch 155: cell (108, 311)
+- stretch 156: cell (101, 331)
+- stretch 157: cell (324, 163)
+- stretch 158: cell (418, 260)
+- stretch 160: cell (171, 529)
+- stretch 191: cell (183, 664)
+- stretch 195: cell (523, 683)
+- stretch 198: cell (550, 426)
+- stretch 199: cell (361, 566)
+- stretch 202: cell (418, 142)
+- stretch 215: cell (231, 332)
+- stretch 220: cell (551, 627)
+- stretch 222: cell (395, 722)
+- stretch 224: cell (394, 767)
+- stretch 225: cell (560, 654)
+- stretch 235: cell (563, 653)
+- stretch 241: cell (444, 505)
+- stretch 247: cell (523, 626)
+- stretch 252: cell (594, 264)
+- stretch 254: cell (610, 174)
+- stretch 257: cell (588, 501)
+- stretch 261: cell (381, 515)
+- stretch 263: cell (395, 719)
+- stretch 270: cell (470, 195)
+- stretch 272: cell (479, 222)
+- stretch 273: cell (455, 177)
+- stretch 279: cell (156, 776)
+- stretch 281: cell (254, 677)
+- stretch 287: cell (429, 274)
+- stretch 289: cell (326, 625)
+- stretch 291: cell (246, 520)
+- stretch 295: cell (303, 822)
+- stretch 302: cell (234, 366)
+- stretch 304: cell (319, 310)
+
+## Places joined by land and water
+- barge: 118 of 125 places
+  - joined: aghaboe, ahenny, aidne_seat, ailech, annaghdown, antrim, ardagh, ardfert, ardmore, ardstraw, armagh, bangor, birr, bruree, cairpre_seat, carndonagh, carraig_aille, cashel, church_island_currane, church_island_valentia, ciarraige_seat, clogher, clonard, clondalkin, clonenagh, clones, clonfert, clonmacnoise, cloyne, cong, connor, corco_modruad, cork, croaghan_hill, derry, devenish, downpatrick, dromiskin, dromore, drumcliff, duleek, dun_ailinne, dunleer, dunseverick, durrow, elphin, emain_macha, emly, fahan, ferns, finglas, fore, glendalough, gowran, granard, hare_island, illaunloughan, inchbofin, inchcleraun, inis_patraic, iniscealtra, inisfallen, inishglora, inishkeel, inishmacsaint, kildare, killala, killeigh, kilmacduagh, knockainey, knowth, lagore, lemanaghan, lismore, locha_lein, loegaire_seat, lorrha, louth, lusk, lyons_hill, mayo, monaincha, monasterboice, movilla, moynagh, mullaghmast, mungret, naas, nendrum, old_leighlin, rahan, raphoe, rathangan, rathcroghan, rathmore, roscommon, roscrea, ross_carbery, saul, scattery, seirkieran, slane, spike_island, st_mullins, swords, taghmon, tailtiu, tara, terryglass, tethbae_seat, tir_amalgaid, trim, tuam, ui_echach_seat, ui_maine_seat, uisneach, uliathain_seat, white_island
+  - not joined: inishbofin, inishkea_north, inishmurray, killeany, rechru, skellig_michael, tory
+- currach: 125 of 125 places
+  - joined: aghaboe, ahenny, aidne_seat, ailech, annaghdown, antrim, ardagh, ardfert, ardmore, ardstraw, armagh, bangor, birr, bruree, cairpre_seat, carndonagh, carraig_aille, cashel, church_island_currane, church_island_valentia, ciarraige_seat, clogher, clonard, clondalkin, clonenagh, clones, clonfert, clonmacnoise, cloyne, cong, connor, corco_modruad, cork, croaghan_hill, derry, devenish, downpatrick, dromiskin, dromore, drumcliff, duleek, dun_ailinne, dunleer, dunseverick, durrow, elphin, emain_macha, emly, fahan, ferns, finglas, fore, glendalough, gowran, granard, hare_island, illaunloughan, inchbofin, inchcleraun, inis_patraic, iniscealtra, inisfallen, inishbofin, inishglora, inishkea_north, inishkeel, inishmacsaint, inishmurray, kildare, killala, killeany, killeigh, kilmacduagh, knockainey, knowth, lagore, lemanaghan, lismore, locha_lein, loegaire_seat, lorrha, louth, lusk, lyons_hill, mayo, monaincha, monasterboice, movilla, moynagh, mullaghmast, mungret, naas, nendrum, old_leighlin, rahan, raphoe, rathangan, rathcroghan, rathmore, rechru, roscommon, roscrea, ross_carbery, saul, scattery, seirkieran, skellig_michael, slane, spike_island, st_mullins, swords, taghmon, tailtiu, tara, terryglass, tethbae_seat, tir_amalgaid, tory, trim, tuam, ui_echach_seat, ui_maine_seat, uisneach, uliathain_seat, white_island
+  - not joined: none

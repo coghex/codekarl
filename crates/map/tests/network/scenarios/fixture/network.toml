@@ -72,3 +72,18 @@ from = "d"
 to = "e"
 category = "path"
 level = 1
+
+[water]
+river_width_m = 20
+shore_height_m = 10
+strait_m = 500
+
+[[water_class]]
+id = "barge"
+reach_m = 1000
+sea_going = false
+
+[[water_class]]
+id = "currach"
+reach_m = 5000
+sea_going = true

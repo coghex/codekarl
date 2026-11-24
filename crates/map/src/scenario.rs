@@ -475,7 +475,14 @@ pub fn load_scenario(directory: impl AsRef<Path>) -> Result<Scenario, LoadError>
         &location_kinds,
     )?;
     let catchment_owners = compute_catchments(&map.data, &locations, &location_kinds)?;
-    let network = crate::network::load(directory, &locations, map.data.crop)?;
+    let network = crate::network::load(
+        directory,
+        &locations,
+        &crate::network::MapFiles {
+            directory: &map_directory,
+            map: &map,
+        },
+    )?;
     Ok(Scenario {
         id: scenario_file.id,
         start,
