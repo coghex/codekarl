@@ -9591,7 +9591,7 @@ pub(crate) mod tests {
                 );
             }
         }
-        rules.herd_species = shipped.herd_species;
+        rules.herd_species = shipped.herd_species.into_iter().take(3).collect();
         rules.buildings[0].herds = shipped
             .buildings
             .iter()
@@ -9830,7 +9830,9 @@ pub(crate) mod tests {
                         kind: "farm".to_owned(),
                         levels: 1,
                         method_levels: vec![1, 0, 0, 0],
-                        herds: vec![9, 6, 5],
+                        herds: (0..rules.herd_species.len())
+                            .map(|i| [9, 6, 5].get(i).copied().unwrap_or(0))
+                            .collect(),
                         employment: vec![
                             Employment {
                                 owners: 1,
@@ -9843,8 +9845,8 @@ pub(crate) mod tests {
                         storehouse_accounts: None,
                         production_carries: vec![vec![0; goods]; 4],
                         method_suitability: vec![vec![1000; goods]; 4],
-                        herd_birth_carries: vec![0; 3],
-                        herd_death_carries: vec![0; 3],
+                        herd_birth_carries: vec![0; rules.herd_species.len()],
+                        herd_death_carries: vec![0; rules.herd_species.len()],
                         herd_product_carries: vec![
                             0;
                             rules
@@ -9853,7 +9855,9 @@ pub(crate) mod tests {
                                 .map(|s| s.products.len())
                                 .sum()
                         ],
-                        herd_grazing_sums: vec![1000, 400, 1000],
+                        herd_grazing_sums: (0..rules.herd_species.len())
+                            .map(|i| [1000, 400, 1000].get(i).copied().unwrap_or(1000))
+                            .collect(),
                         wage_carries: vec![0; goods],
                         pay_carries: vec![0; goods],
                         fee_carries: Vec::new(),
@@ -10910,7 +10914,7 @@ pub(crate) mod tests {
                 && place.religion.as_deref() == Some("christianity")
                 && place.monk_religion.as_deref() == Some("christianity")
         }));
-        assert_eq!(rules.goods.len(), 26);
+        assert_eq!(rules.goods.len(), 27);
         assert_eq!(rules.pop_types.len(), 4);
         assert_eq!(
             rules.curves.keys().map(String::as_str).collect::<Vec<_>>(),
@@ -11212,24 +11216,10 @@ pub(crate) mod tests {
     fn herd_daily_trace(fed: bool) -> (String, [[u64; 6]; 3]) {
         use std::fmt::Write as _;
 
-        // Keep the accepted herd witness on its original goods and methods; fuel has separate coverage.
-        let mut rules = shipped_rules();
-        rules
-            .goods
-            .retain(|good| good.id != "hardwood" && good.id != "peat");
-        for id in ["hardwood", "peat"] {
-            rules.seasons.remove(id);
-            for values in rules.suitability.values_mut() {
-                values.remove(id);
-            }
-        }
-        for building in &mut rules.buildings {
-            building.methods.retain(|method| method.serves != "fuel");
-        }
+        let rules = shipped_rules();
+        assert_eq!(rules.herd_species.len(), 4);
+        assert_eq!(rules.herd_species[3].animal, "horses");
         let mut state = shipped_production_fixture(&rules);
-        state.places[0].buildings[0].method_levels.truncate(2);
-        state.places[0].buildings[0].production_carries.truncate(2);
-        state.places[0].buildings[0].method_suitability.truncate(2);
         let place = &mut state.places[0];
         place.prices_milli = rules
             .goods
@@ -11264,11 +11254,11 @@ pub(crate) mod tests {
         let farm = place.buildings[0].clone();
         let holdings = &mut place.buildings[1];
         holdings.method_levels = vec![1, 0];
-        holdings.herds = vec![9, 6, 5];
-        holdings.herd_birth_carries = vec![0; 3];
-        holdings.herd_death_carries = vec![0; 3];
+        holdings.herds = vec![9, 6, 5, 0];
+        holdings.herd_birth_carries = vec![0; 4];
+        holdings.herd_death_carries = vec![0; 4];
         holdings.herd_product_carries = vec![0; 2];
-        holdings.herd_grazing_sums = vec![1000, 400, 1000];
+        holdings.herd_grazing_sums = vec![1000, 400, 1000, 1000];
         let mut demesne = farm;
         demesne.kind = "demesne".to_owned();
         demesne.method_levels = vec![1];
@@ -11341,15 +11331,57 @@ pub(crate) mod tests {
                     }
                     let ledger = run_daily_economy(&rules, &mut state, date).unwrap();
                     let place = &state.places[0];
-                    let herds: Vec<_> = place.buildings.iter().map(|b| &b.herds).collect();
-                    let stocks: Vec<_> = place.buildings.iter().map(|b| &b.stock).collect();
-                    let pop_stocks: Vec<_> = place.pops.iter().map(|p| &p.stock).collect();
+                    // The accepted literals predate horses and fuel goods. Project the added species and goods
+                    // from the output, while the full shipped rules and state drive the simulation.
+                    let goods = rules.goods.len() - 3;
+                    assert_eq!(
+                        rules.goods[goods..]
+                            .iter()
+                            .map(|g| g.id.as_str())
+                            .collect::<Vec<_>>(),
+                        ["hardwood", "peat", "horses"]
+                    );
+                    let herds: Vec<_> = place
+                        .buildings
+                        .iter()
+                        .map(|b| &b.herds[..b.herds.len().min(3)])
+                        .collect();
+                    let stocks: Vec<_> =
+                        place.buildings.iter().map(|b| &b.stock[..goods]).collect();
+                    let pop_stocks: Vec<_> = place.pops.iter().map(|p| &p.stock[..goods]).collect();
                     let wages: Vec<_> = place
                         .buildings
                         .iter()
-                        .map(|b| (&b.wage_carries, &b.pay_carries, &b.wage_history))
+                        .map(|b| {
+                            (
+                                &b.wage_carries[..goods],
+                                &b.pay_carries[..goods],
+                                &b.wage_history,
+                            )
+                        })
                         .collect();
-                    writeln!(trace, "{year}-{month:02}-{day:02} {herds:?} {:?} {:?} {:?} {:?} {stocks:?} {pop_stocks:?} {wages:?} {wage_units:?} {:?} {:?}", ledger.herd_births, ledger.herd_deaths, ledger.herd_slaughter, ledger.produced, place.prices_milli, ledger.daily_consumption).unwrap();
+                    let wage_units: Vec<_> = wage_units.iter().map(|w| &w[..goods]).collect();
+                    let mut consumption = ledger.daily_consumption.clone();
+                    if let Some(d) = &mut consumption {
+                        for v in [
+                            &mut d.stock_before,
+                            &mut d.butchered,
+                            &mut d.opened,
+                            &mut d.ticked,
+                            &mut d.lost,
+                            &mut d.stock_after,
+                        ] {
+                            v.truncate(goods);
+                        }
+                        for v in [
+                            &mut d.herds_before,
+                            &mut d.herd_slaughter,
+                            &mut d.herds_after,
+                        ] {
+                            v.truncate(3);
+                        }
+                    }
+                    writeln!(trace, "{year}-{month:02}-{day:02} {herds:?} {:?} {:?} {:?} {:?} {stocks:?} {pop_stocks:?} {wages:?} {wage_units:?} {:?} {:?}", &ledger.herd_births[..3], &ledger.herd_deaths[..3], &ledger.herd_slaughter[..3], &ledger.produced[..goods], &place.prices_milli[..goods], consumption).unwrap();
                 }
             }
         }
@@ -11441,6 +11473,7 @@ pub(crate) mod tests {
             ("cattle", &["herd"][..]),
             ("pigs", &["herd"][..]),
             ("sheep", &["herd"][..]),
+            ("horses", &["herd"][..]),
         ]);
         for good in &rules.goods {
             let expected_tags = expected.get(good.id.as_str()).copied().unwrap_or_default();
@@ -14417,9 +14450,20 @@ pub(crate) mod tests {
             .unwrap()
     }
 
+    fn without_horses(mut rules: Rules) -> Rules {
+        rules.herd_species.retain(|s| s.animal != "horses");
+        for building in &mut rules.buildings {
+            building.herds.remove("horses");
+        }
+        for grazing in rules.grazing.values_mut() {
+            grazing.remove("horses");
+        }
+        rules
+    }
+
     #[test]
     fn fourth_species_runs_its_lifecycle_and_ledger() {
-        let mut rules = shipped_rules();
+        let mut rules = without_horses(shipped_rules());
         let mut goat = rules
             .goods
             .iter()
@@ -14543,7 +14587,7 @@ pub(crate) mod tests {
         let mut state = shipped_production_fixture(&rules);
         let dairy = good_at(&rules, "dairy");
         let farm = &mut state.places[0].buildings[0];
-        farm.herds = vec![0, 0, 1];
+        farm.herds = vec![0, 0, 1, 0];
         farm.method_suitability[0][dairy] = 700;
         let mut total = 0;
         let mut wool = 0;
@@ -14583,7 +14627,7 @@ pub(crate) mod tests {
             645
         );
         let mut with_cattle = shipped_production_fixture(&rules);
-        with_cattle.places[0].buildings[0].herds = vec![1, 0, 1];
+        with_cattle.places[0].buildings[0].herds = vec![1, 0, 1, 0];
         let january = run_monthly_production(
             &rules,
             &mut with_cattle,
@@ -14600,7 +14644,7 @@ pub(crate) mod tests {
 
     #[test]
     fn emergency_priority_skips_hide_only_species_before_pigs_and_cattle() {
-        let mut rules = shipped_rules();
+        let mut rules = without_horses(shipped_rules());
         let mut goat = rules
             .goods
             .iter()
@@ -14656,7 +14700,7 @@ pub(crate) mod tests {
 
     #[test]
     fn herd_products_keep_separate_carries_and_fractional_wool() {
-        let mut rules = shipped_rules();
+        let mut rules = without_horses(shipped_rules());
         for species in &mut rules.herd_species {
             species.births_pm_year = 0;
             species.deaths_pm_year = 0;
@@ -14735,7 +14779,7 @@ pub(crate) mod tests {
 
     #[test]
     fn new_species_product_uses_the_herd_startup_estimate() {
-        let mut rules = shipped_rules();
+        let mut rules = without_horses(shipped_rules());
         let mut goat = rules
             .goods
             .iter()
@@ -14794,7 +14838,7 @@ pub(crate) mod tests {
         uninterrupted.places[0].buildings[0].herd_product_carries[0] = 123_456;
         let bytes = uninterrupted.to_bytes().unwrap();
         let mut loaded = EconomyState::from_bytes(&bytes).unwrap();
-        assert_eq!(loaded.places[0].buildings[0].herds, [9, 6, 5]);
+        assert_eq!(loaded.places[0].buildings[0].herds, [9, 6, 5, 0]);
         assert_eq!(
             loaded.places[0].buildings[0].herd_product_carries[0],
             123_456
@@ -14950,8 +14994,129 @@ pub(crate) mod tests {
                         month: Some(6)
                     }]
                 },
+                HerdSpecies {
+                    animal: "horses".into(),
+                    births_pm_year: 300,
+                    deaths_pm_year: 60,
+                    emergency_order: 3,
+                    yields: vec![HerdYield {
+                        good: "hides".into(),
+                        units: 1
+                    }],
+                    products: Vec::new(),
+                },
             ]
         );
+    }
+
+    #[test]
+    fn shipped_horses_start_only_at_the_demesne() {
+        let rules = shipped_rules();
+        let horse = rules.goods.iter().find(|g| g.id == "horses").unwrap();
+        assert_eq!(
+            (
+                horse.unit.as_str(),
+                horse.weight_g,
+                horse.volume_ml,
+                horse.base_price
+            ),
+            ("head", 400_000, 0, 6_000)
+        );
+        assert_eq!(
+            (
+                horse.hunger_centi,
+                horse.necessities_centi,
+                horse.niceties_centi,
+                horse.luxuries_centi
+            ),
+            (0, 0, 0, 0)
+        );
+        for (terrain, expected) in [
+            ("pasture", 1000),
+            ("marsh", 500),
+            ("forest", 300),
+            ("bog", 300),
+            ("mountain", 300),
+        ] {
+            assert_eq!(rules.grazing[terrain]["horses"], expected);
+        }
+        for name in ["farm", "holdings", "demesne"] {
+            let building = rules.buildings.iter().find(|b| b.id == name).unwrap();
+            if name == "demesne" {
+                assert_eq!(building.herds["horses"].maximum, 3);
+                assert_eq!(herd_counts(&rules, &[2], building).unwrap()[3], 4);
+            } else {
+                assert!(!building.herds.contains_key("horses"));
+            }
+        }
+    }
+
+    #[test]
+    fn horses_breed_die_and_the_surplus_yields_hides() {
+        let rules = shipped_rules();
+        let mut state = shipped_production_fixture(&rules);
+        let building = &mut state.places[0].buildings[0];
+        building.kind = "demesne".into();
+        building.levels = 2;
+        building.method_levels = vec![2];
+        building.production_carries.truncate(1);
+        building.method_suitability.truncate(1);
+        building.herds = vec![0, 0, 0, 4];
+        let mut totals = [0, 0, 0, 0];
+        for year in 768..788 {
+            for month in 1..=12 {
+                let ledger = run_monthly_production(
+                    &rules,
+                    &mut state,
+                    Date {
+                        year,
+                        month,
+                        day: 1,
+                        hour: 12,
+                    },
+                )
+                .unwrap();
+                totals[0] += ledger.herd_births[3];
+                totals[1] += ledger.herd_deaths[3];
+                totals[2] += ledger.herd_slaughter[3];
+                totals[3] += ledger.produced[good_at(&rules, "hides")];
+            }
+        }
+        assert_eq!(
+            (state.places[0].buildings[0].herds[3], totals),
+            (6, [16, 6, 8, 8])
+        );
+    }
+
+    #[test]
+    fn starving_demesne_never_butchers_horses_even_when_floor_is_waived() {
+        let rules = shipped_rules();
+        for (necessities, expected_herds, expected_slaughter) in [
+            (400, [4, 4, 4, 6], [20, 12, 10, 0]),
+            (200, [0, 0, 0, 6], [24, 16, 14, 0]),
+        ] {
+            let mut state = shipped_production_fixture(&rules);
+            let place = &mut state.places[0];
+            let building = &mut place.buildings[0];
+            building.kind = "demesne".into();
+            building.levels = 2;
+            building.method_levels = vec![2];
+            building.herds = vec![24, 16, 14, 6];
+            place.pops[0].workers = 100_000;
+            place.pops[0].consumption.necessities_pm = necessities;
+            place.pops[0].consumption.pantry_hunger_centi = vec![0; rules.goods.len()];
+            let mut ledger = DailyConsumptionLedger {
+                butchered: vec![0; rules.goods.len()],
+                lost: vec![0; rules.goods.len()],
+                herd_slaughter: vec![0; rules.herd_species.len()],
+                ..DailyConsumptionLedger::default()
+            };
+            let threshold = u128::MAX;
+            butcher_emergency(&rules, place, 0, threshold, &mut ledger).unwrap();
+            assert!(held_hunger(&rules, &place.pops[0]).unwrap() < threshold);
+            assert_eq!(place.buildings[0].herds, expected_herds);
+            assert_eq!(ledger.herd_slaughter, expected_slaughter);
+        }
     }
 
     #[test]
@@ -14963,7 +15128,7 @@ pub(crate) mod tests {
                 .iter()
                 .map(|s| s.animal.as_str())
                 .collect::<Vec<_>>(),
-            ["cattle", "pigs", "sheep"]
+            ["cattle", "pigs", "sheep", "horses"]
         );
         for name in ["farm", "holdings", "demesne"] {
             let b = rules.buildings.iter().find(|b| b.id == name).unwrap();
@@ -16244,7 +16409,7 @@ pub(crate) mod tests {
             },
         )
         .unwrap();
-        assert_eq!(ledger.herd_births, [1, 0, 0]);
+        assert_eq!(ledger.herd_births, [1, 0, 0, 0]);
         let fish = rules
             .goods
             .iter()

@@ -36,6 +36,13 @@ emergency_order=1
 yields=[{good="mutton", units=33}]
 products=[{good="wool", amount_milli=1500, month=6}]
 
+[[herd_species]]
+animal="horses"
+births_pm_year=300
+deaths_pm_year=60
+emergency_order=3
+yields=[{good="hides", units=1}]
+
 [footprint_m2]
 farm = 2000
 holdings = 4000
@@ -386,6 +393,19 @@ luxuries_centi=0
 base_price=6
 pop_limit_milli=40000
 
+[[goods]]
+id="horses"
+tags=["herd"]
+unit="head"
+weight_g=400000
+volume_ml=0
+hunger_centi=0
+necessities_centi=0
+niceties_centi=0
+luxuries_centi=0
+base_price=6000
+pop_limit_milli=0
+
 [[pop_types]]
 id="peasant"
 dependent_pm=400
@@ -498,7 +518,7 @@ score_share_pm={ fish=800, seabirds=150, vegetables=30, herbs=20 }
 # jobs (one owner covers 10 of them) and `owner_kind` names the pop type that owns: one noble covers 10 labourers.
 [[buildings]]
 id="demesne"
-herds={ cattle={maximum=12}, pigs={maximum=8}, sheep={maximum=7} }
+herds={ cattle={maximum=12}, pigs={maximum=8}, sheep={maximum=7}, horses={maximum=3} }
 workers_per_level=10
 land_per_level=2
 owner_workers={ labourer=10 }
@@ -669,22 +689,27 @@ sheep=0
 pigs=0
 sea=1000
 [grazing.pasture]
+horses=1000
 cattle=1000
 sheep=1000
 pigs=400
 [grazing.forest]
+horses=300
 cattle=300
 sheep=300
 pigs=1000
 [grazing.bog]
+horses=300
 cattle=400
 sheep=400
 pigs=200
 [grazing.marsh]
+horses=500
 cattle=600
 sheep=600
 pigs=300
 [grazing.mountain]
+horses=300
 cattle=200
 sheep=500
 pigs=100

@@ -1080,3 +1080,53 @@ fn ledger_pop_row_explains_its_kind_and_uses_its_size_and_place_cells() {
         "the place cell explains the place: {captured:?}"
     );
 }
+
+#[test]
+fn demesne_horse_icon_shows_its_glossary_explanation() {
+    let mut rig = rig(&[r"VIEWS[1].cards.buildings[1].kind = 'demesne'
+VIEWS[1].cards.buildings[1].herds = {
+  {species='cattle', head=16, maximum=24}, {species='pigs', head=10, maximum=16},
+  {species='sheep', head=9, maximum=14}, {species='horses', head=4, maximum=6},
+}
+time(1, 1); select_place('cards', 'Cards'); tabs_by_title.Cards:select('buildings', true)
+local text = require('lib.text'); local real_set = text.set
+text.set = function(line, value) real_set(line, value); if capture_tooltips then note('horse_tip ' .. value) end end
+capture_tooltips = true
+look_buttons.rows.on_click(); card_object.items[2].on_click()
+local row = card_object.items[2]
+local content, part = row.tooltip(20, 78)
+note('horse_source ' .. content.title .. ' ' .. tostring(part))
+local P = require('lib.ui').P
+local left = card_object.origin_x + card_object.x
+local top = card_object.origin_y + card_object.y + card_object.tops[2]
+note(string.format('horse_point %g %g', left + 20 * P, top + 78 * P))"]);
+    rig.opened();
+    let point = point_note(&rig, "horse_point ");
+    rig.feed(&[PointerEvent::Move(points(point.0, point.1))]);
+    for _ in 0..22 {
+        rig.deliver_fixture_frame_at(1800, 900, 2);
+    }
+    let seen = notes(&rig);
+    assert!(
+        seen.iter()
+            .any(|s| s.contains("goodsquad ui/goods/horses.png")),
+        "{seen:?}"
+    );
+    assert!(
+        seen.iter().any(|s| s == "horse_source horses horses"),
+        "{seen:?}"
+    );
+    assert!(seen.iter().any(|s| s == "horse_tip horses"), "{seen:?}");
+    let words = seen
+        .iter()
+        .filter_map(|s| s.strip_prefix("horse_tip "))
+        .collect::<String>();
+    assert!(
+        words.contains("Live horses, bred at the nobles' demesne."),
+        "{words:?}"
+    );
+    assert!(
+        seen.iter().any(|s| s.contains("4 / 6")),
+        "horse count: {seen:?}"
+    );
+}

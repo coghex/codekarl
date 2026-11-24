@@ -530,7 +530,7 @@ note('after_all ' .. #panel_shown)",
         pnote(&rig, "pbar_filter_rect "),
         format!("pbar_filter_rect {} {} 26 30", width - 58, height - 34)
     );
-    assert_eq!(pnote(&rig, "goods "), "goods 26");
+    assert_eq!(pnote(&rig, "goods "), "goods 27");
     assert_eq!(pnote(&rig, "untagged "), "untagged herbs,beeswax");
     assert_eq!(
         pnote(&rig, "pcount "),
@@ -546,12 +546,15 @@ note('after_all ' .. #panel_shown)",
     );
     ppick_click(&mut rig, "herd");
     rig.opened();
-    assert_eq!(pnote(&rig, "herd_order "), "herd_order cattle,pigs,sheep");
-    assert_eq!(pnote(&rig, "pcount "), "pcount 3 of 26");
+    assert_eq!(
+        pnote(&rig, "herd_order "),
+        "herd_order cattle,pigs,sheep,horses"
+    );
+    assert_eq!(pnote(&rig, "pcount "), "pcount 4 of 27");
     assert_eq!(pnote(&rig, "figures_same "), "figures_same true");
     rig.opened();
     assert_eq!(pnote(&rig, "untagged_in_filters "), "untagged_in_filters 0");
-    assert_eq!(pnote(&rig, "after_all "), "after_all 26");
+    assert_eq!(pnote(&rig, "after_all "), "after_all 27");
     assert_eq!(
         pnote(&rig, "fabric_order "),
         "fabric_order hemp,hides,linen"

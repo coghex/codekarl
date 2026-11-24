@@ -833,7 +833,7 @@ mod tests {
                     kind: "farm".to_owned(),
                     levels: 3,
                     method_levels: vec![3, 0],
-                    herds: vec![27, 18, 15],
+                    herds: vec![27, 18, 15, 0],
                     employment: vec![Employment {
                         owners: 10,
                         workers: 25,
@@ -842,10 +842,10 @@ mod tests {
                     storehouse_accounts: None,
                     production_carries: vec![vec![0; goods]; 2],
                     method_suitability: vec![vec![0; goods]; 2],
-                    herd_birth_carries: vec![0; 3],
-                    herd_death_carries: vec![0; 3],
+                    herd_birth_carries: vec![0; 4],
+                    herd_death_carries: vec![0; 4],
                     herd_product_carries: vec![0; 2],
-                    herd_grazing_sums: vec![0; 3],
+                    herd_grazing_sums: vec![0; 4],
                     wage_carries: vec![0; goods],
                     pay_carries: vec![0; goods],
                     fee_carries: Vec::new(),
@@ -1111,15 +1111,15 @@ mod tests {
         holdings.kind = "holdings".to_owned();
         holdings.levels = 1;
         holdings.method_levels = vec![1, 0];
-        holdings.herds = vec![0; 3];
+        holdings.herds = vec![0; 4];
         holdings.employment.clear();
         holdings.stock = vec![0; goods];
         holdings.production_carries = vec![vec![0; goods]; 2];
         holdings.method_suitability = vec![vec![0; goods]; 2];
-        holdings.herd_birth_carries = vec![0; 3];
-        holdings.herd_death_carries = vec![0; 3];
+        holdings.herd_birth_carries = vec![0; 4];
+        holdings.herd_death_carries = vec![0; 4];
         holdings.herd_product_carries = vec![0; 2];
-        holdings.herd_grazing_sums = vec![0; 3];
+        holdings.herd_grazing_sums = vec![0; 4];
         holdings.wage_carries = vec![0; goods];
         holdings.pay_carries = vec![0; goods];
         holdings.fee_carries.clear();
@@ -1978,7 +1978,7 @@ mod tests {
         let mut place = fixture(&rules);
         let farm = &mut place.buildings[0];
         farm.method_levels = vec![1, 0];
-        farm.herds = vec![0, 0, 3, 2];
+        farm.herds = vec![0, 0, 3, 0, 2];
         farm.method_suitability[0][index_of(&rules, "dairy")] = 700;
         farm.method_suitability[0][index_of(&rules, "oats")] = 1000;
         let view = building_view(&rules, farm, 0, test_date());
@@ -2002,7 +2002,7 @@ mod tests {
         assert_eq!(projected_yield(&rules, farm, 550), 602 * dairy + 5 * oats);
         let mut holdings = farm.clone();
         holdings.kind = "holdings".into();
-        holdings.herds = vec![4, 0, 0, 0];
+        holdings.herds = vec![4, 0, 0, 0, 0];
         let other = building_view(&rules, &holdings, 0, test_date());
         assert_eq!(
             other.herds[0],
