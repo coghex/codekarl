@@ -1662,6 +1662,64 @@ mod stretch_save_tests {
         }
     }
 
+    /// A new game of the shipped scenario, as the game starts it.
+    fn shipped_start(dir: &Path, load: Option<&Path>) -> Prepared {
+        let game = GameConfig {
+            scenario: Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../assets/scenarios/ireland-768"),
+            saves: dir.join("saves"),
+        };
+        prepare(
+            &Request {
+                game: &game,
+                vms: &[],
+                load,
+                seed: if load.is_some() { None } else { Some(42) },
+            },
+            || Ok(42),
+            &mut |_, _| {},
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_new_shipped_game_saved_at_11_and_at_13_on_its_first_day_matches_the_unbroken_game() {
+        // The economy is the opening levels the start rule chose (CK-404). Each save is of a fresh game stepped to its hour of the
+        // first day, so the 13:00 save is the one straight after the first noon tick, not the second noon.
+        let dir = crate::testing::Dir::new();
+        let path = super::super::saves::quicksave_path(&dir.0.join("saves"));
+        let first = shipped_start(&dir.0, None).simulation.date().unwrap();
+        for hour in [11, 13] {
+            let mut prepared = shipped_start(&dir.0, None);
+            assert!(
+                !prepared.simulation.state().economy.places.is_empty(),
+                "the start has populated the economy"
+            );
+            while prepared.simulation.date().unwrap().hour != hour {
+                prepared.simulation.step().unwrap();
+            }
+            assert_eq!(
+                prepared.simulation.date().unwrap(),
+                Date { hour, ..first },
+                "the save is on the first day"
+            );
+            let state = prepared.simulation.state().stretches.clone();
+            let digest = save_with(&prepared, &path, state);
+            let mut loaded = shipped_start(&dir.0, Some(&path));
+            assert_eq!(loaded.simulation.digest().unwrap(), digest);
+            // Through the following noon: an exchange missed after the 11:00 load, or made twice after the 13:00 load, would differ.
+            for _ in 0..24 {
+                prepared.simulation.step().unwrap();
+                loaded.simulation.step().unwrap();
+            }
+            assert_eq!(
+                loaded.simulation.digest().unwrap(),
+                prepared.simulation.digest().unwrap(),
+                "saved at {hour}:00"
+            );
+        }
+    }
+
     #[test]
     fn shipped_network_initializes_every_stretch_and_exactly_the_five_roads() {
         let dir = crate::testing::Dir::new();

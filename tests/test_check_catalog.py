@@ -2746,6 +2746,12 @@ GUARDS: tuple[Guard, ...] = (
         "economy.core",
         ("assets/game/economy.toml", "assets/scenarios/ireland-768/economy.toml"),
     ),
+    # CK-404: the start-by-need tests check that the shipped rules name no fuel need or fuel method yet.
+    Guard(
+        "crates/economy/src/start_levels_tests.rs",
+        "economy.core",
+        ("assets/game/economy.toml",),
+    ),
     Guard(
         "apps/codekarl/src/readout_tests.rs",
         "rust.app",
