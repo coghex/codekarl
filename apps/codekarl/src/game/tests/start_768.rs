@@ -138,6 +138,21 @@ fn shipped_herds_start_at_two_thirds_of_their_maximum() {
 }
 
 #[test]
+fn shipped_start_has_no_fuel_levels_before_the_fuel_need() {
+    let directory = assets().join("scenarios/ireland-768");
+    let scenario = ck_map::load_scenario(&directory).unwrap();
+    let (economy, _) = starting_economy(&assets(), &directory, &scenario).unwrap();
+    for place in &economy.places {
+        for building in &place.buildings {
+            if building.kind == "farm" {
+                assert_eq!(&building.method_levels[2..], &[0, 0], "{}", place.id);
+                assert_eq!(building.method_levels.iter().sum::<u32>(), building.levels);
+            }
+        }
+    }
+}
+
+#[test]
 fn the_shipped_figures_join_the_scenarios_places_and_pops_before_any_generation() {
     let directory = assets().join("scenarios/ireland-768");
     let scenario = ck_map::load_scenario(&directory).unwrap();

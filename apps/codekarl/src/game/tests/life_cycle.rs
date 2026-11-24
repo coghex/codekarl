@@ -196,6 +196,58 @@ impl Drop for Game {
     }
 }
 
+#[test]
+fn fuel_levels_and_stacks_survive_saves_before_and_after_noon() {
+    let (rules, initial) = start();
+    let mut economy = initial.clone();
+    let hardwood = rules.goods.iter().position(|g| g.id == "hardwood").unwrap();
+    let peat = rules.goods.iter().position(|g| g.id == "peat").unwrap();
+    let place = economy
+        .places
+        .iter_mut()
+        .find(|place| {
+            place
+                .buildings
+                .iter()
+                .any(|b| b.kind == "farm" && b.levels >= 2)
+                && !place.pops.is_empty()
+        })
+        .unwrap();
+    let farm = place
+        .buildings
+        .iter_mut()
+        .find(|b| b.kind == "farm")
+        .unwrap();
+    farm.method_levels.fill(0);
+    farm.method_levels[0] = farm.levels - 2;
+    farm.method_levels[2] = 1;
+    farm.method_levels[3] = 1;
+    farm.stock[hardwood] = 1;
+    place.pops[0].stock[peat] = 1;
+    let mut game = Game::with_economy(
+        rules.clone(),
+        economy,
+        vec![],
+        at(768, 1, 1, 11),
+        "fuel-save",
+    );
+    let identity = super::identity("aa");
+    for after_noon in [false, true] {
+        if after_noon {
+            assert!(game.through(noon(768, 1, 1)).is_empty());
+        }
+        let digest = game.simulation.digest().unwrap();
+        let bytes = game.simulation.save(identity.meta(42)).to_bytes().unwrap();
+        let loaded = ck_sim::Save::<GameState>::from_bytes(&bytes, &identity.expected()).unwrap();
+        assert_eq!(loaded.digest().unwrap(), digest);
+        let actual = &game.simulation.state().economy.places;
+        for (saved, live) in loaded.state.economy.places.iter().zip(actual) {
+            assert_eq!(saved.buildings, live.buildings);
+            assert_eq!(saved.pops, live.pops);
+        }
+    }
+}
+
 fn noon(year: u16, month: u8, day: u8) -> Date {
     date(year, month, day, crate::game::core::ECONOMY_HOUR)
 }

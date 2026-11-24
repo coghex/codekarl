@@ -293,7 +293,11 @@ fn volume_ml(rules: &Rules, stock: &[u64]) -> u64 {
         .iter()
         .zip(stock)
         .fold(0_u64, |sum, (good, units)| {
-            sum.saturating_add(units.saturating_mul(good.volume_ml))
+            sum.saturating_add(units.saturating_mul(if good.stacked_outside {
+                0
+            } else {
+                good.volume_ml
+            }))
         })
 }
 
@@ -414,14 +418,14 @@ fn projected_yield(rules: &Rules, building: &BuildingState, mean_fertility_pm: u
                 .and_then(|row| row.get(good_index))
                 .copied()
                 .unwrap_or(0);
-            let (fertility, fertility_reference) = if method.resource == "sea" {
+            let (fertility, fertility_reference) = if method.resource == "usable_land" {
                 (
-                    u128::from(rules.fertility_reference_pm),
+                    u128::from(mean_fertility_pm),
                     u128::from(rules.fertility_reference_pm),
                 )
             } else {
                 (
-                    u128::from(mean_fertility_pm),
+                    u128::from(rules.fertility_reference_pm),
                     u128::from(rules.fertility_reference_pm),
                 )
             };
@@ -727,7 +731,7 @@ fn place_view(
                         .methods
                         .iter()
                         .zip(&building.method_levels)
-                        .filter(|(method, _)| method.resource != "sea")
+                        .filter(|(method, _)| method.resource == "usable_land")
                         .fold(0_u64, |levels, (_, count)| {
                             levels.saturating_add(u64::from(*count))
                         });
@@ -1712,6 +1716,36 @@ mod tests {
         assert_eq!(
             view_for_place(&rules, invalid_worker_total).buildings[0].store_capacity_ml,
             0
+        );
+    }
+
+    #[test]
+    fn fuel_stacks_do_not_change_displayed_storage_or_field_room() {
+        let rules = shipped_rules();
+        let plain = fixture(&rules);
+        let before = view_for_place(&rules, plain.clone());
+        let mut with_fuel = plain.clone();
+        let hardwood = index_of(&rules, "hardwood");
+        let peat = index_of(&rules, "peat");
+        assert_eq!(
+            (rules.goods[hardwood].volume_ml, rules.goods[peat].volume_ml),
+            (100_000, 150_000)
+        );
+        with_fuel.pops[0].stock[hardwood] = 20;
+        with_fuel.buildings[0].stock[peat] = 30;
+        let after = view_for_place(&rules, with_fuel);
+        assert_eq!(before.storage_used_ml, after.storage_used_ml);
+        assert_eq!(
+            before.buildings[0].store_used_ml,
+            after.buildings[0].store_used_ml
+        );
+        let mut field_only = plain.clone();
+        field_only.buildings[0].method_levels = vec![1, 0, 0, 0];
+        let mut with_fuel_levels = field_only.clone();
+        with_fuel_levels.buildings[0].method_levels = vec![1, 0, 1, 1];
+        assert_eq!(
+            field_room_for(&rules, field_only),
+            field_room_for(&rules, with_fuel_levels)
         );
     }
 

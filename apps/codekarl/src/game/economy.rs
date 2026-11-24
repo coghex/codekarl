@@ -192,6 +192,40 @@ mod tests {
     }
 
     #[test]
+    fn shipped_start_assigns_all_levels_and_fuel_only_to_farms() {
+        let assets = ireland_assets();
+        let directory = assets.join("scenarios/ireland-768");
+        let scenario = ck_map::load_scenario(&directory).unwrap();
+        let rules = Rules::load(assets.join("game/economy.toml")).unwrap();
+        let (state, _) = starting_economy(&assets, &directory, &scenario).unwrap();
+        for place in &state.places {
+            for building in &place.buildings {
+                if building.kind == "storehouse" {
+                    continue;
+                }
+                let definition = rules
+                    .buildings
+                    .iter()
+                    .find(|b| b.id == building.kind)
+                    .unwrap();
+                assert_eq!(
+                    building.levels,
+                    building.method_levels.iter().sum(),
+                    "{} {}",
+                    place.id,
+                    building.kind
+                );
+                for (method, count) in definition.methods.iter().zip(&building.method_levels) {
+                    if ["forest", "bog"].contains(&method.resource.as_str()) {
+                        assert_eq!(building.kind, "farm");
+                        assert_eq!(*count, 0, "{} {}", place.id, method.id);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn the_shipped_start_places_every_level_on_a_method_and_keeps_armaghs_demesne() {
         let assets = ireland_assets();
         let directory = assets.join("scenarios/ireland-768");
@@ -425,7 +459,7 @@ mod tests {
         assert_eq!(
             report,
             [
-                "glendalough farm: cut levels 30 -> 28 (no method has enough land or sea)",
+                "glendalough farm: cut levels 30 -> 28 (a method has room, but none serves food or an unmet need)",
                 "killeany starts over building cap: footprint 50400 m², prepared 70400 m², max_buildable 47600 m²",
                 "tory starts over building cap: footprint 24200 m², prepared 44200 m², max_buildable 23600 m²",
                 "rechru starts over building cap: footprint 50400 m², prepared 70400 m², max_buildable 24050 m²",

@@ -796,6 +796,35 @@ fn run_map_selection_fixture_vm(markers: &std::path::Path) {
             .all(|message| !matches!(message, crate::game::core::Message::MarkUnsaved)),
         "map scrolling and window open, raise, move, and close are navigation"
     );
+    drop(rig);
+    std::fs::remove_file(markers.join("drag-verified")).unwrap();
+    let mut control = Rig::new_fixture_body(map_selection_fixture::body());
+    open_map_selection_fixture(&mut control, markers);
+    select_fixture_place(&mut control, markers);
+    std::fs::write(markers.join("map-marker-drag-injected"), "x").unwrap();
+    let x = f64::from(control.map_pointer.x) / 256.0;
+    let y = f64::from(control.map_pointer.y) / 256.0;
+    let before = crate::map_app::lock(&control.map).selection().unwrap().seq;
+    control.feed(&[down(x, y)]);
+    control.feed(&[up(x, y), PointerEvent::Move(points(10.0, 10.0))]);
+    assert_eq!(
+        crate::map_app::lock(&control.map).selection().unwrap().seq,
+        before + 1,
+        "the release selected before the barrier frame"
+    );
+    control.deliver_fixture_frame();
+    assert!(
+        !markers.join("drag-verified").exists(),
+        "selection remains pending at the barrier frame"
+    );
+    control.sequence += 1;
+    control.link.post(update(control.sequence)).unwrap();
+    let result = answer(&mut control.link).answer;
+    assert!(
+        matches!(result, Answer::Failed { .. }),
+        "late selection must fail: {result:?}"
+    );
+    assert!(!markers.join("drag-verified").exists());
 }
 
 #[test]
@@ -1304,6 +1333,13 @@ fn select_fixture_place(rig: &mut Rig, markers: &std::path::Path) {
 
 fn verify_map_marker_drag(rig: &mut Rig, markers: &std::path::Path) {
     // The window driver observes that dragging a map marker opened nothing before opening Help.
+    std::fs::write(markers.join("map-marker-drag-injected"), "x")
+        .expect("the map drag stage marker");
+    rig.deliver_fixture_frame();
+    assert!(
+        !markers.join("drag-verified").exists(),
+        "the marker alone cannot prove the drag completed"
+    );
     let dragged = PointerPosition {
         x: rig.map_pointer.x + 20 * 256,
         y: rig.map_pointer.y + 10 * 256,
@@ -1313,12 +1349,26 @@ fn verify_map_marker_drag(rig: &mut Rig, markers: &std::path::Path) {
         f64::from(rig.map_pointer.y) / 256.0,
     )]);
     rig.feed(&[PointerEvent::Move(dragged)]);
+    rig.deliver_fixture_frame();
+    assert!(
+        !markers.join("drag-verified").exists(),
+        "the drag move cannot prove release was handled"
+    );
     rig.feed(&[up(
         f64::from(dragged.x) / 256.0,
         f64::from(dragged.y) / 256.0,
     )]);
-    std::fs::write(markers.join("map-marker-drag-injected"), "x")
-        .expect("the map drag stage reached the UI frame callback");
+    rig.deliver_fixture_frame();
+    assert!(
+        !markers.join("drag-verified").exists(),
+        "the fixture needs the post-release barrier"
+    );
+    rig.feed(&[PointerEvent::Move(points(10.0, 10.0))]);
+    rig.deliver_fixture_frame();
+    assert!(
+        !markers.join("drag-verified").exists(),
+        "the barrier frame precedes selection delivery"
+    );
     rig.deliver_fixture_frame();
     assert!(
         markers.join("drag-verified").is_file(),
@@ -1351,10 +1401,20 @@ fn open_and_raise_fixture_windows(rig: &mut Rig, markers: &std::path::Path) {
 fn move_fixture_place_window(rig: &mut Rig, markers: &std::path::Path) {
     std::fs::write(markers.join("title-drag-injected"), "x")
         .expect("the title drag stage reached the UI frame callback");
+    rig.deliver_fixture_frame();
+    assert!(
+        !markers.join("title-moved").exists(),
+        "the marker alone cannot prove the drag completed"
+    );
     // The place panel's title bar holds the tabs, the go-to button and the close button, and at its floor width nothing between them is
     // free: drag from the title bar's left end, before the first tab (CK-381).
     rig.feed(&[down(12.0, 75.0)]);
     rig.feed(&[PointerEvent::Move(points(42.0, 95.0))]);
+    rig.deliver_fixture_frame();
+    assert!(
+        !markers.join("title-moved").exists(),
+        "the move alone cannot prove the drag completed"
+    );
     rig.feed(&[up(42.0, 95.0)]);
     rig.deliver_fixture_frame();
     assert!(

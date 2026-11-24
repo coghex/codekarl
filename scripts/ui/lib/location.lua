@@ -52,7 +52,7 @@ end
 -- This list is deliberately fixed: an unlisted future good keeps its readable name without an asynchronous file lookup.
 local GOODS_WITH_ICONS = {
   "oats", "barley", "peas_beans", "vegetables", "apples", "dairy", "beef", "pork", "mutton", "fish", "seabirds",
-  "ale", "mead", "wine", "honey", "herbs", "wool", "beeswax", "hides", "linen", "hemp", "cattle", "pigs", "sheep",
+  "ale", "mead", "wine", "honey", "herbs", "wool", "beeswax", "hides", "linen", "hemp", "hardwood", "peat", "cattle", "pigs", "sheep",
 }
 local HAS_GOODS_ICON = {}
 for _, good in ipairs(GOODS_WITH_ICONS) do HAS_GOODS_ICON[good] = true end

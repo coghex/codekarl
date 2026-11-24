@@ -252,6 +252,29 @@ ART = {
         "T.......T",
         ".........",
     ],
+    # Original fuel icons drawn from plain pixel shapes; see docs/ui-art-provenance.md.
+    "hardwood": [
+        ".........",
+        ".bTTbTTb.",
+        "bTCCBTCCb",
+        "bTCCBTCCb",
+        ".bTTbTTb.",
+        "..bTTTb..",
+        ".bTCCCTb.",
+        ".bTCCCTb.",
+        "..bbbbb..",
+    ],
+    "peat": [
+        ".........",
+        "..bbbb...",
+        ".bttttb..",
+        ".bbbbbb..",
+        "bbbbb.bbb",
+        "btttbtttb",
+        "bbbbbbbbb",
+        ".bttbttb.",
+        ".bbbbbbb.",
+    ],
     # Original plain-shape cloth and rope, CK-392; see the provenance note.
     "linen": [
         ".........",

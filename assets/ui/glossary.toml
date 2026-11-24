@@ -320,6 +320,14 @@ text = "Cloth made from flax, produced by subsistence farms."
 title = "hemp"
 text = "Plant fibre made into rope and cloth, produced by subsistence farms."
 
+[term.hardwood]
+title = "raw hardwood"
+text = "Loads of wood cut in a farm's wood focus, used as fuel."
+
+[term.peat]
+title = "peat"
+text = "Turf cut from bogs by a farm, stacked for fuel."
+
 [term.cattle]
 title = "cattle"
 text = "Live cattle, kept for milk, meat and hides."
@@ -335,6 +343,14 @@ text = "Live sheep, kept for wool, milk and meat."
 [term.mixed_farming]
 title = "mixed farming"
 text = "A farming {method}: crops and animals together on the same land."
+
+[term.wood_focus]
+title = "wood focus"
+text = "A farm {method} cutting {hardwood} from nearby forest while keeping herds."
+
+[term.turf_cutting]
+title = "turf cutting"
+text = "A farm {method} cutting {peat} from nearby bog while keeping herds."
 
 [term.monastic_farming]
 title = "monastic farming"

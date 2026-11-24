@@ -36,6 +36,7 @@ fn good(id: &str, hunger: u32, niceties: u32, base_price: u64, fuel: bool) -> Go
         unit: "unit".to_owned(),
         weight_g: 1,
         volume_ml: 1,
+        stacked_outside: false,
         hunger_centi: hunger,
         necessities_centi: hunger,
         niceties_centi: niceties,
@@ -73,6 +74,7 @@ fn method(id: &str, resource: &str, serves: &str, outputs: &[(&str, u64)]) -> Me
     Method {
         id: id.to_owned(),
         resource: resource.to_owned(),
+        cells_per_level: None,
         annual_output,
         suitability: if land { "crops" } else { "sea" }.to_owned(),
         score_share_pm: BTreeMap::from([(outputs[0].0.to_owned(), 1000)]),
@@ -489,14 +491,14 @@ fn no_fuel_need_exists_until_data_names_one() {
             .iter()
             .all(|kind| kind.fuel_need_milli_day == 0)
     );
-    assert!(
-        shipped
-            .buildings
-            .iter()
-            .flat_map(|item| &item.methods)
-            .all(|item| item.serves == "food"),
-        "the shipped rules have no fuel method on this base"
-    );
+    let fuel_methods: Vec<_> = shipped
+        .buildings
+        .iter()
+        .flat_map(|b| &b.methods)
+        .filter(|m| m.serves == "fuel")
+        .map(|m| m.id.as_str())
+        .collect();
+    assert_eq!(fuel_methods, ["wood_focus", "turf_cutting"]);
 }
 
 #[test]

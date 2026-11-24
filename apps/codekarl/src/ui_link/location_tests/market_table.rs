@@ -487,7 +487,7 @@ note('untagged ' .. table.concat(untagged, ','))",
             "announce_ppicker()",
             "note_order('herd_order') announce_panel_bar('list') note('figures_same ' .. tostring(figures() == figures_before))",
             r"local missing = {}
-for _, tag in ipairs({'clothing', 'fabric', 'food', 'herd'}) do
+for _, tag in ipairs({'clothing', 'fabric', 'food', 'fuel', 'herd', 'wood'}) do
   panel_bar:clear()
   panel_bar:toggle(1, tag)
   for _, row in ipairs(panel_shown) do
@@ -501,6 +501,14 @@ local fabric = {}
 for _, row in ipairs(panel_shown) do fabric[#fabric + 1] = row.sort.name end
 table.sort(fabric)
 note('fabric_order ' .. table.concat(fabric, ','))
+for _, tag in ipairs({'fuel', 'wood'}) do
+  panel_bar:clear()
+  panel_bar:toggle(1, tag)
+  local names = {}
+  for _, row in ipairs(panel_shown) do names[#names + 1] = row.sort.name end
+  table.sort(names)
+  note(tag .. '_order ' .. table.concat(names, ','))
+end
 panel_bar:clear()
 note('after_all ' .. #panel_shown)",
             "announce_ppicker()",
@@ -522,7 +530,7 @@ note('after_all ' .. #panel_shown)",
         pnote(&rig, "pbar_filter_rect "),
         format!("pbar_filter_rect {} {} 26 30", width - 58, height - 34)
     );
-    assert_eq!(pnote(&rig, "goods "), "goods 24");
+    assert_eq!(pnote(&rig, "goods "), "goods 26");
     assert_eq!(pnote(&rig, "untagged "), "untagged herbs,beeswax");
     assert_eq!(
         pnote(&rig, "pcount "),
@@ -533,21 +541,23 @@ note('after_all ' .. #panel_shown)",
     rig.opened();
     assert_eq!(
         pnote(&rig, "ppicker "),
-        "ppicker filter clothing,fabric,food,herd",
+        "ppicker filter clothing,fabric,food,fuel,herd,wood",
         "the tags the goods carry, with no heading"
     );
     ppick_click(&mut rig, "herd");
     rig.opened();
     assert_eq!(pnote(&rig, "herd_order "), "herd_order cattle,pigs,sheep");
-    assert_eq!(pnote(&rig, "pcount "), "pcount 3 of 24");
+    assert_eq!(pnote(&rig, "pcount "), "pcount 3 of 26");
     assert_eq!(pnote(&rig, "figures_same "), "figures_same true");
     rig.opened();
     assert_eq!(pnote(&rig, "untagged_in_filters "), "untagged_in_filters 0");
-    assert_eq!(pnote(&rig, "after_all "), "after_all 24");
+    assert_eq!(pnote(&rig, "after_all "), "after_all 26");
     assert_eq!(
         pnote(&rig, "fabric_order "),
         "fabric_order hemp,hides,linen"
     );
+    assert_eq!(pnote(&rig, "fuel_order "), "fuel_order peat,raw hardwood");
+    assert_eq!(pnote(&rig, "wood_order "), "wood_order raw hardwood");
     pclick(&mut rig, "pbar_sort");
     rig.opened();
     assert_eq!(

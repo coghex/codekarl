@@ -73,6 +73,9 @@ pub struct Good {
     pub weight_g: u64,
     /// Cargo volume in millilitres per unit (zero for live herds).
     pub volume_ml: u64,
+    /// Excluded from indoor storage volume, while retaining its cargo volume.
+    #[serde(default)]
+    pub stacked_outside: bool,
     /// Hunger and tier values in hundredths of a person-day per unit.
     pub hunger_centi: u32,
     /// Needs value in hundredths of a person-day per unit.
@@ -144,6 +147,9 @@ pub struct Method {
     pub id: String,
     /// Maximum levels allowed by the resource this method consumes.
     pub resource: String,
+    /// Terrain cells required for a forest or bog level.
+    #[serde(default)]
+    pub cells_per_level: Option<u32>,
     /// Annual output by good at suitability 1000.
     pub annual_output: BTreeMap<String, u64>,
     /// Per-good suitability category, normally terrain or sea.
@@ -800,10 +806,19 @@ impl Rules {
                         ));
                     }
                 }
-                if !["usable_land", "sea"].contains(&method.resource.as_str()) {
+                if !["usable_land", "sea", "forest", "bog"].contains(&method.resource.as_str()) {
                     return Err(refuse(
                         format!("buildings[{index}].methods.{}.resource", method.id),
-                        "must be `usable_land` or `sea`".to_owned(),
+                        "must be `usable_land`, `sea`, `forest` or `bog`".to_owned(),
+                    ));
+                }
+                let terrain_resource = ["forest", "bog"].contains(&method.resource.as_str());
+                if (terrain_resource && method.cells_per_level.unwrap_or(0) == 0)
+                    || (!terrain_resource && method.cells_per_level.is_some())
+                {
+                    return Err(refuse(
+                        format!("buildings[{index}].methods.{}.cells_per_level", method.id),
+                        "forest and bog require positive cells per level; other resources must omit it".to_owned(),
                     ));
                 }
                 if ![FOOD_NEED, FUEL_NEED].contains(&method.serves.as_str()) {
@@ -2270,6 +2285,7 @@ fn level_candidates(
     land: &LandCounts,
     remaining_sea: u32,
     quality_pm: u16,
+    assigned: &[u32],
 ) -> Result<Vec<Candidate>, DataError> {
     let mut candidates = Vec::new();
     for (index, method) in building.methods.iter().enumerate() {
@@ -2278,6 +2294,13 @@ fn level_candidates(
                 continue;
             }
             None
+        } else if ["forest", "bog"].contains(&method.resource.as_str()) {
+            let cells = land.land_cells.get(&method.resource).copied().unwrap_or(0);
+            let needed = method.cells_per_level.unwrap_or(0);
+            if needed == 0 || assigned[index] >= cells / needed {
+                continue;
+            }
+            Some(method.resource.clone())
         } else {
             let Some(terrain) = choose_terrain(
                 rules,
@@ -2344,7 +2367,8 @@ fn assign_building_levels(
     let mut output = BTreeMap::<String, u64>::new();
     let mut cut_for_room = None;
     for _ in 0..wanted {
-        let candidates = level_candidates(rules, building, land, *remaining_sea, quality_pm)?;
+        let candidates =
+            level_candidates(rules, building, land, *remaining_sea, quality_pm, &assigned)?;
         let mut chosen = demand.choose(rules, building, &candidates, &assigned);
         let mut raised = None;
         if chosen.is_none() {
@@ -2409,7 +2433,8 @@ fn assign_building_levels(
         }
         if method.resource == "sea" {
             used_sea = used_sea.saturating_add(1);
-        } else if let Some(terrain) = terrain.as_ref() {
+        } else if method.resource == "usable_land" {
+            let terrain = terrain.as_ref().expect("land method has terrain");
             let fertility = land
                 .fertility_pm
                 .get_mut(terrain)
@@ -2459,7 +2484,7 @@ fn starting_method_output(
             )
         })?;
     let mut denominator = 1000_u128;
-    if method.resource != "sea" {
+    if method.resource == "usable_land" {
         numerator = numerator
             .checked_mul(u128::from(quality_pm))
             .ok_or_else(|| {
@@ -3935,7 +3960,9 @@ fn volume_used(rules: &Rules, stock: &[u64], group: Option<usize>) -> Result<u12
         .iter()
         .zip(stock)
         .try_fold(0_u128, |total, (good, units)| {
-            if group.is_some_and(|wanted| storehouse_group(&good.id) != Some(wanted)) {
+            if good.stacked_outside
+                || group.is_some_and(|wanted| storehouse_group(&good.id) != Some(wanted))
+            {
                 return Ok(total);
             }
             total
@@ -4051,7 +4078,7 @@ fn room_by_cap_and_volume(
     let cap_room = good_cap.saturating_sub(stored_good);
     let used_volume = volume_used(rules, stock, group)?;
     let volume_room = capacity_ml.saturating_sub(used_volume);
-    let by_volume = if good.volume_ml == 0 {
+    let by_volume = if good.stacked_outside || good.volume_ml == 0 {
         offered
     } else {
         u64::try_from((volume_room / u128::from(good.volume_ml)).min(u128::from(u64::MAX)))
@@ -5564,7 +5591,7 @@ fn butcher_emergency(
             .methods
             .iter()
             .zip(&building.method_levels)
-            .filter(|(method, _)| method.resource == "usable_land")
+            .filter(|(method, _)| method.resource != "sea")
             .map(|(_, levels)| *levels)
             .sum::<u32>();
         for &species in &species_order {
@@ -6306,7 +6333,7 @@ pub fn run_monthly_production_with_quality(
                     );
                     let suitability =
                         u128::from(building.method_suitability[method_index][good_index]);
-                    let farming = method.resource != "sea";
+                    let farming = method.resource == "usable_land";
                     let (quality_factor, reference_factor) = if farming {
                         reduced_ratio(quality_pm, rules.fertility_reference_pm)
                     } else {
@@ -9407,6 +9434,7 @@ pub(crate) mod tests {
                 unit: "unit".to_owned(),
                 weight_g: 1,
                 volume_ml: 1,
+                stacked_outside: false,
                 hunger_centi: 100,
                 necessities_centi: 100,
                 niceties_centi: 0,
@@ -9473,6 +9501,7 @@ pub(crate) mod tests {
                     methods: vec![Method {
                         id: "mixed".to_owned(),
                         resource: "usable_land".to_owned(),
+                        cells_per_level: None,
                         annual_output: BTreeMap::from([("food".to_owned(), 1)]),
                         suitability: "crops".to_owned(),
                         score_share_pm: BTreeMap::from([("food".to_owned(), 1000)]),
@@ -9604,6 +9633,7 @@ pub(crate) mod tests {
                 unit: "unit".to_owned(),
                 weight_g: 1,
                 volume_ml: 1,
+                stacked_outside: false,
                 hunger_centi: hunger,
                 necessities_centi: necessities,
                 niceties_centi: niceties,
@@ -9799,7 +9829,7 @@ pub(crate) mod tests {
                     BuildingState {
                         kind: "farm".to_owned(),
                         levels: 1,
-                        method_levels: vec![1, 0],
+                        method_levels: vec![1, 0, 0, 0],
                         herds: vec![9, 6, 5],
                         employment: vec![
                             Employment {
@@ -9811,8 +9841,8 @@ pub(crate) mod tests {
                         ],
                         stock: empty_stock.clone(),
                         storehouse_accounts: None,
-                        production_carries: vec![vec![0; goods]; 2],
-                        method_suitability: vec![vec![1000; goods]; 2],
+                        production_carries: vec![vec![0; goods]; 4],
+                        method_suitability: vec![vec![1000; goods]; 4],
                         herd_birth_carries: vec![0; 3],
                         herd_death_carries: vec![0; 3],
                         herd_product_carries: vec![
@@ -9916,7 +9946,7 @@ pub(crate) mod tests {
         let mut state = shipped_production_fixture(&rules);
         let place = &mut state.places[0];
         place.buildings[0].levels = 0;
-        place.buildings[0].method_levels = vec![0, 0];
+        place.buildings[0].method_levels = vec![0, 0, 0, 0];
         place.buildings[1].levels = 2;
         place.buildings[1].method_levels = vec![1, 1];
         (rules, state)
@@ -9964,6 +9994,30 @@ pub(crate) mod tests {
         place.buildings[1].employment[2].workers = 4;
         place.pops[2].employment[1].workers = 4;
         (rules, state)
+    }
+
+    #[test]
+    fn outside_stacks_obey_caps_but_do_not_fill_stores() {
+        let mut rules = tiny_rules();
+        rules.goods[0].volume_ml = 720_000;
+        rules.goods[0].pop_limit_milli = 10_000;
+        let mut fuel = rules.goods[0].clone();
+        fuel.id = "hardwood".into();
+        fuel.volume_ml = 100_000;
+        fuel.pop_limit_milli = 2_000;
+        fuel.stacked_outside = true;
+        rules.goods.push(fuel);
+        let mut pop = reserve_test_pop(1);
+        pop.stock = vec![1, 0];
+        assert_eq!(receive_pop(&rules, &mut pop, 1, 3).unwrap(), 1);
+        assert_eq!(receive_pop(&rules, &mut pop, 0, 1).unwrap(), 1);
+        assert_eq!(volume_used(&rules, &pop.stock, None).unwrap(), 720_000);
+        rules.goods[0].volume_ml = 800_000;
+        let mut building = reserve_test_building(1, 0);
+        building.stock = vec![1, 0];
+        building.employment[0].workers = 8;
+        assert_eq!(receive_building(&rules, &mut building, 1, 3).unwrap(), 1);
+        assert_eq!(volume_used(&rules, &building.stock, None).unwrap(), 800_000);
     }
 
     #[test]
@@ -10856,7 +10910,7 @@ pub(crate) mod tests {
                 && place.religion.as_deref() == Some("christianity")
                 && place.monk_religion.as_deref() == Some("christianity")
         }));
-        assert_eq!(rules.goods.len(), 24);
+        assert_eq!(rules.goods.len(), 26);
         assert_eq!(rules.pop_types.len(), 4);
         assert_eq!(
             rules.curves.keys().map(String::as_str).collect::<Vec<_>>(),
@@ -11158,8 +11212,24 @@ pub(crate) mod tests {
     fn herd_daily_trace(fed: bool) -> (String, [[u64; 6]; 3]) {
         use std::fmt::Write as _;
 
-        let rules = shipped_rules();
+        // Keep the accepted herd witness on its original goods and methods; fuel has separate coverage.
+        let mut rules = shipped_rules();
+        rules
+            .goods
+            .retain(|good| good.id != "hardwood" && good.id != "peat");
+        for id in ["hardwood", "peat"] {
+            rules.seasons.remove(id);
+            for values in rules.suitability.values_mut() {
+                values.remove(id);
+            }
+        }
+        for building in &mut rules.buildings {
+            building.methods.retain(|method| method.serves != "fuel");
+        }
         let mut state = shipped_production_fixture(&rules);
+        state.places[0].buildings[0].method_levels.truncate(2);
+        state.places[0].buildings[0].production_carries.truncate(2);
+        state.places[0].buildings[0].method_suitability.truncate(2);
         let place = &mut state.places[0];
         place.prices_milli = rules
             .goods
@@ -11366,6 +11436,8 @@ pub(crate) mod tests {
             ("hides", &["clothing", "fabric"][..]),
             ("linen", &["clothing", "fabric"][..]),
             ("hemp", &["fabric"][..]),
+            ("hardwood", &["wood", "fuel"][..]),
+            ("peat", &["fuel"][..]),
             ("cattle", &["herd"][..]),
             ("pigs", &["herd"][..]),
             ("sheep", &["herd"][..]),
@@ -13764,6 +13836,7 @@ pub(crate) mod tests {
                 unit: "unit".to_owned(),
                 weight_g: 1,
                 volume_ml: 1,
+                stacked_outside: false,
                 hunger_centi: 100,
                 necessities_centi: 100,
                 niceties_centi: 0,
@@ -13778,6 +13851,7 @@ pub(crate) mod tests {
                 unit: "unit".to_owned(),
                 weight_g: 1,
                 volume_ml: 1,
+                stacked_outside: false,
                 hunger_centi: 100,
                 necessities_centi: 100,
                 niceties_centi: 0,
@@ -13961,6 +14035,7 @@ pub(crate) mod tests {
             unit: "pound".to_owned(),
             weight_g: 1,
             volume_ml: 1,
+            stacked_outside: false,
             hunger_centi: 100,
             necessities_centi: 100,
             niceties_centi: 0,
@@ -13976,6 +14051,7 @@ pub(crate) mod tests {
         rules.buildings[0].methods.push(Method {
             id: "coastal".to_owned(),
             resource: "sea".to_owned(),
+            cells_per_level: None,
             annual_output: BTreeMap::from([("fish".to_owned(), 1000)]),
             suitability: "sea".to_owned(),
             score_share_pm: BTreeMap::from([("fish".to_owned(), 1000)]),
@@ -14038,6 +14114,302 @@ pub(crate) mod tests {
             "fishing levels are not capped by sea/4"
         );
         assert_eq!(farm.levels, 3);
+    }
+
+    #[test]
+    fn fuel_methods_respect_terrain_room_without_using_fields() {
+        let rules = shipped_rules();
+        let farm = rules.buildings.iter().find(|b| b.id == "farm").unwrap();
+        let mut land = LandCounts {
+            land_cells: BTreeMap::from([("forest".into(), 9), ("bog".into(), 5)]),
+            fertility_pm: BTreeMap::new(),
+            ..LandCounts::default()
+        };
+        let result = assign_building_levels(
+            &rules,
+            farm,
+            5,
+            &mut land,
+            &mut 0,
+            &mut StartDemand::fixture(&rules, 0, 100_000_000),
+            1000,
+        )
+        .unwrap();
+        assert_eq!(result.method_levels, [0, 0, 2, 2]);
+        assert_eq!(result.used_land, 0);
+        assert!(land.fertility_pm.is_empty());
+        let mut short = LandCounts {
+            land_cells: BTreeMap::from([("forest".into(), 3)]),
+            ..LandCounts::default()
+        };
+        let result = assign_building_levels(
+            &rules,
+            farm,
+            1,
+            &mut short,
+            &mut 0,
+            &mut StartDemand::fixture(&rules, 0, 100_000_000),
+            550,
+        )
+        .unwrap();
+        assert_eq!(result.method_levels, [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn fuel_levels_contribute_to_the_emergency_breeding_floor() {
+        let rules = shipped_rules();
+        for levels in [vec![0, 0, 1, 1], vec![1, 0, 1, 0]] {
+            let mut state = shipped_production_fixture(&rules);
+            let place = &mut state.places[0];
+            place.pops[0].consumption.necessities_pm = 400;
+            place.pops[0].consumption.pantry_hunger_centi = vec![0; rules.goods.len()];
+            place.buildings[0].method_levels = levels;
+            place.buildings[0].herds = vec![4, 4, 4];
+            let mut ledger = DailyConsumptionLedger {
+                butchered: vec![0; rules.goods.len()],
+                lost: vec![0; rules.goods.len()],
+                herd_slaughter: vec![0; 3],
+                ..DailyConsumptionLedger::default()
+            };
+            butcher_emergency(&rules, place, 0, 1_000_000, &mut ledger).unwrap();
+            assert_eq!(place.buildings[0].herds, [4, 4, 4]);
+            assert_eq!(ledger.herd_slaughter, [0, 0, 0]);
+        }
+    }
+
+    #[test]
+    fn opening_fuel_levels_follow_need_and_terrain_room() {
+        let rules = shipped_rules();
+        let farm = rules.buildings.iter().find(|b| b.id == "farm").unwrap();
+        let land = LandCounts {
+            land_cells: BTreeMap::from([
+                ("forest".into(), 8),
+                ("bog".into(), 4),
+                ("pasture".into(), 8),
+            ]),
+            fertility_pm: BTreeMap::from([("pasture".into(), 8000)]),
+            ..LandCounts::default()
+        };
+        let candidates = level_candidates(&rules, farm, &land, 0, 550, &[0; 4]).unwrap();
+        for (candidate, food, fuel) in [
+            (0, 673_270, 0),
+            (1, 172_270, 3_000_000),
+            (2, 172_270, 2_800_000),
+        ] {
+            let output = &candidates[candidate].output;
+            let food_actual: u128 = output
+                .iter()
+                .map(|(index, units)| units * u128::from(rules.goods[*index].hunger_centi))
+                .sum();
+            let fuel_actual: u128 = output
+                .iter()
+                .map(|(index, units)| rules.goods[*index].category_supplied("fuel", *units))
+                .sum();
+            assert_eq!((food_actual, fuel_actual), (food, fuel));
+        }
+        for (levels, expected) in [
+            (1, [1, 0, 0, 0]),
+            (2, [1, 0, 1, 0]),
+            (3, [2, 0, 1, 0]),
+            (4, [2, 0, 1, 1]),
+        ] {
+            let result = assign_building_levels(
+                &rules,
+                farm,
+                levels,
+                &mut land.clone(),
+                &mut 0,
+                &mut StartDemand::fixture(&rules, 1_825_000, 6_205_000),
+                550,
+            )
+            .unwrap();
+            assert_eq!(result.method_levels, expected);
+        }
+        for (food, fuel, expected) in [
+            (1_825_000, 6_205_000, vec![2, 0, 1, 1]),
+            (1_825_000, 0, vec![4, 0, 0, 0]),
+        ] {
+            let result = assign_building_levels(
+                &rules,
+                farm,
+                4,
+                &mut land.clone(),
+                &mut 0,
+                &mut StartDemand::fixture(&rules, food, fuel),
+                550,
+            )
+            .unwrap();
+            assert_eq!(result.method_levels, expected);
+        }
+        let mut limited = land.clone();
+        limited.fertility_pm.insert("pasture".into(), 4000);
+        let result = assign_building_levels(
+            &rules,
+            farm,
+            4,
+            &mut limited,
+            &mut 0,
+            &mut StartDemand::fixture(&rules, 1_825_000, 0),
+            550,
+        )
+        .unwrap();
+        assert_eq!(result.method_levels, [2, 0, 0, 0]);
+        assert_eq!(result.cut_for_room, Some(false));
+    }
+
+    #[test]
+    fn storehouse_refuses_both_fuel_goods() {
+        let rules = shipped_rules();
+        let mut building = shipped_production_fixture(&rules)
+            .places
+            .remove(0)
+            .buildings
+            .remove(0);
+        let before = building.stock.clone();
+        for id in ["hardwood", "peat"] {
+            assert_eq!(
+                receive_storehouse(&rules, &mut building, None, good_at(&rules, id), 3).unwrap(),
+                3
+            );
+            assert_eq!(building.stock, before);
+        }
+    }
+
+    #[test]
+    fn fuel_method_data_refuses_missing_zero_and_misplaced_cell_limits() {
+        for (index, cells) in [
+            (2, None),
+            (2, Some(0)),
+            (3, None),
+            (3, Some(0)),
+            (0, Some(1)),
+            (1, Some(1)),
+        ] {
+            let mut rules = shipped_rules();
+            rules.buildings[0].methods[index].cells_per_level = cells;
+            let error = rules.validate("fixture").unwrap_err();
+            assert!(error.entry.contains("cells_per_level"), "{error}");
+        }
+    }
+
+    #[test]
+    fn fuel_output_and_estimates_ignore_field_quality() {
+        let rules = shipped_rules();
+        let farm = rules.buildings.iter().find(|b| b.id == "farm").unwrap();
+        for (method_index, terrain, good, monthly) in
+            [(2, "forest", "hardwood", 750), (3, "bog", "peat", 2000)]
+        {
+            let method = &farm.methods[method_index];
+            assert_eq!(
+                starting_method_output(
+                    &rules,
+                    farm,
+                    method,
+                    good,
+                    method.annual_output[good],
+                    Some(terrain),
+                    0
+                )
+                .unwrap(),
+                starting_method_output(
+                    &rules,
+                    farm,
+                    method,
+                    good,
+                    method.annual_output[good],
+                    Some(terrain),
+                    1000
+                )
+                .unwrap()
+            );
+            for quality in [0, 1000] {
+                let mut land = LandCounts {
+                    land_cells: BTreeMap::from([(
+                        terrain.to_owned(),
+                        method.cells_per_level.unwrap(),
+                    )]),
+                    ..LandCounts::default()
+                };
+                let assignment = assign_building_levels(
+                    &rules,
+                    farm,
+                    1,
+                    &mut land,
+                    &mut 0,
+                    &mut StartDemand::fixture(&rules, 0, 100_000_000),
+                    quality,
+                )
+                .unwrap();
+                assert_eq!(assignment.method_levels[method_index], 1);
+                assert_eq!(assignment.output[good], method.annual_output[good]);
+                let mut state = shipped_production_fixture(&rules);
+                let building = &mut state.places[0].buildings[0];
+                building.method_levels = assignment.method_levels;
+                building.method_suitability = assignment.method_suitability;
+                building.herd_grazing_sums = assignment.herd_grazing_sums;
+                for month in 1..=12 {
+                    let ledger = run_monthly_production_with_quality(
+                        &rules,
+                        &mut state,
+                        Date {
+                            year: 768,
+                            month,
+                            day: 1,
+                            hour: 12,
+                        },
+                        &BTreeMap::from([("fixture".to_owned(), quality)]),
+                    )
+                    .unwrap();
+                    let cutting = if method_index == 2 {
+                        [11, 12, 1, 2].contains(&month)
+                    } else {
+                        [8, 9].contains(&month)
+                    };
+                    assert_eq!(
+                        ledger.produced[good_at(&rules, good)],
+                        if cutting { monthly } else { 0 }
+                    );
+                    assert_eq!(ledger.produced[good_at(&rules, "oats")], 0);
+                    if month == 6 {
+                        assert!(!state.places[0].buildings[0].herds.is_empty());
+                        assert!(ledger.produced[good_at(&rules, "dairy")] > 0);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn shipped_fuel_goods_have_the_authored_properties() {
+        let rules = shipped_rules();
+        for (id, tags, supply, volume, price, cap) in [
+            ("hardwood", vec!["wood", "fuel"], 1000, 100_000, 10, 30_000),
+            ("peat", vec!["fuel"], 700, 150_000, 6, 40_000),
+        ] {
+            let good = &rules.goods[good_at(&rules, id)];
+            assert_eq!(good.tags, tags);
+            assert_eq!(good.supplies["fuel"], supply);
+            assert_eq!(
+                (
+                    good.unit.as_str(),
+                    good.weight_g,
+                    good.volume_ml,
+                    good.base_price,
+                    good.pop_limit_milli
+                ),
+                ("load", 50_000, volume, price, cap)
+            );
+            assert!(good.stacked_outside);
+            assert_eq!(
+                (
+                    good.hunger_centi,
+                    good.necessities_centi,
+                    good.niceties_centi,
+                    good.luxuries_centi
+                ),
+                (0, 0, 0, 0)
+            );
+        }
     }
 
     fn shipped_rules() -> Rules {
@@ -14819,6 +15191,7 @@ pub(crate) mod tests {
             unit: "pound".to_owned(),
             weight_g: 1,
             volume_ml: 1,
+            stacked_outside: false,
             hunger_centi: 100,
             necessities_centi: 100,
             niceties_centi: 0,
@@ -14971,6 +15344,7 @@ pub(crate) mod tests {
             unit: "pound".to_owned(),
             weight_g: 1,
             volume_ml: 1,
+            stacked_outside: false,
             hunger_centi: 100,
             necessities_centi: 100,
             niceties_centi: 0,
@@ -14986,6 +15360,7 @@ pub(crate) mod tests {
         rules.buildings[0].methods.push(Method {
             id: "coastal".to_owned(),
             resource: "sea".to_owned(),
+            cells_per_level: None,
             annual_output: BTreeMap::from([("fish".to_owned(), 1000)]),
             suitability: "sea".to_owned(),
             score_share_pm: BTreeMap::from([("fish".to_owned(), 1000)]),
@@ -15151,6 +15526,7 @@ pub(crate) mod tests {
                 unit: "unit".to_owned(),
                 weight_g: 1,
                 volume_ml,
+                stacked_outside: false,
                 hunger_centi: 0,
                 necessities_centi: 0,
                 niceties_centi: 0,
@@ -15444,6 +15820,7 @@ pub(crate) mod tests {
                 unit: "unit".to_owned(),
                 weight_g: 1,
                 volume_ml: 1,
+                stacked_outside: false,
                 hunger_centi: 0,
                 necessities_centi: 0,
                 niceties_centi: 0,
@@ -15750,6 +16127,7 @@ pub(crate) mod tests {
             unit: "pound".to_owned(),
             weight_g: 1,
             volume_ml: 1,
+            stacked_outside: false,
             hunger_centi: 0,
             necessities_centi: 0,
             niceties_centi: 0,
@@ -15764,6 +16142,7 @@ pub(crate) mod tests {
             unit: "hide".to_owned(),
             weight_g: 1,
             volume_ml: 1,
+            stacked_outside: false,
             hunger_centi: 0,
             necessities_centi: 0,
             niceties_centi: 0,
@@ -16315,6 +16694,7 @@ pub(crate) mod tests {
             unit: "pound".to_owned(),
             weight_g: 1,
             volume_ml: 1,
+            stacked_outside: false,
             hunger_centi: 0,
             necessities_centi: 0,
             niceties_centi: 10,
@@ -16382,6 +16762,7 @@ pub(crate) mod tests {
             unit: "pound".to_owned(),
             weight_g: 1,
             volume_ml: 1,
+            stacked_outside: false,
             hunger_centi: 0,
             necessities_centi: 0,
             niceties_centi: 10,
@@ -16587,6 +16968,7 @@ pub(crate) mod tests {
             unit: "pound".to_owned(),
             weight_g: 1,
             volume_ml: 1,
+            stacked_outside: false,
             hunger_centi: 0,
             necessities_centi: 0,
             niceties_centi: 100,
@@ -16675,6 +17057,7 @@ pub(crate) mod tests {
                 unit: "unit".to_owned(),
                 weight_g: 1,
                 volume_ml: 1,
+                stacked_outside: false,
                 hunger_centi: 0,
                 necessities_centi: 0,
                 niceties_centi: 0,
@@ -16747,6 +17130,7 @@ pub(crate) mod tests {
                 unit: "unit".to_owned(),
                 weight_g: 1,
                 volume_ml: 1,
+                stacked_outside: false,
                 hunger_centi: hunger,
                 necessities_centi: hunger,
                 niceties_centi: 0,
