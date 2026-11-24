@@ -279,6 +279,64 @@ fn noon(year: u16, month: u8, day: u8) -> Date {
 }
 
 #[test]
+fn surplus_after_monthly_death_survives_saves_on_both_sides_of_noon() {
+    let (base_rules, initial) = start();
+    let mut rules = base_rules.clone();
+    let mut economy = initial.clone();
+    economy.places.truncate(1);
+    let place = &mut economy.places[0];
+    place.pops.truncate(1);
+    let kind = place.pops[0].kind.clone();
+    let pop_type = rules.pop_types.iter_mut().find(|p| p.id == kind).unwrap();
+    pop_type.births_pm_year = 0;
+    pop_type.worker_deaths_pm_year = 1;
+    pop_type.dependent_deaths_pm_year = 0;
+    let hides = rules.goods.iter().position(|g| g.id == "hides").unwrap();
+    rules.goods[hides].pop_limit_milli = 1_000;
+    let pop = &mut place.pops[0];
+    pop.workers = 2;
+    pop.dependents = 0;
+    pop.stock.fill(0);
+    pop.stock[hides] = 2;
+    pop.employment.clear();
+    pop.consumption.worker_death_carry = 11_999_999_999_999;
+    place.buildings.clear();
+    for hour in [11, 13] {
+        let mut game = Game::with_economy(
+            rules.clone(),
+            economy.clone(),
+            vec![],
+            at(768, 2, 1, 11),
+            &format!("surplus-save-{hour}"),
+        );
+        let failures = game.through(noon(768, 2, 1));
+        assert!(failures.is_empty(), "{failures:?}");
+        assert_eq!(game.state().economy.places[0].pops[0].workers, 1);
+        assert_eq!(game.state().economy.places[0].pops[0].stock[hides], 2);
+        while game.simulation.date().unwrap() < date(768, 2, 2, hour) {
+            assert!(game.simulation.step().unwrap().is_empty());
+        }
+        let identity = super::identity("aa");
+        let bytes = game.simulation.save(identity.meta(42)).to_bytes().unwrap();
+        let loaded = ck_sim::Save::<GameState>::from_bytes(&bytes, &identity.expected()).unwrap();
+        let mut scheduler = Scheduler::<GameState>::new();
+        register_economy_callback_with_storage(
+            &mut scheduler,
+            Arc::new(rules.clone()),
+            Arc::clone(&game.handle),
+        );
+        let mut resumed =
+            Simulation::<GameState, GameCommand>::from_save(loaded, scheduler, apply).unwrap();
+        for _ in 0..24 {
+            assert!(game.simulation.step().unwrap().is_empty());
+            assert!(resumed.step().unwrap().is_empty());
+        }
+        assert_eq!(resumed.state().economy, game.state().economy);
+        assert_eq!(resumed.state().economy.places[0].pops[0].stock[hides], 1);
+    }
+}
+
+#[test]
 fn herds_and_product_carries_survive_saves_on_both_sides_of_noon() {
     let rules = start().0.clone();
     let mut economy = start().1.clone();

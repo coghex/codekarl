@@ -497,6 +497,7 @@ annual_output={ peat=4000, beef=1100, pork=970, mutton=165, dairy=860, wool=10, 
 score_share_pm={ peat=930, beef=25, pork=20, mutton=5, dairy=10, wool=5, hides=5 }
 [[buildings]]
 id="holdings"
+church=true
 herds={ cattle={maximum=12}, pigs={maximum=8}, sheep={maximum=7} }
 workers_per_level=10
 land_per_level=2

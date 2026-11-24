@@ -106,6 +106,7 @@ fn turf() -> Method {
 fn building(id: &str, methods: Vec<Method>) -> BuildingType {
     BuildingType {
         id: id.to_owned(),
+        church: id == "holdings",
         workers_per_level: 10,
         land_per_level: 2,
         owner_workers: match id {
