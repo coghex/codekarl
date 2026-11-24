@@ -1957,3 +1957,36 @@ fn the_noon_step_runs_with_the_largest_building_allowance_the_rules_accept() {
     );
     assert!(ledger.is_ok(), "{:?}", ledger.err());
 }
+
+#[test]
+fn fuel_stays_out_of_exchange_but_remains_in_daily_orders() {
+    let mut rules = rules();
+    let mut place = place(&rules, 2);
+    small(&mut place, 1);
+    settle_the_rest(&rules, &mut place, &["oats", "hardwood", "peat"]);
+    want(&rules, &mut place, PEASANT, "oats", 1);
+    spare(&rules, &mut place, MONK, "oats", 1);
+    place.pops[PEASANT].stock[good(&rules, "hardwood")] = 6;
+    capacity(&mut rules, &mut place, PEASANT, 10_000_000);
+    capacity(&mut rules, &mut place, MONK, 10_000_000);
+    for pop in [PEASANT, MONK] {
+        for id in ["hardwood", "peat"] {
+            assert_eq!(position(&rules, &place, pop, id), (0, 0));
+        }
+    }
+    let wood = good(&rules, "hardwood");
+    let peat = good(&rules, "peat");
+    let orders = daily_market_orders(&rules, &place).unwrap();
+    assert_eq!(
+        (
+            orders.buy_units[wood],
+            orders.buy_units[peat],
+            orders.sell_units[wood],
+            orders.sell_units[peat]
+        ),
+        (0, 7, 1, 0)
+    );
+    let before = goods_everywhere(&place);
+    exchange(&rules, &mut place);
+    assert_eq!(goods_everywhere(&place), before);
+}

@@ -198,6 +198,40 @@ mod tests {
         let scenario = ck_map::load_scenario(&directory).unwrap();
         let rules = Rules::load(assets.join("game/economy.toml")).unwrap();
         let (state, _) = starting_economy(&assets, &directory, &scenario).unwrap();
+        let mut fuel_levels = 0;
+        let mut wood_places = 0;
+        let mut turf_places = 0;
+        let mut neither_places = 0;
+        for place in &state.places {
+            let farm = place
+                .buildings
+                .iter()
+                .find(|building| building.kind == "farm");
+            let wood = farm
+                .and_then(|b| b.method_levels.get(2))
+                .copied()
+                .unwrap_or(0)
+                > 0;
+            let turf = farm
+                .and_then(|b| b.method_levels.get(3))
+                .copied()
+                .unwrap_or(0)
+                > 0;
+            wood_places += usize::from(wood);
+            turf_places += usize::from(turf);
+            neither_places += usize::from(!wood && !turf);
+        }
+        let counts = land_counts(&scenario, &rules.terrain_order).unwrap();
+        let cannot_cut = counts
+            .iter()
+            .filter(|land| {
+                land.land_cells.get("forest").copied().unwrap_or(0) < 4
+                    && land.land_cells.get("bog").copied().unwrap_or(0) < 2
+            })
+            .count();
+        eprintln!(
+            "fuel start: wood={wood_places} turf={turf_places} neither_started={neither_places} cannot_cut={cannot_cut}"
+        );
         for place in &state.places {
             for building in &place.buildings {
                 if building.kind == "storehouse" {
@@ -218,11 +252,12 @@ mod tests {
                 for (method, count) in definition.methods.iter().zip(&building.method_levels) {
                     if ["forest", "bog"].contains(&method.resource.as_str()) {
                         assert_eq!(building.kind, "farm");
-                        assert_eq!(*count, 0, "{} {}", place.id, method.id);
+                        fuel_levels += *count;
                     }
                 }
             }
         }
+        assert!(fuel_levels > 0);
     }
 
     #[test]
@@ -254,8 +289,8 @@ mod tests {
         assert!(
             report
                 .iter()
-                .any(|line| line.starts_with("glendalough farm: cut levels 30 -> 28")),
-            "a level no method has room for is cut and reported: {report:?}"
+                .all(|line| !line.starts_with("glendalough farm: cut levels")),
+            "fuel methods now have room for Glendalough's farm levels: {report:?}"
         );
         let armagh = state
             .places
@@ -459,7 +494,6 @@ mod tests {
         assert_eq!(
             report,
             [
-                "glendalough farm: cut levels 30 -> 28 (a method has room, but none serves food or an unmet need)",
                 "killeany starts over building cap: footprint 50400 m², prepared 70400 m², max_buildable 47600 m²",
                 "tory starts over building cap: footprint 24200 m², prepared 44200 m², max_buildable 23600 m²",
                 "rechru starts over building cap: footprint 50400 m², prepared 70400 m², max_buildable 24050 m²",

@@ -153,18 +153,20 @@ fn shipped_herds_start_at_two_thirds_of_their_maximum() {
 }
 
 #[test]
-fn shipped_start_has_no_fuel_levels_before_the_fuel_need() {
+fn shipped_start_assigns_fuel_methods_and_all_farm_levels() {
     let directory = assets().join("scenarios/ireland-768");
     let scenario = ck_map::load_scenario(&directory).unwrap();
     let (economy, _) = starting_economy(&assets(), &directory, &scenario).unwrap();
+    let mut fuel_levels = 0;
     for place in &economy.places {
         for building in &place.buildings {
             if building.kind == "farm" {
-                assert_eq!(&building.method_levels[2..], &[0, 0], "{}", place.id);
+                fuel_levels += building.method_levels[2..].iter().sum::<u32>();
                 assert_eq!(building.method_levels.iter().sum::<u32>(), building.levels);
             }
         }
     }
+    assert!(fuel_levels > 0);
 }
 
 #[test]

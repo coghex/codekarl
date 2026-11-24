@@ -224,27 +224,53 @@ fn fuel_levels_and_stacks_survive_saves_before_and_after_noon() {
     farm.method_levels[3] = 1;
     farm.stock[hardwood] = 1;
     place.pops[0].stock[peat] = 1;
-    let mut game = Game::with_economy(
-        rules.clone(),
-        economy,
-        vec![],
-        at(768, 1, 1, 11),
-        "fuel-save",
-    );
+    place.pops[0].consumption.hearth_milli = 100;
+    place.pops[0].consumption.fuel_need_month = 20;
+    place.pops[0].consumption.fuel_burned_month = 10;
+    place.pops[0].consumption.fuel_death_carry = 9;
     let identity = super::identity("aa");
     for after_noon in [false, true] {
+        let mut game = Game::with_economy(
+            rules.clone(),
+            economy.clone(),
+            vec![],
+            at(768, 1, 2, 11),
+            "fuel-save",
+        );
         if after_noon {
-            assert!(game.through(noon(768, 1, 1)).is_empty());
+            assert!(game.through(noon(768, 1, 2)).is_empty());
         }
         let digest = game.simulation.digest().unwrap();
         let bytes = game.simulation.save(identity.meta(42)).to_bytes().unwrap();
         let loaded = ck_sim::Save::<GameState>::from_bytes(&bytes, &identity.expected()).unwrap();
         assert_eq!(loaded.digest().unwrap(), digest);
         let actual = &game.simulation.state().economy.places;
+        assert!(
+            actual
+                .iter()
+                .flat_map(|p| &p.pops)
+                .any(|p| p.consumption.hearth_milli > 0
+                    && p.consumption.fuel_need_month > 0
+                    && p.consumption.fuel_burned_month > 0
+                    && p.consumption.fuel_death_carry > 0)
+        );
         for (saved, live) in loaded.state.economy.places.iter().zip(actual) {
             assert_eq!(saved.buildings, live.buildings);
             assert_eq!(saved.pops, live.pops);
         }
+        let mut scheduler = Scheduler::<GameState>::new();
+        register_economy_callback_with_storage(
+            &mut scheduler,
+            Arc::new(rules.clone()),
+            Arc::clone(&game.handle),
+        );
+        let mut resumed =
+            Simulation::<GameState, GameCommand>::from_save(loaded, scheduler, apply).unwrap();
+        for _ in 0..24 {
+            assert!(game.simulation.step().unwrap().is_empty());
+            assert!(resumed.step().unwrap().is_empty());
+        }
+        assert_eq!(resumed.digest().unwrap(), game.simulation.digest().unwrap());
     }
 }
 

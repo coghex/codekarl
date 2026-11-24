@@ -2757,7 +2757,9 @@ GUARDS: tuple[Guard, ...] = (
         "economy.core",
         ("assets/game/economy.toml", "assets/scenarios/ireland-768/economy.toml"),
     ),
-    # CK-404: the start-by-need tests check that the shipped rules name no fuel need or fuel method yet.
+    # CK-398: fuel ordering tests read the shipped economy rules.
+    Guard("crates/economy/src/fuel.rs", "economy.core", ("assets/game/economy.toml",)),
+    # CK-404: the start-by-need tests check the shipped fuel-rate and method data.
     Guard(
         "crates/economy/src/start_levels_tests.rs",
         "economy.core",

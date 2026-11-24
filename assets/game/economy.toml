@@ -1,3 +1,4 @@
+fuel_deaths_pm_year=100
 herd_start_share = [2, 3]
 # Shared M9 economy rules. Quantities are integer native units;
 # hunger/tier values are integer hundredths of a person-day.
@@ -407,6 +408,7 @@ base_price=6000
 pop_limit_milli=0
 
 [[pop_types]]
+fuel_need_milli_day=20
 id="peasant"
 dependent_pm=400
 births_pm_year=67
@@ -416,6 +418,7 @@ necessities_expectation_pm=1000
 niceties_expectation_pm=0
 luxuries_expectation_pm=0
 [[pop_types]]
+fuel_need_milli_day=20
 id="labourer"
 dependent_pm=400
 births_pm_year=67
@@ -425,6 +428,7 @@ necessities_expectation_pm=1000
 niceties_expectation_pm=300
 luxuries_expectation_pm=0
 [[pop_types]]
+fuel_need_milli_day=20
 id="monk"
 dependent_pm=120
 births_pm_year=0
@@ -436,6 +440,7 @@ luxuries_expectation_pm=100
 # The noble pop: the lords' households. Births and deaths at the peasant rates, expectations 1000 / 700 / 300 (owner, r188).
 # Source: p1-noble-economy-r1.toml (ck-designer-1, 2026-11-19), approved by the owner (r190).
 [[pop_types]]
+fuel_need_milli_day=20
 id="noble"
 dependent_pm=400
 births_pm_year=67

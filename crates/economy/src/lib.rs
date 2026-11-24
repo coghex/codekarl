@@ -14,6 +14,7 @@ use start_levels::{Candidate, StartDemand};
 
 pub mod bigint;
 pub mod events;
+mod fuel;
 pub mod genetics;
 pub mod lifecycle;
 pub mod peoples;
@@ -303,6 +304,9 @@ pub struct Rules {
     pub housing_classes: Vec<String>,
     /// Natural makeshift shelter in thousandths of a person per land cell.
     pub shelter_pm: BTreeMap<String, u16>,
+    /// Annual dependent deaths at full fuel shortage, per mille.
+    #[serde(default)]
+    pub fuel_deaths_pm_year: u16,
     /// Fraction of open positions filled each month, in per-mille.
     #[serde(default = "default_hire_pm")]
     pub hire_pm: u16,
@@ -1876,6 +1880,7 @@ pub fn starting_state(
             });
         }
         fill_starting_employment(rules, &mut pops, &mut buildings);
+        fuel::seed_starting_fuel(rules, &mut pops, &buildings)?;
         let prices_milli = rules
             .goods
             .iter()
@@ -3080,6 +3085,10 @@ fn pop_target_units(
     Ok(target.max(comfort_target))
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "The order book combines food, fuel and owner reserves in one pass."
+)]
 fn daily_market_orders(rules: &Rules, place: &PlaceState) -> Result<DailyMarketOrders, DataError> {
     let goods = rules.goods.len();
     let mut orders = DailyMarketOrders {
@@ -3092,7 +3101,36 @@ fn daily_market_orders(rules: &Rules, place: &PlaceState) -> Result<DailyMarketO
             missing_data("market.pop.size".to_owned(), "population size overflow")
         })?;
         pop_sizes.push(people);
-        for good_index in 0..rules.goods.len() {
+        let daily = fuel::fuel_daily_need(rules, pop)?;
+        let target = daily
+            .checked_mul(240)
+            .ok_or_else(|| missing_data("fuel.target".to_owned(), "target overflow"))?;
+        let holding = fuel::fuel_holding(rules, &pop.stock, pop.consumption.hearth_milli)?;
+        if let Some(index) = fuel::fuel_ranking(rules, &place.prices_milli, false)?
+            .first()
+            .copied()
+        {
+            let supply = rules.goods[index].category_supplied("fuel", 1);
+            orders.buy_units[index] = orders.buy_units[index]
+                .checked_add(target.saturating_sub(holding).div_ceil(supply))
+                .ok_or_else(|| missing_data("fuel.buy".to_owned(), "buy overflow"))?;
+        }
+        let spare = fuel::fuel_spare(
+            rules,
+            &pop.stock,
+            pop.consumption.hearth_milli,
+            target,
+            &place.prices_milli,
+        )?;
+        for (index, units) in spare.into_iter().enumerate() {
+            orders.sell_units[index] = orders.sell_units[index]
+                .checked_add(u128::from(units))
+                .ok_or_else(|| missing_data("fuel.sell".to_owned(), "sell overflow"))?;
+        }
+        for (good_index, good) in rules.goods.iter().enumerate() {
+            if good.category_supplied("fuel", 1) > 0 {
+                continue;
+            }
             let holding = pop_market_holding(place, pop_index, good_index)?;
             let target = pop_target_units(rules, &pop.kind, people, good_index)?;
             let buy = target.saturating_sub(holding);
@@ -3129,7 +3167,35 @@ fn daily_market_orders(rules: &Rules, place: &PlaceState) -> Result<DailyMarketO
         }
     }
     for (building_index, building) in place.buildings.iter().enumerate() {
+        let mut reserve = 0_u128;
+        for (pop_index, people) in owner_people_by_building[building_index]
+            .iter()
+            .copied()
+            .enumerate()
+        {
+            let pop = &place.pops[pop_index];
+            let rate = rules
+                .pop_types
+                .iter()
+                .find(|kind| kind.id == pop.kind)
+                .ok_or_else(|| {
+                    missing_data(format!("pop_types.{}", pop.kind), "definition is missing")
+                })?
+                .fuel_need_milli_day;
+            reserve = reserve
+                .checked_add(u128::from(people) * u128::from(rate) * 60)
+                .ok_or_else(|| missing_data("fuel.reserve".to_owned(), "reserve overflow"))?;
+        }
+        let spare = fuel::fuel_spare(rules, &building.stock, 0, reserve, &place.prices_milli)?;
+        for (index, units) in spare.into_iter().enumerate() {
+            orders.sell_units[index] = orders.sell_units[index]
+                .checked_add(u128::from(units))
+                .ok_or_else(|| missing_data("fuel.sell".to_owned(), "sell overflow"))?;
+        }
         for (good_index, good) in rules.goods.iter().enumerate() {
+            if good.category_supplied("fuel", 1) > 0 {
+                continue;
+            }
             let holding = building_market_holding(rules, place, building, good_index)?;
             let mut owner_reserve = 0_u128;
             for (pop_index, people) in owner_people_by_building[building_index]
@@ -3851,6 +3917,14 @@ pub struct PopConsumption {
     pub worker_death_carry: u64,
     /// Exact monthly dependent-death remainder.
     pub dependent_death_carry: u64,
+    /// Fuel already opened, in thousandths.
+    pub hearth_milli: u64,
+    /// Fuel needed and burned since the last monthly step.
+    pub fuel_need_month: u64,
+    /// Fuel burned since the last monthly step.
+    pub fuel_burned_month: u64,
+    /// Exact monthly fuel-death remainder.
+    pub fuel_death_carry: u64,
     /// Signed fractional remainder for monthly dependent-share drift.
     pub dependent_drift_carry: i64,
 }
@@ -5772,7 +5846,21 @@ pub fn run_daily_consumption(
 fn run_daily_consumption_with_ledger(
     rules: &Rules,
     state: &mut EconomyState,
+    date: Date,
+) -> Result<(Vec<Vec<u16>>, DailyConsumptionLedger), DataError> {
+    let prices: Vec<Vec<u64>> = state
+        .places
+        .iter()
+        .map(|place| place.prices_milli.clone())
+        .collect();
+    run_daily_consumption_at_prices(rules, state, date, &prices)
+}
+
+fn run_daily_consumption_at_prices(
+    rules: &Rules,
+    state: &mut EconomyState,
     _date: Date,
+    prices: &[Vec<u64>],
 ) -> Result<(Vec<Vec<u16>>, DailyConsumptionLedger), DataError> {
     rules.validate("economy rules")?;
     let mut next = state.clone();
@@ -5787,7 +5875,7 @@ fn run_daily_consumption_with_ledger(
         ..DailyConsumptionLedger::default()
     };
     let mut intake_by_place = Vec::with_capacity(next.places.len());
-    for place in &mut next.places {
+    for (place, day_prices) in next.places.iter_mut().zip(prices) {
         prepare_place_counters(&mut place.counters, rules.goods.len())?;
         let mut place_intake = Vec::with_capacity(place.pops.len());
         let opened_before = ledger.opened.clone();
@@ -5796,6 +5884,7 @@ fn run_daily_consumption_with_ledger(
         let mut index = 0;
         while index < place.pops.len() {
             draw_pop(rules, place, index)?;
+            fuel::draw_and_burn(rules, place, index, day_prices, &mut ledger)?;
             let intake_pm = consume_pop_tracked(rules, place, index, &mut ledger)?;
             place_intake.push(intake_pm);
             index += 1;
@@ -6884,12 +6973,18 @@ pub fn run_daily_economy_with_floors(
     nearby_by_place: &BTreeMap<String, Vec<NearbyPlace>>,
     floors: &BTreeMap<(String, usize), u64>,
 ) -> Result<ProductionLedger, DataError> {
+    let day_prices: Vec<Vec<u64>> = state
+        .places
+        .iter()
+        .map(|place| place.prices_milli.clone())
+        .collect();
     let mut next = state.clone();
     update_daily_prices(rules, &mut next)?;
     let mut ledger = run_monthly_production_with_quality(rules, &mut next, date, quality_by_place)?;
-    // The exchange (CK-391): after the price step and any production and payday, before drawing and eating.
+    // The exchange uses moved prices; fuel uses the price as the day began.
     swap::run_daily_swaps(rules, &mut next)?;
-    let (intake_pm, daily_consumption) = run_daily_consumption_with_ledger(rules, &mut next, date)?;
+    let (intake_pm, daily_consumption) =
+        run_daily_consumption_at_prices(rules, &mut next, date, &day_prices)?;
     ledger.intake_pm = intake_pm;
     ledger.daily_consumption = Some(daily_consumption);
     if date.day == 1 {
@@ -6916,6 +7011,49 @@ pub fn run_daily_economy_with_floors(
     }
     *state = next;
     Ok(ledger)
+}
+
+/// Validate saved fuel balances before a world is installed.
+///
+/// # Errors
+/// Returns the named pop and invalid balance, total, or carry.
+pub fn validate_fuel_state(rules: &Rules, state: &EconomyState) -> Result<(), DataError> {
+    let max_supply = rules
+        .goods
+        .iter()
+        .map(|good| good.category_supplied("fuel", 1))
+        .max()
+        .unwrap_or(0);
+    for place in &state.places {
+        for (index, pop) in place.pops.iter().enumerate() {
+            let entry = format!("places.{}.pops.{index}.fuel", place.id);
+            let fuel = &pop.consumption;
+            if (max_supply == 0 && fuel.hearth_milli != 0)
+                || (max_supply > 0 && u128::from(fuel.hearth_milli) >= max_supply)
+            {
+                return Err(missing_data(
+                    format!("{entry}.hearth"),
+                    &format!("invalid balance {}", fuel.hearth_milli),
+                ));
+            }
+            if fuel.fuel_burned_month > fuel.fuel_need_month {
+                return Err(missing_data(
+                    format!("{entry}.burned"),
+                    &format!(
+                        "{} exceeds need {}",
+                        fuel.fuel_burned_month, fuel.fuel_need_month
+                    ),
+                ));
+            }
+            if fuel.fuel_death_carry >= 12_000_000 {
+                return Err(missing_data(
+                    format!("{entry}.death_carry"),
+                    &format!("invalid carry {}", fuel.fuel_death_carry),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// A nearby destination in deterministic nearest-first order.
@@ -8187,14 +8325,39 @@ fn run_monthly_demography_with_floors(
                 worker_death_factors[2],
                 worker_death_factors[2],
             ];
-            let dependent_deaths = exact_monthly_rate(
+            let ordinary_deaths = exact_monthly_rate(
                 pop.dependents,
                 pop_type.dependent_deaths_pm_year,
                 &dependent_death_factors,
                 &mut pop.consumption.dependent_death_carry,
                 "demography.dependent_deaths",
-            )?
-            .min(pop.dependents);
+            )?;
+            let need = pop.consumption.fuel_need_month;
+            let burned = pop.consumption.fuel_burned_month;
+            if burned > need {
+                return Err(missing_data(
+                    "fuel.burned_month".to_owned(),
+                    "burned exceeds need",
+                ));
+            }
+            let shortage = if need == 0 {
+                0
+            } else {
+                u64::try_from(u128::from(need - burned) * 1000 / u128::from(need))
+                    .expect("shortage <= 1000")
+            };
+            let fuel_deaths = exact_monthly_rate(
+                pop.dependents,
+                rules.fuel_deaths_pm_year,
+                &[shortage],
+                &mut pop.consumption.fuel_death_carry,
+                "demography.fuel_deaths",
+            )?;
+            pop.consumption.fuel_need_month = 0;
+            pop.consumption.fuel_burned_month = 0;
+            let dependent_deaths = ordinary_deaths
+                .saturating_add(fuel_deaths)
+                .min(pop.dependents);
             // CK-364: the deaths the characters already committed are among the pop's deaths: dependents first, then workers.
             let (worker_deaths, dependent_deaths) =
                 net_of_pending(worker_deaths, dependent_deaths, pop.pending_deaths);
@@ -9218,6 +9381,10 @@ fn encode_pop_consumption(value: &PopConsumption, out: &mut Vec<u8>) -> Result<(
     value.birth_carry.encode(out)?;
     value.worker_death_carry.encode(out)?;
     value.dependent_death_carry.encode(out)?;
+    value.hearth_milli.encode(out)?;
+    value.fuel_need_month.encode(out)?;
+    value.fuel_burned_month.encode(out)?;
+    value.fuel_death_carry.encode(out)?;
     value.dependent_drift_carry.encode(out)?;
     Ok(())
 }
@@ -9242,6 +9409,10 @@ fn decode_pop_consumption(input: &mut Reader<'_>) -> Result<PopConsumption, Cano
         birth_carry: u64::decode(input)?,
         worker_death_carry: u64::decode(input)?,
         dependent_death_carry: u64::decode(input)?,
+        hearth_milli: u64::decode(input)?,
+        fuel_need_month: u64::decode(input)?,
+        fuel_burned_month: u64::decode(input)?,
+        fuel_death_carry: u64::decode(input)?,
         dependent_drift_carry: i64::decode(input)?,
     })
 }
@@ -9478,6 +9649,7 @@ pub(crate) mod tests {
             ]),
             housing_classes: vec!["makeshift".to_owned(), "basic".to_owned()],
             shelter_pm: BTreeMap::from([("pasture".to_owned(), 50), ("bog".to_owned(), 10)]),
+            fuel_deaths_pm_year: 0,
             hire_pm: 100,
             leave_pm: 50,
             buildable_base_m2: 20_000,
@@ -14309,6 +14481,579 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn fuel_orders_choose_cheapest_per_unit_and_preserve_fractional_target() {
+        let rules = shipped_rules();
+        let mut state = shipped_production_fixture(&rules);
+        let place = &mut state.places[0];
+        place.pops.truncate(1);
+        place.buildings.clear();
+        place.prices_milli = rules.goods.iter().map(|g| g.base_price * 1000).collect();
+        let hardwood = good_at(&rules, "hardwood");
+        let peat = good_at(&rules, "peat");
+        let pop = &mut place.pops[0];
+        pop.workers = 100;
+        pop.dependents = 0;
+        pop.stock[hardwood] = 300;
+        pop.stock[peat] = 100;
+        let orders = daily_market_orders(&rules, place).unwrap();
+        assert_eq!(
+            (orders.buy_units[hardwood], orders.buy_units[peat]),
+            (0, 158)
+        );
+        place.prices_milli[peat] = 8000;
+        let orders = daily_market_orders(&rules, place).unwrap();
+        assert_eq!(
+            (orders.buy_units[hardwood], orders.buy_units[peat]),
+            (110, 0)
+        );
+    }
+
+    #[test]
+    fn fuel_burning_carries_balance_and_never_repays_missed_days() {
+        let rules = shipped_rules();
+        let mut state = shipped_production_fixture(&rules);
+        let place = &mut state.places[0];
+        place.pops.truncate(1);
+        place.buildings.clear();
+        place.prices_milli = rules
+            .goods
+            .iter()
+            .map(|good| good.base_price * 1000)
+            .collect();
+        let hardwood = good_at(&rules, "hardwood");
+        let pop = &mut place.pops[0];
+        pop.workers = 30;
+        pop.dependents = 0;
+        let prices = place.prices_milli.clone();
+        let mut ledger = DailyConsumptionLedger {
+            opened: vec![0; rules.goods.len()],
+            ..Default::default()
+        };
+        for _ in 0..5 {
+            fuel::draw_and_burn(&rules, place, 0, &prices, &mut ledger).unwrap();
+        }
+        place.pops[0].stock[hardwood] = 100;
+        for _ in 0..31 {
+            fuel::draw_and_burn(&rules, place, 0, &prices, &mut ledger).unwrap();
+        }
+        let consumption = &place.pops[0].consumption;
+        assert_eq!(
+            (
+                consumption.fuel_need_month,
+                consumption.fuel_burned_month,
+                consumption.hearth_milli,
+                ledger.opened[hardwood]
+            ),
+            (21_600, 18_600, 400, 19)
+        );
+    }
+
+    #[test]
+    fn noon_burn_uses_the_price_before_the_price_step() {
+        let rules = shipped_rules();
+        let mut state = shipped_production_fixture(&rules);
+        let place = &mut state.places[0];
+        place.pops.truncate(1);
+        place.buildings.clear();
+        place.pops[0].employment.clear();
+        place.pops[0].workers = 1;
+        place.pops[0].dependents = 0;
+        place.pops[0].consumption.pantry_hunger_centi = vec![0; rules.goods.len()];
+        place.pops[0].consumption.ticking_carries = vec![0; rules.goods.len()];
+        let wood = good_at(&rules, "hardwood");
+        let peat = good_at(&rules, "peat");
+        place.pops[0].stock[wood] = 1;
+        place.pops[0].stock[peat] = 1;
+        place.prices_milli = rules
+            .goods
+            .iter()
+            .map(|good| good.base_price * 1000)
+            .collect();
+        place.prices_milli[peat] = 6999;
+        place.price_drift_carries = vec![0; rules.goods.len()];
+        let orders = daily_market_orders(&rules, place).unwrap();
+        assert_eq!(orders.buy_units[peat], 5);
+        let ledger = run_daily_economy(
+            &rules,
+            &mut state,
+            Date {
+                year: 768,
+                month: 1,
+                day: 2,
+                hour: 12,
+            },
+        )
+        .unwrap();
+        let place = &state.places[0];
+        assert_eq!(place.prices_milli[peat], 7199);
+        assert_eq!(place.pops[0].consumption.hearth_milli, 680);
+        assert_eq!(
+            (place.pops[0].stock[wood], place.pops[0].stock[peat]),
+            (1, 0)
+        );
+        assert_eq!(ledger.daily_consumption.unwrap().opened[peat], 1);
+    }
+
+    #[test]
+    fn noon_draw_uses_the_opening_price_and_respects_owner_reserve() {
+        let rules = shipped_rules();
+        let mut state = shipped_production_fixture(&rules);
+        let place = &mut state.places[0];
+        place.pops.truncate(1);
+        place.buildings.truncate(1);
+        place.pops[0].employment.truncate(1);
+        place.buildings[0].employment.truncate(1);
+        place.pops[0].workers = 1;
+        place.pops[0].dependents = 0;
+        place.pops[0].consumption.pantry_hunger_centi = vec![0; rules.goods.len()];
+        place.pops[0].consumption.ticking_carries = vec![0; rules.goods.len()];
+        place.pops[0].consumption.hearth_milli = 500;
+        let wood = good_at(&rules, "hardwood");
+        let peat = good_at(&rules, "peat");
+        place.buildings[0].stock[wood] = 1;
+        place.buildings[0].stock[peat] = 1;
+        place.prices_milli = rules
+            .goods
+            .iter()
+            .map(|good| good.base_price * 1000)
+            .collect();
+        place.prices_milli[peat] = 6999;
+        place.price_drift_carries = vec![0; rules.goods.len()];
+        let orders = daily_market_orders(&rules, place).unwrap();
+        assert_eq!(
+            (
+                orders.buy_units[peat],
+                orders.sell_units[wood],
+                orders.sell_units[peat]
+            ),
+            (7, 0, 0)
+        );
+        run_daily_economy(
+            &rules,
+            &mut state,
+            Date {
+                year: 768,
+                month: 1,
+                day: 2,
+                hour: 12,
+            },
+        )
+        .unwrap();
+        let place = &state.places[0];
+        assert_eq!(place.prices_milli[peat], 7199);
+        assert_eq!(place.pops[0].consumption.hearth_milli, 480);
+        assert_eq!(
+            (
+                place.pops[0].stock[peat],
+                place.buildings[0].stock[wood],
+                place.buildings[0].stock[peat]
+            ),
+            (1, 1, 0)
+        );
+    }
+
+    #[test]
+    fn fuel_draw_uses_building_order_and_obeys_the_pop_cap() {
+        let mut rules = shipped_rules();
+        let mut state = shipped_production_fixture(&rules);
+        let place = &mut state.places[0];
+        place.pops.truncate(1);
+        place.buildings.truncate(1);
+        place.pops[0].workers = 1;
+        place.pops[0].dependents = 0;
+        place.buildings[0].employment.truncate(1);
+        let wood = good_at(&rules, "hardwood");
+        let peat = good_at(&rules, "peat");
+        place.buildings[0].stock[wood] = 2;
+        let mut second = place.buildings[0].clone();
+        second.stock[wood] = 0;
+        second.stock[peat] = 2;
+        place.buildings.push(second);
+        let prices: Vec<_> = rules
+            .goods
+            .iter()
+            .map(|good| good.base_price * 1000)
+            .collect();
+        let mut ledger = DailyConsumptionLedger {
+            opened: vec![0; rules.goods.len()],
+            ..Default::default()
+        };
+        fuel::draw_and_burn(&rules, place, 0, &prices, &mut ledger).unwrap();
+        assert_eq!(
+            (
+                place.pops[0].stock[wood],
+                place.buildings[0].stock[wood],
+                place.buildings[1].stock[peat]
+            ),
+            (1, 0, 2)
+        );
+        assert_eq!(place.pops[0].consumption.hearth_milli, 980);
+        place.pops[0].consumption.hearth_milli = 0;
+        place.pops[0].stock[wood] = 30;
+        place.pops[0].stock[peat] = 0;
+        place.buildings[0].stock[wood] = 2;
+        place.buildings[1].stock[peat] = 0;
+        rules
+            .pop_types
+            .iter_mut()
+            .find(|kind| kind.id == "peasant")
+            .unwrap()
+            .fuel_need_milli_day = 1000;
+        fuel::draw_and_burn(&rules, place, 0, &prices, &mut ledger).unwrap();
+        assert_eq!(place.buildings[0].stock[wood], 2);
+    }
+
+    #[test]
+    fn fuel_start_allocates_by_coverage_and_shares_available_methods() {
+        let rules = shipped_rules();
+        let farm = rules
+            .buildings
+            .iter()
+            .find(|building| building.id == "farm")
+            .unwrap();
+        let land = |forest, bog| LandCounts {
+            land_cells: BTreeMap::from([
+                ("pasture".into(), 52),
+                ("forest".into(), forest),
+                ("bog".into(), bog),
+            ]),
+            fertility_pm: BTreeMap::from([("pasture".into(), 52_000)]),
+            ..LandCounts::default()
+        };
+        for (forest, bog, expected) in [
+            (8, 0, [24, 0, 2, 0]),
+            (8, 4, [24, 0, 1, 1]),
+            (0, 0, [26, 0, 0, 0]),
+        ] {
+            let mut demand = StartDemand::fixture(&rules, 18_250_000, 3_650_000);
+            let result = assign_building_levels(
+                &rules,
+                farm,
+                26,
+                &mut land(forest, bog),
+                &mut 0,
+                &mut demand,
+                550,
+            )
+            .unwrap();
+            assert_eq!(result.method_levels, expected);
+        }
+        for (levels, expected) in [
+            (1, [1, 0, 0, 0]),
+            (2, [1, 0, 1, 0]),
+            (24, [23, 0, 1, 0]),
+            (25, [23, 0, 1, 1]),
+            (26, [24, 0, 1, 1]),
+        ] {
+            let result = assign_building_levels(
+                &rules,
+                farm,
+                levels,
+                &mut land(8, 4),
+                &mut 0,
+                &mut StartDemand::fixture(&rules, 18_250_000, 3_650_000),
+                550,
+            )
+            .unwrap();
+            assert_eq!(result.method_levels, expected);
+        }
+    }
+
+    #[test]
+    fn one_person_starts_with_five_wood_or_seven_peat_loads() {
+        let rules = shipped_rules();
+        let original = shipped_production_fixture(&rules);
+        let wood = good_at(&rules, "hardwood");
+        let peat = good_at(&rules, "peat");
+        for (levels, expected) in [
+            (vec![0, 0, 1, 0], (5, 0)),
+            (vec![0, 0, 0, 1], (0, 7)),
+            (vec![0, 0, 1, 1], (5, 0)),
+            (vec![1, 0, 0, 0], (0, 0)),
+        ] {
+            let mut place = original.places[0].clone();
+            place.pops.truncate(1);
+            place.pops[0].workers = 1;
+            place.pops[0].dependents = 0;
+            place.buildings[0].method_levels = levels;
+            fuel::seed_starting_fuel(&rules, &mut place.pops, &place.buildings).unwrap();
+            assert_eq!(
+                (place.pops[0].stock[wood], place.pops[0].stock[peat]),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn fuel_burn_on_first_closes_the_previous_month_window() {
+        let mut rules = shipped_rules();
+        for kind in &mut rules.pop_types {
+            kind.births_pm_year = 0;
+            kind.worker_deaths_pm_year = 0;
+            kind.dependent_deaths_pm_year = 0;
+        }
+        let mut state = shipped_production_fixture(&rules);
+        let place = &mut state.places[0];
+        place.pops.truncate(1);
+        place.buildings.clear();
+        place.pops[0].employment.clear();
+        place.pops[0].workers = 0;
+        place.pops[0].dependents = 1;
+        place.pops[0].consumption.pantry_hunger_centi = vec![0; rules.goods.len()];
+        place.pops[0].consumption.ticking_carries = vec![0; rules.goods.len()];
+        place.pops[0].consumption.hearth_milli = 20;
+        place.pops[0].consumption.fuel_need_month = 20;
+        place.pops[0].consumption.fuel_burned_month = 0;
+        place.prices_milli = rules.goods.iter().map(|g| g.base_price * 1000).collect();
+        place.price_drift_carries = vec![0; rules.goods.len()];
+        run_daily_economy(
+            &rules,
+            &mut state,
+            Date {
+                year: 768,
+                month: 1,
+                day: 1,
+                hour: 12,
+            },
+        )
+        .unwrap();
+        let pop = &state.places[0].pops[0];
+        assert_eq!(
+            (
+                pop.consumption.fuel_need_month,
+                pop.consumption.fuel_burned_month
+            ),
+            (0, 0)
+        );
+        assert_eq!(pop.consumption.fuel_death_carry, 50_000);
+    }
+
+    #[test]
+    fn saved_fuel_state_refuses_each_invalid_field_with_pop_location() {
+        let rules = shipped_rules();
+        let mut state = shipped_production_fixture(&rules);
+        assert!(validate_fuel_state(&rules, &state).is_ok());
+        state.places[0].pops[0].consumption.hearth_milli = 1000;
+        let error = validate_fuel_state(&rules, &state).unwrap_err();
+        assert!(error.entry.contains("pops.0.fuel.hearth"));
+        assert!(error.problem.contains("1000"));
+        state.places[0].pops[0].consumption.hearth_milli = 999;
+        state.places[0].pops[0].consumption.fuel_burned_month = 2;
+        state.places[0].pops[0].consumption.fuel_need_month = 1;
+        assert!(
+            validate_fuel_state(&rules, &state)
+                .unwrap_err()
+                .entry
+                .contains("burned")
+        );
+        state.places[0].pops[0].consumption.fuel_burned_month = 1;
+        state.places[0].pops[0].consumption.fuel_death_carry = 12_000_000;
+        assert!(
+            validate_fuel_state(&rules, &state)
+                .unwrap_err()
+                .entry
+                .contains("death_carry")
+        );
+    }
+
+    #[test]
+    fn fuel_burns_two_windows_with_exact_remainders() {
+        let rules = shipped_rules();
+        let mut state = shipped_production_fixture(&rules);
+        let place = &mut state.places[0];
+        place.pops.truncate(1);
+        place.buildings.clear();
+        let wood = good_at(&rules, "hardwood");
+        place.pops[0].workers = 30;
+        place.pops[0].dependents = 0;
+        place.pops[0].stock[wood] = 100;
+        let prices: Vec<_> = rules.goods.iter().map(|g| g.base_price * 1000).collect();
+        let mut ledger = DailyConsumptionLedger {
+            opened: vec![0; rules.goods.len()],
+            ..Default::default()
+        };
+        for _ in 0..31 {
+            fuel::draw_and_burn(&rules, place, 0, &prices, &mut ledger).unwrap();
+        }
+        let c = &mut place.pops[0].consumption;
+        assert_eq!(
+            (
+                c.fuel_need_month,
+                c.fuel_burned_month,
+                c.hearth_milli,
+                ledger.opened[wood]
+            ),
+            (18_600, 18_600, 400, 19)
+        );
+        c.fuel_need_month = 0;
+        c.fuel_burned_month = 0;
+        ledger.opened[wood] = 0;
+        for _ in 0..28 {
+            fuel::draw_and_burn(&rules, place, 0, &prices, &mut ledger).unwrap();
+        }
+        let c = &place.pops[0].consumption;
+        assert_eq!(
+            (
+                c.fuel_need_month,
+                c.fuel_burned_month,
+                c.hearth_milli,
+                ledger.opened[wood]
+            ),
+            (16_800, 16_800, 600, 17)
+        );
+    }
+
+    #[test]
+    fn fuel_death_and_ordinary_death_are_capped_together() {
+        let mut rules = accounting_rules(0, 0);
+        rules.pop_types[0].dependent_pm = 500;
+        rules.pop_types[0].dependent_deaths_pm_year = 1;
+        rules.fuel_deaths_pm_year = 1;
+        let mut state = accounting_state(1, 1);
+        let pop = &mut state.places[0].pops[0];
+        pop.consumption.fuel_need_month = 1000;
+        pop.consumption.fuel_burned_month = 0;
+        pop.consumption.fuel_death_carry = 11_999_000;
+        pop.consumption.dependent_death_carry = 11_999_000_000_000_000;
+        run_monthly_demography(&rules, &mut state, &BTreeMap::new(), &BTreeMap::new(), None)
+            .unwrap();
+        let pop = &state.places[0].pops[0];
+        assert_eq!(pop.workers + pop.dependents, 1);
+        assert_eq!(pop.counters.current.deaths, 1);
+    }
+
+    #[test]
+    fn fuel_orders_follow_price_and_abundant_fuels_settle_apart() {
+        let rules = shipped_rules();
+        let mut initial = shipped_production_fixture(&rules);
+        let place = &mut initial.places[0];
+        place.pops.truncate(1);
+        place.pops[0].workers = 1;
+        place.pops[0].dependents = 0;
+        place.pops[0].employment.truncate(1);
+        place.buildings.truncate(1);
+        place.buildings[0].employment.truncate(1);
+        place.prices_milli = rules
+            .goods
+            .iter()
+            .map(|good| good.base_price * 1000)
+            .collect();
+        place.price_drift_carries = vec![0; rules.goods.len()];
+        let wood = good_at(&rules, "hardwood");
+        let peat = good_at(&rules, "peat");
+        place.buildings[0].stock[wood] = 100;
+        let mut only_wood = initial.clone();
+        assert!(
+            daily_market_orders(&rules, &only_wood.places[0])
+                .unwrap()
+                .buy_units[peat]
+                > 0
+        );
+        for _ in 0..1000 {
+            update_daily_prices(&rules, &mut only_wood).unwrap();
+        }
+        let order = daily_market_orders(&rules, &only_wood.places[0]).unwrap();
+        assert!(order.buy_units[wood] > 0);
+        assert_eq!(order.buy_units[peat], 0);
+        initial.places[0].buildings[0].stock[peat] = 100;
+        for _ in 0..1000 {
+            update_daily_prices(&rules, &mut initial).unwrap();
+        }
+        let place = &initial.places[0];
+        let order = daily_market_orders(&rules, place).unwrap();
+        assert_eq!((order.buy_units[wood], order.buy_units[peat]), (0, 7));
+        assert_eq!(
+            (place.prices_milli[wood], place.prices_milli[peat]),
+            (5000, 3399)
+        );
+    }
+
+    #[test]
+    fn combined_fuel_deaths_respect_pending_deaths_and_living_floor() {
+        let mut rules = accounting_rules(0, 0);
+        rules.pop_types[0].dependent_pm = 500;
+        rules.pop_types[0].dependent_deaths_pm_year = 12_000;
+        rules.fuel_deaths_pm_year = 12_000;
+        let mut state = accounting_state(1, 2);
+        let pop = &mut state.places[0].pops[0];
+        pop.pending_deaths = 1;
+        pop.consumption.fuel_need_month = 1000;
+        let floors = BTreeMap::from([(("owner_reserve".to_owned(), 0), 2)]);
+        run_monthly_demography_with_floors(
+            &rules,
+            &mut state,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            None,
+            &floors,
+        )
+        .unwrap();
+        let pop = &state.places[0].pops[0];
+        assert_eq!(
+            (pop.workers, pop.dependents, pop.counters.current.deaths),
+            (1, 1, 2)
+        );
+    }
+
+    #[test]
+    fn fuel_owner_reserve_spares_whole_loads_at_mixed_boundary() {
+        let rules = shipped_rules();
+        let mut state = shipped_production_fixture(&rules);
+        let place = &mut state.places[0];
+        place.pops.truncate(1);
+        place.buildings.truncate(1);
+        place.pops[0].workers = 1;
+        place.pops[0].dependents = 0;
+        place.pops[0].employment.truncate(1);
+        place.buildings[0].employment.truncate(1);
+        place.prices_milli = rules
+            .goods
+            .iter()
+            .map(|good| good.base_price * 1000)
+            .collect();
+        let wood = good_at(&rules, "hardwood");
+        let peat = good_at(&rules, "peat");
+        place.buildings[0].stock[wood] = 2;
+        place.buildings[0].stock[peat] = 1;
+        let orders = daily_market_orders(&rules, place).unwrap();
+        assert_eq!((orders.sell_units[wood], orders.sell_units[peat]), (1, 0));
+        place.buildings[0].stock[wood] = 1;
+        let orders = daily_market_orders(&rules, place).unwrap();
+        assert_eq!((orders.sell_units[wood], orders.sell_units[peat]), (0, 0));
+    }
+
+    #[test]
+    fn fuel_need_is_in_the_start_projection_but_live_orders_buy_peat() {
+        let rules = shipped_rules();
+        let mut state = shipped_production_fixture(&rules);
+        let place = &mut state.places[0];
+        place.pops.truncate(1);
+        place.buildings.clear();
+        place.pops[0].workers = 500;
+        place.pops[0].dependents = 0;
+        place.pops[0].employment.clear();
+        place.prices_milli = rules
+            .goods
+            .iter()
+            .map(|good| good.base_price * 1000)
+            .collect();
+        let wood = good_at(&rules, "hardwood");
+        let peat = good_at(&rules, "peat");
+        let demand = StartDemand::new(&rules, &place.pops).unwrap();
+        assert_eq!(
+            (demand.food_need(), demand.fuel_need()),
+            (18_250_000, 3_650_000)
+        );
+        assert_eq!((demand.orders()[wood], demand.orders()[peat]), (0, 0));
+        assert_eq!(
+            fuel::fuel_daily_need(&rules, &place.pops[0]).unwrap(),
+            10_000
+        );
+        let orders = daily_market_orders(&rules, place).unwrap();
+        assert_eq!((orders.buy_units[wood], orders.buy_units[peat]), (0, 3429));
+    }
+
+    #[test]
     fn fuel_method_data_refuses_missing_zero_and_misplaced_cell_limits() {
         for (index, cells) in [
             (2, None),
@@ -15771,6 +16516,10 @@ pub(crate) mod tests {
                         birth_carry: 0,
                         worker_death_carry: 0,
                         dependent_death_carry: 0,
+                        hearth_milli: 0,
+                        fuel_need_month: 0,
+                        fuel_burned_month: 0,
+                        fuel_death_carry: 0,
                         dependent_drift_carry: -321_654,
                     },
                     counters: CounterBuckets {
@@ -18200,6 +18949,33 @@ pub(crate) mod tests {
         rules.pop_types[0].worker_deaths_pm_year = worker_deaths_pm_year;
         rules.pop_types[0].dependent_deaths_pm_year = 0;
         rules
+    }
+
+    #[test]
+    fn monthly_fuel_deaths_keep_their_own_carry_and_do_not_kill_workers() {
+        let mut rules = accounting_rules(0, 0);
+        rules.fuel_deaths_pm_year = 100;
+        rules.pop_types[0].dependent_pm = 1000;
+        let mut state = accounting_state(0, 1200);
+        for (deaths, carry) in [(10, 0), (9, 11_000_000), (10, 9_100_000)] {
+            let pop = &mut state.places[0].pops[0];
+            let before = pop.dependents;
+            pop.consumption.fuel_need_month = 1000;
+            pop.consumption.fuel_burned_month = 0;
+            run_monthly_demography(&rules, &mut state, &BTreeMap::new(), &BTreeMap::new(), None)
+                .unwrap();
+            let pop = &state.places[0].pops[0];
+            assert_eq!(before - pop.dependents, deaths);
+            assert_eq!(pop.workers, 0);
+            assert_eq!(pop.consumption.fuel_death_carry, carry);
+            assert_eq!(
+                (
+                    pop.consumption.fuel_need_month,
+                    pop.consumption.fuel_burned_month
+                ),
+                (0, 0)
+            );
+        }
     }
 
     #[test]
