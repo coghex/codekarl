@@ -9,6 +9,9 @@ wind_land_friction = 70000
 wind_land_factor = 330
 wind_slope_blocks = 2
 wind_belt_latitude = 60000
+steer_friction = 1000
+steer_factor = 1000
+meet_share = 500
 
 cosine = [
     1000000, 999998, 999994, 999986, 999976, 999962, 999945, 999925, 999903, 999877, 999848, 999816,

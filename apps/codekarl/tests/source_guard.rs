@@ -445,7 +445,10 @@ fn keyboard_offences(root: &Path) -> Vec<(String, usize, &'static str)> {
             }
             if !matches!(
                 relative.as_str(),
-                "src/main.rs" | "src/bin/economy_soak.rs" | "src/bin/travel_times.rs"
+                "src/main.rs"
+                    | "src/bin/economy_soak.rs"
+                    | "src/bin/travel_times.rs"
+                    | "src/bin/weather_trial.rs"
             ) && (line.contains("args_os") || line.contains("env::args"))
             {
                 found.push((
@@ -504,6 +507,12 @@ fn nothing_in_the_program_names_the_keyboard_filter_or_reads_the_arguments_outsi
     assert!(
         soak.contains("env::args"),
         "the economy soak binary reads its process arguments"
+    );
+    let weather = fs::read_to_string(root.join("src/bin/weather_trial.rs"))
+        .expect("the standalone weather-trial binary");
+    assert!(
+        weather.contains("env::args"),
+        "the weather-trial binary reads its process arguments"
     );
     let travel = fs::read_to_string(root.join("src/bin/travel_times.rs"))
         .expect("the standalone travel-times binary");

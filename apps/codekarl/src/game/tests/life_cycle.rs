@@ -139,6 +139,7 @@ impl Game {
             economy,
             characters: store_of(characters),
             stretches: BTreeMap::new(),
+            lows: crate::game::lows::Lows::default(),
         };
         let simulation = Self::simulate(rules, &handle, state, from);
         Self {

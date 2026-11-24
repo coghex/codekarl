@@ -248,6 +248,7 @@ pub(crate) fn prepare(
             ck_economy::validate_switch_years(&save.state.economy, date.year)
                 .map_err(|error| format!("save {}: {error}", path.display()))?;
         }
+        validate_weather_list(weather.as_deref(), &save.state.lows)?;
         super::character_storage::Storage::validate(&storage.path, &save.state)
             .map_err(|e| e.to_string())?;
         let layers = save.meta.layers;
@@ -288,6 +289,7 @@ pub(crate) fn prepare(
                     economy: economy_state,
                     characters,
                     stretches: super::stretch::starting(scenario.network.as_ref()),
+                    lows: crate::game::lows::Lows::default(),
                 },
                 scheduler(),
                 apply,
@@ -325,6 +327,7 @@ pub(crate) fn prepare(
 }
 
 struct WeatherData {
+    backdrop: Option<ck_map::Backdrop>,
     rules: ck_sim::weather::WeatherRules,
     places: Vec<(String, ck_sim::weather::WeatherPlace, [i64; 12])>,
     winds: Vec<Option<[(i64, i64, i64); 12]>>,
@@ -377,10 +380,43 @@ impl WeatherData {
             places.push((location.id.clone(), place, expected));
         }
         Ok(Self {
+            backdrop,
             rules,
             places,
             winds,
         })
+    }
+
+    fn validate_lows(&self, lows: &super::lows::Lows) -> Result<(), String> {
+        match &self.backdrop {
+            Some(backdrop) => {
+                super::wind::WindField::new(backdrop, &self.rules)?.validate_list(lows)
+            }
+            None if lows.next >= 1 && lows.entries.is_empty() => Ok(()),
+            None => Err("weather list: no backdrop or invalid next number".into()),
+        }
+    }
+
+    fn step_lows(&self, lows: &mut super::lows::Lows, date: Date) {
+        if lows.entries.is_empty() {
+            return;
+        }
+        if let Some(backdrop) = &self.backdrop {
+            let offset = ck_sim::weather::julian_day(
+                i64::from(date.year),
+                i64::from(date.month),
+                i64::from(date.day),
+            ) - ck_sim::weather::julian_day(1, 1, 1);
+            let (year, month, day) = ck_sim::weather::gregorian(offset).expect("validated date");
+            let field =
+                super::wind::WindField::new(backdrop, &self.rules).expect("validated backdrop");
+            field.step(
+                lows,
+                year,
+                usize::try_from(month).expect("valid month"),
+                day,
+            );
+        }
     }
 
     fn daily_means(&self, date: Date) -> Result<BTreeMap<String, i64>, String> {
@@ -490,18 +526,33 @@ impl ViewWiring {
         &self,
     ) -> impl Fn(&GameState, Date) -> Result<(), String> + Send + 'static {
         let rules = self.rules.clone();
+        let weather = self.weather.clone();
         let quality = self
             .land_by_place
             .iter()
             .filter_map(|(id, land)| Some((id.clone(), ck_economy::mean_fertility(land).ok()?)))
             .collect::<BTreeMap<_, _>>();
-        move |state, date| match rules.as_deref() {
-            Some(rules) => {
-                ck_economy::validate_level_records(rules, &quality, &state.economy)?;
-                ck_economy::validate_switch_years(&state.economy, date.year)
+        move |state, date| {
+            validate_weather_list(weather.as_deref(), &state.lows)?;
+            match rules.as_deref() {
+                Some(rules) => {
+                    ck_economy::validate_level_records(rules, &quality, &state.economy)?;
+                    ck_economy::validate_switch_years(&state.economy, date.year)
+                }
+                None => Ok(()),
             }
-            None => Ok(()),
         }
+    }
+}
+
+fn validate_weather_list(
+    weather: Option<&WeatherData>,
+    lows: &super::lows::Lows,
+) -> Result<(), String> {
+    match weather {
+        Some(data) => data.validate_lows(lows),
+        None if lows.next >= 1 && lows.entries.is_empty() => Ok(()),
+        None => Err("weather list: no backdrop or invalid next number".into()),
     }
 }
 
@@ -818,6 +869,14 @@ fn gameplay_scheduler_with_rules(
     characters_io: Option<super::character_storage::Handle>,
 ) -> Scheduler<GameState> {
     let mut scheduler = Scheduler::<GameState>::new();
+    if let Some(weather) = weather.clone() {
+        scheduler
+            .register("weather.hourly", Cadence::Hourly, move |state, tick| {
+                weather.step_lows(&mut state.lows, tick.date());
+                Ok(())
+            })
+            .expect("weather system name is unique");
+    }
     if let Some(rules) = rules {
         register_economy_callback_with_context(
             &mut scheduler,
@@ -2413,6 +2472,7 @@ mod stretch_save_tests {
                 .map(|location| (location.id.clone(), place, expected_year))
                 .collect();
             prepared.weather = Some(Arc::new(WeatherData {
+                backdrop: None,
                 rules,
                 places,
                 winds: vec![Some(monthly); count],
@@ -2468,6 +2528,7 @@ mod stretch_save_tests {
         };
         let expected = coast.expected_year(&rules, 768).unwrap();
         let weather = WeatherData {
+            backdrop: None,
             rules,
             places: vec![("coast".to_owned(), coast, expected)],
             winds: vec![],
@@ -2523,6 +2584,7 @@ mod stretch_save_tests {
                 .map(|location| (location.id.clone(), place, year))
                 .collect();
             prepared.weather = Some(Arc::new(WeatherData {
+                backdrop: None,
                 rules,
                 places,
                 winds: vec![Some([(100, 100, 101_000); 12]); prepared.scenario.locations.len()],
@@ -2609,6 +2671,7 @@ mod stretch_save_tests {
         };
         let expected = north.expected_year(&rules, 1).unwrap();
         let weather = WeatherData {
+            backdrop: None,
             rules,
             places: vec![("north".into(), north, expected)],
             winds: vec![],
@@ -2650,6 +2713,7 @@ mod stretch_save_tests {
             .map(|location| (location.id.clone(), coast, expected))
             .collect();
         prepared.weather = Some(Arc::new(WeatherData {
+            backdrop: None,
             rules,
             places,
             winds: vec![],
@@ -2726,6 +2790,7 @@ mod stretch_save_tests {
         };
         let expected = place.expected_year(&weather_rules, 768).unwrap();
         let weather = Arc::new(WeatherData {
+            backdrop: None,
             rules: weather_rules,
             places: vec![("fixture".into(), place, expected)],
             winds: vec![],
@@ -2907,6 +2972,210 @@ mod stretch_save_tests {
             &mut |_, _| {},
         )
         .unwrap()
+    }
+
+    #[test]
+    fn a_root_without_backdrop_refuses_a_nonempty_weather_list() {
+        let dir = crate::testing::Dir::new();
+        let (game, source) = fixture(&dir.0);
+        let path = super::super::saves::quicksave_path(&game.saves);
+        let mut save = source.simulation.save(source.identity.meta(42));
+        save.state.lows.next = 2;
+        save.state.lows.entries.push(super::super::lows::Low {
+            number: 1,
+            x: 21_361_500,
+            y: 15_777_500,
+            radius: 500_000,
+            depth: 3000,
+            strongest: 4489,
+        });
+        write_save(&source, &save, &path);
+        let result = prepare(
+            &Request {
+                game: &game,
+                vms: &[],
+                load: Some(&path),
+                seed: None,
+            },
+            || Ok(42),
+            &mut |_, _| {},
+        );
+        assert!(result.err().unwrap().contains("weather list"));
+        let lines = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&lines);
+        let (_, running) = fixture(&dir.0);
+        let mut core = test_core(
+            running,
+            game.saves.clone(),
+            Outputs {
+                log: Box::new(move |_, line| captured.lock().unwrap().push(line)),
+                publish: Box::new(|_| {}),
+                fail: Box::new(|e| panic!("{e}")),
+            },
+        );
+        let before = core.digest();
+        core.dispatch(Message::Control(Control::Quickload), Duration::ZERO);
+        assert_eq!(core.digest(), before);
+        assert!(
+            lines
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|line| line.contains("weather list"))
+        );
+    }
+
+    #[test]
+    fn malformed_weather_lists_are_refused_by_both_load_paths() {
+        let dir = crate::testing::Dir::new();
+        let source = shipped_start(&dir.0, None);
+        let game = GameConfig {
+            scenario: Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../assets/scenarios/ireland-768"),
+            saves: dir.0.join("saves"),
+        };
+        let weather = source.weather.as_ref().unwrap();
+        let field =
+            super::super::wind::WindField::new(weather.backdrop.as_ref().unwrap(), &weather.rules)
+                .unwrap();
+        let mut valid = super::super::lows::Lows::default();
+        field
+            .place(&mut valid, 21361, 15777, 500_000, 3000)
+            .unwrap();
+        field
+            .place(&mut valid, 21892, 15336, 800_000, 2000)
+            .unwrap();
+        let mut cases = Vec::new();
+        let mut order = valid.clone();
+        order.entries.reverse();
+        cases.push(order);
+        let mut number = valid.clone();
+        number.next = 2;
+        cases.push(number);
+        let mut radius = valid.clone();
+        radius.entries[0].radius = 49_999;
+        cases.push(radius);
+        let mut centre = valid;
+        centre.entries[0].y = 0;
+        cases.push(centre);
+        let path = super::super::saves::quicksave_path(&game.saves);
+        for bad in cases {
+            let mut save = source.simulation.save(source.identity.meta(42));
+            save.state.lows = bad;
+            write_save(&source, &save, &path);
+            let result = prepare(
+                &Request {
+                    game: &game,
+                    vms: &[],
+                    load: Some(&path),
+                    seed: None,
+                },
+                || Ok(42),
+                &mut |_, _| {},
+            );
+            assert!(result.err().unwrap().contains("weather list"));
+            let lines = Arc::new(Mutex::new(Vec::new()));
+            let captured = Arc::clone(&lines);
+            let mut core = test_core_running(
+                shipped_start(&dir.0, None),
+                game.saves.clone(),
+                Outputs {
+                    log: Box::new(move |_, line| captured.lock().unwrap().push(line)),
+                    publish: Box::new(|_| {}),
+                    fail: Box::new(|e| panic!("{e}")),
+                },
+            );
+            let before = core.digest();
+            core.dispatch(Message::Control(Control::Quickload), Duration::ZERO);
+            assert_eq!(core.digest(), before);
+            assert!(
+                lines
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|line| line.contains("weather list"))
+            );
+        }
+    }
+
+    #[test]
+    fn placed_low_follows_clock_and_both_load_paths() {
+        let dir = crate::testing::Dir::new();
+        let source = shipped_start(&dir.0, None);
+        let mut save = source.simulation.save(source.identity.meta(42));
+        let weather = source.weather.as_ref().unwrap();
+        let field =
+            super::super::wind::WindField::new(weather.backdrop.as_ref().unwrap(), &weather.rules)
+                .unwrap();
+        field
+            .place(&mut save.state.lows, 21361, 15777, 500_000, 3000)
+            .unwrap();
+        let path = super::super::saves::quicksave_path(&dir.0.join("saves"));
+        write_save(&source, &save, &path);
+        let mut game = shipped_start(&dir.0, Some(&path));
+        let game_config = GameConfig {
+            scenario: Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../assets/scenarios/ireland-768"),
+            saves: dir.0.join("saves"),
+        };
+        let mut loaded = None;
+        for (hour, expected) in [
+            (7, (21_612_229, 15_743_230)),
+            (12, (21_795_366, 15_742_041)),
+            (13, (21_831_601, 15_741_411)),
+        ] {
+            while game.simulation.date().unwrap().hour != hour {
+                game.simulation.step().unwrap();
+            }
+            let low = &game.simulation.state().lows.entries[0];
+            assert_eq!((low.x, low.y), expected);
+            let view = view_builder(game.view_wiring())(
+                game.simulation.state(),
+                game.simulation.date().unwrap(),
+            );
+            assert_eq!(
+                view.places
+                    .iter()
+                    .find(|p| p.id == "birr")
+                    .unwrap()
+                    .wind
+                    .as_ref()
+                    .unwrap(),
+                &(2, "SW".to_owned())
+            );
+            if hour == 7 {
+                loaded = Some(load_both_ways(&dir.0, &game_config, &game, "weather"));
+            } else {
+                follow_to(
+                    loaded.as_mut().unwrap(),
+                    &game,
+                    game.simulation.date().unwrap(),
+                );
+            }
+        }
+        let end = Date {
+            year: 768,
+            month: 10,
+            day: 10,
+            hour: 0,
+        };
+        while game.simulation.date().unwrap() != end {
+            game.simulation.step().unwrap();
+        }
+        follow_to(loaded.as_mut().unwrap(), &game, end);
+        let low = &game.simulation.state().lows.entries[0];
+        assert_eq!((low.x, low.y), (22_243_142, 15_693_313));
+        let view = view_builder(game.view_wiring())(game.simulation.state(), end);
+        assert_eq!(
+            view.places
+                .iter()
+                .find(|p| p.id == "birr")
+                .unwrap()
+                .wind
+                .as_ref()
+                .unwrap(),
+            &(2, "SW".to_owned())
+        );
     }
 
     #[test]
@@ -3687,6 +3956,7 @@ mod switch_replay_tests {
                 economy: fort(rules),
                 characters: ck_characters::CharacterStore::default(),
                 stretches: BTreeMap::new(),
+                lows: crate::game::lows::Lows::default(),
             },
             make(),
             apply,

@@ -119,6 +119,7 @@ fn run(
             economy: economy(broken),
             characters: store_of(characters),
             stretches: BTreeMap::new(),
+            lows: crate::game::lows::Lows::default(),
         },
         scheduler,
         apply,
@@ -324,6 +325,7 @@ fn the_daily_passes_run_the_event_engine_with_the_character_storage_on_the_first
         economy: economy_with_a_noble_pop(),
         characters: store_of(vec![monk]),
         stretches: BTreeMap::new(),
+        lows: crate::game::lows::Lows::default(),
     };
     run_character_passes(
         &rules,
@@ -399,6 +401,7 @@ fn an_unavailable_log_does_not_stop_the_state_updates_and_is_reported() {
         economy: economy_with_a_noble_pop(),
         characters: store_of(vec![monk]),
         stretches: BTreeMap::new(),
+        lows: crate::game::lows::Lows::default(),
     };
     let result = run_character_passes(
         &rules,
@@ -438,6 +441,7 @@ fn a_place_passion_written_by_the_production_pass_names_the_place_by_its_authore
         economy: economy_with_a_noble_pop(),
         characters: store_of(vec![chief]),
         stretches: BTreeMap::new(),
+        lows: crate::game::lows::Lows::default(),
     };
     let names: BTreeMap<String, String> = [("fixture".to_owned(), "Ard Mhacha".to_owned())].into();
     run_character_passes(
@@ -484,6 +488,7 @@ fn the_first_daily_phase_backfills_a_promotion_before_the_deaths_and_the_economy
         economy: economy_with_a_noble_pop(),
         characters: store_of(vec![noble]),
         stretches: BTreeMap::new(),
+        lows: crate::game::lows::Lows::default(),
     };
     super::super::setup::run_pre_economy_passes(
         &rules,

@@ -225,6 +225,10 @@ fn a_year_of_the_shipped_game_from_its_first_noon_is_day_for_day_the_accepted_ye
     // fertility, shelter, nearby places, the character phases and the population floors. The economy after each noon step, from
     // the first noon through the noon of the next anniversary.
     let (_dir, mut prepared, _) = shipped(42);
+    assert_eq!(
+        prepared.simulation.state().lows,
+        crate::game::lows::Lows::default()
+    );
     let first = prepared.simulation.date().unwrap();
     assert_eq!(
         (first.year, first.month, first.day, first.hour),
@@ -244,6 +248,10 @@ fn a_year_of_the_shipped_game_from_its_first_noon_is_day_for_day_the_accepted_ye
         assert!(errors.is_empty(), "{errors:?}");
         let now = prepared.simulation.date().unwrap();
         if now.hour == 13 {
+            assert_eq!(
+                prepared.simulation.state().lows,
+                crate::game::lows::Lows::default()
+            );
             writeln!(
                 lines,
                 "{}-{:02}-{:02} {:016x}",
@@ -1063,6 +1071,39 @@ fn weather_is_present_for_every_shipped_place() {
     );
     assert_eq!(view.places.len(), prepared.scenario.locations.len());
     assert!(view.places.iter().all(|place| place.temperature.is_some()));
+}
+
+#[test]
+fn game_without_backdrop_starts_and_steps_with_an_empty_list() {
+    let dir = Dir::new();
+    let scenario = assets_with_scenario(&dir, "ireland-768");
+    fs::remove_dir_all(dir.0.join("assets/map/backdrop")).unwrap();
+    let game = GameConfig {
+        scenario,
+        saves: dir.0.join("saves"),
+    };
+    let mut prepared = prepare(
+        &Request {
+            game: &game,
+            vms: &[],
+            load: None,
+            seed: Some(42),
+        },
+        || Ok(42),
+        &mut |_, _| {},
+    )
+    .unwrap();
+    assert_eq!(
+        prepared.simulation.state().lows,
+        crate::game::lows::Lows::default()
+    );
+    for _ in 0..24 {
+        assert!(prepared.simulation.step().unwrap().is_empty());
+    }
+    assert_eq!(
+        prepared.simulation.state().lows,
+        crate::game::lows::Lows::default()
+    );
 }
 
 #[test]
