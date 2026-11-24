@@ -100,6 +100,44 @@ fn pops_of(state: &GameState, place: &str) -> Vec<(usize, String, String, u64)> 
 }
 
 #[test]
+fn shipped_herds_start_at_two_thirds_of_their_maximum() {
+    let directory = assets().join("scenarios/ireland-768");
+    let scenario = ck_map::load_scenario(&directory).unwrap();
+    let (economy, _) = starting_economy(&assets(), &directory, &scenario).unwrap();
+    let rules = ck_economy::Rules::load(assets().join("game/economy.toml")).unwrap();
+    let mut checked = 0;
+    for building in economy.places.iter().flat_map(|place| &place.buildings) {
+        let definition = rules
+            .buildings
+            .iter()
+            .find(|b| b.id == building.kind)
+            .unwrap();
+        let levels: u64 = definition
+            .methods
+            .iter()
+            .zip(&building.method_levels)
+            .filter(|(method, _)| method.resource != "sea")
+            .map(|(_, levels)| u64::from(*levels))
+            .sum();
+        for (species, head) in rules.herd_species.iter().zip(&building.herds) {
+            let maximum = definition
+                .herds
+                .get(&species.animal)
+                .map_or(0, |c| c.maximum * levels);
+            assert_eq!(
+                *head,
+                maximum * 2 / 3,
+                "{} {}",
+                building.kind,
+                species.animal
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked > 0);
+}
+
+#[test]
 fn the_shipped_figures_join_the_scenarios_places_and_pops_before_any_generation() {
     let directory = assets().join("scenarios/ireland-768");
     let scenario = ck_map::load_scenario(&directory).unwrap();

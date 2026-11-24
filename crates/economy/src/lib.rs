@@ -208,14 +208,12 @@ pub struct HerdSpecies {
     pub products: Vec<HerdProduct>,
 }
 
-/// Capacity and opening count per farming level.
+/// Capacity per farming level.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct HerdCapacity {
     /// Maximum head per level.
     pub maximum: u64,
-    /// Opening head per level.
-    pub start: u64,
 }
 
 /// A building's job positions, land use, owner coverage and production methods.
@@ -254,6 +252,8 @@ pub struct BuildingType {
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Rules {
+    /// Opening share of each herd maximum, numerator and denominator.
+    pub herd_start_share: [u64; 2],
     /// Herd species in canonical order.
     #[serde(default)]
     pub herd_species: Vec<HerdSpecies>,
@@ -431,6 +431,15 @@ impl Rules {
             entry,
             problem,
         };
+        if self.herd_start_share[0] == 0
+            || self.herd_start_share[1] == 0
+            || self.herd_start_share[0] > self.herd_start_share[1]
+        {
+            return Err(refuse(
+                "herd_start_share".to_owned(),
+                "invalid share".to_owned(),
+            ));
+        }
         unique_ids(
             file,
             "goods",
@@ -1012,13 +1021,10 @@ impl Rules {
             }
         }
         for building in &self.buildings {
-            for (animal, capacity) in &building.herds {
+            for animal in building.herds.keys() {
                 let entry = format!("buildings.{}.herds.{animal}", building.id);
                 if !self.herd_species.iter().any(|s| s.animal == *animal) {
                     return Err(refuse(entry, "unknown herd species".to_owned()));
-                }
-                if capacity.start > capacity.maximum {
-                    return Err(refuse(entry, "start exceeds maximum".to_owned()));
                 }
             }
         }
@@ -3251,13 +3257,17 @@ fn herd_counts(
             let start = building
                 .herds
                 .get(&species.animal)
-                .map_or(0, |capacity| capacity.start);
-            farming_levels.checked_mul(start).ok_or_else(|| {
-                missing_data(
-                    format!("buildings.{}.herds.{}", building.id, species.animal),
-                    "starting herd count overflow",
-                )
-            })
+                .map_or(0, |capacity| capacity.maximum);
+            farming_levels
+                .checked_mul(start)
+                .and_then(|maximum| maximum.checked_mul(rules.herd_start_share[0]))
+                .map(|scaled| scaled / rules.herd_start_share[1])
+                .ok_or_else(|| {
+                    missing_data(
+                        format!("buildings.{}.herds.{}", building.id, species.animal),
+                        "starting herd count overflow",
+                    )
+                })
         })
         .collect()
 }
@@ -9336,6 +9346,7 @@ pub(crate) mod tests {
     )]
     pub(crate) fn tiny_rules() -> Rules {
         Rules {
+            herd_start_share: [2, 3],
             herd_species: Vec::new(),
             goods: vec![Good {
                 id: "food".to_owned(),
@@ -14022,13 +14033,7 @@ pub(crate) mod tests {
             .find(|b| b.id == "farm")
             .unwrap()
             .herds
-            .insert(
-                "goats".into(),
-                HerdCapacity {
-                    maximum: 2,
-                    start: 1,
-                },
-            );
+            .insert("goats".into(), HerdCapacity { maximum: 2 });
         let mut state = shipped_production_fixture(&rules);
         let farm = &mut state.places[0].buildings[0];
         farm.herds = vec![0, 0, 0, 10];
@@ -14131,10 +14136,7 @@ pub(crate) mod tests {
         }
         assert_eq!(total, 602);
         assert_eq!(wool, 1);
-        let cattle = HerdCapacity {
-            maximum: 12,
-            start: 9,
-        };
+        let cattle = HerdCapacity { maximum: 12 };
         rules.buildings[farm_index]
             .herds
             .insert("cattle".into(), cattle);
@@ -14206,13 +14208,7 @@ pub(crate) mod tests {
             .find(|b| b.id == "farm")
             .unwrap()
             .herds
-            .insert(
-                "goats".into(),
-                HerdCapacity {
-                    maximum: 10,
-                    start: 1,
-                },
-            );
+            .insert("goats".into(), HerdCapacity { maximum: 10 });
         let mut state = shipped_production_fixture(&rules);
         let place = &mut state.places[0];
         place.buildings[0].herds = vec![1, 1, 0, 1];
@@ -14277,13 +14273,7 @@ pub(crate) mod tests {
             .find(|b| b.id == "farm")
             .unwrap()
             .herds
-            .insert(
-                "goats".into(),
-                HerdCapacity {
-                    maximum: 10,
-                    start: 1,
-                },
-            );
+            .insert("goats".into(), HerdCapacity { maximum: 10 });
         let mut state = shipped_production_fixture(&rules);
         let farm = &mut state.places[0].buildings[0];
         farm.herds = vec![1, 0, 1, 1];
@@ -14345,13 +14335,8 @@ pub(crate) mod tests {
             .find(|building| building.id == "farm")
             .unwrap();
         farm.herds.clear();
-        farm.herds.insert(
-            "goats".into(),
-            HerdCapacity {
-                maximum: 4,
-                start: 1,
-            },
-        );
+        farm.herds
+            .insert("goats".into(), HerdCapacity { maximum: 4 });
         let farm = &rules.buildings[0];
         assert_eq!(
             starting_method_output(
@@ -14436,22 +14421,47 @@ pub(crate) mod tests {
             .iter()
             .find(|building| building.kind == "farm")
             .unwrap();
-        assert_eq!(single_farm.herds, [9, 6, 5]);
-        let (state, _) = starting_state(&rules, &data, &[location], 10).unwrap();
+        assert_eq!(single_farm.herds, [8, 5, 4]);
+        let (state, _) =
+            starting_state(&rules, &data, std::slice::from_ref(&location), 10).unwrap();
         let farm = state.places[0]
             .buildings
             .iter()
             .find(|building| building.kind == "farm")
             .unwrap();
         assert_eq!(farm.method_levels, [2]);
-        assert_eq!(farm.herds, [18, 12, 10]);
+        assert_eq!(farm.herds, [16, 10, 9]);
+        let mut half = rules.clone();
+        half.herd_start_share = [1, 2];
+        let (state, _) = starting_state(&half, &data, std::slice::from_ref(&location), 10).unwrap();
+        let farm = state.places[0]
+            .buildings
+            .iter()
+            .find(|b| b.kind == "farm")
+            .unwrap();
+        assert_eq!(farm.herds, [12, 8, 7]);
+        assert_eq!(
+            herd_counts(&rules, &[10], &rules.buildings[0]).unwrap(),
+            [80, 53, 46]
+        );
+        let mut fixture = rules.clone();
+        let mut goat = fixture.herd_species[0].clone();
+        goat.animal = "goats".into();
+        fixture.herd_species.push(goat);
+        fixture.buildings[0]
+            .herds
+            .insert("goats".into(), HerdCapacity { maximum: 3 });
+        assert_eq!(
+            herd_counts(&fixture, &[2], &fixture.buildings[0]).unwrap()[3],
+            4
+        );
     }
 
     #[test]
     fn starting_herd_count_overflow_is_refused() {
         let mut rules = shipped_rules();
         let farm = &mut rules.buildings[0];
-        farm.herds.get_mut("cattle").unwrap().start = u64::MAX;
+        farm.herds.get_mut("cattle").unwrap().maximum = u64::MAX;
         let error = herd_counts(&rules, &[2, 0], &rules.buildings[0]).unwrap_err();
         assert_eq!(error.entry, "buildings.farm.herds.cattle");
         assert!(error.problem.contains("overflow"));
@@ -14529,27 +14539,9 @@ pub(crate) mod tests {
         );
         for name in ["farm", "holdings", "demesne"] {
             let b = rules.buildings.iter().find(|b| b.id == name).unwrap();
-            assert_eq!(
-                b.herds["cattle"],
-                HerdCapacity {
-                    maximum: 12,
-                    start: 9
-                }
-            );
-            assert_eq!(
-                b.herds["pigs"],
-                HerdCapacity {
-                    maximum: 8,
-                    start: 6
-                }
-            );
-            assert_eq!(
-                b.herds["sheep"],
-                HerdCapacity {
-                    maximum: 7,
-                    start: 5
-                }
-            );
+            assert_eq!(b.herds["cattle"], HerdCapacity { maximum: 12 });
+            assert_eq!(b.herds["pigs"], HerdCapacity { maximum: 8 });
+            assert_eq!(b.herds["sheep"], HerdCapacity { maximum: 7 });
         }
         let mut cases: Vec<(&str, Rules)> = Vec::new();
         let mut bad = rules.clone();
@@ -14559,17 +14551,19 @@ pub(crate) mod tests {
         bad.herd_species.push(bad.herd_species[0].clone());
         cases.push(("herd_species", bad));
         let mut bad = rules.clone();
-        bad.buildings[0].herds.insert(
-            "unknown".into(),
-            HerdCapacity {
-                maximum: 1,
-                start: 1,
-            },
-        );
+        bad.buildings[0]
+            .herds
+            .insert("unknown".into(), HerdCapacity { maximum: 1 });
         cases.push(("buildings.farm.herds.unknown", bad));
         let mut bad = rules.clone();
-        bad.buildings[0].herds.get_mut("cattle").unwrap().start = 13;
-        cases.push(("buildings.farm.herds.cattle", bad));
+        bad.herd_start_share = [4, 3];
+        cases.push(("herd_start_share", bad));
+        let mut bad = rules.clone();
+        bad.herd_start_share = [0, 0];
+        cases.push(("herd_start_share", bad));
+        let mut bad = rules.clone();
+        bad.herd_start_share = [0, 3];
+        cases.push(("herd_start_share", bad));
         let mut bad = rules.clone();
         bad.herd_species[0].yields[0].good = "unknown".into();
         cases.push(("herd_species.cattle.yields.unknown", bad));
