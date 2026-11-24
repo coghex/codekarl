@@ -151,8 +151,18 @@ pub(crate) fn starting_economy(
             land,
         })
         .collect::<Vec<_>>();
-    ck_economy::starting_state(&rules, &data, &starts, scenario.start.month)
-        .map_err(|error| error.to_string())
+    ck_economy::starting_state_at(
+        &rules,
+        &data,
+        &starts,
+        ck_sim::Date {
+            year: scenario.start.year,
+            month: scenario.start.month,
+            day: scenario.start.day,
+            hour: scenario.start.hour,
+        },
+    )
+    .map_err(|error| error.to_string())
 }
 
 #[cfg(test)]

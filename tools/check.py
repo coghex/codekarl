@@ -1417,6 +1417,27 @@ STEPS = [
             "assets/scenarios/ireland-768/",
         ),
     ),
+    Step(
+        "methods.year",
+        FULL,
+        lambda: [
+            [
+                "cargo",
+                "test",
+                "-p",
+                "codekarl",
+                "--lib",
+                "shipped_yearly_monthly_looks_report_passing_moves",
+                "--locked",
+                "--",
+                "--ignored",
+                "--nocapture",
+            ]
+        ],
+        category="optional",
+        description="The shipped Ireland year's monthly production-method look, including the method-pair counts.",
+        paths=("apps/codekarl/src/game/setup.rs", "crates/economy/"),
+    ),
     # CK-130: each optional scale group owns one crate. Both stay outside every level and run only when named.
     Step(
         "metal.scale",

@@ -61,6 +61,7 @@ RUST_STEPS = (
     "metal.window-compat",
     "metal.window-instanced",
     "travel.scale",
+    "methods.year",
     "input.core",
     "map.core",
     "sim.core",
@@ -340,7 +341,7 @@ class Levels(CheckFixture):
                 *(
                     name
                     for name in RUST_STEPS
-                    if name not in (*VULKAN_OPTIONAL_STEPS, "travel.scale")
+                    if name not in (*VULKAN_OPTIONAL_STEPS, "travel.scale", "methods.year")
                 ),
                 *UNITTEST_STEPS,
                 "mypy",

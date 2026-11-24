@@ -274,6 +274,9 @@ def presenter_case_names(source: str) -> list[str]:
 
 def group_units(step: check.Step, targets: dict[str, list[tuple[str, str, bool]]]) -> set[Unit]:
     """Every test unit the group's commands run."""
+    # The named ignored case is outside the normal lib-test unit and is asserted separately below.
+    if step.name == "methods.year":
+        return set()
     units: set[Unit] = set()
     for command in step.commands() if step.action is None else []:
         if command[:2] == ["cargo", "test"]:
@@ -1568,6 +1571,43 @@ class CrateOwnedWindowGroups(unittest.TestCase):
         self.assertEqual((witness.category, witness.levels), ("affected", ()))
 
 
+class MethodsYearGroup(unittest.TestCase):
+    """CK-408: the long shipped-year look is named and runs at the milestone full level."""
+
+    def test_year_witness_is_full_and_named_but_not_changed(self) -> None:
+        step = next(item for item in check.STEPS if item.name == "methods.year")
+        self.assertEqual(
+            (step.category, step.needs, step.levels), ("optional", "plain", check.FULL)
+        )
+        self.assertIn(step.name, check.select("full"))
+        self.assertNotIn(step.name, check.select("fast"))
+        self.assertNotIn(
+            step.name,
+            {
+                c.step.name
+                for c in check.plan(check.STEPS, ["apps/codekarl/src/game/setup.rs"]).choices
+                if c.selected
+            },
+        )
+        self.assertIn(
+            step.name,
+            {
+                c.step.name
+                for c in check.plan(check.STEPS, [], requested=[step.name]).choices
+                if c.selected
+            },
+        )
+        command = step.commands()[0]
+        self.assertIn("shipped_yearly_monthly_looks_report_passing_moves", command)
+        self.assertIn("--ignored", command)
+        self.assertIn("--nocapture", command)
+        source = (REPO / "apps/codekarl/src/game/setup.rs").read_text()
+        self.assertRegex(
+            source,
+            r'#\[ignore = "[^"\n]+"\]\s*fn shipped_yearly_monthly_looks_report_passing_moves',
+        )
+
+
 class OptionalScaleGroup(unittest.TestCase):
     """CK-130: the milestone 5 scale acceptance is an optional group. It opens a 1920 x 1080 window and holds the GPU for minutes, so
     it runs only when named, at no level, with its two harnesses told to run (`CK_SCALE_RUN=1`) and in release."""
@@ -2398,6 +2438,7 @@ GUARDS: tuple[Guard, ...] = (
             "crates/log/src/lib.rs",
             "crates/gpu-vulkan/build.rs",
             "apps/codekarl/src/main.rs",
+            "apps/codekarl/src/game/setup.rs",
             *TOOLCHAIN_FILES[:2],
             "apps/codekarl/Cargo.toml",
             "crates/log/Cargo.toml",
@@ -3904,7 +3945,8 @@ class Quick(unittest.TestCase):
     def test_01_quick_and_fast_keep_their_meaning_through_the_catalog(self) -> None:
         self.assertEqual(check.select("quick"), ["fmt", "ruff", "shellcheck"])
         self.assertEqual(
-            check.select("fast"), [name for name in check.select("full") if name != "travel.scale"]
+            check.select("fast"),
+            [name for name in check.select("full") if name not in ("travel.scale", "methods.year")],
         )
         # CK-130: an optional step (`metal.scale`) has no level, so no level selects it.
         everything = [step.name for step in check.STEPS if step.levels]

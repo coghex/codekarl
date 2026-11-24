@@ -21,6 +21,8 @@ pub mod peoples;
 pub mod personality;
 mod start_levels;
 mod swap;
+/// Read-only comparisons of production methods.
+pub mod switching;
 pub use events::{Epithet, EpithetScope, EpithetTrigger, EventRules};
 pub use genetics::{Genetics, PopGenetics};
 pub use lifecycle::LifeCycle;
@@ -342,11 +344,18 @@ pub struct Rules {
     pub suitability: BTreeMap<String, BTreeMap<String, u16>>,
     /// Grazing suitability by terrain and animal key, in ‰.
     pub grazing: BTreeMap<String, BTreeMap<String, u16>>,
+    /// Extra margin a method switch must earn, in per-mille of staying value.
+    #[serde(default = "default_method_switch_margin_pm")]
+    pub method_switch_margin_pm: u16,
     /// Target-price response in per-mille.
     pub price_k_pm: u32,
     /// The most a swap's starter may lose to rounding, as a share of what it gives, in per-mille (CK-391).
     #[serde(default = "default_swap_loss_limit_pm")]
     pub swap_loss_limit_pm: u16,
+}
+
+fn default_method_switch_margin_pm() -> u16 {
+    200
 }
 
 fn default_swap_loss_limit_pm() -> u16 {
@@ -455,6 +464,12 @@ impl Rules {
             entry,
             problem,
         };
+        if self.method_switch_margin_pm > 1000 {
+            return Err(refuse(
+                "method_switch_margin_pm".to_owned(),
+                "must be at most 1000".to_owned(),
+            ));
+        }
         if self.herd_start_share[0] == 0
             || self.herd_start_share[1] == 0
             || self.herd_start_share[0] > self.herd_start_share[1]
@@ -813,6 +828,21 @@ impl Rules {
                         ));
                     }
                 }
+                let fuel_outputs = method
+                    .annual_output
+                    .keys()
+                    .filter(|id| {
+                        self.goods
+                            .iter()
+                            .any(|good| &good.id == *id && good.category_supplied("fuel", 1) > 0)
+                    })
+                    .count();
+                if fuel_outputs > 1 {
+                    return Err(refuse(
+                        format!("buildings[{index}].methods.{}", method.id),
+                        "a method may make at most one fuel".to_owned(),
+                    ));
+                }
                 if !["usable_land", "sea", "forest", "bog"].contains(&method.resource.as_str()) {
                     return Err(refuse(
                         format!("buildings[{index}].methods.{}.resource", method.id),
@@ -1037,6 +1067,16 @@ impl Rules {
                 let product_entry = format!("{entry}.products.{}", product.good);
                 if !goods.contains(product.good.as_str()) {
                     return Err(refuse(product_entry, "unknown good".to_owned()));
+                }
+                if self
+                    .goods
+                    .iter()
+                    .any(|good| good.id == product.good && good.category_supplied("fuel", 1) > 0)
+                {
+                    return Err(refuse(
+                        product_entry,
+                        "a recurring herd product cannot supply fuel".to_owned(),
+                    ));
                 }
                 if product.amount_milli.is_none() {
                     return Err(refuse(
@@ -1535,19 +1575,50 @@ pub fn natural_shelter(rules: &Rules, land: &LandCounts) -> Result<u64, DataErro
 /// Build the deterministic opening economy from authored scenario data.
 ///
 /// The report names every resource cut and any authored level for which no
-/// method had room. Employment is filled directly and has no monthly rate cap.
+/// method had room. Employment is filled directly and has no monthly rate cap. `start_month` is also
+/// the first payday's month; callers with a calendar date use [`starting_state_at`].
 ///
 /// # Errors
 /// Returns a source-qualified error for invalid rules, missing templates or checked arithmetic overflow.
-#[expect(
-    clippy::too_many_lines,
-    reason = "The per-location startup sequence is kept together so holdings, farm, storehouse, and employment ordering stays explicit."
-)]
 pub fn starting_state(
     rules: &Rules,
     data: &ScenarioEconomy,
     locations: &[StartLocation],
     start_month: u8,
+) -> Result<(EconomyState, Vec<String>), DataError> {
+    starting_state_with_payday(rules, data, locations, start_month, start_month)
+}
+
+/// Builds the starting economy using the scenario's exact date for opening unpaid work.
+///
+/// # Errors
+/// Returns a source-qualified error for an invalid date, invalid rules or failed initialization.
+pub fn starting_state_at(
+    rules: &Rules,
+    data: &ScenarioEconomy,
+    locations: &[StartLocation],
+    start: Date,
+) -> Result<(EconomyState, Vec<String>), DataError> {
+    ck_sim::GameTime::from_date(start)
+        .map_err(|error| missing_data("scenario start".into(), &error.to_string()))?;
+    let first_payday = if start.day == 1 && start.hour <= 12 {
+        start.month
+    } else {
+        start.month % 12 + 1
+    };
+    starting_state_with_payday(rules, data, locations, start.month, first_payday)
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "The startup sequence preserves its placement and employment ordering."
+)]
+fn starting_state_with_payday(
+    rules: &Rules,
+    data: &ScenarioEconomy,
+    locations: &[StartLocation],
+    start_month: u8,
+    first_payday: u8,
 ) -> Result<(EconomyState, Vec<String>), DataError> {
     if !(1..=12).contains(&start_month) {
         return Err(DataError {
@@ -1917,6 +1988,13 @@ pub fn starting_state(
             });
         }
         fill_starting_employment(rules, &mut pops, &mut buildings);
+        seed_unpaid_work(
+            rules,
+            &pops,
+            &mut buildings,
+            mean_fertility(&location.land)?,
+            first_payday,
+        )?;
         fuel::seed_starting_fuel(rules, &mut pops, &buildings)?;
         let prices_milli = rules
             .goods
@@ -2440,6 +2518,7 @@ fn assign_building_levels(
                 .map_err(|_| missing_data("projection".to_owned(), "method count overflow"))?,
             ground: terrain.clone(),
             paydays: MATURE_PAYDAYS,
+            unpaid_work: seasonal_accounts(rules, building, method),
         });
         demand.provide(rules, &level_output);
         if method.resource == "sea" {
@@ -2581,6 +2660,29 @@ pub fn validate_level_records(
     Ok(())
 }
 
+fn check_unpaid_accounts(
+    rules: &Rules,
+    definition: &BuildingType,
+    method: &Method,
+    record: &LevelRecord,
+    level: &str,
+) -> Result<(), String> {
+    let expected = seasonal_accounts(rules, definition, method);
+    for good in expected.keys() {
+        if !record.unpaid_work.contains_key(good) {
+            return Err(format!("{level} good {good}: missing unpaid work account"));
+        }
+    }
+    for good in record.unpaid_work.keys() {
+        if !expected.contains_key(good) {
+            return Err(format!(
+                "{level} good {good}: unexpected unpaid work account"
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn check_level_records(
     rules: &Rules,
     definition: &BuildingType,
@@ -2618,6 +2720,7 @@ fn check_level_records(
                 method.id
             ));
         }
+        check_unpaid_accounts(rules, definition, method, record, &level)?;
         if record.paydays > MATURE_PAYDAYS {
             return Err(format!(
                 "{level}: {} completed paydays is more than {MATURE_PAYDAYS}",
@@ -3025,6 +3128,149 @@ pub fn herd_supplies(rules: &Rules, building: &BuildingType, good_id: &str) -> b
             species.yields.iter().any(|item| item.good == good_id)
                 || species.products.iter().any(|item| item.good == good_id)
         })
+}
+
+fn seasonal_accounts(
+    rules: &Rules,
+    building: &BuildingType,
+    method: &Method,
+) -> BTreeMap<String, bigint::Big> {
+    method
+        .annual_output
+        .keys()
+        .filter(|good| !herd_supplies(rules, building, good))
+        .map(|good| (good.clone(), bigint::Big::default()))
+        .collect()
+}
+
+fn seed_unpaid_work(
+    rules: &Rules,
+    pops: &[PopState],
+    buildings: &mut [BuildingState],
+    quality: u16,
+    start_month: u8,
+) -> Result<(), DataError> {
+    for building in buildings {
+        let definition = rules
+            .buildings
+            .iter()
+            .find(|item| item.id == building.kind)
+            .ok_or_else(|| {
+                missing_data(
+                    format!("buildings.{}", building.kind),
+                    "definition is missing",
+                )
+            })?;
+        if definition.methods.is_empty() {
+            continue;
+        }
+        let positions = u64::from(building.levels) * u64::from(definition.workers_per_level);
+        if positions == 0 {
+            continue;
+        }
+        let staffed = building
+            .employment
+            .iter()
+            .try_fold(0_u64, |sum, e| sum.checked_add(e.workers))
+            .ok_or_else(|| missing_data("employment.workers".into(), "worker count overflow"))?
+            .min(positions);
+        let coverage = u64::from(building_coverage_pm(definition, pops, building)?);
+        let efficiency = 1000 - u64::from(definition.penalty_pm) * (1000 - coverage) / 1000;
+        for record in &mut building.level_records {
+            let method = &definition.methods[record.method as usize];
+            for (good, account) in &mut record.unpaid_work {
+                let season_key = if ["oats", "barley", "peas_beans"].contains(&good.as_str()) {
+                    "grain"
+                } else {
+                    good.as_str()
+                };
+                let season = rules.seasons.get(season_key).ok_or_else(|| {
+                    missing_data(format!("seasons.{season_key}"), "season table is missing")
+                })?;
+                let suitability = method_suitability_pm(
+                    rules,
+                    definition,
+                    method,
+                    good,
+                    record.ground.as_deref(),
+                );
+                let (q, reference) = if method.resource == "usable_land" {
+                    (quality, rules.fertility_reference_pm)
+                } else {
+                    (1, 1)
+                };
+                for offset in 0..12 {
+                    let month = usize::from((start_month - 1 + offset) % 12);
+                    accrue_unpaid_work(
+                        account,
+                        method.annual_output[good],
+                        suitability,
+                        MATURE_PAYDAYS,
+                        u128::from(season[month]),
+                        staffed,
+                        positions,
+                        efficiency,
+                        q,
+                        reference,
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+// The account records work at this payday's yield, before the building's output carry.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The inputs are the distinct factors of one payday's exact production formula."
+)]
+fn accrue_unpaid_work(
+    account: &mut bigint::Big,
+    annual: u64,
+    suitability: u16,
+    count: u8,
+    month_share: u128,
+    staffed: u64,
+    positions: u64,
+    coverage: u64,
+    quality: u16,
+    reference: u16,
+) {
+    let seasonal = i128::try_from(month_share).unwrap_or(0) * 12;
+    let balance = 1000_i128 - seasonal;
+    let factors = [
+        u128::from(annual),
+        u128::from(suitability),
+        u128::from(count - 1),
+        balance.unsigned_abs(),
+        u128::from(staffed),
+        u128::from(coverage),
+        u128::from(quality),
+    ];
+    let denominator = u128::from(positions) * 1_000_000 * u128::from(reference);
+    let small = factors
+        .iter()
+        .try_fold(1_u128, |product, factor| product.checked_mul(*factor));
+    let (amount, has_remainder) = if let Some(numerator) = small {
+        (
+            bigint::Big::new(numerator / denominator),
+            numerator % denominator != 0,
+        )
+    } else {
+        let (amount, remainder) = bigint::product(&factors).divmod(&bigint::Big::new(denominator));
+        (amount, remainder != bigint::Big::default())
+    };
+    if balance >= 0 {
+        *account = account.add(&amount);
+    } else {
+        let debit = if has_remainder {
+            amount.add(&bigint::Big::new(1))
+        } else {
+            amount
+        };
+        *account = account.sub(&debit).unwrap_or_default();
+    }
 }
 
 fn method_suitability_pm(
@@ -4225,6 +4471,8 @@ pub struct LevelRecord {
     pub ground: Option<String>,
     /// Paydays completed on this method without a break, from 0 to [`MATURE_PAYDAYS`].
     pub paydays: u8,
+    /// Unpaid seasonal work, in 144,000ths of a good, keyed by good ID.
+    pub unpaid_work: BTreeMap<String, bigint::Big>,
 }
 
 /// A building in the initial economy state.
@@ -6916,6 +7164,37 @@ pub fn run_monthly_production_with_quality(
                                 )
                             })?,
                     );
+                    for record in building
+                        .level_records
+                        .iter_mut()
+                        .filter(|record| record.method as usize == method_index)
+                    {
+                        let level_suitability = method_suitability_pm(
+                            rules,
+                            definition,
+                            method,
+                            good_id,
+                            record.ground.as_deref(),
+                        );
+                        let (quality, reference) = if method.resource == "usable_land" {
+                            (quality_pm, rules.fertility_reference_pm)
+                        } else {
+                            (1, 1)
+                        };
+                        let account = record.unpaid_work.entry(good_id.clone()).or_default();
+                        accrue_unpaid_work(
+                            account,
+                            *annual,
+                            level_suitability,
+                            record.paydays,
+                            month_share,
+                            staffed,
+                            positions,
+                            coverage_efficiency,
+                            quality,
+                            reference,
+                        );
+                    }
                     // Each level's suitability for the good on its own ground is multiplied by its count for the day
                     // less one (its share, in twelfths) before the levels are added.
                     let suitability = level_groups[method_index]
@@ -9950,6 +10229,7 @@ fn encode_level_records(records: &[LevelRecord], out: &mut Vec<u8>) -> Result<()
             None => false.encode(out)?,
         }
         record.paydays.encode(out)?;
+        record.unpaid_work.encode(out)?;
     }
     Ok(())
 }
@@ -9967,6 +10247,7 @@ fn decode_level_records(input: &mut Reader<'_>) -> Result<Vec<LevelRecord>, Cano
                 None
             },
             paydays: u8::decode(input)?,
+            unpaid_work: BTreeMap::decode(input)?,
         });
     }
     Ok(records)
@@ -10304,10 +10585,10 @@ pub(crate) mod tests {
                     owner_kind: None,
                 },
             ],
-            seasons: BTreeMap::from([(
-                "grain".to_owned(),
-                vec![0, 0, 0, 0, 0, 0, 0, 0, 1000, 0, 0, 0],
-            )]),
+            seasons: BTreeMap::from(
+                ["grain", "food"]
+                    .map(|key| (key.to_owned(), vec![0, 0, 0, 0, 0, 0, 0, 0, 1000, 0, 0, 0])),
+            ),
             curves: BTreeMap::from([
                 (
                     "intake_food_days".to_owned(),
@@ -10341,6 +10622,7 @@ pub(crate) mod tests {
                 BTreeMap::from([("crops".to_owned(), 1000), ("food".to_owned(), 1000)]),
             )]),
             grazing: BTreeMap::from([("pasture".to_owned(), BTreeMap::new())]),
+            method_switch_margin_pm: 200,
             price_k_pm: 500,
             swap_loss_limit_pm: 100,
         }
@@ -10506,6 +10788,7 @@ pub(crate) mod tests {
                 method: 0,
                 ground: Some("pasture".to_owned()),
                 paydays: MATURE_PAYDAYS,
+                unpaid_work: BTreeMap::new(),
             }],
             herds: vec![0, 1, 0],
             employment: vec![
@@ -10611,6 +10894,7 @@ pub(crate) mod tests {
                     method: u32::try_from(method_index).unwrap(),
                     ground: ground.clone(),
                     paydays: MATURE_PAYDAYS,
+                    unpaid_work: seasonal_accounts(rules, definition, method),
                 });
             }
         }
@@ -10628,7 +10912,7 @@ pub(crate) mod tests {
         }
     }
 
-    fn shipped_production_fixture(rules: &Rules) -> EconomyState {
+    pub(super) fn shipped_production_fixture(rules: &Rules) -> EconomyState {
         assert_eq!(
             rules.suitability[FLAT]["oats"], 1000,
             "flatten the fixture's rules with flatten_pasture"
@@ -10713,6 +10997,7 @@ pub(crate) mod tests {
                             method: 0,
                             ground: Some("pasture".to_owned()),
                             paydays: MATURE_PAYDAYS,
+                            unpaid_work: BTreeMap::new(),
                         }],
                         herds: (0..rules.herd_species.len())
                             .map(|i| [9, 6, 5].get(i).copied().unwrap_or(0))
@@ -11214,6 +11499,7 @@ pub(crate) mod tests {
                 method: 0,
                 ground: Some("pasture".to_owned()),
                 paydays: MATURE_PAYDAYS,
+                unpaid_work: BTreeMap::new(),
             }],
             herds: Vec::new(),
             employment: vec![Employment {
@@ -11356,6 +11642,7 @@ pub(crate) mod tests {
                 method: 0,
                 ground: Some("pasture".to_owned()),
                 paydays: MATURE_PAYDAYS,
+                unpaid_work: BTreeMap::new(),
             }],
             herds: Vec::new(),
             employment: vec![
@@ -11948,6 +12235,7 @@ pub(crate) mod tests {
                 method: 0,
                 ground: Some("pasture".to_owned()),
                 paydays: MATURE_PAYDAYS,
+                unpaid_work: BTreeMap::new(),
             }],
             herds: vec![0; 3],
             employment: vec![Employment {
@@ -13580,7 +13868,11 @@ pub(crate) mod tests {
                             number: 0,
                             method: 0,
                             ground: Some("pasture".to_owned()),
-                            paydays: MATURE_PAYDAYS
+                            paydays: MATURE_PAYDAYS,
+                            unpaid_work: BTreeMap::from([(
+                                "food".to_owned(),
+                                bigint::Big::default()
+                            )]),
                         }],
                         herds: Vec::new(),
                         employment: vec![Employment {
@@ -15426,6 +15718,10 @@ pub(crate) mod tests {
     #[test]
     fn coastal_methods_need_nearby_sea_but_one_sea_cell_allows_many_levels() {
         let mut rules = tiny_rules();
+        rules.seasons.insert(
+            "fish".to_owned(),
+            vec![0, 0, 0, 0, 0, 0, 0, 0, 1000, 0, 0, 0],
+        );
         rules.goods.push(Good {
             id: "fish".to_owned(),
             tags: Vec::new(),
@@ -17193,7 +17489,7 @@ pub(crate) mod tests {
         );
     }
 
-    fn good_at(rules: &Rules, id: &str) -> usize {
+    pub(super) fn good_at(rules: &Rules, id: &str) -> usize {
         rules.goods.iter().position(|good| good.id == id).unwrap()
     }
 
@@ -17791,6 +18087,7 @@ pub(crate) mod tests {
                             method: 0,
                             ground: Some("pasture".to_owned()),
                             paydays: MATURE_PAYDAYS,
+                            unpaid_work: BTreeMap::new(),
                         }],
                         herds: vec![9, 6, 5],
                         employment: vec![Employment {
@@ -17906,6 +18203,7 @@ pub(crate) mod tests {
         );
 
         let mut rules = tiny_rules();
+        rules.seasons.remove("food");
         rules.goods[0].id = "oats".to_owned();
         rules.goods[0].pop_limit_milli = 1_000_000;
         rules
@@ -18198,6 +18496,7 @@ pub(crate) mod tests {
                 method: 0,
                 ground: Some("pasture".to_owned()),
                 paydays: MATURE_PAYDAYS,
+                unpaid_work: BTreeMap::new(),
             }],
             herds: Vec::new(),
             employment: vec![
@@ -18345,6 +18644,7 @@ pub(crate) mod tests {
                         method: 0,
                         ground: Some("pasture".to_owned()),
                         paydays: MATURE_PAYDAYS,
+                        unpaid_work: BTreeMap::new(),
                     }],
                     herds: vec![20, 0, 0],
                     employment: vec![Employment::default()],
@@ -18505,6 +18805,7 @@ pub(crate) mod tests {
                 method: 0,
                 ground: Some("pasture".to_owned()),
                 paydays: MATURE_PAYDAYS,
+                unpaid_work: BTreeMap::new(),
             }],
             herds: Vec::new(),
             employment: vec![Employment {
@@ -19137,6 +19438,7 @@ pub(crate) mod tests {
     #[test]
     fn two_good_food_split_tracks_oats_and_barley_hunger_proportionally() {
         let mut rules = tiny_rules();
+        rules.seasons.remove("food");
         rules.goods[0].id = "oats".to_owned();
         rules.goods[0].hunger_centi = 1800;
         rules.goods[0].necessities_centi = 1800;
@@ -19408,6 +19710,7 @@ pub(crate) mod tests {
                 method: 0,
                 ground: Some("pasture".to_owned()),
                 paydays: MATURE_PAYDAYS,
+                unpaid_work: BTreeMap::new(),
             }],
             herds: vec![0, 0, 0],
             employment: vec![Employment {
@@ -19705,6 +20008,7 @@ pub(crate) mod tests {
                     method: 0,
                     ground: Some("pasture".to_owned()),
                     paydays: MATURE_PAYDAYS,
+                    unpaid_work: BTreeMap::new(),
                 }],
                 herds: vec![0, 2, 0],
                 employment: vec![Employment {
@@ -19954,6 +20258,7 @@ pub(crate) mod tests {
                 method: 0,
                 ground: Some("pasture".to_owned()),
                 paydays: MATURE_PAYDAYS,
+                unpaid_work: BTreeMap::new(),
             }],
             herds: Vec::new(),
             employment: vec![Employment {
@@ -20028,6 +20333,7 @@ pub(crate) mod tests {
                 method: 0,
                 ground: Some("pasture".to_owned()),
                 paydays: MATURE_PAYDAYS,
+                unpaid_work: BTreeMap::new(),
             }],
             herds: Vec::new(),
             employment: vec![Employment::default()],
@@ -20501,6 +20807,7 @@ pub(crate) mod tests {
                 method: 0,
                 ground: Some("pasture".to_owned()),
                 paydays: MATURE_PAYDAYS,
+                unpaid_work: BTreeMap::new(),
             }],
             herds: Vec::new(),
             employment: vec![Employment::default()],
@@ -21864,6 +22171,7 @@ pub(crate) mod tests {
                 method: 0,
                 ground: Some("pasture".to_owned()),
                 paydays: MATURE_PAYDAYS,
+                unpaid_work: BTreeMap::new(),
             }],
             herds: Vec::new(),
             employment: vec![Employment::default(); 3],
@@ -22074,7 +22382,7 @@ pub(crate) mod tests {
 
     // ---------------------------------------------------------------- CK-406: levels as records, paydays and wide carries
 
-    fn level_rules() -> Rules {
+    pub(super) fn level_rules() -> Rules {
         let mut rules = shipped_rules();
         flatten_pasture(&mut rules);
         rules
@@ -22087,17 +22395,23 @@ pub(crate) mod tests {
         hour: 12,
     };
 
-    fn level(number: u32, method: u32, ground: Option<&str>, paydays: u8) -> LevelRecord {
+    pub(super) fn level(
+        number: u32,
+        method: u32,
+        ground: Option<&str>,
+        paydays: u8,
+    ) -> LevelRecord {
         LevelRecord {
             number,
             method,
             ground: ground.map(str::to_owned),
             paydays,
+            unpaid_work: BTreeMap::new(),
         }
     }
 
     /// The fixture's farm with exactly these records: its counts, level total, sums and employment follow them.
-    fn farm_with(rules: &Rules, state: &mut EconomyState, records: Vec<LevelRecord>) {
+    pub(super) fn farm_with(rules: &Rules, state: &mut EconomyState, records: Vec<LevelRecord>) {
         let farm = &mut state.places[0].buildings[0];
         let definition = rules.buildings.iter().find(|b| b.id == "farm").unwrap();
         farm.levels = u32::try_from(records.len()).unwrap();
@@ -22106,6 +22420,13 @@ pub(crate) mod tests {
             farm.method_levels[record.method as usize] += 1;
         }
         farm.level_records = records;
+        for record in &mut farm.level_records {
+            record.unpaid_work = seasonal_accounts(
+                rules,
+                definition,
+                &definition.methods[record.method as usize],
+            );
+        }
         (farm.method_suitability, farm.herd_grazing_sums) =
             derive_level_sums(rules, definition, &farm.level_records).unwrap();
         farm.employment[0].workers =
@@ -22580,6 +22901,1067 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "The complete fixture pins the score, residual fuel demand and unchanged state together."
+    )]
+    fn march_look_uses_the_exact_unpaid_and_slow_start_costs_without_mutating_state() {
+        let mut rules = level_rules();
+        rules.fertility_reference_pm = 1000;
+        rules
+            .seasons
+            .insert("grain".into(), vec![0, 0, 0, 0, 0, 0, 0, 0, 1000, 0, 0, 0]);
+        rules.seasons.insert(
+            "hardwood".into(),
+            vec![250, 250, 0, 0, 0, 0, 0, 0, 0, 0, 250, 250],
+        );
+        let def = rules.buildings.iter_mut().find(|b| b.id == "farm").unwrap();
+        def.herds.clear();
+        def.methods[0].annual_output = BTreeMap::from([("oats".into(), 100)]);
+        def.methods[2].annual_output = BTreeMap::from([("hardwood".into(), 600)]);
+        let mut state = shipped_production_fixture(&rules);
+        farm_with(&rules, &mut state, vec![level(0, 0, Some("pasture"), 13)]);
+        let place = &mut state.places[0];
+        place.buildings.truncate(1);
+        place.buildings[0].herds.fill(0);
+        place.buildings[0].level_records[0]
+            .unpaid_work
+            .insert("oats".into(), bigint::Big::new(50 * 144_000));
+        for pop in &mut place.pops {
+            pop.workers = 0;
+            pop.dependents = 0;
+        }
+        let land = LandCounts {
+            land_cells: BTreeMap::from([("pasture".into(), 10), ("forest".into(), 4)]),
+            fertility_pm: BTreeMap::from([("pasture".into(), 10_000)]),
+            fertile_cells: 10,
+            fertile_cells_by_terrain: BTreeMap::from([("pasture".into(), 10)]),
+            sea: 0,
+        };
+        let prices = vec![1; rules.goods.len()];
+        let jobs = BTreeMap::from([("oats".into(), 1000), ("hardwood".into(), 1000)]);
+        let before = state.to_bytes().unwrap();
+        let first = switching::look(&rules, &state.places[0], &land, 0, 3, &prices, &jobs).unwrap();
+        let second =
+            switching::look(&rules, &state.places[0], &land, 0, 3, &prices, &jobs).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(state.to_bytes().unwrap(), before);
+        let item = first.moves.iter().find(|m| m.method == 2).unwrap();
+        let fraction = |n| (bigint::Big::new(n), bigint::Big::new(1));
+        assert_eq!(
+            (
+                item.staying.numerator.clone(),
+                item.staying.denominator.clone()
+            ),
+            fraction(100)
+        );
+        assert_eq!(
+            (
+                item.switching.numerator.clone(),
+                item.switching.denominator.clone()
+            ),
+            fraction(600)
+        );
+        assert_eq!(
+            (
+                item.unpaid.numerator.clone(),
+                item.unpaid.denominator.clone()
+            ),
+            fraction(50)
+        );
+        assert_eq!(
+            (
+                item.slow_start.numerator.clone(),
+                item.slow_start.denominator.clone()
+            ),
+            fraction(175)
+        );
+        assert_eq!(
+            (
+                item.surplus.magnitude.numerator.clone(),
+                item.surplus.magnitude.denominator.clone()
+            ),
+            fraction(255)
+        );
+        assert!(!item.surplus.negative);
+        assert_eq!(first.answer.map(|i| first.moves[i].method), Some(2));
+        for (month, wood, account, slow_num, slow_den, loss_num, loss_den) in [
+            (8, 400, 13_200_000, 850, 3, 95, 1),
+            (10, 400, 1_200_000, 350, 1, 235, 3),
+            (8, 600, 13_200_000, 425, 1, 110, 3),
+        ] {
+            let mut case_rules = rules.clone();
+            case_rules
+                .buildings
+                .iter_mut()
+                .find(|b| b.id == "farm")
+                .unwrap()
+                .methods[2]
+                .annual_output
+                .insert("hardwood".into(), wood);
+            let mut case_state = state.clone();
+            case_state.places[0].buildings[0].level_records[0]
+                .unpaid_work
+                .insert("oats".into(), bigint::Big::new(account));
+            let result = switching::look(
+                &case_rules,
+                &case_state.places[0],
+                &land,
+                0,
+                month,
+                &prices,
+                &jobs,
+            )
+            .unwrap();
+            let item = result.moves.iter().find(|m| m.method == 2).unwrap();
+            assert_eq!(item.slow_start.numerator.to_u128(), Some(slow_num));
+            assert_eq!(item.slow_start.denominator.to_u128(), Some(slow_den));
+            assert!(item.surplus.negative);
+            assert_eq!(item.surplus.magnitude.numerator.to_u128(), Some(loss_num));
+            assert_eq!(item.surplus.magnitude.denominator.to_u128(), Some(loss_den));
+        }
+        // A herd worth 500 on both sides contributes nothing to this level's margin.
+        let mut common_rules = rules.clone();
+        common_rules
+            .buildings
+            .iter_mut()
+            .find(|b| b.id == "farm")
+            .unwrap()
+            .herds
+            .insert("cattle".into(), HerdCapacity { maximum: 12 });
+        let mut common_state = state.clone();
+        let cattle = common_rules
+            .herd_species
+            .iter()
+            .position(|s| s.animal == "cattle")
+            .unwrap();
+        common_state.places[0].buildings[0].herds[cattle] = 7;
+        common_state.places[0].buildings[0].level_records[0]
+            .unpaid_work
+            .insert("oats".into(), bigint::Big::new(20 * 144_000));
+        let common_jobs = BTreeMap::from([
+            ("oats".into(), 100),
+            ("hardwood".into(), 150),
+            ("dairy".into(), 500),
+        ]);
+        let common = switching::look(
+            &common_rules,
+            &common_state.places[0],
+            &land,
+            0,
+            3,
+            &prices,
+            &common_jobs,
+        )
+        .unwrap();
+        let item = common.moves.iter().find(|m| m.method == 2).unwrap();
+        assert_eq!(
+            (
+                item.staying.numerator.to_u128(),
+                item.staying.denominator.to_u128()
+            ),
+            (Some(100), Some(1))
+        );
+        assert_eq!(
+            (
+                item.switching.numerator.to_u128(),
+                item.switching.denominator.to_u128()
+            ),
+            (Some(150), Some(1))
+        );
+        assert_eq!(
+            (
+                item.surplus.magnitude.numerator.to_u128(),
+                item.surplus.magnitude.denominator.to_u128()
+            ),
+            (Some(10), Some(1))
+        );
+        assert!(!item.surplus.negative);
+        let mut partial_rules = rules.clone();
+        partial_rules
+            .buildings
+            .iter_mut()
+            .find(|b| b.id == "farm")
+            .unwrap()
+            .workers_per_level = 4;
+        let mut partial_state = state.clone();
+        partial_state.places[0].buildings[0].employment[0].workers = 3;
+        let partial = switching::look(
+            &partial_rules,
+            &partial_state.places[0],
+            &land,
+            0,
+            3,
+            &prices,
+            &jobs,
+        )
+        .unwrap();
+        let wood = partial.moves.iter().find(|m| m.method == 2).unwrap();
+        assert_eq!(wood.staying.numerator.to_u128(), Some(75));
+        assert_eq!(wood.switching.numerator.to_u128(), Some(450));
+        let mut two_methods = rules.clone();
+        two_methods
+            .seasons
+            .insert("fish".into(), two_methods.seasons["hardwood"].clone());
+        two_methods
+            .buildings
+            .iter_mut()
+            .find(|b| b.id == "farm")
+            .unwrap()
+            .methods[1]
+            .annual_output = BTreeMap::from([("fish".into(), 600)]);
+        let mut coastal_land = land.clone();
+        coastal_land.sea = 1;
+        let mut both_jobs = jobs.clone();
+        both_jobs.insert("fish".into(), 1000);
+        let tied_methods = switching::look(
+            &two_methods,
+            &state.places[0],
+            &coastal_land,
+            0,
+            3,
+            &prices,
+            &both_jobs,
+        )
+        .unwrap();
+        assert_eq!(
+            tied_methods.answer.map(|i| tied_methods.moves[i].method),
+            Some(1)
+        );
+        let mut tied_rules = rules.clone();
+        tied_rules
+            .buildings
+            .iter_mut()
+            .find(|b| b.id == "farm")
+            .unwrap()
+            .methods[2]
+            .annual_output
+            .insert("hardwood".into(), 240);
+        let tied =
+            switching::look(&tied_rules, &state.places[0], &land, 0, 3, &prices, &jobs).unwrap();
+        let wood = tied.moves.iter().find(|m| m.method == 2).unwrap();
+        assert_eq!(wood.surplus.magnitude.numerator.to_u128(), Some(0));
+        assert!(tied.answer.is_none());
+        // The source level returns its own field room before another land method is tried.
+        let mut field_rules = rules.clone();
+        let field = &mut field_rules
+            .buildings
+            .iter_mut()
+            .find(|b| b.id == "farm")
+            .unwrap()
+            .methods[1];
+        field.resource = "usable_land".into();
+        field.suitability = "crops".into();
+        let mut exactly_one_field = land.clone();
+        exactly_one_field.land_cells = BTreeMap::from([("pasture".into(), 2)]);
+        exactly_one_field.fertility_pm = BTreeMap::from([("pasture".into(), 2000)]);
+        exactly_one_field.fertile_cells = 2;
+        exactly_one_field.sea = 0;
+        let before_land = exactly_one_field.clone();
+        let result = switching::look(
+            &field_rules,
+            &state.places[0],
+            &exactly_one_field,
+            0,
+            3,
+            &prices,
+            &jobs,
+        )
+        .unwrap();
+        assert_eq!(
+            result
+                .moves
+                .iter()
+                .find(|m| m.method == 1)
+                .unwrap()
+                .ground
+                .as_deref(),
+            Some("pasture")
+        );
+        assert_eq!(exactly_one_field, before_land);
+        let mut one_method = rules.clone();
+        one_method
+            .buildings
+            .iter_mut()
+            .find(|b| b.id == "farm")
+            .unwrap()
+            .methods
+            .truncate(1);
+        let result =
+            switching::look(&one_method, &state.places[0], &land, 0, 3, &prices, &jobs).unwrap();
+        assert!(result.moves.is_empty() && result.answer.is_none());
+        let mut no_forest = land.clone();
+        no_forest.land_cells.insert("forest".into(), 0);
+        let no_room =
+            switching::look(&rules, &state.places[0], &no_forest, 0, 3, &prices, &jobs).unwrap();
+        assert!(no_room.moves.iter().all(|m| m.method != 2));
+
+        // One job load is counted before any heat, and unused output is capped.
+        let limited_jobs = BTreeMap::from([("oats".into(), 1000), ("hardwood".into(), 1)]);
+        let limited = switching::look(
+            &rules,
+            &state.places[0],
+            &land,
+            0,
+            3,
+            &prices,
+            &limited_jobs,
+        )
+        .unwrap();
+        let wood = limited.moves.iter().find(|m| m.method == 2).unwrap();
+        assert_eq!(
+            (
+                wood.switching.numerator.clone(),
+                wood.switching.denominator.clone()
+            ),
+            fraction(1)
+        );
+        assert_eq!(
+            (
+                wood.slow_start.numerator.clone(),
+                wood.slow_start.denominator.clone()
+            ),
+            fraction(0)
+        );
+        assert!(limited.answer.is_none());
+
+        let mut heat_rules = rules.clone();
+        heat_rules
+            .pop_types
+            .iter_mut()
+            .find(|p| p.id == "peasant")
+            .unwrap()
+            .fuel_need_milli_day = 1000;
+        let mut heat_state = state.clone();
+        heat_state.places[0].pops[0].workers = 1;
+        let heat = switching::look(
+            &heat_rules,
+            &heat_state.places[0],
+            &land,
+            0,
+            3,
+            &prices,
+            &limited_jobs,
+        )
+        .unwrap();
+        let wood = heat.moves.iter().find(|m| m.method == 2).unwrap();
+        assert_eq!(
+            (
+                wood.switching.numerator.clone(),
+                wood.switching.denominator.clone()
+            ),
+            fraction(366)
+        );
+        let mut valued = state.clone();
+        valued.places[0].buildings[0].level_records[0]
+            .unpaid_work
+            .insert("oats".into(), bigint::Big::new(30 * 144_000));
+        let mut valued_prices = prices.clone();
+        valued_prices[good_at(&rules, "oats")] = 1000;
+        let result = switching::look(
+            &rules,
+            &valued.places[0],
+            &land,
+            0,
+            3,
+            &valued_prices,
+            &jobs,
+        )
+        .unwrap();
+        let item = result.moves.iter().find(|m| m.method == 2).unwrap();
+        assert_eq!(item.unpaid.numerator.to_u128(), Some(30_000));
+        assert_eq!(item.unpaid.denominator.to_u128(), Some(1));
+        let large = u128::from(u32::MAX) + 123;
+        heat_state.places[0].buildings[0].level_records[0]
+            .unpaid_work
+            .insert("oats".into(), bigint::Big::new(large));
+        let result =
+            switching::look(&rules, &heat_state.places[0], &land, 0, 3, &prices, &jobs).unwrap();
+        let item = result.moves.iter().find(|m| m.method == 2).unwrap();
+        assert_eq!(
+            item.unpaid.numerator.mul(&bigint::Big::new(144_000)),
+            item.unpaid.denominator.mul(&bigint::Big::new(large))
+        );
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "The shared fixture compares herd loss, retained animals, marginal gain and capped founders."
+    )]
+    fn the_last_land_level_bears_the_lost_herd_products_and_net_animal_cost() {
+        let mut rules = level_rules();
+        rules.fertility_reference_pm = 1000;
+        let farm = rules.buildings.iter_mut().find(|b| b.id == "farm").unwrap();
+        farm.herds.retain(|animal, _| animal == "cattle");
+        farm.herds.get_mut("cattle").unwrap().maximum = 12;
+        farm.methods[0].annual_output = BTreeMap::from([("oats".into(), 100)]);
+        farm.methods[1].annual_output = BTreeMap::from([("fish".into(), 160)]);
+        let species = rules
+            .herd_species
+            .iter_mut()
+            .find(|s| s.animal == "cattle")
+            .unwrap();
+        species.yields = vec![HerdYield {
+            good: "beef".into(),
+            units: 150,
+        }];
+        let mut state = shipped_production_fixture(&rules);
+        farm_with(&rules, &mut state, vec![level(0, 0, Some("pasture"), 13)]);
+        let place = &mut state.places[0];
+        place.buildings.truncate(1);
+        place.buildings[0].herds.fill(0);
+        let cattle = rules
+            .herd_species
+            .iter()
+            .position(|s| s.animal == "cattle")
+            .unwrap();
+        place.buildings[0].herds[cattle] = 10;
+        for pop in &mut place.pops {
+            pop.workers = 0;
+            pop.dependents = 0;
+        }
+        let land = LandCounts {
+            land_cells: BTreeMap::from([("pasture".into(), 10)]),
+            fertility_pm: BTreeMap::from([("pasture".into(), 10_000)]),
+            fertile_cells: 10,
+            fertile_cells_by_terrain: BTreeMap::from([("pasture".into(), 10)]),
+            sea: 1,
+        };
+        let mut prices = vec![1; rules.goods.len()];
+        prices[good_at(&rules, "cattle")] = 240;
+        let jobs = BTreeMap::from([
+            ("oats".into(), 1000),
+            ("fish".into(), 1000),
+            ("dairy".into(), 500),
+        ]);
+        let result =
+            switching::look(&rules, &state.places[0], &land, 0, 3, &prices, &jobs).unwrap();
+        let sea = result.moves.iter().find(|m| m.method == 1).unwrap();
+        assert_eq!(sea.staying.numerator.to_u128(), Some(600));
+        assert_eq!(sea.staying.denominator.to_u128(), Some(1));
+        assert_eq!(sea.switching.numerator.to_u128(), Some(160));
+        assert_eq!(sea.herd_cost.numerator.to_u128(), Some(900));
+        assert_eq!(sea.herd_cost.denominator.to_u128(), Some(1));
+        assert!(sea.surplus.negative);
+
+        farm_with(
+            &rules,
+            &mut state,
+            vec![
+                level(0, 0, Some("pasture"), 13),
+                level(1, 0, Some("pasture"), 13),
+            ],
+        );
+        state.places[0].buildings[0].employment[0].owners = 2;
+        let result =
+            switching::look(&rules, &state.places[0], &land, 0, 3, &prices, &jobs).unwrap();
+        let sea = result
+            .moves
+            .iter()
+            .find(|m| m.method == 1 && m.level == 0)
+            .unwrap();
+        assert_eq!(sea.herd_cost.numerator.to_u128(), Some(0));
+        assert_eq!(sea.staying.numerator.to_u128(), Some(100));
+
+        // A 100-to-150 move with 20 of animal loss clears a 20 margin by 10.
+        let mut gain_rules = rules.clone();
+        gain_rules.herd_species[cattle].products.clear();
+        gain_rules.herd_species[cattle].yields.clear();
+        gain_rules
+            .buildings
+            .iter_mut()
+            .find(|b| b.id == "farm")
+            .unwrap()
+            .methods[1]
+            .annual_output
+            .insert("fish".into(), 600);
+        let mut gain_state = state.clone();
+        farm_with(
+            &gain_rules,
+            &mut gain_state,
+            vec![level(0, 0, Some("pasture"), 13)],
+        );
+        gain_state.places[0].buildings[0].herds[cattle] = 10;
+        let mut gain_prices = vec![1; gain_rules.goods.len()];
+        gain_prices[good_at(&gain_rules, "cattle")] = 2;
+        let gain_jobs = BTreeMap::from([("oats".into(), 100), ("fish".into(), 150)]);
+        let gain = switching::look(
+            &gain_rules,
+            &gain_state.places[0],
+            &land,
+            0,
+            3,
+            &gain_prices,
+            &gain_jobs,
+        )
+        .unwrap();
+        let sea = gain.moves.iter().find(|m| m.method == 1).unwrap();
+        assert_eq!(sea.staying.numerator.to_u128(), Some(100));
+        assert_eq!(sea.switching.numerator.to_u128(), Some(150));
+        assert_eq!(sea.slow_start.numerator.to_u128(), Some(0));
+        assert_eq!(sea.herd_cost.numerator.to_u128(), Some(20));
+        assert_eq!(sea.surplus.magnitude.numerator.to_u128(), Some(10));
+        assert!(!sea.surplus.negative);
+
+        // Settlement caps two proposed founders at the one-head capacity.
+        rules
+            .buildings
+            .iter_mut()
+            .find(|b| b.id == "farm")
+            .unwrap()
+            .herds
+            .get_mut("cattle")
+            .unwrap()
+            .maximum = 1;
+        farm_with(&rules, &mut state, vec![level(0, 1, None, 13)]);
+        state.places[0].buildings[0].herds.fill(0);
+        let result =
+            switching::look(&rules, &state.places[0], &land, 0, 3, &prices, &jobs).unwrap();
+        let land_move = result.moves.iter().find(|m| m.method == 0).unwrap();
+        assert_eq!(land_move.herd_cost.numerator.to_u128(), Some(240));
+        assert_eq!(land_move.herd_cost.denominator.to_u128(), Some(1));
+        assert_eq!(land_move.switching.numerator.to_u128(), Some(172));
+        assert_eq!(land_move.switching.denominator.to_u128(), Some(1));
+    }
+
+    #[test]
+    fn another_young_levels_slow_first_year_is_subtracted_before_the_demand_cap() {
+        let mut rules = level_rules();
+        rules.fertility_reference_pm = 1000;
+        rules.seasons.insert(
+            "grain".into(),
+            vec![83, 83, 83, 83, 84, 84, 84, 84, 83, 83, 83, 83],
+        );
+        let farm = rules.buildings.iter_mut().find(|b| b.id == "farm").unwrap();
+        farm.herds.clear();
+        farm.methods[0].annual_output = BTreeMap::from([("oats".into(), 240)]);
+        let mut state = shipped_production_fixture(&rules);
+        farm_with(
+            &rules,
+            &mut state,
+            vec![
+                level(0, 0, Some("pasture"), 13),
+                level(1, 0, Some("pasture"), 0),
+            ],
+        );
+        let place = &mut state.places[0];
+        place.buildings.truncate(1);
+        place.buildings[0].herds.fill(0);
+        place.buildings[0].employment[0].owners = 2;
+        for pop in &mut place.pops {
+            pop.workers = 0;
+            pop.dependents = 0;
+        }
+        let land = LandCounts {
+            land_cells: BTreeMap::from([("pasture".into(), 10)]),
+            fertility_pm: BTreeMap::from([("pasture".into(), 10_000)]),
+            fertile_cells: 10,
+            fertile_cells_by_terrain: BTreeMap::new(),
+            sea: 1,
+        };
+        let jobs = BTreeMap::from([("oats".into(), 120)]);
+        let result = switching::look(
+            &rules,
+            &state.places[0],
+            &land,
+            0,
+            12,
+            &vec![1; rules.goods.len()],
+            &jobs,
+        )
+        .unwrap();
+        let entry = result
+            .moves
+            .iter()
+            .find(|m| m.method == 1 && m.level == 0)
+            .unwrap();
+        assert_eq!(entry.staying.numerator.to_u128(), Some(10));
+        assert_eq!(entry.staying.denominator.to_u128(), Some(1));
+    }
+
+    #[test]
+    fn the_look_chooses_the_poorer_ground_then_the_lower_level_number_on_a_tie() {
+        let mut rules = level_rules();
+        rules.fertility_reference_pm = 1000;
+        let def = rules.buildings.iter_mut().find(|b| b.id == "farm").unwrap();
+        def.herds.clear();
+        def.methods[0].annual_output = BTreeMap::from([("oats".into(), 100)]);
+        def.methods[3].annual_output = BTreeMap::from([("peat".into(), 600)]);
+        rules
+            .suitability
+            .get_mut("bog")
+            .unwrap()
+            .insert("oats".into(), 250);
+        let mut state = shipped_production_fixture(&rules);
+        farm_with(
+            &rules,
+            &mut state,
+            vec![
+                level(0, 0, Some("pasture"), 13),
+                level(1, 0, Some("bog"), 13),
+            ],
+        );
+        let place = &mut state.places[0];
+        place.buildings.truncate(1);
+        place.buildings[0].herds.fill(0);
+        place.buildings[0].employment[0].owners = 2;
+        for pop in &mut place.pops {
+            pop.workers = 0;
+            pop.dependents = 0;
+        }
+        let land = LandCounts {
+            land_cells: BTreeMap::from([("pasture".into(), 10), ("bog".into(), 20)]),
+            fertility_pm: BTreeMap::from([("pasture".into(), 10_000), ("bog".into(), 20_000)]),
+            fertile_cells: 30,
+            fertile_cells_by_terrain: BTreeMap::new(),
+            sea: 0,
+        };
+        let prices = vec![1; rules.goods.len()];
+        let jobs = BTreeMap::from([("oats".into(), 1000), ("peat".into(), 1000)]);
+        let result =
+            switching::look(&rules, &state.places[0], &land, 0, 3, &prices, &jobs).unwrap();
+        let answer = &result.moves[result.answer.unwrap()];
+        assert_eq!((answer.method, answer.level), (3, 1));
+        rules
+            .suitability
+            .get_mut("bog")
+            .unwrap()
+            .insert("oats".into(), 1000);
+        let result =
+            switching::look(&rules, &state.places[0], &land, 0, 3, &prices, &jobs).unwrap();
+        let answer = &result.moves[result.answer.unwrap()];
+        assert_eq!((answer.method, answer.level), (3, 0));
+    }
+
+    #[test]
+    fn a_herd_product_named_by_the_method_is_counted_once() {
+        let mut rules = level_rules();
+        rules.fertility_reference_pm = 1000;
+        let farm = rules.buildings.iter_mut().find(|b| b.id == "farm").unwrap();
+        farm.herds.retain(|name, _| name == "cattle");
+        farm.methods[0].annual_output = BTreeMap::from([("oats".into(), 999)]);
+        farm.methods[1].annual_output = BTreeMap::from([("fish".into(), 1000)]);
+        let cattle = rules
+            .herd_species
+            .iter_mut()
+            .find(|s| s.animal == "cattle")
+            .unwrap();
+        cattle.products = vec![HerdProduct {
+            good: "oats".into(),
+            amount_milli: Some(10_000),
+            season: Some("grain".into()),
+            month: None,
+        }];
+        cattle.yields = vec![HerdYield {
+            good: "beef".into(),
+            units: 1,
+        }];
+        let mut state = shipped_production_fixture(&rules);
+        farm_with(&rules, &mut state, vec![level(0, 0, Some("pasture"), 13)]);
+        let place = &mut state.places[0];
+        place.buildings.truncate(1);
+        place.buildings[0].herds.fill(0);
+        let cattle_index = rules
+            .herd_species
+            .iter()
+            .position(|s| s.animal == "cattle")
+            .unwrap();
+        place.buildings[0].herds[cattle_index] = 1;
+        for pop in &mut place.pops {
+            pop.workers = 0;
+            pop.dependents = 0;
+        }
+        let land = LandCounts {
+            land_cells: BTreeMap::from([("pasture".into(), 10)]),
+            fertility_pm: BTreeMap::from([("pasture".into(), 10_000)]),
+            fertile_cells: 10,
+            fertile_cells_by_terrain: BTreeMap::new(),
+            sea: 1,
+        };
+        let jobs = BTreeMap::from([("oats".into(), 10), ("fish".into(), 15)]);
+        let result = switching::look(
+            &rules,
+            &state.places[0],
+            &land,
+            0,
+            3,
+            &vec![1; rules.goods.len()],
+            &jobs,
+        )
+        .unwrap();
+        let sea = result.moves.iter().find(|m| m.method == 1).unwrap();
+        assert_eq!(sea.staying.numerator.to_u128(), Some(10));
+        assert_eq!(sea.switching.numerator.to_u128(), Some(15));
+        assert_eq!(sea.slow_start.numerator.to_u128(), Some(0));
+        assert_eq!(sea.herd_cost.numerator.to_u128(), Some(0));
+        assert_eq!(sea.surplus.magnitude.numerator.to_u128(), Some(3));
+        assert!(!sea.surplus.negative);
+        assert!(
+            state.places[0].buildings[0].level_records[0]
+                .unpaid_work
+                .is_empty()
+        );
+
+        // A different recurring product contributes its full value to the lost herd.
+        rules.herd_species[cattle_index].products[0].good = "ale".into();
+        rules.herd_species[cattle_index].products[0].amount_milli = Some(100_000);
+        let farm = rules.buildings.iter_mut().find(|b| b.id == "farm").unwrap();
+        farm.methods[0].annual_output = BTreeMap::from([("oats".into(), 100)]);
+        farm.methods[1].annual_output = BTreeMap::from([("fish".into(), 160)]);
+        rules
+            .seasons
+            .insert("fish".into(), vec![0, 500, 500, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        state.places[0].buildings[0].level_records[0]
+            .unpaid_work
+            .insert("oats".into(), bigint::Big::default());
+        let jobs = BTreeMap::from([
+            ("oats".into(), 100),
+            ("fish".into(), 160),
+            ("ale".into(), 100),
+        ]);
+        let result = switching::look(
+            &rules,
+            &state.places[0],
+            &land,
+            0,
+            3,
+            &vec![1; rules.goods.len()],
+            &jobs,
+        )
+        .unwrap();
+        let sea = result.moves.iter().find(|m| m.method == 1).unwrap();
+        assert_eq!(sea.staying.numerator.to_u128(), Some(200));
+        assert_eq!(sea.switching.numerator.to_u128(), Some(160));
+        assert_eq!(sea.slow_start.numerator.to_u128(), Some(20));
+        assert!(sea.surplus.negative);
+        assert_eq!(sea.surplus.magnitude.numerator.to_u128(), Some(100));
+    }
+
+    #[test]
+    fn mature_crop_accounts_follow_the_calendar_across_two_years() {
+        let mut account = bigint::Big::new(30 * 144_000);
+        for month in (1..=12).cycle().take(24) {
+            accrue_unpaid_work(
+                &mut account,
+                120,
+                1000,
+                13,
+                if month == 9 { 1000 } else { 0 },
+                10,
+                10,
+                1000,
+                1,
+                1,
+            );
+            let expected = match month {
+                8 => Some(110),
+                9 => Some(0),
+                10 => Some(10),
+                12 => Some(30),
+                _ => None,
+            };
+            if let Some(units) = expected {
+                assert_eq!(account.to_u128(), Some(units * 144_000), "month {month}");
+            }
+        }
+    }
+
+    #[test]
+    fn opening_uses_the_first_payday_at_or_after_the_actual_start() {
+        let mut rules = tiny_rules();
+        rules.fertility_reference_pm = 1000;
+        rules.buildings[0].methods[0]
+            .annual_output
+            .insert("food".into(), 120);
+        let location = StartLocation {
+            id: "fort".into(),
+            kind: "ringfort".into(),
+            size: 1,
+            land: LandCounts {
+                land_cells: BTreeMap::from([("pasture".into(), 8)]),
+                fertility_pm: BTreeMap::from([("pasture".into(), 8000)]),
+                fertile_cells: 8,
+                fertile_cells_by_terrain: BTreeMap::new(),
+                sea: 0,
+            },
+        };
+        for (month, day, hour, expected) in [
+            (10, 9, 0, 10),
+            (10, 1, 11, 0),
+            (10, 1, 12, 0),
+            (10, 1, 13, 10),
+            (12, 31, 23, 30),
+        ] {
+            let (state, _) = starting_state_at(
+                &rules,
+                &tiny_start_data(),
+                std::slice::from_ref(&location),
+                Date {
+                    year: 768,
+                    month,
+                    day,
+                    hour,
+                },
+            )
+            .unwrap();
+            let account = &state.places[0].buildings[0].level_records[0].unpaid_work["food"];
+            assert_eq!(
+                account.to_u128(),
+                Some(expected * 144_000),
+                "{month}/{day} {hour}:00"
+            );
+        }
+    }
+
+    #[test]
+    fn opening_accounts_cover_the_twelve_months_before_the_first_payday() {
+        let mut rules = level_rules();
+        rules.fertility_reference_pm = 1000;
+        rules
+            .buildings
+            .iter_mut()
+            .find(|b| b.id == "farm")
+            .unwrap()
+            .methods[0]
+            .annual_output = BTreeMap::from([("oats".into(), 120)]);
+        let mut state = shipped_production_fixture(&rules);
+        farm_with(&rules, &mut state, vec![level(0, 0, Some("pasture"), 13)]);
+        let place = &mut state.places[0];
+        place.buildings.truncate(1);
+        for (month, expected) in [(1, 30_u128), (5, 70)] {
+            place.buildings[0].level_records[0]
+                .unpaid_work
+                .get_mut("oats")
+                .unwrap()
+                .clone_from(&bigint::Big::default());
+            seed_unpaid_work(&rules, &place.pops, &mut place.buildings, 1000, month).unwrap();
+            assert_eq!(
+                place.buildings[0].level_records[0].unpaid_work["oats"].to_u128(),
+                Some(expected * 144_000)
+            );
+        }
+        rules
+            .buildings
+            .iter_mut()
+            .find(|b| b.id == "farm")
+            .unwrap()
+            .methods[1]
+            .annual_output = BTreeMap::from([("fish".into(), 1000)]);
+        farm_with(&rules, &mut state, vec![level(0, 1, None, 13)]);
+        let place = &mut state.places[0];
+        for (month, expected) in [(1, 166 * 144_000_u128), (5, 55_200_000)] {
+            place.buildings[0].level_records[0]
+                .unpaid_work
+                .get_mut("fish")
+                .unwrap()
+                .clone_from(&bigint::Big::default());
+            seed_unpaid_work(&rules, &place.pops, &mut place.buildings, 1000, month).unwrap();
+            assert_eq!(
+                place.buildings[0].level_records[0].unpaid_work["fish"].to_u128(),
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn mature_fish_account_tracks_the_shipped_season_for_two_years() {
+        let rules = shipped_rules();
+        let mut account = bigint::Big::new(166 * 144_000);
+        for month in (1..=12).cycle().take(24) {
+            accrue_unpaid_work(
+                &mut account,
+                1000,
+                1000,
+                13,
+                u128::from(rules.seasons["fish"][month - 1]),
+                10,
+                10,
+                1000,
+                1,
+                1,
+            );
+            let expected = match month {
+                4 => Some(55_200_000),
+                9 => Some(0),
+                12 => Some(166 * 144_000),
+                _ => None,
+            };
+            if let Some(expected) = expected {
+                assert_eq!(account.to_u128(), Some(expected), "month {month}");
+            }
+        }
+    }
+
+    #[test]
+    fn unpaid_work_rounds_each_fractional_month_down() {
+        let mut third = bigint::Big::default();
+        accrue_unpaid_work(&mut third, 301, 1000, 13, 0, 1, 3, 1000, 1, 1);
+        assert_eq!(third.to_u128(), Some(1_204_000));
+        let mut account = bigint::Big::default();
+        // A yearly amount of 100 + 1/7 units, from one worker in seven positions.
+        accrue_unpaid_work(&mut account, 701, 1000, 13, 0, 1, 7, 1000, 1, 1);
+        assert_eq!(account.to_u128(), Some(1_201_714));
+    }
+
+    #[test]
+    fn rules_refuse_multiple_method_fuels_and_fuel_herd_products_and_large_margin() {
+        let mut rules = shipped_rules();
+        assert_eq!(rules.method_switch_margin_pm, 200);
+        rules.method_switch_margin_pm = 1001;
+        assert!(
+            rules
+                .validate("fixture")
+                .unwrap_err()
+                .entry
+                .contains("method_switch_margin_pm")
+        );
+        rules.method_switch_margin_pm = 200;
+        let method = &mut rules
+            .buildings
+            .iter_mut()
+            .find(|b| b.methods.len() > 1)
+            .unwrap()
+            .methods[0];
+        method.annual_output.insert("hardwood".into(), 1);
+        method.annual_output.insert("peat".into(), 1);
+        let method_id = method.id.clone();
+        assert!(
+            rules
+                .validate("fixture")
+                .unwrap_err()
+                .entry
+                .contains(&method_id)
+        );
+        let mut defaults = shipped_rules();
+        defaults
+            .goods
+            .iter_mut()
+            .find(|g| g.id == "peat")
+            .unwrap()
+            .supplies
+            .remove("fuel");
+        let method = &mut defaults
+            .buildings
+            .iter_mut()
+            .find(|b| b.methods.len() > 1)
+            .unwrap()
+            .methods[0];
+        method.annual_output.insert("hardwood".into(), 1);
+        method.annual_output.insert("peat".into(), 1);
+        let method_id = method.id.clone();
+        assert!(
+            defaults
+                .validate("fixture")
+                .unwrap_err()
+                .entry
+                .contains(&method_id)
+        );
+        let mut rules = shipped_rules();
+        rules
+            .goods
+            .iter_mut()
+            .find(|g| g.id == "peat")
+            .unwrap()
+            .supplies
+            .remove("fuel");
+        rules.herd_species[0].products[0].good = "peat".into();
+        let error = rules.validate("fixture").unwrap_err();
+        assert!(
+            error.entry.contains("cattle") && error.entry.contains("peat"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn unpaid_work_accrues_at_each_months_yield_and_saturates_at_zero() {
+        let mut full = bigint::Big::default();
+        let mut half = bigint::Big::default();
+        // October: the first level is fully staffed, the second half staffed.
+        accrue_unpaid_work(&mut full, 100, 1000, 13, 0, 10, 10, 1000, 1, 1);
+        accrue_unpaid_work(&mut half, 100, 1000, 13, 0, 5, 10, 1000, 1, 1);
+        // November: both are half staffed; previous work retains October's yield.
+        for account in [&mut full, &mut half] {
+            accrue_unpaid_work(account, 100, 1000, 13, 0, 5, 10, 1000, 1, 1);
+        }
+        assert_eq!(full.to_u128(), Some(1_800_000));
+        assert_eq!(half.to_u128(), Some(1_200_000));
+        accrue_unpaid_work(&mut full, 100, 1000, 13, 1000, 5, 10, 1000, 1, 1);
+        assert_eq!(full, bigint::Big::default());
+        // Grain taken up on 1 December reaches its first payday on 1 January.
+        let mut young = bigint::Big::default();
+        accrue_unpaid_work(&mut young, 100, 1000, 1, 0, 10, 10, 1000, 1, 1);
+        assert_eq!(young, bigint::Big::default());
+    }
+
+    #[test]
+    fn production_carry_never_enters_a_levels_unpaid_work() {
+        let rules = level_rules();
+        let mut zero = shipped_production_fixture(&rules);
+        farm_with(&rules, &mut zero, vec![level(0, 0, Some("pasture"), 13)]);
+        let mut carry = zero.clone();
+        let oats = good_at(&rules, "oats");
+        carry.places[0].buildings[0].production_carries[0][oats] = 1;
+        let date = Date {
+            year: 768,
+            month: 10,
+            day: 1,
+            hour: 12,
+        };
+        run_monthly_production(&rules, &mut zero, date).unwrap();
+        run_monthly_production(&rules, &mut carry, date).unwrap();
+        assert_eq!(
+            zero.places[0].buildings[0].level_records[0].unpaid_work,
+            carry.places[0].buildings[0].level_records[0].unpaid_work
+        );
+    }
+
+    #[test]
+    fn unpaid_accounts_round_trip_without_a_fixed_integer_limit() {
+        let mut record = level(0, 0, Some("pasture"), 13);
+        let amount = bigint::Big::new(u128::MAX).add(&bigint::Big::new(1));
+        record.unpaid_work.insert("oats".into(), amount);
+        let mut bytes = Vec::new();
+        encode_level_records(&[record.clone()], &mut bytes).unwrap();
+        let mut reader = Reader::new(&bytes);
+        assert_eq!(decode_level_records(&mut reader).unwrap(), vec![record]);
+        reader.finish().unwrap();
+    }
+
+    #[test]
+    fn saved_unpaid_accounts_must_match_the_levels_method_and_herd() {
+        let rules = level_rules();
+        let mut state = shipped_production_fixture(&rules);
+        farm_with(&rules, &mut state, vec![level(0, 0, Some("pasture"), 13)]);
+        validate_level_records(&rules, &BTreeMap::new(), &state).unwrap();
+        let good = state.places[0].buildings[0].level_records[0]
+            .unpaid_work
+            .keys()
+            .next()
+            .unwrap()
+            .clone();
+        state.places[0].buildings[0].level_records[0]
+            .unpaid_work
+            .remove(&good);
+        let error = validate_level_records(&rules, &BTreeMap::new(), &state).unwrap_err();
+        assert!(
+            error.contains(&format!("building farm level 0 good {good}: missing")),
+            "{error}"
+        );
+        state.places[0].buildings[0].level_records[0]
+            .unpaid_work
+            .insert(good, bigint::Big::default());
+        state.places[0].buildings[0].level_records[0]
+            .unpaid_work
+            .insert("not_a_product".into(), bigint::Big::default());
+        let error = validate_level_records(&rules, &BTreeMap::new(), &state).unwrap_err();
+        assert!(
+            error.contains("building farm level 0 good not_a_product: unexpected"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn each_fault_of_a_saved_level_record_is_refused_naming_the_building_and_the_level() {
         let rules = level_rules();
         let mut state = shipped_production_fixture(&rules);
@@ -22739,6 +24121,63 @@ pub(crate) mod tests {
             }
         }
         state
+    }
+
+    #[test]
+    fn each_months_look_runs_on_the_partly_staffed_real_start() {
+        let rules = shipped_rules();
+        let mut state = levels_witness_state(&rules);
+        let land = LandCounts {
+            land_cells: BTreeMap::from([
+                ("pasture".into(), 300),
+                ("forest".into(), 300),
+                ("bog".into(), 300),
+            ]),
+            fertility_pm: BTreeMap::from([
+                ("pasture".into(), 300_000),
+                ("forest".into(), 300_000),
+                ("bog".into(), 300_000),
+            ]),
+            fertile_cells: 900,
+            fertile_cells_by_terrain: BTreeMap::new(),
+            sea: 300,
+        };
+        for month in 1..=12 {
+            run_monthly_production(
+                &rules,
+                &mut state,
+                Date {
+                    year: 768,
+                    month,
+                    day: 1,
+                    hour: 12,
+                },
+            )
+            .unwrap();
+            let place = &state.places[0];
+            for (i, building) in place.buildings.iter().enumerate() {
+                if rules
+                    .buildings
+                    .iter()
+                    .find(|b| b.id == building.kind)
+                    .unwrap()
+                    .methods
+                    .len()
+                    > 1
+                {
+                    switching::look(
+                        &rules,
+                        place,
+                        &land,
+                        i,
+                        month,
+                        &place.prices_milli,
+                        &BTreeMap::new(),
+                    )
+                    .unwrap();
+                }
+            }
+        }
     }
 
     /// A building with none of its levels, so that a month's production is one other building's alone.

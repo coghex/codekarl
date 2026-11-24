@@ -146,6 +146,12 @@ fn pop_type(id: &str, fuel_need_milli_day: u64) -> PopType {
 /// The fixture's rules, with the given buildings (each after `farm` in the order given).
 fn rules_with(buildings: Vec<BuildingType>, fuel_need_milli_day: u64) -> Rules {
     let mut rules = tiny_rules();
+    rules.seasons.remove("food");
+    for key in ["fish", "hardwood", "peat", "ale"] {
+        rules
+            .seasons
+            .insert(key.to_owned(), vec![0, 0, 0, 0, 0, 0, 0, 0, 1000, 0, 0, 0]);
+    }
     rules.goods = vec![
         good("oats", 365, 0, 2, false),
         good("fish", 365, 0, 3, false),
