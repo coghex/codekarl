@@ -155,9 +155,7 @@ with sources, and **Open** what is still to decide.
     used in the calculations.
 - **The overhead share** does not matter much now. It will be defined by building type later; 10% (subsistence farm) and 30% (monastic
   holdings) are fine for now.
-- **The farm's stockpile:**
-  - peasants always keep what they have, unless they are full; they give nothing to the building;
-  - the exception is payday, when the excess goes into the building's stockpile.
+- **The farm's stockpile:** the earlier payday-only exception is superseded by the general surplus rule in §3.6 (owner r108–r110).
 - **Barter:** the initiator bears the rounding loss (the designer's recommendation, accepted).
 - **Buildings barter only with what is in their storehouse.** Barter happens before any output is registered, so the stockpile always
   shows filled. **Moot since r17,** because barter is deferred.
@@ -184,7 +182,7 @@ with sources, and **Open** what is still to decide.
   - Owners, the monks in the owner pool (the earlier word "priest" was only the owner's shorthand), **collect no wages**. They live
     communally on what the pop and the building hold, and the farms' surplus replenishes it.
   - Buildings only **predict** an owner's wage, so that they can hire.
-  - **Any excess goes to the labourers.** Merchants trading oats for ale will help later.
+  - **Excess:** the later general rule in §3.6 routes a pop's surplus before alms; a building's own surplus keeps the alms route.
 - **C3, positions and movement.**
   - Each building defines how it fills its positions. The holdings have 5 monks and 5 labourers per level.
   - Open monk positions fill as needed, and labourers prefer to become monks when there is room.
@@ -198,7 +196,7 @@ with sources, and **Open** what is still to decide.
 - **Storehouses** (owner idea, adjusted by research; see §2):
   - simple local buildings at farms and monasteries, owned by the pops they serve;
   - depositors are tracked;
-  - **alms, then the storehouse, then loss.**
+  - The later rule in §3.6 tries the pop's own account first; a building's own excess still goes to alms, then the communal account.
   - Public granaries come later.
 - **C6:** barter is **deferred** to the merchants milestone.
 - **C7, the location panel and map modes.**
@@ -211,7 +209,7 @@ with sources, and **Open** what is still to decide.
     Places are points, so the map is blended. Maps that include consumption come later.
 
 **Storehouse accounts (owner, 2026-11-08, answering review r17)**
-- **Labourers' surplus:** after alms, it goes into the storehouse under the **labourers' own account**.
+- **Labourers' surplus:** the later rule in §3.6 tries their own account before passing on the rest.
 - **Movers' accounts:** movers **take their share of their old pop's account with them, as goods**, up to what their new store can
   hold. What does not fit stays with the old pop.
 
@@ -573,18 +571,27 @@ monks die").
     `⌊V₀ / (P₀ × M)⌋`, with `M` the months from the start month to the first month with a grain harvest (11 for an October start).
     Real months replace these entries as paydays happen;
   - monthly wages are paid from it.
-- **Store capacities are volumes** (Firm; §3.15). `Σ units × volume ≤ capacity`, in millilitres, shared by every stored good. A unit
-  fits only whole, and a unit that does not fit is lost (Firm). Live animals live in herds (§3.14).
-- **Payday (Firm, r14):**
-  1. the wages go into the workers' own stores, up to their volume and per-good caps;
-  2. the overhead, and any wages that do not fit, go into the **building's stockpile**, up to its capacity;
-  3. **alms (Firm, r17):** what still does not fit goes to the **labourers** at the place, then to any other hungry pop there, hungriest
-     (fewest days of food) first, each up to its room. **Hungry** means less than 60 days of food, the drawing threshold below,
-     counting the pop's store and its storehouse account (owner, 2026-11-10, `owner-direction-ck227-notes-r1.md`);
-  4. **the storehouse** (§3.18). It is credited to the account of the pop the goods came from: the worker pop for its wages, including
-     labourers (Firm, r18), and the building's communal account for overhead;
-  5. the rest is lost.
-- **Outside payday, pops keep what they hold** (Firm). Nothing moves from a pop to a building.
+- **Store capacities are volumes** (§3.15). A receipt fits only whole units and checks both volume and the good's cap.
+- **A pop's surplus** (CK-403; owner r108–r110) is goods it is given or holds beyond its store and its own storehouse account.
+  After trying its store, then its account, it passes the rest in order:
+  1. to its owned buildings, split by its owner positions; only if it owns none, to its workplaces, split by its workers;
+  2. to the place's church buildings, split by level; holdings are marked as church buildings in the data. A building already tried
+     in the first step is not tried twice. A storehouse receives into its communal account;
+  3. as alms into other pops' stores: labourers in pop order, then other pops under 60 days of food, fewest whole days first and ties
+     in pop order. Food in an account counts in that ordering, but alms go into the store only. The giver is skipped;
+  4. whatever remains is lost. A pop's lost units count for that pop and for the place, including its per-good loss.
+
+  A building step divides by largest remainder, ties in building order. When a building fills, its unaccepted share is divided again
+  among the buildings in that step with room. Wages, fee wages, each head's butchering yields, and the daily look below use this rule.
+- **Production payday** first fills all workers' stores for every building and good. It then handles extras in building order, good
+  order, overhead before worker extras, and worker pop order. Each worker's account is tried when that worker's extra is handled.
+  A building's own overhead or rent uses its separate, unchanged route: its stockpile, alms, communal account, then loss; it does
+  not pass through church buildings. At fee payday, one good's stores are filled and its extras handled before the next good.
+- **Daily surplus look:** after all drawing and eating, before monthly births, deaths, hiring, movement and fees, each pop in order
+  sheds each good above its per-good limit in goods order. If its store remains over volume, it sheds the least valuable good per unit
+  of volume first, with ties in goods order, until within volume. Goods stacked outside are shed only for their own limit. Each pop's
+  shed goods pass on in that order before the next pop is examined. A head lost before the economy step counts that noon; a head lost
+  in the monthly deaths is reflected at the next noon.
 - **Drawing (E1):** when a pop's own food (store plus pantries) falls below 60 days, it moves real goods into its store, until it is
   back at 60 days or nothing is left, in this order:
   1. its own storehouse account;
@@ -675,13 +682,9 @@ the monthly death step, which clears them. The variable temperature-related need
   the herds of the buildings where it has owners, one head at a time, until `H` reaches `⌊need × 500 / 1000⌋`, the breeding floor
   stops it, or the herds are empty:
   - **the order** (Proposal): pigs, then sheep, then cattle. The cows that give dairy go last;
-  - **each head** yields whole units of meat (and hides), as slaughter does (§3.14). **One path (r11):**
-    1. the units go into the **pop's store**, up to its volume;
-    2. units that do not fit are destroyed and counted as lost;
-    3. eating then continues as normal: it opens units from the store into the balances (step 1 of eating).
-
-    So the goods ledger records them as produced, then stored or lost, then opened. The benefit ledger counts only opened units.
-    Butchering stops once the store plus the balance reach that 500‰ threshold, or when the store is full;
+  - **each head** yields all goods named by the species, in data order. They enter the pop's store and any excess passes on at once
+    by §3.6. Eating then opens units from the store as usual. A later pop can draw food passed on by an earlier pop and therefore
+    butcher fewer animals. The ledger records the animals actually butchered and all their yields;
   - labourers have no herd, so they cannot butcher.
 
   It eats into future production: a realistic famine trap.
@@ -808,6 +811,7 @@ deaths_d = dependents × dep_death_base[type] × g_hunger(N) × g_comfort(W, L) 
      drawing, so what a pop swaps for today it eats today;
   3. drawing (§3.6);
   4. eating and needs (§3.7);
+  4a. each pop's surplus look and pass-on (§3.6);
   5. **on the 1st:**
      - births, deaths and drift (§3.8);
      - hiring and movement (§3.5);
@@ -1120,7 +1124,8 @@ herd stays. These are counts, not individual animals, so livestock stays abstrac
   paid in one month uses `portion(head × amount_milli, cov, 10⁶, carry)` in that month. Slaughter yields whole units per head. Fractions
   stay in each product's saved carry, so a store only ever receives whole units.
 - **Emergency butchering** follows the separate priority in the species data. The shipped order is pigs, sheep, then cattle; only a
-  species yielding a good with positive hunger value is eligible, so horses are never emergency butchered. Each slaughter yield is paid in its authored order.
+  species yielding a good with positive hunger value is eligible, so horses are never emergency butchered. Every authored yield is
+  paid in order and any pop surplus passes on at once (§3.6).
 - **Coverage applies to herd products too,** because an unmanaged herd is poorly kept (Proposal): births, dairy and wool are multiplied
   by the coverage multiplier.
 - **Replenishing** (Firm): when a herd is below its maximum, live animals held by the building or its owner pops return to it. In M9
@@ -1162,7 +1167,8 @@ herd stays. These are counts, not individual animals, so livestock stays abstrac
   - **What a refusal does:**
     - **drawing and movement** only shrink to what fits, or are skipped. They never destroy goods: what cannot be received stays where
       it was;
-    - **payday overflow and butchering** past every cap are lost, as the owner decided (§3.6, §3.14).
+    - **pop surplus** from wages, butchering, fees or the daily look passes through §3.6 and only the remainder is lost. A swap is
+      sized to what the receiving store can hold and passes nothing on.
 - **Weight** has no use in M9. It is there for carts, merchants and ships later.
 
 ### 3.16 The local market (Firm direction, owner 2026-11-08; Proposal mechanism)
@@ -1339,10 +1345,11 @@ labourers more meat.
   goods. They are filled only from its owner pops, so a storehouse is never a movement destination (§3.5). **Its posted wage** (§3.6)
   records that fee as the month's pay per worker, and starts at 0, since its stock belongs to its depositors (CK-242).
 - **The fee, one ledger (E2):** on the 1st, for each good and each account, `fee = portion(account_g, 10, 1000, fcarry)`. It is
-  debited from both the account and the physical stock, then credited once to the storehouse workers' stores, through payday's overflow
-  path. Physical stock always equals the sum of the accounts.
+  debited from both the account and the physical stock, then credited once to the storehouse workers. For each good in order, their
+  stores are filled before that good's surplus follows §3.6; only then is the next good paid. Physical stock always equals the sum of
+  the accounts.
 - **Accounts:** owner pops, the building's communal account, and **labourer pops** (Firm, r18) each have an account per good. Excess is
-  credited to the pop whose excess it was (§3.6). A pop draws its own
+  credited to the pop whose excess it was, before passing on what does not fit (§3.6). A pop draws its own
   goods back when its food falls below 60 days, and its account counts towards its days of food (§3.7).
 - **Public granaries,** owned by labourers and taking deposits from anyone, come later (owner).
 
