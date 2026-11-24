@@ -426,8 +426,10 @@ monastery's holdings, both, or neither. The kind-and-size tables of §3.12–3.1
     cut and reported, and so are the rest of the building's levels.
   - **The order:** places in file order; within a place, the holdings, then the demesne, then the farm; levels one at a time.
 - **The result (CK-406)** keeps each producing level in placement order, with its method, ground and completed paydays on that method.
-  The method counts, suitability and grazing sums and field room follow from those records. Storehouse levels are storage kinds, not
-  producing levels. Usable-land methods keep their chosen terrain (including forest and bog); wood and turf keep forest and bog
+  The method counts, the suitability sums (each level's own suitability for each good on its own ground, added up) and the grazing
+  sums (each level's ground, added up) are kept equal to those records: they are saved with the building, and a load refuses a save
+  where they differ (below). The field room a building uses is that of its usable-land levels, each on its own terrain. Storehouse
+  levels are storage kinds, not producing levels and have no records. Usable-land methods keep their chosen terrain (including forest and bog); wood and turf keep forest and bog
   respectively; sea methods have no ground. Levels cut at the start have no record. Herds count every non-sea level (§3.14).
 - **Paydays:** every level starts mature at 13 completed paydays. A payday uses `min(completed + 1, 13)`, then stores that count;
   seasonal output uses `(count − 1) / 12`. Herd products follow the herd and do not use this fraction. Nothing switches in this slice.
@@ -435,8 +437,18 @@ monastery's holdings, both, or neither. The kind-and-size tables of §3.12–3.1
   level's own suitability for the good times its payday count less one. Each month's output is the quotient of
   `annual_g × weighted_g × season_pm_g[month] × staffed × cov × quality + carry_g` over
   `12 × levels × workers_per_level × 10⁹ × reference`, using the reduced quality/reference ratio for usable land and 1/1 otherwise.
-  The remainder is the exact carry, held in `u128`; its unit is twelve times finer than before CK-406. A zero-position building has
-  no denominator and a zero or absent carry. Mature levels preserve the old output exactly.
+  The remainder is the exact carry, held and saved in `u128`; its unit is twelve times finer than before CK-406, so it can pass 64
+  bits. The product is worked in 128 bits when it fits and exactly in arbitrary size when it does not (a legal payday of the old units
+  may), so no payday is refused that the old units paid. A zero-position building has no denominator and a zero or absent carry.
+  Mature levels preserve the old output exactly, day for day.
+- **Saved levels (CK-406):** a save holds every producing building's records and its carries. Both ways of loading a save (a start
+  from it and a load during play) check them before installing anything, and refuse a save, naming the building and the level (or
+  the method and the good of a carry), when: a level's method is not one of the building's; its ground does not fit its method's
+  resource (a usable-land method needs a land terrain, any, forest and bog included; wood needs forest; turf needs bog; sea has none);
+  its completed paydays are above 13; the numbers are not each of `0 .. levels − 1` once, or the records do not add up to the
+  building's levels or method counts; the saved suitability matrix (a row for each method and a value for each good) or the grazing
+  sums are not those of the records; or a carry is not below its denominator (or is not nothing where the building has no positions).
+  A building whose every level was cut has no records and carries of nothing, written or left out, and is a good save.
   - Staffing is conserved and never rounded; only whole goods are floored.
   - Coverage applies to the whole building.
 - **Chosen once in M9.** Changing a level's method mid-game is the vision's conversion, and comes with construction. It is out of
