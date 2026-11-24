@@ -433,6 +433,19 @@ monastery's holdings, both, or neither. The kind-and-size tables of §3.12–3.1
   respectively; sea methods have no ground. Levels cut at the start have no record. Herds count every non-sea level (§3.14).
 - **Paydays:** every level starts mature at 13 completed paydays. A payday uses `min(completed + 1, 13)`, then stores that count;
   seasonal output uses `(count − 1) / 12`. Herd products follow the herd and do not use this fraction. Nothing switches in this slice.
+- **Unpaid work and the monthly look (CK-408, pending code acceptance):** each level keeps an account in 144,000ths of a unit
+  for each seasonal good its method pays, excluding goods supplied by its building's herd. Each payday adds that month's work at
+  the yield and staffing used that day and subtracts the exact seasonal output before the building's carry; the account rounds down
+  and cannot become negative. Mature starting levels open with twelve months of this calculation. Both save-load paths require
+  exactly the accounts the method needs, with nonnegative balances of any size.
+- The **look** is read-only and is not yet called by the game. After a payday it compares each level's present method with each
+  alternative that has room, using opening-of-day prices. It counts each level's next twelve paydays only up to the place's remaining
+  yearly orders and heat need, after other levels and herds supply them; fuel fills job shortages before heat. A method makes at
+  most one fuel, and a recurring herd product cannot be fuel. The herd contribution is the difference in recurring products the
+  building would keep or lose, rather than the common herd value on both sides. The cost includes unpaid work, the new method's
+  slow first year, and the net cost of animals lost or capped founders. A move passes only when its gain exceeds those costs plus
+  `method_switch_margin_pm` of the staying value (200‰ initially); the largest exact surplus wins, with method order and level
+  number breaking ties. No level moves in this slice.
 - **Staffing per method (exact):** there is no integer `staffed_m`. Let `weighted_g` be the sum, over the method's levels, of each
   level's own suitability for the good times its payday count less one. Each month's output is the quotient of
   `annual_g × weighted_g × season_pm_g[month] × staffed × cov × quality + carry_g` over
