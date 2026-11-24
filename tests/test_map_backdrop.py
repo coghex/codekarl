@@ -3,6 +3,7 @@
 import importlib.util
 import sys
 import tempfile
+import tomllib
 import unittest
 from datetime import date, timedelta
 from pathlib import Path
@@ -204,6 +205,12 @@ class RebuildTests(unittest.TestCase):
             settings = PATH.parent / "settings.toml"
             output = root / "out"
             build.build(settings, source, output)
+            manifest = tomllib.loads((output / "backdrop.toml").read_text())
+            self.assertEqual(manifest["format"], 2)
+            self.assertEqual(len(manifest["row_latitude_e4"]), manifest["rows"])
+            self.assertEqual(
+                (manifest["row_latitude_e4"][0], manifest["row_latitude_e4"][-1]), (749780, -599766)
+            )
             for name in (
                 "backdrop.toml",
                 "land.png",
@@ -270,7 +277,7 @@ class ReportCoverageTests(unittest.TestCase):
             backdrop, region = root / "backdrop", root / "region"
             backdrop.mkdir()
             region.mkdir()
-            manifest = """format = 1
+            manifest = """format = 2
 projection = "spherical_mercator"
 cell_metres = 839.0
 block_cells = 16
@@ -378,7 +385,7 @@ class ReportHalfShareTests(unittest.TestCase):
                 region.mkdir()
                 columns = (geometry.WORLD_CELLS + size - 1) // size
                 first, column = 200, 10
-                (backdrop / "backdrop.toml").write_text(f"""format = 1
+                (backdrop / "backdrop.toml").write_text(f"""format = 2
 projection = "spherical_mercator"
 cell_metres = 839.0
 block_cells = {size}

@@ -1,10 +1,11 @@
-format = 1
+format = 2
 projection = "spherical_mercator"
 cell_metres = 839.0
 block_cells = 8192
 first_row = 0
 rows = 6
 columns = 6
+row_latitude_e4 = [815281, 654499, 248293, -339217, -694480, -829368]
 
 [layers]
 land = "land.png"

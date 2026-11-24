@@ -126,13 +126,14 @@ def build(settings_path: Path, sources: Path, output: Path) -> None:
     write_png(output / "land.png", (land * 255).astype(np.uint8))
     for name, image in fields.items():
         write_png(output / f"{name}.png", image)
-    manifest = f"""format = 1
+    manifest = f"""format = 2
 projection = "spherical_mercator"
 cell_metres = 839.0
 block_cells = {grid.block_cells}
 first_row = {grid.first_row}
 rows = {grid.rows}
 columns = {grid.columns}
+row_latitude_e4 = {list(map(int, half_away(lat[:, 0] * 10000)))}
 
 [layers]
 land = "land.png"

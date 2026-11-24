@@ -30,13 +30,16 @@ def comparable_blocks(  # noqa: PLR0913  # crop and backdrop geometry are indepe
     return squares, [(c, r) for c, r in squares if first <= r < first + rows]
 
 
+BACKDROP_FORMAT = 2
+
+
 def load_backdrop(path: Path) -> tuple[dict, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     manifest = tomllib.loads((path / "backdrop.toml").read_text())
     size, first, rows, columns = (
         manifest[k] for k in ("block_cells", "first_row", "rows", "columns")
     )
     if (
-        manifest.get("format") != 1
+        manifest.get("format") != BACKDROP_FORMAT
         or manifest.get("projection") != "spherical_mercator"
         or manifest.get("cell_metres") != CELL
     ):

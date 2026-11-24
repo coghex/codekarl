@@ -935,7 +935,20 @@ pub(crate) fn place_table(place: &PlaceView) -> ConfigValue {
         ),
     ]);
     add_temperature(&mut result, place.temperature);
+    add_wind(&mut result, place.wind.as_ref());
     result
+}
+
+fn add_wind(result: &mut ConfigValue, wind: Option<&(i64, String)>) {
+    if let (Some((knots, direction)), ConfigValue::Table(fields)) = (wind, result) {
+        fields.insert(
+            "wind".to_owned(),
+            table([
+                ("knots", ConfigValue::Integer(*knots)),
+                ("direction", text(direction)),
+            ]),
+        );
+    }
 }
 
 fn add_temperature(result: &mut ConfigValue, temperature: Option<(i64, u8, i64)>) {
@@ -1818,6 +1831,7 @@ mod tests {
         let place = PlaceView {
             id: "fixture".to_owned(),
             temperature: None,
+            wind: None,
             workers: 80,
             dependents: 40,
             food_days: 215,

@@ -18,6 +18,7 @@ fn large_fixture_loads_and_answers_block_samples() {
     assert_eq!(backdrop.block_of(5 * 4096, 3 * 4096), Some((5, 3)));
     assert_eq!(backdrop.block_of(0, 4096), None);
     assert_eq!(backdrop.east(11), Some(0));
+    assert!(backdrop.row_latitude_e4(3).is_some());
     let sample = backdrop.sample(5, 3, 0).expect("sea sample");
     assert!(!sample.land);
     assert_eq!(sample.pressure_pa, 100_558);
@@ -107,6 +108,10 @@ fn shipped_data_matches_worked_normals() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one fixture checks related manifest and image failures"
+)]
 fn rejects_invalid_manifests_and_images_with_file_names() {
     use std::{
         fs,
@@ -131,7 +136,7 @@ fn rejects_invalid_manifests_and_images_with_file_names() {
     }
     let original = fs::read_to_string(dir.join("backdrop.toml")).expect("manifest");
     for (old, new) in [
-        ("format = 1", "format = 2"),
+        ("format = 2", "format = 1"),
         ("spherical_mercator", "bad_projection"),
         ("cell_metres = 839.0", "cell_metres = 840.0"),
         ("block_cells = 4096", "block_cells = 24"),
@@ -146,6 +151,44 @@ fn rejects_invalid_manifests_and_images_with_file_names() {
             .to_string();
         assert!(error.contains("backdrop.toml"), "{error}");
     }
+    let line = original
+        .lines()
+        .find(|line| line.starts_with("row_latitude_e4 = "))
+        .unwrap();
+    let mut values: Vec<i32> = line
+        .split_once('[')
+        .unwrap()
+        .1
+        .trim_end_matches(']')
+        .split(',')
+        .map(|s| s.trim().parse().unwrap())
+        .collect();
+    let replace_values =
+        |values: &[i32]| original.replace(line, &format!("row_latitude_e4 = {values:?}"));
+    let first = values[0];
+    for delta in [2, 3] {
+        values[0] = first + delta;
+        fs::write(dir.join("backdrop.toml"), replace_values(&values)).unwrap();
+        assert_eq!(load_backdrop(&dir).is_ok(), delta == 2);
+        if delta == 3 {
+            assert!(
+                load_backdrop(&dir)
+                    .err()
+                    .unwrap()
+                    .to_string()
+                    .contains("backdrop.toml")
+            );
+        }
+    }
+    values.pop();
+    fs::write(dir.join("backdrop.toml"), replace_values(&values)).unwrap();
+    assert!(
+        load_backdrop(&dir)
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("backdrop.toml")
+    );
     fs::write(dir.join("backdrop.toml"), original).expect("restore manifest");
     for name in [
         "land.png",

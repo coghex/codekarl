@@ -1095,7 +1095,7 @@ fn a_changed_weather_rule_refuses_an_existing_save() {
     let source = fs::read_to_string(&weather).unwrap();
     fs::write(
         weather,
-        source.replace("swing_coast = 48", "swing_coast = 49"),
+        source.replace("wind_sea_factor = 690", "wind_sea_factor = 691"),
     )
     .unwrap();
     let error = prepare(
@@ -1111,4 +1111,85 @@ fn a_changed_weather_rule_refuses_an_existing_save() {
     .err()
     .unwrap();
     assert!(error.contains("rules_hash"), "{error}");
+}
+
+#[test]
+fn backdrop_identity_and_missing_backdrop_are_checked_on_load() {
+    for change in ["latitude", "pressure", "remove"] {
+        let dir = Dir::new();
+        let scenario = assets_with_scenario(&dir, "ireland-768");
+        let game = GameConfig {
+            scenario: scenario.clone(),
+            saves: dir.0.join("saves"),
+        };
+        let (save, _) = super::setup::write_save(&game, 0, 42);
+        let backdrop = dir.0.join("assets/map/backdrop");
+        if change == "latitude" {
+            let manifest = backdrop.join("backdrop.toml");
+            let text = fs::read_to_string(&manifest).unwrap();
+            fs::write(
+                manifest,
+                text.replacen(
+                    "row_latitude_e4 = [749780,",
+                    "row_latitude_e4 = [749781,",
+                    1,
+                ),
+            )
+            .unwrap();
+            ck_map::load_backdrop(&backdrop).unwrap();
+        } else if change == "pressure" {
+            let path = backdrop.join("pressure.png");
+            let file = std::io::BufReader::new(fs::File::open(&path).unwrap());
+            let mut reader = png::Decoder::new(file).read_info().unwrap();
+            let mut pixels = vec![0; reader.output_buffer_size().unwrap()];
+            let info = reader.next_frame(&mut pixels).unwrap();
+            pixels.truncate(info.buffer_size());
+            let value = u16::from_be_bytes([pixels[0], pixels[1]]) + 1;
+            pixels[..2].copy_from_slice(&value.to_be_bytes());
+            let file = std::io::BufWriter::new(fs::File::create(&path).unwrap());
+            let mut encoder = png::Encoder::new(file, info.width, info.height);
+            encoder.set_color(png::ColorType::Grayscale);
+            encoder.set_depth(png::BitDepth::Sixteen);
+            encoder
+                .write_header()
+                .unwrap()
+                .write_image_data(&pixels)
+                .unwrap();
+            ck_map::load_backdrop(&backdrop).unwrap();
+        } else {
+            fs::remove_dir_all(&backdrop).unwrap();
+        }
+        let error = prepare(
+            &Request {
+                game: &game,
+                vms: &[],
+                load: Some(&save),
+                seed: None,
+            },
+            || Ok(0),
+            &mut |_, _| {},
+        )
+        .err()
+        .unwrap();
+        assert!(error.contains("map hash"), "{change}: {error}");
+        if change == "remove" {
+            let prepared = new_game_in(&dir, scenario, 42).unwrap();
+            let view = crate::game::setup::view_builder(prepared.view_wiring())(
+                prepared.simulation.state(),
+                prepared.simulation.date().unwrap(),
+            );
+            assert!(view.places.iter().all(|p| p.wind.is_none()));
+        }
+    }
+}
+
+#[test]
+fn invalid_backdrop_format_refuses_start() {
+    let dir = Dir::new();
+    let scenario = assets_with_scenario(&dir, "ireland-768");
+    let manifest = dir.0.join("assets/map/backdrop/backdrop.toml");
+    let source = fs::read_to_string(&manifest).unwrap();
+    fs::write(manifest, source.replacen("format = 2", "format = 1", 1)).unwrap();
+    let error = new_game_in(&dir, scenario, 42).err().unwrap();
+    assert!(error.contains("backdrop.toml"), "{error}");
 }

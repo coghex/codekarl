@@ -306,3 +306,38 @@ end
         "{recorded:?}"
     );
 }
+
+#[test]
+fn wind_lines_follow_revision_and_cover_calm_and_abandoned() {
+    let mut rig = rig(&[r"
+VIEWS[1].rowan.temperature = {mean=128, month=9, expected=135}
+VIEWS[1].rowan.wind = {knots=2, direction='SW'}
+VIEWS[2].rowan.wind = {knots=0, direction=''}
+local location = require('lib.location')
+for _, revision in ipairs({1, 2}) do
+  local lines = location.lines('location', game.place('rowan', revision), 800)
+  for _, line in ipairs(lines) do
+    if type(line) == 'string' and (line:find('wind', 1, true) or line:find('temperature', 1, true)) then note(line) end
+  end
+end
+local abandoned = {id='empty', state='abandoned', kind='fort', wind={knots=2, direction='SW'}}
+for _, line in ipairs(location.lines('location', abandoned, 800)) do
+  if type(line) == 'string' and line:find('wind', 1, true) then note(line) end
+end
+"]);
+    rig.opened();
+    let recorded = notes(&rig);
+    let wind = recorded
+        .iter()
+        .position(|line| line == "wind 2 kn SW")
+        .unwrap();
+    assert_eq!(recorded[wind - 1], "temperature 12.8° · September 13.5°");
+    assert!(recorded.iter().any(|line| line == "wind calm"));
+    assert_eq!(
+        recorded
+            .iter()
+            .filter(|line| *line == "wind 2 kn SW")
+            .count(),
+        2
+    );
+}

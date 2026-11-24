@@ -767,10 +767,16 @@ local function temperature_line(place)
   return "temperature " .. degrees(value.mean) .. " · " .. months[value.month] .. " " .. degrees(value.expected)
 end
 
+local function wind_line(place)
+  if place.wind.knots == 0 then return "wind calm" end
+  return "wind " .. place.wind.knots .. " kn " .. place.wind.direction
+end
+
 local function location_lines(place, width)
   if place.state == "abandoned" then
     local lines = {(tostring(place.kind):gsub("_", " ")), {tooltip_parts = {{text = "abandoned", term = "abandoned"}}, place = place.id}}
     if place.temperature ~= nil then lines[#lines + 1] = temperature_line(place) end
+    if place.wind ~= nil then lines[#lines + 1] = wind_line(place) end
     return lines
   end
   local content_width = math.max(1, (width or 412) // P)
@@ -819,6 +825,7 @@ local function location_lines(place, width)
     }, place = place.id},
   }
   if place.temperature ~= nil then lines[#lines + 1] = temperature_line(place) end
+  if place.wind ~= nil then lines[#lines + 1] = wind_line(place) end
   local price_right = content_width - 82
   local base_right = content_width - 56
   local bar_x = content_width - 48

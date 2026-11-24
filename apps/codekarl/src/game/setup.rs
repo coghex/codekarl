@@ -176,7 +176,9 @@ pub(crate) fn prepare(
         scenario_hash: hashes::scenario_hash(directory)
             .map_err(|error| format!("[game] {error}"))?,
         map_hash: hashes::map_directory(directory)
-            .and_then(|map| hashes::map_hash(&map))
+            .and_then(|map| {
+                hashes::map_hash_with_backdrop(&map, asset_root, economy_rules.is_some())
+            })
             .map_err(|error| format!("[game] {error}"))?,
         scripts_hash: hashes::scripts_hash(gameplay_entry)?,
         rules_hash: hashes::rules_hash(asset_root)?,
@@ -309,6 +311,7 @@ pub(crate) fn prepare(
 struct WeatherData {
     rules: ck_sim::weather::WeatherRules,
     places: Vec<(String, ck_sim::weather::WeatherPlace, [i64; 12])>,
+    winds: Vec<Option<[(i64, i64, i64); 12]>>,
 }
 
 impl WeatherData {
@@ -318,6 +321,17 @@ impl WeatherData {
         let text =
             std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
         let rules = WeatherRules::parse(&text)?;
+        let backdrop_path = root.join("map/backdrop");
+        let backdrop = if backdrop_path.exists() {
+            Some(ck_map::load_backdrop(&backdrop_path).map_err(|e| e.to_string())?)
+        } else {
+            None
+        };
+        let field = backdrop
+            .as_ref()
+            .map(|b| super::wind::WindField::new(b, &rules))
+            .transpose()?;
+        let mut winds = Vec::new();
         let data = &scenario.map.data;
         let crop = data.crop;
         let mut places = Vec::new();
@@ -334,9 +348,23 @@ impl WeatherData {
                 phase: i64::from(data.climate_phase),
             };
             let expected = place.expected_year(&rules, i64::from(scenario.start.year))?;
+            let monthly = field.as_ref().and_then(|field| {
+                let i = u32::try_from(location.cell.x).ok()?;
+                let j = u32::try_from(location.cell.y).ok()?;
+                let mut values = [(0, 0, 0); 12];
+                for (month, value) in values.iter_mut().enumerate() {
+                    *value = field.monthly(i, j, month)?;
+                }
+                Some(values)
+            });
+            winds.push(monthly);
             places.push((location.id.clone(), place, expected));
         }
-        Ok(Self { rules, places })
+        Ok(Self {
+            rules,
+            places,
+            winds,
+        })
     }
 
     fn daily_means(&self, date: Date) -> Result<BTreeMap<String, i64>, String> {
@@ -363,7 +391,21 @@ impl WeatherData {
         } else {
             date.month
         };
-        for (view, (_, place, expected)) in view.places.iter_mut().zip(&self.places) {
+        let (year, gregorian_month, gregorian_day) =
+            ck_sim::weather::gregorian(day).expect("validated weather day");
+        for (index, (view, (_, place, expected))) in
+            view.places.iter_mut().zip(&self.places).enumerate()
+        {
+            if let Some(Some(months)) = self.winds.get(index) {
+                let (u, v, _) = super::wind::day(
+                    months,
+                    year,
+                    usize::try_from(gregorian_month).expect("valid month"),
+                    gregorian_day,
+                );
+                let (knots, direction) = super::wind::display(u, v);
+                view.wind = Some((knots, direction.to_owned()));
+            }
             view.temperature = Some((
                 place
                     .daily_mean(&self.rules, day)
@@ -2207,6 +2249,140 @@ mod stretch_save_tests {
     }
 
     #[test]
+    fn real_wind_view_uses_latest_noon_and_previous_year() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+        let scenario = ck_map::load_scenario(root.join("scenarios/ireland-768")).unwrap();
+        let weather = WeatherData::load(&root, &scenario).unwrap();
+        let birr = scenario
+            .locations
+            .iter()
+            .position(|p| p.id == "birr")
+            .unwrap();
+        for (year, month, day, hour, expected) in [
+            (768, 10, 9, 0, (2, "SW")),
+            (769, 1, 9, 13, (4, "SW")),
+            (769, 1, 10, 6, (4, "SW")),
+            (769, 1, 10, 12, (4, "SW")),
+            (769, 1, 10, 13, (4, "S")),
+        ] {
+            let mut view = view::EconomyView {
+                places: vec![view::PlaceView::default(); scenario.locations.len()],
+                ..Default::default()
+            };
+            weather.add_to_view(
+                &mut view,
+                Date {
+                    year,
+                    month,
+                    day,
+                    hour,
+                },
+            );
+            assert_eq!(
+                view.places[birr]
+                    .wind
+                    .as_ref()
+                    .map(|(k, d)| (*k, d.as_str())),
+                Some(expected)
+            );
+        }
+        let mut view = view::EconomyView {
+            places: vec![view::PlaceView::default(); scenario.locations.len()],
+            ..Default::default()
+        };
+        weather.add_to_view(
+            &mut view,
+            Date {
+                year: 1,
+                month: 1,
+                day: 1,
+                hour: 0,
+            },
+        );
+        assert!(view.places[birr].wind.is_some());
+    }
+
+    #[test]
+    fn birr_wind_at_noon_survives_real_save_and_load() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+        let scenario = ck_map::load_scenario(root.join("scenarios/ireland-768")).unwrap();
+        let actual = WeatherData::load(&root, &scenario).unwrap();
+        let birr = scenario
+            .locations
+            .iter()
+            .position(|p| p.id == "birr")
+            .unwrap();
+        let monthly = actual.winds[birr].unwrap();
+        for (year, month, day, hour, expected) in [
+            (768, 10, 9, 0, (2, "SW")),
+            (769, 1, 9, 13, (4, "SW")),
+            (769, 1, 10, 6, (4, "SW")),
+            (769, 1, 10, 12, (4, "SW")),
+            (769, 1, 10, 13, (4, "S")),
+        ] {
+            let dir = crate::testing::Dir::new();
+            let (game, mut prepared) = fixture(&dir.0);
+            let rules = ck_sim::weather::WeatherRules::parse(include_str!(
+                "../../../../assets/game/weather.toml"
+            ))
+            .unwrap();
+            let place = ck_sim::weather::WeatherPlace {
+                latitude_e4: 531_000,
+                longitude_e4: -79_000,
+                mean: 94,
+                half_range: 44,
+                nearness: 170,
+                phase: 650,
+            };
+            let expected_year = place.expected_year(&rules, 768).unwrap();
+            let count = prepared.scenario.locations.len();
+            let places = prepared
+                .scenario
+                .locations
+                .iter()
+                .map(|location| (location.id.clone(), place, expected_year))
+                .collect();
+            prepared.weather = Some(Arc::new(WeatherData {
+                rules,
+                places,
+                winds: vec![Some(monthly); count],
+            }));
+            let date = Date {
+                year,
+                month,
+                day,
+                hour,
+            };
+            prepared.simulation = Simulation::new(
+                GameTime::from_date(date).unwrap(),
+                42,
+                prepared.simulation.state().clone(),
+                Scheduler::new(),
+                apply,
+            );
+            let mut core = test_core(
+                prepared,
+                game.saves,
+                Outputs {
+                    log: Box::new(|_, _| {}),
+                    publish: Box::new(|_| {}),
+                    fail: Box::new(|error| panic!("{error}")),
+                },
+            );
+            let wind = |core: &Core<GameState, GameCommand>| {
+                core.snapshot().economy.unwrap().places[0]
+                    .wind
+                    .clone()
+                    .unwrap()
+            };
+            assert_eq!(wind(&core), (expected.0, expected.1.to_owned()));
+            core.dispatch(Message::Control(Control::Quicksave), Duration::ZERO);
+            core.dispatch(Message::Control(Control::Quickload), Duration::ZERO);
+            assert_eq!(wind(&core), (expected.0, expected.1.to_owned()));
+        }
+    }
+
+    #[test]
     fn weather_view_uses_latest_noon_and_its_month() {
         let rules = ck_sim::weather::WeatherRules::parse(include_str!(
             "../../../../assets/game/weather.toml"
@@ -2224,6 +2400,7 @@ mod stretch_save_tests {
         let weather = WeatherData {
             rules,
             places: vec![("coast".to_owned(), coast, expected)],
+            winds: vec![],
         };
         for (hour, value) in [
             (0, (128, 9, 135)),
@@ -2275,7 +2452,11 @@ mod stretch_save_tests {
                 .iter()
                 .map(|location| (location.id.clone(), place, year))
                 .collect();
-            prepared.weather = Some(Arc::new(WeatherData { rules, places }));
+            prepared.weather = Some(Arc::new(WeatherData {
+                rules,
+                places,
+                winds: vec![Some([(100, 100, 101_000); 12]); prepared.scenario.locations.len()],
+            }));
             let date = Date {
                 year: 768,
                 month: 10,
@@ -2304,9 +2485,14 @@ mod stretch_save_tests {
                     .unwrap()
             };
             assert_eq!(temp(&core), expected);
+            let wind = |core: &Core<GameState, GameCommand>| {
+                core.snapshot().economy.unwrap().places[0].wind.clone()
+            };
+            assert_eq!(wind(&core), Some((3, "SW".to_owned())));
             core.dispatch(Message::Control(Control::Quicksave), Duration::ZERO);
             core.dispatch(Message::Control(Control::Quickload), Duration::ZERO);
             assert_eq!(temp(&core), expected);
+            assert_eq!(wind(&core), Some((3, "SW".to_owned())));
             if opening_hour == 0 {
                 core.dispatch(Message::Control(Control::TogglePause), Duration::ZERO);
                 for hour in 1..=13 {
@@ -2355,6 +2541,7 @@ mod stretch_save_tests {
         let weather = WeatherData {
             rules,
             places: vec![("north".into(), north, expected)],
+            winds: vec![],
         };
         let mut view = view::EconomyView {
             places: vec![view::PlaceView::default()],
@@ -2392,7 +2579,11 @@ mod stretch_save_tests {
             .iter()
             .map(|location| (location.id.clone(), coast, expected))
             .collect();
-        prepared.weather = Some(Arc::new(WeatherData { rules, places }));
+        prepared.weather = Some(Arc::new(WeatherData {
+            rules,
+            places,
+            winds: vec![],
+        }));
         let date = Date {
             year: 769,
             month: 10,
@@ -2467,6 +2658,7 @@ mod stretch_save_tests {
         let weather = Arc::new(WeatherData {
             rules: weather_rules,
             places: vec![("fixture".into(), place, expected)],
+            winds: vec![],
         });
         let scheduler = |data| {
             gameplay_scheduler_with_rules(

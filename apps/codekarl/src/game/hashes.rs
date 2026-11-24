@@ -176,7 +176,16 @@ pub(crate) fn map_directory(directory: &Path) -> Result<PathBuf, String> {
 ///
 /// # Errors
 /// A file that cannot be read, or a `map.toml` without `[layers]`.
+#[cfg(test)]
 pub(crate) fn map_hash(directory: &Path) -> Result<String, String> {
+    map_hash_with_backdrop(directory, Path::new(""), false)
+}
+
+pub(crate) fn map_hash_with_backdrop(
+    directory: &Path,
+    root: &Path,
+    enabled: bool,
+) -> Result<String, String> {
     let (_, map) = read(directory, "map.toml")?;
     let text = std::str::from_utf8(&map).map_err(|error| format!("map.toml: {error}"))?;
     let keys: MapKeys =
@@ -190,6 +199,17 @@ pub(crate) fn map_hash(directory: &Path) -> Result<String, String> {
     if directory.join("location_kinds.toml").exists() {
         let (name, bytes) = read(directory, "location_kinds.toml")?;
         files.insert(name, bytes);
+    }
+    let backdrop = root.join("map/backdrop");
+    if enabled && backdrop.exists() {
+        let (_, manifest) = read(&backdrop, "backdrop.toml")?;
+        let text = std::str::from_utf8(&manifest).map_err(|e| format!("backdrop.toml: {e}"))?;
+        let keys: MapKeys = toml::from_str(text).map_err(|e| format!("backdrop.toml: {e}"))?;
+        files.insert("backdrop/backdrop.toml".to_owned(), manifest);
+        for name in keys.layers.values() {
+            let (_, bytes) = read(&backdrop, name)?;
+            files.insert(format!("backdrop/{name}"), bytes);
+        }
     }
     Ok(content_hash(files.into_iter().collect()))
 }
