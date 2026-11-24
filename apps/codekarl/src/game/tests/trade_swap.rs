@@ -355,3 +355,56 @@ fn a_building_payment_for_scarce_fish_survives_saves_around_noon() {
     run_to(&mut late, at(3, 13));
     assert_eq!(canonical(&late), next);
 }
+
+#[test]
+fn a_fuel_swap_survives_saves_before_and_after_noon() {
+    let mut rules = rules();
+    rules
+        .goods
+        .iter_mut()
+        .find(|g| g.id == "hardwood")
+        .unwrap()
+        .base_price = 100;
+    let mut economy = fort(&rules);
+    let place = &mut economy.places[0];
+    let good = |id: &str| rules.goods.iter().position(|g| g.id == id).unwrap();
+    let (wood, peat, fish, oats) = (good("hardwood"), good("peat"), good("fish"), good("oats"));
+    let noble = place.pops.iter().position(|p| p.kind == "noble").unwrap();
+    let peasant = place.pops.iter().position(|p| p.kind == "peasant").unwrap();
+    let noble_heads = place.pops[noble].workers + place.pops[noble].dependents;
+    let peasant_heads = place.pops[peasant].workers + place.pops[peasant].dependents;
+    place.pops[noble].stock[fish] = noble_heads * 25;
+    place.pops[noble].stock[wood] = 0;
+    place.pops[noble].stock[peat] = 0;
+    place.pops[noble].consumption.hearth_milli = 0;
+    place.pops[peasant].stock[wood] = 2;
+    place.pops[peasant].consumption.hearth_milli = peasant_heads * 20 * 240;
+    place.prices_milli[wood] = 100_000;
+    place.prices_milli[oats] = 100_000;
+
+    let mut no_capacity = rules.clone();
+    for building in &mut no_capacity.buildings {
+        building.market_capacity_ml_per_level = 0;
+    }
+    let mut control = game(&no_capacity, economy.clone(), at(2, 0));
+    run_to(&mut control, at(2, 13));
+    let mut unbroken = game(&rules, economy.clone(), at(2, 0));
+    run_to(&mut unbroken, at(2, 11));
+    let mut early = reloaded(&rules, &unbroken);
+    run_to(&mut unbroken, at(2, 13));
+    run_to(&mut early, at(2, 13));
+    let after = canonical(&unbroken);
+    assert_eq!(canonical(&early), after);
+    assert!(
+        units(&unbroken, &rules, "peasant", "hardwood")
+            < units(&control, &rules, "peasant", "hardwood"),
+        "the noon actually traded fuel"
+    );
+    let mut late = reloaded(&rules, &unbroken);
+    assert_eq!(canonical(&late), after);
+    run_to(&mut unbroken, at(3, 13));
+    run_to(&mut early, at(3, 13));
+    run_to(&mut late, at(3, 13));
+    assert_eq!(canonical(&early), canonical(&unbroken));
+    assert_eq!(canonical(&late), canonical(&unbroken));
+}

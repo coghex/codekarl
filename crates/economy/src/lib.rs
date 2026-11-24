@@ -3174,7 +3174,7 @@ fn daily_market_orders(rules: &Rules, place: &PlaceState) -> Result<DailyMarketO
                 .ok_or_else(|| missing_data("market.sell".to_owned(), "sell order overflow"))?;
         }
     }
-    for building in building_market_sells(rules, place)? {
+    for building in building_market_sells(rules, place, &place.prices_milli)? {
         for (good, sell) in building.into_iter().enumerate() {
             orders.sell_units[good] = orders.sell_units[good]
                 .checked_add(sell)
@@ -3185,7 +3185,11 @@ fn daily_market_orders(rules: &Rules, place: &PlaceState) -> Result<DailyMarketO
 }
 
 /// Each building's offer above its owners' food reserve, also used by the exchange.
-fn building_market_sells(rules: &Rules, place: &PlaceState) -> Result<Vec<Vec<u128>>, DataError> {
+fn building_market_sells(
+    rules: &Rules,
+    place: &PlaceState,
+    prices: &[u64],
+) -> Result<Vec<Vec<u128>>, DataError> {
     let pop_sizes = place
         .pops
         .iter()
@@ -3237,7 +3241,7 @@ fn building_market_sells(rules: &Rules, place: &PlaceState) -> Result<Vec<Vec<u1
                 .checked_add(u128::from(people) * u128::from(rate) * 60)
                 .ok_or_else(|| missing_data("fuel.reserve".to_owned(), "reserve overflow"))?;
         }
-        let spare = fuel::fuel_spare(rules, &building.stock, 0, reserve, &place.prices_milli)?;
+        let spare = fuel::fuel_spare(rules, &building.stock, 0, reserve, prices)?;
         for (index, units) in spare.into_iter().enumerate() {
             sells[building_index][index] = sells[building_index][index]
                 .checked_add(u128::from(units))
@@ -7214,7 +7218,7 @@ pub fn run_daily_economy_with_floors(
     update_daily_prices(rules, &mut next)?;
     let mut ledger = run_monthly_production_with_quality(rules, &mut next, date, quality_by_place)?;
     // The exchange uses moved prices; fuel uses the price as the day began.
-    swap::run_daily_swaps(rules, &mut next)?;
+    swap::run_daily_swaps_at_prices(rules, &mut next, &day_prices)?;
     let (intake_pm, daily_consumption) =
         run_daily_consumption_at_prices(rules, &mut next, date, &day_prices)?;
     ledger.intake_pm = intake_pm;
