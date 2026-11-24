@@ -237,9 +237,23 @@ fn the_shipped_network_has_the_water_of_the_design() {
         .collect();
     assert_eq!(classes, [("barge", 1000, false), ("currach", 5000, true)]);
     assert_eq!(network.river_width_mm, 20_000);
-    assert_eq!(network.landings.len(), 213);
+    assert_eq!(network.landings.len(), 214);
+    let landing = network.landings.iter().find(|l| l.id == 214).unwrap();
+    assert_eq!(
+        (
+            landing.node,
+            landing.crossing,
+            landing.joint,
+            landing.approach_m
+        ),
+        (268, Some(260), Some(2220), 0)
+    );
+    assert_eq!(landing.bodies, [20, 14]);
+    assert_eq!(landing.shore, [379, 522]);
+    assert_eq!(landing.bank, Some(ck_map::Bank::Right));
+    assert_eq!(landing.end, Some(ck_map::LandEnd::From));
     let landed: std::collections::BTreeSet<u64> = network.landings.iter().map(|l| l.node).collect();
-    assert_eq!(landed.len(), 147);
+    assert_eq!(landed.len(), 148);
     let places = network
         .nodes
         .iter()

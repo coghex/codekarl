@@ -10,7 +10,7 @@ terrain_sha256 = "0c23fefb59ba8d408d2824e351da017d9688630a22555df8a8a6a947b1cd7e
 rivers_sha256 = "e8959053e38c9a814e8a5fb2f1320352494f8f49900af250ea81dc67d1aa0495"
 sea_distance = "sea_distance.png"
 sea_distance_sha256 = "4a85071911e57bab5d107749bcc9158f78a8b4fd0323eeaa95e6e42842b86b82"
-next_landing_id = 214
+next_landing_id = 215
 
 [[node]]
 id = 1
@@ -4606,6 +4606,7 @@ level = 1
 tidal = false
 crossings = [{ river = "shannon", width_tenths_m = 1007, kind = "none" }]
 wades = []
+landing_from = 214
 landing_to = 163
 
 [[stretch]]
@@ -54115,6 +54116,17 @@ crossing = 303
 end = "to"
 approach_m = 0
 bodies = [1, 0]
+
+[[landing]]
+id = 214
+node = 268
+bank = "right"
+shore = [379, 522]
+joint = 2220
+crossing = 260
+end = "from"
+approach_m = 0
+bodies = [20, 14]
 
 [[strait]]
 place = "church_island_currane"

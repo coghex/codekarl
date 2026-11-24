@@ -2041,6 +2041,54 @@ mod tests {
     }
 
     #[test]
+    fn ireland_slige_mor_crossing_has_two_boat_transfers() {
+        let _search = IRELAND_SEARCH.lock().unwrap();
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let scenario = ck_map::load_scenario(root.join("assets/scenarios/ireland-768")).unwrap();
+        let rules = TravelRules::parse(
+            &std::fs::read_to_string(root.join("assets/game/travel.toml")).unwrap(),
+        )
+        .unwrap();
+        let ways = measure_ways(&scenario, &rules).unwrap();
+        let states =
+            current_way_states(&super::super::stretch::starting(scenario.network.as_ref()));
+        for profile in ["currach", "barge", "cart"] {
+            let routes = routes_from(
+                &scenario,
+                &ways,
+                &states,
+                &rules.profiles[profile],
+                &rules,
+                268,
+            )
+            .unwrap();
+            let trip = routes.itinerary(&scenario, &ways, 269, &rules).unwrap();
+            if profile == "cart" {
+                assert!(!trip.iter().any(
+                    |leg| matches!(leg.kind, TripKind::Land { way, .. } if ways[way].id == 260)
+                ));
+            } else {
+                assert_eq!(
+                    routes.to(269).unwrap().hours,
+                    BigRational::from_integer(4.into())
+                );
+                assert_eq!(
+                    trip.iter()
+                        .filter(|leg| matches!(leg.kind, TripKind::Transfer { .. }))
+                        .count(),
+                    2
+                );
+                let water: Vec<_> = trip
+                    .iter()
+                    .filter(|leg| matches!(leg.kind, TripKind::Water { .. }))
+                    .collect();
+                assert_eq!(water.len(), 1);
+                assert_eq!(water[0].length_mm, BigRational::from_integer(0.into()));
+            }
+        }
+    }
+
+    #[test]
     fn ireland_cart_detours_via_fords_between_clonmacnoise_and_clonfert() {
         let _search = IRELAND_SEARCH.lock().unwrap();
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");

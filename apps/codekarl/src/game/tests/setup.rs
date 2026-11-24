@@ -883,7 +883,7 @@ fn the_shipped_scenario_starts_with_its_landings_and_its_straits() {
         .0
         .expect("the shipped scenario starts");
     let network = started.scenario.network.as_ref().expect("a stored network");
-    assert_eq!(network.landings.len(), 213);
+    assert_eq!(network.landings.len(), 214);
     assert_eq!(network.straits.len(), 10);
     let landed: std::collections::BTreeSet<u64> = network.landings.iter().map(|l| l.node).collect();
     let places = network

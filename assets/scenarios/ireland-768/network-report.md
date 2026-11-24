@@ -614,6 +614,7 @@
 - bank node 266: landing 161, crossing stretch 258 from end, right bank, shore (425, 507), approach 0 m; barge 20, currach 14
 - bank node 267: landing 94, river brosna-03 run 0, left bank, shore (427, 508), approach 0 m; barge 20, currach 14
 - bank node 267: landing 162, crossing stretch 258 to end, left bank, shore (427, 508), approach 0 m; barge 20, currach 14
+- bank node 268: landing 214, crossing stretch 260 from end, right bank, shore (379, 522), approach 0 m; barge 20, currach 14
 - bank node 269: landing 163, crossing stretch 260 to end, left bank, shore (380, 520), approach 0 m; barge 20, currach 14
 - bank node 270: landing 95, river suir-02 run 0, right bank, shore (395, 721), approach 0 m; barge 1, currach 0
 - bank node 270: landing 164, crossing stretch 262 from end, right bank, shore (395, 721), approach 0 m; barge 1, currach 0
@@ -778,7 +779,7 @@
 - uliathain_seat: no usable water reached
 
 ## Shores refused
-- bank node 268: shore (379, 522), marsh
+- none
 
 ## Crossing stretches by boat
 - stretch 12: landings 131, 132; barge crosses; currach crosses
@@ -804,7 +805,7 @@
 - stretch 253: landings 155, 156; barge crosses; currach crosses
 - stretch 256: landings 159, 160; barge crosses; currach crosses
 - stretch 258: landings 161, 162; barge crosses; currach crosses
-- stretch 260: landings none, 163; barge cannot cross; currach cannot cross
+- stretch 260: landings 214, 163; barge crosses; currach crosses
 - stretch 262: landings 164, 165; barge crosses; currach crosses
 - stretch 265: landings 170, 171; barge crosses; currach crosses
 - stretch 267: landings 172, 173; barge crosses; currach crosses
