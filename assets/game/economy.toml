@@ -3,6 +3,7 @@ herd_start_share = [2, 3]
 # hunger/tier values are integer hundredths of a person-day.
 # are hundredths of a person-day, storage limits are thousandths of a unit/person.
 price_k_pm = 500
+swap_loss_limit_pm = 100
 religions = ["christianity", "irish_paganism", "norse_paganism", "anglo_saxon_paganism"]
 terrain_order = ["pasture", "forest", "bog", "marsh", "mountain"]
 housing_classes = ["makeshift", "basic"]
@@ -410,6 +411,7 @@ owner_workers={ peasant=10 }
 penalty_pm=500
 overhead_pm=100
 recruit_range_m=30000
+market_capacity_ml_per_level=50000
 [[buildings.methods]]
 id="mixed_farming"
 resource="usable_land"
@@ -431,6 +433,7 @@ owner_workers={ monk=5, labourer=10 }
 penalty_pm=500
 overhead_pm=300
 recruit_range_m=100000
+market_capacity_ml_per_level=100000
 [[buildings.methods]]
 id="monastic_farming"
 resource="usable_land"
@@ -457,6 +460,7 @@ owner_kind="noble"
 penalty_pm=500
 overhead_pm=300
 recruit_range_m=30000
+market_capacity_ml_per_level=100000
 [[buildings.methods]]
 id="demesne_farming"
 resource="usable_land"

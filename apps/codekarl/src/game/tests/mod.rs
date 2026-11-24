@@ -34,6 +34,7 @@ mod run;
 mod setup;
 mod start_768;
 mod storage;
+mod trade_swap;
 mod views;
 
 /// A state the test systems write: three counters folded from the random streams, and a flag a system may raise.

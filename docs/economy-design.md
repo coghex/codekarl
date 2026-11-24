@@ -276,7 +276,7 @@ The numbers are placeholders for tuning.
 | hardwood, peat | load | – | | | | farm wood focus or turf cutting |
 | oats | bushel | high | ✓ | | | farm, holdings |
 | barley | bushel | high | ✓ | | | farm, holdings |
-| cattle, pigs, sheep (live) | head | – | | | | the herds (§3.14); not eaten except by emergency butchering |
+| cattle, pigs, sheep, horses (live) | head | – | | | | the herds (§3.14); horses are not eaten |
 | beef, pork, mutton | pound (salted) | medium | ✓ | ✓ | | the herds' slaughtered surplus (§3.14) |
 | dairy (butter, cheese) | pound | medium | ✓ | ✓ | | the cattle herd, by season (§3.14; Research: the main value of cattle; butter keeps) |
 | peas and beans | bushel | medium | ✓ | | | farm (small) |
@@ -314,7 +314,7 @@ then "you can add a tag for 'herd' too for the cattle, pigs, and sheep herbs and
   | `food` | oats, barley, peas and beans, vegetables, apples, dairy, beef, pork, mutton, fish, seabirds, ale, mead, wine, honey |
   | `clothing` | wool, hides, linen |
   | `fabric` | hides, linen, hemp |
-  | `herd` | cattle, pigs, sheep |
+  | `herd` | cattle, pigs, sheep, horses |
   | none | herbs, beeswax |
 
   A test (`crates/economy/src/lib.rs`, `shipped_goods_have_the_owner_approved_tags`) holds the shipped file to this table.
@@ -951,6 +951,7 @@ No random draw is used (map-design §5.1). Every number goes into the scenario's
 | cattle (live) | head | 250 kg | (herd) | – | – | – | – | 2,400 |
 | pigs (live) | head | 80 kg | (herd) | – | – | – | – | 600 |
 | sheep (live) | head | 35 kg | (herd) | – | – | – | – | 300 |
+| horses (live) | head | 400 kg | (herd) | – | – | – | – | 6,000 |
 
 - **Linen and hemp** have a per-person cap of 5 lb each. Mixed subsistence farming produces 10 lb of each per level yearly: hemp in September, linen half in October and half in November. Each has a 5‰ land-choice score share, taken from oats (690‰). These fixed outputs follow staffing, crop suitability and fertility. No pop consumes them yet.
 - **Weights and volumes** are standard approximations for research: a Winchester bushel is 35.2 L, and an ale gallon is about 4.6 L.
@@ -1072,17 +1073,17 @@ any building (Firm: no strict rules), and every value goes into the guesswork lo
 
 **Herds belong to buildings.** Each farm, holdings and demesne keeps a head count for each species its building type names. The ordered
 species list, birth and death rates, slaughter yields, recurring products and emergency-butchering priority are rules data; each building
-type supplies its maximum per farming level. Every herd starts at two thirds of its total maximum, rounded down. The shipped species are cattle, pigs and sheep. If pops move, the
+type supplies its maximum per farming level. Every herd starts at two thirds of its total maximum, rounded down. The shipped species are cattle, pigs, sheep and horses; only the demesne keeps horses. If pops move, the
 herd stays. These are counts, not individual animals, so livestock stays abstract as the vision requires.
 
-| | Cattle | Pigs | Sheep |
-|---|---|---|---|
-| maximum per level (Firm) | 12 | 8 | 7 |
-| starting share of maximum | 2/3 | 2/3 | 2/3 |
-| births, ‰ of the herd per year | 500 | 1,500 | 800 |
-| deaths, ‰ of the herd per year | 80 | 100 | 80 |
-| slaughter yield per head | 220 lb beef, 1 hide | 88 lb pork | 33 lb mutton |
-| herd products | dairy 72 lb per head per year, by season | – | wool 1.5 lb per head per year, in June |
+| | Cattle | Pigs | Sheep | Horses (demesne only) |
+|---|---|---|---|---|
+| maximum per level | 12 | 8 | 7 | 3 |
+| starting share of maximum | 2/3 | 2/3 | 2/3 | 2/3 |
+| births, ‰ of the herd per year | 500 | 1,500 | 800 | 300 |
+| deaths, ‰ of the herd per year | 80 | 100 | 80 | 60 |
+| slaughter yield per head | 220 lb beef, 1 hide | 88 lb pork | 33 lb mutton | 1 hide |
+| herd products | dairy 72 lb per head per year, by season | – | wool 1.5 lb per head per year, in June | – |
 
 - **Research:** *Críth Gablach* gives the *ócaire*, the smallest free farmer, 7 cows and a bull, 7 pigs and a sow, and 7 sheep. The
   per-level herd is a little above that.
@@ -1109,7 +1110,7 @@ herd stays. These are counts, not individual animals, so livestock stays abstrac
   paid in one month uses `portion(head × amount_milli, cov, 10⁶, carry)` in that month. Slaughter yields whole units per head. Fractions
   stay in each product's saved carry, so a store only ever receives whole units.
 - **Emergency butchering** follows the separate priority in the species data. The shipped order is pigs, sheep, then cattle; only a
-  species yielding a good with positive hunger value is eligible. Each slaughter yield is paid in its authored order.
+  species yielding a good with positive hunger value is eligible, so horses are never emergency butchered. Each slaughter yield is paid in its authored order.
 - **Coverage applies to herd products too,** because an unmanaged herd is poorly kept (Proposal): births, dairy and wool are multiplied
   by the coverage multiplier.
 - **Replenishing** (Firm): when a herd is below its maximum, live animals held by the building or its owner pops return to it. In M9

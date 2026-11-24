@@ -2763,6 +2763,19 @@ GUARDS: tuple[Guard, ...] = (
         "economy.core",
         ("assets/game/economy.toml",),
     ),
+    # CK-391: the swap's tests load the shipped rules, whose two new numbers (the market capacity of a building level and the
+    # swap's loss limit) they read, and run the exchange over them.
+    Guard(
+        "crates/economy/src/swap_tests.rs",
+        "economy.core",
+        ("assets/game/economy.toml",),
+    ),
+    # CK-391: the game-boundary witness of the swap loads the same shipped rules and runs the game's own noon step.
+    Guard(
+        "apps/codekarl/src/game/tests/trade_swap.rs",
+        "rust.app",
+        ("assets/game/economy.toml",),
+    ),
     Guard(
         "apps/codekarl/src/readout_tests.rs",
         "rust.app",

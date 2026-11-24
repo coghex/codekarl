@@ -19,6 +19,7 @@ pub mod lifecycle;
 pub mod peoples;
 pub mod personality;
 mod start_levels;
+mod swap;
 pub use events::{Epithet, EpithetScope, EpithetTrigger, EventRules};
 pub use genetics::{Genetics, PopGenetics};
 pub use lifecycle::LifeCycle;
@@ -240,6 +241,9 @@ pub struct BuildingType {
     /// Maximum ground-distance in metres for recruiting into this building.
     /// `None` is retained during deserialization so validation can name a missing key.
     pub recruit_range_m: Option<u32>,
+    /// Market capacity one level gives to the building's owners, in millilitres a day (CK-391). Nothing when left out.
+    #[serde(default)]
+    pub market_capacity_ml_per_level: u64,
     /// Species kept by this building, keyed by animal good.
     #[serde(default)]
     pub herds: BTreeMap<String, HerdCapacity>,
@@ -327,6 +331,13 @@ pub struct Rules {
     pub grazing: BTreeMap<String, BTreeMap<String, u16>>,
     /// Target-price response in per-mille.
     pub price_k_pm: u32,
+    /// The most a swap's starter may lose to rounding, as a share of what it gives, in per-mille (CK-391).
+    #[serde(default = "default_swap_loss_limit_pm")]
+    pub swap_loss_limit_pm: u16,
+}
+
+fn default_swap_loss_limit_pm() -> u16 {
+    100
 }
 
 impl Rules {
@@ -644,6 +655,12 @@ impl Rules {
             return Err(refuse(
                 "price_k_pm".to_owned(),
                 "must be at most 10000".to_owned(),
+            ));
+        }
+        if self.swap_loss_limit_pm > 1000 {
+            return Err(refuse(
+                "swap_loss_limit_pm".to_owned(),
+                "must be at most 1000".to_owned(),
             ));
         }
         let goods: std::collections::BTreeSet<_> =
@@ -3025,6 +3042,19 @@ fn building_market_holding(
     )?))
 }
 
+/// A pop's target for a good: the larger of its 240-day food target and its comfort target.
+fn pop_target_units(
+    rules: &Rules,
+    pop_kind: &str,
+    people: u64,
+    good_index: usize,
+) -> Result<u128, DataError> {
+    let target = food_target_units(rules, pop_kind, people, good_index, 240)?;
+    let comfort_target = tier_target_units(rules, pop_kind, people, good_index, 1)?
+        .max(tier_target_units(rules, pop_kind, people, good_index, 2)?);
+    Ok(target.max(comfort_target))
+}
+
 fn daily_market_orders(rules: &Rules, place: &PlaceState) -> Result<DailyMarketOrders, DataError> {
     let goods = rules.goods.len();
     let mut orders = DailyMarketOrders {
@@ -3037,22 +3067,19 @@ fn daily_market_orders(rules: &Rules, place: &PlaceState) -> Result<DailyMarketO
             missing_data("market.pop.size".to_owned(), "population size overflow")
         })?;
         pop_sizes.push(people);
-        for (good_index, good) in rules.goods.iter().enumerate() {
+        for good_index in 0..rules.goods.len() {
             let holding = pop_market_holding(place, pop_index, good_index)?;
-            let target = food_target_units(rules, &pop.kind, people, good_index, 240)?;
-            let comfort_target = tier_target_units(rules, &pop.kind, people, good_index, 1)?
-                .max(tier_target_units(rules, &pop.kind, people, good_index, 2)?);
-            let target = target.max(comfort_target);
+            let target = pop_target_units(rules, &pop.kind, people, good_index)?;
             let buy = target.saturating_sub(holding);
             orders.buy_units[good_index] = orders.buy_units[good_index]
                 .checked_add(buy)
                 .ok_or_else(|| missing_data("market.buy".to_owned(), "buy order overflow"))?;
-            if good.hunger_centi > 0 {
-                let sell = holding.saturating_sub(target);
-                orders.sell_units[good_index] = orders.sell_units[good_index]
-                    .checked_add(sell)
-                    .ok_or_else(|| missing_data("market.sell".to_owned(), "sell order overflow"))?;
-            }
+            // A pop offers whatever it holds above its target, with or without a hunger value (CK-391): the
+            // exchange swaps the same spare, so the price step and the exchange see the same offers.
+            let sell = holding.saturating_sub(target);
+            orders.sell_units[good_index] = orders.sell_units[good_index]
+                .checked_add(sell)
+                .ok_or_else(|| missing_data("market.sell".to_owned(), "sell order overflow"))?;
         }
     }
     let mut owner_people_by_building = vec![vec![0_u64; place.pops.len()]; place.buildings.len()];
@@ -4033,6 +4060,36 @@ fn room_by_cap_and_volume(
     Ok(offered.min(cap_room).min(by_volume))
 }
 
+/// How much of `offered` a pop's store (its stock `stock`, for `people` people) takes: the good's per-person limit and the store's
+/// volume, as every receipt checks them.
+fn pop_store_limits(
+    rules: &Rules,
+    people: u64,
+    good_index: usize,
+) -> Result<(u64, u128), DataError> {
+    let good = rules
+        .goods
+        .get(good_index)
+        .ok_or_else(|| missing_data("pop.stock".to_owned(), "good index is outside rules"))?;
+    let good_cap = u64::try_from(u128::from(good.pop_limit_milli) * u128::from(people) / 1000)
+        .map_err(|_| missing_data("pop.cap".to_owned(), "good cap exceeds u64"))?;
+    let capacity = u128::from(people)
+        .checked_mul(720_000)
+        .ok_or_else(|| missing_data("pop.capacity".to_owned(), "volume capacity overflow"))?;
+    Ok((good_cap, capacity))
+}
+
+fn pop_store_accepts(
+    rules: &Rules,
+    people: u64,
+    stock: &[u64],
+    good_index: usize,
+    offered: u64,
+) -> Result<u64, DataError> {
+    let (good_cap, capacity) = pop_store_limits(rules, people, good_index)?;
+    room_by_cap_and_volume(rules, stock, good_index, good_cap, capacity, None, offered)
+}
+
 fn receive_pop(
     rules: &Rules,
     pop: &mut PopState,
@@ -4045,22 +4102,11 @@ fn receive_pop(
             "stock dimensions do not match goods",
         ));
     }
-    let good = rules
-        .goods
-        .get(good_index)
-        .ok_or_else(|| missing_data("pop.stock".to_owned(), "good index is outside rules"))?;
     let people = pop
         .workers
         .checked_add(pop.dependents)
         .ok_or_else(|| missing_data("pop.size".to_owned(), "population size overflow"))?;
-    let good_cap = u64::try_from(u128::from(good.pop_limit_milli) * u128::from(people) / 1000)
-        .map_err(|_| missing_data("pop.cap".to_owned(), "good cap exceeds u64"))?;
-    let capacity = u128::from(people)
-        .checked_mul(720_000)
-        .ok_or_else(|| missing_data("pop.capacity".to_owned(), "volume capacity overflow"))?;
-    let accepted = room_by_cap_and_volume(
-        rules, &pop.stock, good_index, good_cap, capacity, None, offered,
-    )?;
+    let accepted = pop_store_accepts(rules, people, &pop.stock, good_index, offered)?;
     pop.stock[good_index] = pop.stock[good_index]
         .checked_add(accepted)
         .ok_or_else(|| missing_data("pop.stock".to_owned(), "stock addition overflow"))?;
@@ -6814,6 +6860,8 @@ pub fn run_daily_economy_with_floors(
     let mut next = state.clone();
     update_daily_prices(rules, &mut next)?;
     let mut ledger = run_monthly_production_with_quality(rules, &mut next, date, quality_by_place)?;
+    // The exchange (CK-391): after the price step and any production and payday, before drawing and eating.
+    swap::run_daily_swaps(rules, &mut next)?;
     let (intake_pm, daily_consumption) = run_daily_consumption_with_ledger(rules, &mut next, date)?;
     ledger.intake_pm = intake_pm;
     ledger.daily_consumption = Some(daily_consumption);
@@ -9204,6 +9252,10 @@ mod noble_tests;
 mod personality_tests;
 #[cfg(test)]
 mod start_levels_tests;
+#[cfg(test)]
+mod swap_oracle_tests;
+#[cfg(test)]
+mod swap_tests;
 
 #[cfg(test)]
 pub(crate) mod tests {
@@ -9417,6 +9469,7 @@ pub(crate) mod tests {
                     penalty_pm: 500,
                     overhead_pm: 100,
                     recruit_range_m: Some(30_000),
+                    market_capacity_ml_per_level: 0,
                     methods: vec![Method {
                         id: "mixed".to_owned(),
                         resource: "usable_land".to_owned(),
@@ -9436,6 +9489,7 @@ pub(crate) mod tests {
                     penalty_pm: 0,
                     overhead_pm: 0,
                     recruit_range_m: Some(0),
+                    market_capacity_ml_per_level: 0,
                     methods: Vec::new(),
                     owner_kind: None,
                 },
@@ -9478,6 +9532,7 @@ pub(crate) mod tests {
             )]),
             grazing: BTreeMap::from([("pasture".to_owned(), BTreeMap::new())]),
             price_k_pm: 500,
+            swap_loss_limit_pm: 100,
         }
     }
 
@@ -13575,6 +13630,7 @@ pub(crate) mod tests {
                 penalty_pm: 500,
                 overhead_pm: 300,
                 recruit_range_m: Some(100_000),
+                market_capacity_ml_per_level: 0,
                 methods: vec![rules.buildings[0].methods[0].clone()],
                 owner_kind: None,
             },
@@ -14993,6 +15049,7 @@ pub(crate) mod tests {
                 penalty_pm: 500,
                 overhead_pm: 300,
                 recruit_range_m: Some(100_000),
+                market_capacity_ml_per_level: 0,
                 methods: vec![farm_method],
                 owner_kind: None,
             },
@@ -18345,6 +18402,7 @@ pub(crate) mod tests {
             penalty_pm: 0,
             overhead_pm: 0,
             recruit_range_m: Some(100_000),
+            market_capacity_ml_per_level: 0,
             methods: Vec::new(),
             owner_kind: None,
         });
