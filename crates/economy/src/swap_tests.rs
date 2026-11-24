@@ -100,6 +100,7 @@ fn building_state(rules: &Rules, kind: &str, levels: u32, pops: usize) -> Buildi
         kind: kind.to_owned(),
         levels,
         method_levels: vec![0; methods],
+        level_records: Vec::new(),
         herds: Vec::new(),
         employment: vec![Employment::default(); pops],
         stock: vec![0; goods],

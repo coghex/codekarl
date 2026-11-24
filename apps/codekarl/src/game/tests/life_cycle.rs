@@ -222,6 +222,26 @@ fn fuel_levels_and_stacks_survive_saves_before_and_after_noon() {
     farm.method_levels[0] = farm.levels - 2;
     farm.method_levels[2] = 1;
     farm.method_levels[3] = 1;
+    // Methods 0, 2 and 3 are the field, wood and turf: the levels stand on pasture, forest and bog.
+    farm.level_records = farm
+        .method_levels
+        .iter()
+        .enumerate()
+        .flat_map(|(method, count)| {
+            let ground = ["pasture", "", "forest", "bog"][method];
+            std::iter::repeat_n((method, ground), *count as usize)
+        })
+        .enumerate()
+        .map(|(number, (method, ground))| ck_economy::LevelRecord {
+            number: u32::try_from(number).unwrap(),
+            method: u32::try_from(method).unwrap(),
+            ground: Some(ground.to_owned()),
+            paydays: ck_economy::MATURE_PAYDAYS,
+        })
+        .collect();
+    let definition = rules.buildings.iter().find(|b| b.id == "farm").unwrap();
+    (farm.method_suitability, farm.herd_grazing_sums) =
+        ck_economy::derive_level_sums(rules, definition, &farm.level_records).unwrap();
     farm.stock[hardwood] = 1;
     place.pops[0].stock[peat] = 1;
     place.pops[0].consumption.hearth_milli = 100;
@@ -391,6 +411,208 @@ fn herds_and_product_carries_survive_saves_on_both_sides_of_noon() {
         assert_eq!(resumed.state().economy, game.state().economy);
         assert_eq!(resumed.digest().unwrap(), game.simulation.digest().unwrap());
     }
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "Both dates are saved at both hours and stepped side by side with the live game in one pass."
+)]
+fn level_records_and_production_carries_survive_saves_on_both_sides_of_noon_at_the_new_year() {
+    let rules = start().0.clone();
+    let mut economy = start().1.clone();
+    economy.places.retain(|place| {
+        place
+            .buildings
+            .iter()
+            .any(|building| building.kind == "farm" && building.level_records.len() >= 2)
+    });
+    economy.places.truncate(1);
+    let farm = economy.places[0]
+        .buildings
+        .iter_mut()
+        .find(|building| building.kind == "farm")
+        .unwrap();
+    let definition = rules.buildings.iter().find(|b| b.id == "farm").unwrap();
+    // A carry above nothing in the first good of each method that has a level, and one young level among the mature.
+    let positions = u128::from(farm.levels) * u128::from(definition.workers_per_level);
+    for (method, levels) in farm.method_levels.iter().enumerate() {
+        if *levels > 0 {
+            farm.production_carries[method] =
+                vec![positions * 12_000_000_000 / 3; rules.goods.len()];
+        }
+    }
+    farm.level_records[0].paydays = 5;
+    // Saved on 31 December and on 1 January, at 11:00 and at 13:00 of the same live game (stepped through its noon, not built again
+    // at that hour): each is the unbroken game from there on, through the payday of 1 January.
+    for (year, month, day) in [(768, 12, 31), (769, 1, 1)] {
+        let mut game = Game::with_economy(
+            rules.clone(),
+            economy.clone(),
+            Vec::new(),
+            at(year, month, day, 11),
+            &format!("level-save-{month}-{day}"),
+        );
+        let reload = |game: &Game, hour: u8| {
+            let identity = crate::game::saves::Identity {
+                build: "level-test".into(),
+                scenario: "fixture".into(),
+                scenario_hash: "0".repeat(64),
+                map_hash: "0".repeat(64),
+                scripts_hash: "0".repeat(64),
+                rules_hash: "0".repeat(64),
+                start: date(year, month, day, hour),
+            };
+            let bytes = game.simulation.save(identity.meta(42)).to_bytes().unwrap();
+            let loaded =
+                ck_sim::Save::<GameState>::from_bytes(&bytes, &identity.expected()).unwrap();
+            assert_eq!(loaded.digest().unwrap(), game.simulation.digest().unwrap());
+            let mut scheduler = Scheduler::<GameState>::new();
+            register_economy_callback_with_storage(
+                &mut scheduler,
+                Arc::new(rules.clone()),
+                Arc::clone(&game.handle),
+            );
+            Simulation::<GameState, GameCommand>::from_save(loaded, scheduler, apply).unwrap()
+        };
+        let mut eleven = reload(&game, 11);
+        assert!(game.through(noon(year, month, day)).is_empty());
+        let mut thirteen = reload(&game, 13);
+        // The 11:00 resume runs its own noon, which the 13:00 save has already had: bring it to the same tick as the others.
+        while eleven.date().unwrap() <= noon(year, month, day) {
+            assert!(eleven.step().unwrap().is_empty());
+        }
+        // The derived market orders are not saved: the comparison leaves them out, as the digest does.
+        let canonical = |economy: &EconomyState| {
+            let mut economy = economy.clone();
+            economy
+                .places
+                .iter_mut()
+                .for_each(|place| place.last_market_orders = None);
+            economy
+        };
+        for _ in 0..=24 {
+            assert_eq!(eleven.date(), game.simulation.date());
+            assert_eq!(thirteen.date(), game.simulation.date());
+            assert_eq!(
+                canonical(&eleven.state().economy),
+                canonical(&game.state().economy)
+            );
+            assert_eq!(
+                canonical(&thirteen.state().economy),
+                canonical(&game.state().economy)
+            );
+            assert_eq!(eleven.digest().unwrap(), game.simulation.digest().unwrap());
+            assert_eq!(
+                thirteen.digest().unwrap(),
+                game.simulation.digest().unwrap()
+            );
+            assert!(game.simulation.step().unwrap().is_empty());
+            assert!(eleven.step().unwrap().is_empty());
+            assert!(thirteen.step().unwrap().is_empty());
+        }
+        let building = game.state().economy.places[0]
+            .buildings
+            .iter()
+            .find(|b| b.kind == "farm")
+            .unwrap();
+        assert!(
+            building
+                .production_carries
+                .iter()
+                .flatten()
+                .any(|carry| *carry > 0),
+            "a production carry above nothing at the end"
+        );
+    }
+}
+
+/// Everything the daily economy changes in a place, as a running digest: prices, stores, herds, wages, staffing, the product carries
+/// and the production carries in the old unit, and every pop's numbers and stores.
+struct Digest(u64);
+
+impl std::fmt::Write for Digest {
+    fn write_str(&mut self, text: &str) -> std::fmt::Result {
+        for byte in text.bytes() {
+            self.0 = (self.0 ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+        }
+        Ok(())
+    }
+}
+
+/// Production carries come in twelfths of the old unit from CK-406 on.
+const CARRY_UNIT: u128 = 12;
+
+fn year_digest(economy: &EconomyState) -> u64 {
+    use std::fmt::Write as _;
+
+    let mut digest = Digest(0xcbf2_9ce4_8422_2325);
+    for place in &economy.places {
+        write!(digest, "{} {:?}", place.id, place.prices_milli).unwrap();
+        for building in &place.buildings {
+            let scaled: Vec<u128> = building
+                .production_carries
+                .iter()
+                .flatten()
+                .map(|carry| {
+                    let carry = *carry;
+                    assert_eq!(carry % CARRY_UNIT, 0);
+                    carry / CARRY_UNIT
+                })
+                .collect();
+            write!(
+                digest,
+                " {} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?}",
+                building.kind,
+                building.stock,
+                building.herds,
+                building.wage_carries,
+                building.pay_carries,
+                building.wage_history,
+                building.employment,
+                building.herd_product_carries,
+                scaled
+            )
+            .unwrap();
+        }
+        for pop in &place.pops {
+            write!(
+                digest,
+                " {} {} {} {:?} {:?}",
+                pop.kind, pop.workers, pop.dependents, pop.stock, pop.employment
+            )
+            .unwrap();
+        }
+    }
+    digest.0
+}
+
+#[test]
+fn the_shipped_scenario_runs_a_year_day_for_day_as_the_build_before_levels_were_records() {
+    use std::fmt::Write as _;
+
+    let (rules, economy) = start();
+    let mut game = Game::with_economy(
+        rules.clone(),
+        economy.clone(),
+        Vec::new(),
+        at(768, 1, 1, 0),
+        "shipped-year",
+    );
+    let mut trace = String::new();
+    for month in 1..=12 {
+        for day in 1..=ck_sim::days_in_month(768, month).unwrap() {
+            let failures = game.through(noon(768, month, day));
+            assert!(failures.is_empty(), "{failures:?}");
+            writeln!(
+                trace,
+                "768-{month:02}-{day:02} {:016x}",
+                year_digest(&game.state().economy)
+            )
+            .unwrap();
+        }
+    }
+    assert_eq!(trace, include_str!("shipped_year_accepted.txt"));
 }
 
 #[test]

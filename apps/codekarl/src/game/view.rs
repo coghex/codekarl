@@ -833,6 +833,7 @@ mod tests {
                     kind: "farm".to_owned(),
                     levels: 3,
                     method_levels: vec![3, 0],
+                    level_records: Vec::new(),
                     herds: vec![27, 18, 15, 0],
                     employment: vec![Employment {
                         owners: 10,
@@ -857,6 +858,7 @@ mod tests {
                     kind: "storehouse".to_owned(),
                     levels: 1,
                     method_levels: vec![1, 0, 0],
+                    level_records: Vec::new(),
                     herds: Vec::new(),
                     employment: vec![Employment::default()],
                     stock: account,
@@ -1049,6 +1051,10 @@ mod tests {
         );
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "The day-one fixture sets each dimension of its three places in one literal pass."
+    )]
     fn day_one_economy_fixture() -> (Rules, EconomyState, Vec<Vec<u64>>, Date) {
         let mut rules = shipped_rules();
         rules.hire_pm = 1000;
@@ -1111,15 +1117,22 @@ mod tests {
         holdings.kind = "holdings".to_owned();
         holdings.levels = 1;
         holdings.method_levels = vec![1, 0];
+        holdings.level_records = vec![ck_economy::LevelRecord {
+            number: 0,
+            method: 0,
+            ground: Some("pasture".to_owned()),
+            paydays: ck_economy::MATURE_PAYDAYS,
+        }];
         holdings.herds = vec![0; 4];
         holdings.employment.clear();
         holdings.stock = vec![0; goods];
         holdings.production_carries = vec![vec![0; goods]; 2];
-        holdings.method_suitability = vec![vec![0; goods]; 2];
+        let definition = rules.buildings.iter().find(|b| b.id == "holdings").unwrap();
+        (holdings.method_suitability, holdings.herd_grazing_sums) =
+            ck_economy::derive_level_sums(&rules, definition, &holdings.level_records).unwrap();
         holdings.herd_birth_carries = vec![0; 4];
         holdings.herd_death_carries = vec![0; 4];
         holdings.herd_product_carries = vec![0; 2];
-        holdings.herd_grazing_sums = vec![0; 4];
         holdings.wage_carries = vec![0; goods];
         holdings.pay_carries = vec![0; goods];
         holdings.fee_carries.clear();
