@@ -146,6 +146,15 @@ pub(crate) fn prepare(
     } else {
         BTreeMap::new()
     };
+    let land_for_switching = if let Some(rules) = economy_rules.as_deref() {
+        economy::land_counts(&scenario, &rules.terrain_order)?
+            .into_iter()
+            .enumerate()
+            .map(|(index, land)| (scenario.locations[index].id.clone(), land))
+            .collect::<BTreeMap<_, _>>()
+    } else {
+        BTreeMap::new()
+    };
     let shelter_by_place = if let Some(rules) = economy_rules.as_deref() {
         economy::land_counts(&scenario, &rules.terrain_order)?
             .into_iter()
@@ -198,6 +207,7 @@ pub(crate) fn prepare(
             gameplay_runtime.as_ref(),
             economy_rules.clone(),
             quality_by_place.clone(),
+            land_for_switching.clone(),
             shelter_by_place.clone(),
             nearby_by_place.clone(),
             reach_by_place.clone(),
@@ -230,6 +240,12 @@ pub(crate) fn prepare(
         super::stretch::validate(&save.state.stretches, &expected)?;
         if let Some(rules) = economy_rules.as_deref() {
             ck_economy::validate_level_records(rules, &quality_by_place, &save.state.economy)
+                .map_err(|error| format!("save {}: {error}", path.display()))?;
+            let date = save
+                .time
+                .date()
+                .map_err(|error| format!("save {}: {error}", path.display()))?;
+            ck_economy::validate_switch_years(&save.state.economy, date.year)
                 .map_err(|error| format!("save {}: {error}", path.display()))?;
         }
         super::character_storage::Storage::validate(&storage.path, &save.state)
@@ -472,15 +488,18 @@ impl ViewWiring {
     /// carries are below their denominators, which depend on each place's mean fertility.
     pub(super) fn level_validation(
         &self,
-    ) -> impl Fn(&GameState) -> Result<(), String> + Send + 'static {
+    ) -> impl Fn(&GameState, Date) -> Result<(), String> + Send + 'static {
         let rules = self.rules.clone();
         let quality = self
             .land_by_place
             .iter()
             .filter_map(|(id, land)| Some((id.clone(), ck_economy::mean_fertility(land).ok()?)))
             .collect::<BTreeMap<_, _>>();
-        move |state| match rules.as_deref() {
-            Some(rules) => ck_economy::validate_level_records(rules, &quality, &state.economy),
+        move |state, date| match rules.as_deref() {
+            Some(rules) => {
+                ck_economy::validate_level_records(rules, &quality, &state.economy)?;
+                ck_economy::validate_switch_years(&state.economy, date.year)
+            }
             None => Ok(()),
         }
     }
@@ -554,6 +573,29 @@ pub(super) fn test_core(
     identity_saves: PathBuf,
     outputs: Outputs,
 ) -> Core<GameState, GameCommand> {
+    core_over(prepared, identity_saves, outputs, Scheduler::new)
+}
+
+/// The same, with the scheduler the running game builds after a load: its daily system, with the map's land, quality and shelter.
+#[cfg(test)]
+pub(super) fn test_core_running(
+    prepared: Prepared,
+    identity_saves: PathBuf,
+    outputs: Outputs,
+) -> Core<GameState, GameCommand> {
+    let inputs = SchedulerInputs::new(&prepared);
+    core_over(prepared, identity_saves, outputs, move || {
+        inputs.scheduler()
+    })
+}
+
+#[cfg(test)]
+fn core_over(
+    prepared: Prepared,
+    identity_saves: PathBuf,
+    outputs: Outputs,
+    scheduler: impl Fn() -> Scheduler<GameState> + Send + 'static,
+) -> Core<GameState, GameCommand> {
     let wiring = prepared.view_wiring();
     let level_validation = wiring.level_validation();
     let fuel_rules = prepared.economy_rules.clone();
@@ -576,7 +618,7 @@ pub(super) fn test_core(
         identity,
         identity_saves,
         Rebuild {
-            scheduler: Box::new(Scheduler::new),
+            scheduler: Box::new(scheduler),
             reset: Box::new(|_| {}),
             apply,
         },
@@ -584,9 +626,9 @@ pub(super) fn test_core(
         Some(view_builder(wiring)),
         layers,
     )
-    .with_state_validation(move |state: &GameState| {
+    .with_state_validation(move |state: &GameState, date| {
         super::stretch::validate(&state.stretches, &stretch_ids)?;
-        level_validation(state)?;
+        level_validation(state, date)?;
         if let Some(rules) = fuel_rules.as_deref() {
             ck_economy::validate_fuel_state(rules, &state.economy).map_err(|e| e.to_string())?;
         }
@@ -606,14 +648,81 @@ pub(crate) struct Connected {
     pub(crate) gameplay: Option<GameplayWiring>,
 }
 
+/// What a game's scheduler is built from, kept to build it again after each load: the running game and the tests of a load during
+/// play build their scheduler from the same inputs.
+struct SchedulerInputs {
+    runtime: Option<Arc<Gameplay>>,
+    rules: Option<Arc<Rules>>,
+    quality_by_place: BTreeMap<String, u16>,
+    land_by_place: BTreeMap<String, ck_economy::LandCounts>,
+    shelter_by_place: BTreeMap<String, u64>,
+    nearby_by_place: BTreeMap<String, Vec<ck_economy::NearbyPlace>>,
+    reach_by_place: BTreeMap<String, Vec<ck_economy::NearbyPlace>>,
+    place_names: BTreeMap<String, String>,
+    weather: Option<Arc<WeatherData>>,
+    characters_io: super::character_storage::Handle,
+}
+
+impl SchedulerInputs {
+    fn new(prepared: &Prepared) -> Self {
+        let wiring = prepared.view_wiring();
+        let land_by_place = wiring.land_by_place.clone();
+        let quality_by_place = land_by_place
+            .iter()
+            .map(|(id, land)| {
+                (
+                    id.clone(),
+                    ck_economy::mean_fertility(land).expect("validated map fertility"),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let rules = prepared.economy_rules.clone();
+        Self {
+            runtime: prepared
+                .gameplay
+                .as_ref()
+                .map(|wiring| Arc::clone(&wiring.runtime)),
+            nearby_by_place: nearby_places(
+                &prepared.scenario,
+                rules.as_deref().map_or(0, max_recruit_range_m),
+            ),
+            reach_by_place: marriage_reach(
+                &prepared.scenario,
+                rules
+                    .as_deref()
+                    .map_or(0, |rules| rules.lifecycle.marriage.pool.far_m),
+            ),
+            place_names: place_names(&prepared.scenario),
+            weather: wiring.weather.clone(),
+            characters_io: Arc::clone(&prepared.characters_io),
+            shelter_by_place: prepared.shelter_by_place.clone(),
+            rules,
+            quality_by_place,
+            land_by_place,
+        }
+    }
+
+    fn scheduler(&self) -> Scheduler<GameState> {
+        gameplay_scheduler_with_rules(
+            self.runtime.as_ref(),
+            self.rules.clone(),
+            self.quality_by_place.clone(),
+            self.land_by_place.clone(),
+            self.shelter_by_place.clone(),
+            self.nearby_by_place.clone(),
+            self.reach_by_place.clone(),
+            self.place_names.clone(),
+            self.weather.clone(),
+            Some(Arc::clone(&self.characters_io)),
+        )
+    }
+}
+
 /// Wires `prepared` to the run: `wake` wakes the main thread whenever the owner publishes.
-#[expect(
-    clippy::too_many_lines,
-    reason = "Connection wiring installs each prepared subsystem once in its dependency order."
-)]
 pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> Connected {
     let wiring = prepared.view_wiring();
     let level_validation = wiring.level_validation();
+    let scheduler_inputs = SchedulerInputs::new(&prepared);
     let stretch_ids = prepared
         .simulation
         .state()
@@ -627,36 +736,11 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
         layers,
         gameplay,
         economy_rules,
-        shelter_by_place,
         saves,
         storage,
-        characters_io,
-        scenario,
         ..
     } = prepared;
-    let land_by_place = wiring.land_by_place.clone();
-    let quality_by_place = land_by_place
-        .iter()
-        .map(|(id, land)| {
-            (
-                id.clone(),
-                ck_economy::mean_fertility(land).expect("validated map fertility"),
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
-    let nearby_by_place = nearby_places(
-        &scenario,
-        economy_rules.as_deref().map_or(0, max_recruit_range_m),
-    );
-    let reach_by_place = marriage_reach(
-        &scenario,
-        economy_rules
-            .as_deref()
-            .map_or(0, |rules| rules.lifecycle.marriage.pool.far_m),
-    );
-    let place_names = place_names(&scenario);
     let wiring_gameplay = gameplay.clone();
-    let wiring_rules = economy_rules.clone();
     let fuel_rules = economy_rules.clone();
     let (sender, receiver) = channel();
     let controls = SimControls::with_wake(sender.clone(), Arc::clone(&wake));
@@ -667,15 +751,6 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
         let failing = Arc::clone(&owned_slot);
         let runtime = gameplay.as_ref().map(|wiring| Arc::clone(&wiring.runtime));
         let terminal_runtime = runtime.clone();
-        let scheduler_runtime = runtime.clone();
-        let scheduler_rules = wiring_rules.clone();
-        let scheduler_quality = quality_by_place.clone();
-        let scheduler_shelter = shelter_by_place.clone();
-        let scheduler_nearby = nearby_by_place.clone();
-        let scheduler_reach = reach_by_place.clone();
-        let scheduler_names = place_names.clone();
-        let scheduler_weather = wiring.weather.clone();
-        let scheduler_io = Arc::clone(&characters_io);
         let reset_runtime = runtime.clone();
         let build = move || {
             Core::new_with_views_and_layers(
@@ -683,19 +758,7 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
                 identity,
                 saves,
                 Rebuild {
-                    scheduler: Box::new(move || {
-                        gameplay_scheduler_with_rules(
-                            scheduler_runtime.as_ref(),
-                            scheduler_rules.clone(),
-                            scheduler_quality.clone(),
-                            scheduler_shelter.clone(),
-                            scheduler_nearby.clone(),
-                            scheduler_reach.clone(),
-                            scheduler_names.clone(),
-                            scheduler_weather.clone(),
-                            Some(Arc::clone(&scheduler_io)),
-                        )
-                    }),
+                    scheduler: Box::new(move || scheduler_inputs.scheduler()),
                     reset: Box::new(move |seed| {
                         if let Some(runtime) = &reset_runtime {
                             runtime.set_seed(seed);
@@ -711,9 +774,9 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
                 Some(view_builder(wiring)),
                 layers,
             )
-            .with_state_validation(move |state: &GameState| {
+            .with_state_validation(move |state: &GameState, date| {
                 super::stretch::validate(&state.stretches, &stretch_ids)?;
-                level_validation(state)?;
+                level_validation(state, date)?;
                 if let Some(rules) = fuel_rules.as_deref() {
                     ck_economy::validate_fuel_state(rules, &state.economy)
                         .map_err(|e| e.to_string())?;
@@ -746,6 +809,7 @@ fn gameplay_scheduler_with_rules(
     gameplay: Option<&Arc<Gameplay>>,
     rules: Option<Arc<Rules>>,
     quality_by_place: BTreeMap<String, u16>,
+    land_by_place: BTreeMap<String, ck_economy::LandCounts>,
     shelter_by_place: BTreeMap<String, u64>,
     nearby_by_place: BTreeMap<String, Vec<ck_economy::NearbyPlace>>,
     reach_by_place: BTreeMap<String, Vec<ck_economy::NearbyPlace>>,
@@ -759,6 +823,7 @@ fn gameplay_scheduler_with_rules(
             &mut scheduler,
             rules,
             quality_by_place,
+            land_by_place,
             shelter_by_place,
             nearby_by_place,
             reach_by_place,
@@ -796,6 +861,7 @@ pub(crate) fn register_economy_callback_with_storage(
         BTreeMap::new(),
         BTreeMap::new(),
         BTreeMap::new(),
+        BTreeMap::new(),
         None,
         Some(handle),
     );
@@ -806,6 +872,7 @@ pub(crate) fn register_economy_callback(scheduler: &mut Scheduler<GameState>, ru
     register_economy_callback_with_context(
         scheduler,
         rules,
+        BTreeMap::new(),
         BTreeMap::new(),
         BTreeMap::new(),
         BTreeMap::new(),
@@ -824,6 +891,7 @@ fn register_economy_callback_with_context(
     scheduler: &mut Scheduler<GameState>,
     rules: Arc<Rules>,
     quality_by_place: BTreeMap<String, u16>,
+    land_by_place: BTreeMap<String, ck_economy::LandCounts>,
     shelter_by_place: BTreeMap<String, u64>,
     nearby_by_place: BTreeMap<String, Vec<ck_economy::NearbyPlace>>,
     reach_by_place: BTreeMap<String, Vec<ck_economy::NearbyPlace>>,
@@ -863,7 +931,7 @@ fn register_economy_callback_with_context(
                         .entry((character.pop.place.clone(), character.pop.slot as usize))
                         .or_insert(0_u64) += 1;
                 }
-                ck_economy::run_daily_economy_with_floors(
+                ck_economy::run_daily_economy_with_land(
                     &rules,
                     &mut state.economy,
                     tick.date(),
@@ -871,6 +939,7 @@ fn register_economy_callback_with_context(
                     &shelter_by_place,
                     &nearby_by_place,
                     &floors,
+                    &land_by_place,
                 )
                 .map_err(io::Error::other)
                 .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>)?;
@@ -2238,6 +2307,7 @@ mod stretch_save_tests {
                 ground: Some("pasture".to_owned()),
                 paydays: ck_economy::MATURE_PAYDAYS,
                 unpaid_work: unpaid_work.clone(),
+                last_switch_year: None,
             })
             .collect();
         farm.production_carries[0][0] = 19_800_000_000_000_000_000;
@@ -2669,6 +2739,7 @@ mod stretch_save_tests {
                 BTreeMap::new(),
                 BTreeMap::new(),
                 BTreeMap::new(),
+                BTreeMap::new(),
                 data,
                 None,
             )
@@ -2709,6 +2780,7 @@ mod stretch_save_tests {
         let scheduler = gameplay_scheduler_with_rules(
             None,
             Some(Arc::new(rules)),
+            BTreeMap::new(),
             BTreeMap::new(),
             BTreeMap::new(),
             BTreeMap::new(),
@@ -2941,6 +3013,382 @@ mod stretch_save_tests {
         }
     }
 
+    /// Every level of the economy as (place, building, level number) with its method and year of last switch.
+    fn level_methods(prepared: &Prepared) -> Vec<(String, usize, u32, u32, Option<u16>)> {
+        let mut levels = Vec::new();
+        for place in &prepared.simulation.state().economy.places {
+            for (index, building) in place.buildings.iter().enumerate() {
+                for record in &building.level_records {
+                    levels.push((
+                        place.id.clone(),
+                        index,
+                        record.number,
+                        record.method,
+                        record.last_switch_year,
+                    ));
+                }
+            }
+        }
+        levels
+    }
+
+    fn step_to(prepared: &mut Prepared, month: u8, day: u8, hour: u8) {
+        loop {
+            let date = prepared.simulation.date().unwrap();
+            if (date.month, date.day, date.hour) == (month, day, hour) {
+                return;
+            }
+            prepared.simulation.step().unwrap();
+        }
+    }
+
+    /// A save written from `save` beside `source`'s character storage.
+    fn write_save(source: &Prepared, save: &Save<GameState>, path: &Path) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut archive = fs::File::open(source.storage.path.join("ARCH")).unwrap();
+        let mut logs = fs::File::open(source.storage.path.join("LOGS")).unwrap();
+        let lengths = (
+            archive.metadata().unwrap().len(),
+            logs.metadata().unwrap().len(),
+        );
+        let mut file = fs::File::create(path).unwrap();
+        save.write_with_sections(
+            &mut file,
+            &mut [
+                (*b"ARCH", lengths.0, &mut archive),
+                (*b"LOGS", lengths.1, &mut logs),
+            ],
+        )
+        .unwrap();
+    }
+
+    /// A game loaded two ways from one save: by a start from it and by a load during play into a core that runs the game's own
+    /// scheduler.
+    struct Loaded {
+        label: String,
+        started: Prepared,
+        playing: Core<GameState, GameCommand>,
+    }
+
+    /// Saves `unbroken` where it stands and loads the save both ways; each load must hold the saved state.
+    fn load_both_ways(dir: &Path, game: &GameConfig, unbroken: &Prepared, label: &str) -> Loaded {
+        let path = super::super::saves::quicksave_path(&dir.join("saves"));
+        let digest = save_with(
+            unbroken,
+            &path,
+            unbroken.simulation.state().stretches.clone(),
+        );
+        let started = shipped_start(dir, Some(&path));
+        assert_eq!(started.simulation.digest().unwrap(), digest, "{label}");
+        assert_eq!(level_methods(&started), level_methods(unbroken), "{label}");
+        let mut playing = test_core_running(
+            shipped_start(dir, None),
+            game.saves.clone(),
+            Outputs {
+                log: Box::new(|_, _| {}),
+                publish: Box::new(|_| {}),
+                fail: Box::new(|e| panic!("{e}")),
+            },
+        );
+        playing.dispatch(Message::Control(Control::Quickload), Duration::ZERO);
+        // What a save holds is the state without the day's cached market orders, which the next noon rebuilds.
+        let saved = <ck_economy::EconomyState as ck_sim::Canonical>::from_bytes(
+            &ck_sim::Canonical::to_bytes(&unbroken.simulation.state().economy).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            playing.state().economy,
+            saved,
+            "{label}: a load during play"
+        );
+        assert_eq!(
+            playing.date(),
+            unbroken.simulation.date().unwrap(),
+            "{label}"
+        );
+        Loaded {
+            label: label.to_owned(),
+            started,
+            playing,
+        }
+    }
+
+    /// Steps both loaded games to `end` and compares them with the unbroken game there, state for state.
+    fn follow_to(loaded: &mut Loaded, unbroken: &Prepared, end: Date) {
+        while loaded.started.simulation.date().unwrap() != end {
+            loaded.started.simulation.step().unwrap();
+        }
+        while loaded.playing.date() != end {
+            loaded.playing.step_for_tests();
+        }
+        let label = &loaded.label;
+        assert_eq!(
+            loaded.started.simulation.digest().unwrap(),
+            unbroken.simulation.digest().unwrap(),
+            "{label}: the started game follows the unbroken one"
+        );
+        assert_eq!(
+            ck_sim::Canonical::to_bytes(loaded.playing.state()).unwrap(),
+            ck_sim::Canonical::to_bytes(unbroken.simulation.state()).unwrap(),
+            "{label}: the game that loaded during play follows the unbroken one"
+        );
+        assert_eq!(
+            level_methods(&loaded.started),
+            level_methods(unbroken),
+            "{label}"
+        );
+    }
+
+    /// A start in which every farm has all its levels at sea and no animals, so that the first look moves levels to farming and
+    /// founders arrive.
+    fn engineered_start(dir: &Path) -> Prepared {
+        let source = shipped_start(dir, None);
+        let rules = Rules::load(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/game/economy.toml"),
+        )
+        .unwrap();
+        let definition = rules.buildings.iter().find(|b| b.id == "farm").unwrap();
+        let mut save = source.simulation.save(source.identity.meta(42));
+        for place in &mut save.state.economy.places {
+            for farm in place
+                .buildings
+                .iter_mut()
+                .filter(|b| b.kind == "farm" && !b.level_records.is_empty())
+            {
+                for record in &mut farm.level_records {
+                    record.method = 1;
+                    record.ground = None;
+                    record.unpaid_work = ["fish", "seabirds"]
+                        .into_iter()
+                        .map(|good| (good.to_owned(), ck_economy::bigint::Big::default()))
+                        .collect();
+                }
+                farm.method_levels = vec![0; definition.methods.len()];
+                farm.method_levels[1] = farm.levels;
+                farm.herds.fill(0);
+                fix_sums(&rules, farm);
+            }
+        }
+        let path = super::super::saves::quicksave_path(&dir.join("engineered"));
+        write_save(&source, &save, &path);
+        shipped_start(dir, Some(&path))
+    }
+
+    /// The places and buildings whose herds began with no animals and have some, in a level that moved: the founders.
+    fn founder_buildings(before: &Prepared, after: &Prepared) -> Vec<(String, usize)> {
+        let mut found = Vec::new();
+        for (was, now) in before
+            .simulation
+            .state()
+            .economy
+            .places
+            .iter()
+            .zip(&after.simulation.state().economy.places)
+        {
+            for (index, (b, a)) in was.buildings.iter().zip(&now.buildings).enumerate() {
+                let moved = a
+                    .level_records
+                    .iter()
+                    .any(|r| r.method != 1 && r.paydays == 0 && r.last_switch_year == Some(768));
+                if moved && b.herds.iter().all(|h| *h == 0) && a.herds.iter().any(|h| *h > 0) {
+                    found.push((now.id.clone(), index));
+                }
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn a_shipped_game_saved_at_a_move_with_founders_and_at_the_year_end_loads_both_ways_and_follows_the_unbroken_game()
+     {
+        let dir = crate::testing::Dir::new();
+        let game = GameConfig {
+            scenario: Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../assets/scenarios/ireland-768"),
+            saves: dir.0.join("saves"),
+        };
+        let mut unbroken = engineered_start(&dir.0);
+        // The first 1st: saved at 11:00 and at 13:00 through the move. Every farm began at sea with no animals, so levels move to
+        // farming and founders arrive in the places that look to it.
+        step_to(&mut unbroken, 11, 1, 11);
+        let mut checkpoints = vec![load_both_ways(
+            &dir.0,
+            &game,
+            &unbroken,
+            "11:00 on the first 1st",
+        )];
+        for _ in 0..2 {
+            unbroken.simulation.step().unwrap();
+        }
+        let methods_now = level_methods(&unbroken);
+        assert_ne!(
+            methods_now,
+            level_methods(&checkpoints[0].started),
+            "a level moved at that noon"
+        );
+        let founders = founder_buildings(&checkpoints[0].started, &unbroken);
+        assert!(
+            !founders.is_empty(),
+            "founders arrived in a level that moved"
+        );
+        checkpoints.push(load_both_ways(
+            &dir.0,
+            &game,
+            &unbroken,
+            "13:00 on the first 1st",
+        ));
+        // After both loads the new method, the founders, no completed paydays and the lock are what the unbroken game holds.
+        for loaded in &checkpoints[1..] {
+            for (place, index) in &founders {
+                let want = unbroken
+                    .simulation
+                    .state()
+                    .economy
+                    .places
+                    .iter()
+                    .find(|p| &p.id == place)
+                    .unwrap();
+                for state in [loaded.started.simulation.state(), loaded.playing.state()] {
+                    let got = state
+                        .economy
+                        .places
+                        .iter()
+                        .find(|p| &p.id == place)
+                        .unwrap();
+                    assert_eq!(got.buildings[*index], want.buildings[*index], "{place}");
+                    assert!(got.buildings[*index].herds.iter().any(|h| *h > 0));
+                    assert!(got.buildings[*index].level_records.iter().any(|r| {
+                        r.method != 1 && r.paydays == 0 && r.last_switch_year == Some(768)
+                    }));
+                }
+            }
+        }
+        // The year end, with levels that switched this year locked: saved on 31 December and before and after the noon of 1 January
+        // that tries them again.
+        step_to(&mut unbroken, 12, 31, 13);
+        assert!(
+            level_methods(&unbroken)
+                .iter()
+                .any(|level| level.4 == Some(768)),
+            "a level that switched in 768 is locked at the year's end"
+        );
+        checkpoints.push(load_both_ways(&dir.0, &game, &unbroken, "31 December"));
+        step_to(&mut unbroken, 1, 1, 11);
+        checkpoints.push(load_both_ways(
+            &dir.0,
+            &game,
+            &unbroken,
+            "11:00 on 1 January",
+        ));
+        for _ in 0..2 {
+            unbroken.simulation.step().unwrap();
+        }
+        checkpoints.push(load_both_ways(
+            &dir.0,
+            &game,
+            &unbroken,
+            "13:00 on 1 January",
+        ));
+        // Every loaded game, kept and stepped from its checkpoint through 2 January, makes the unbroken game's moves.
+        step_to(&mut unbroken, 1, 2, 13);
+        let end = unbroken.simulation.date().unwrap();
+        for loaded in &mut checkpoints {
+            follow_to(loaded, &unbroken, end);
+        }
+    }
+
+    #[test]
+    fn both_load_paths_refuse_a_level_that_last_switched_after_the_games_year_and_keep_the_running_game()
+     {
+        let dir = crate::testing::Dir::new();
+        let game = GameConfig {
+            scenario: Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../assets/scenarios/ireland-768"),
+            saves: dir.0.join("saves"),
+        };
+        let new_game = || shipped_start(&dir.0, None);
+        let source = new_game();
+        let path = super::super::saves::quicksave_path(&game.saves);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut save = source.simulation.save(source.identity.meta(42));
+        let farm = target(&mut save);
+        farm.level_records[0].last_switch_year = Some(769);
+        let mut archive = fs::File::open(source.storage.path.join("ARCH")).unwrap();
+        let mut logs = fs::File::open(source.storage.path.join("LOGS")).unwrap();
+        let lengths = (
+            archive.metadata().unwrap().len(),
+            logs.metadata().unwrap().len(),
+        );
+        let mut file = fs::File::create(&path).unwrap();
+        save.write_with_sections(
+            &mut file,
+            &mut [
+                (*b"ARCH", lengths.0, &mut archive),
+                (*b"LOGS", lengths.1, &mut logs),
+            ],
+        )
+        .unwrap();
+        // A start from the save names the building and the level.
+        let message = prepare(
+            &Request {
+                game: &game,
+                vms: &[],
+                load: Some(&path),
+                seed: None,
+            },
+            || Ok(42),
+            &mut |_, _| {},
+        )
+        .err()
+        .expect("a start from the save refuses it");
+        assert!(
+            message.contains("building farm")
+                && message.contains("level 0")
+                && message.contains("769"),
+            "{message}"
+        );
+        // A load during play refuses it too, and the running game, its storage and its readers are as they were.
+        let running = new_game();
+        let handle = Arc::clone(running.storage.handle.as_ref().unwrap());
+        let archive = Arc::clone(running.storage.cell.as_ref().unwrap());
+        let logs = Arc::clone(running.storage.log_cell.as_ref().unwrap());
+        let before_path = handle.lock().unwrap().clone();
+        let before_archive = archive.lock().unwrap().clone().unwrap();
+        let before_logs = logs.lock().unwrap().clone().unwrap();
+        let records = Arc::new(Mutex::new(Vec::new()));
+        let output = Arc::clone(&records);
+        let mut core = test_core(
+            running,
+            game.saves.clone(),
+            Outputs {
+                log: Box::new(move |_, line| output.lock().unwrap().push(line)),
+                publish: Box::new(|_| {}),
+                fail: Box::new(|e| panic!("{e}")),
+            },
+        );
+        let before = core.digest();
+        core.dispatch(Message::Control(Control::Quickload), Duration::ZERO);
+        assert!(
+            records
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|line| line.contains("building farm") && line.contains("level 0")),
+            "{:?}",
+            records.lock().unwrap()
+        );
+        assert_eq!(core.digest(), before, "the running game is as it was");
+        assert_eq!(*handle.lock().unwrap(), before_path);
+        assert!(Arc::ptr_eq(
+            archive.lock().unwrap().as_ref().unwrap(),
+            &before_archive
+        ));
+        assert!(Arc::ptr_eq(
+            logs.lock().unwrap().as_ref().unwrap(),
+            &before_logs
+        ));
+    }
+
     #[test]
     #[ignore = "the full shipped-year witness runs in the named methods.year group and milestone full check"]
     fn shipped_yearly_monthly_looks_report_passing_moves() {
@@ -3083,6 +3531,385 @@ mod stretch_save_tests {
             if roads.contains(&stretch.id) {
                 assert_eq!(state.level, 1);
             }
+        }
+    }
+}
+
+/// CK-409: a small game of one place, five years of its daily system with levels that switch, saved at named points and loaded
+/// both ways, each loaded game stepped in lockstep with the unbroken one.
+#[cfg(test)]
+mod switch_replay_tests {
+    use super::*;
+    use ck_economy::{
+        ScenarioEconomy, StartDefaults, StartLocation, StartOverride, starting_state,
+    };
+    use ck_sim::GameTime;
+    use std::{fs, time::Duration};
+
+    use crate::game::{controls::Control, core::Message, tests::identity};
+
+    fn rules() -> Rules {
+        Rules::load(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/game/economy.toml"))
+            .unwrap()
+    }
+
+    fn land() -> ck_economy::LandCounts {
+        ck_economy::LandCounts {
+            land_cells: BTreeMap::from([
+                ("pasture".to_owned(), 40),
+                ("forest".to_owned(), 12),
+                ("bog".to_owned(), 6),
+            ]),
+            fertility_pm: BTreeMap::from([("pasture".to_owned(), 24_000)]),
+            fertile_cells: 40,
+            fertile_cells_by_terrain: BTreeMap::from([("pasture".to_owned(), 40)]),
+            sea: 1,
+        }
+    }
+
+    /// One fort of 200 peasants and 20 monks, with a farm of ten levels and holdings of four, every level at sea and no animals:
+    /// the place wants oats, so levels of both buildings move to farming from the first look, and founders arrive.
+    fn fort(rules: &Rules) -> ck_economy::EconomyState {
+        let data = ScenarioEconomy {
+            defaults: BTreeMap::from([(
+                "ringfort".to_owned(),
+                BTreeMap::from([(
+                    "1".to_owned(),
+                    StartDefaults {
+                        peasants: 200,
+                        monks: 20,
+                        labourers: 0,
+                        farm_levels: 10,
+                        holdings_levels: 4,
+                        storehouse_levels: 1,
+                        pop_stock: BTreeMap::new(),
+                        building_stock: BTreeMap::new(),
+                    },
+                )]),
+            )]),
+            places: BTreeMap::from([(
+                "fort".to_owned(),
+                StartOverride {
+                    culture: Some("ulaid".to_owned()),
+                    religion: Some("christianity".to_owned()),
+                    monk_culture: Some("ulaid".to_owned()),
+                    monk_religion: Some("christianity".to_owned()),
+                    ..StartOverride::default()
+                },
+            )]),
+            nobles: BTreeMap::new(),
+        };
+        let (mut state, _) = starting_state(
+            rules,
+            &data,
+            &[StartLocation {
+                id: "fort".to_owned(),
+                kind: "ringfort".to_owned(),
+                size: 1,
+                land: land(),
+            }],
+            1,
+        )
+        .unwrap();
+        for building in state.places[0].buildings.iter_mut().filter(|b| {
+            ["farm", "holdings"].contains(&b.kind.as_str()) && !b.level_records.is_empty()
+        }) {
+            let definition = rules
+                .buildings
+                .iter()
+                .find(|b| b.id == building.kind)
+                .unwrap();
+            // The goods a sea level is paid by season: those its method makes that no herd of the building supplies.
+            let accounts: BTreeMap<String, ck_economy::bigint::Big> = definition.methods[1]
+                .annual_output
+                .keys()
+                .filter(|good| !ck_economy::herd_supplies(rules, definition, good))
+                .map(|good| (good.clone(), ck_economy::bigint::Big::default()))
+                .collect();
+            for record in &mut building.level_records {
+                record.method = 1;
+                record.ground = None;
+                record.paydays = ck_economy::MATURE_PAYDAYS;
+                record.unpaid_work.clone_from(&accounts);
+            }
+            building.method_levels = vec![0; definition.methods.len()];
+            building.method_levels[1] = building.levels;
+            building.herds.fill(0);
+            (building.method_suitability, building.herd_grazing_sums) =
+                ck_economy::derive_level_sums(rules, definition, &building.level_records).unwrap();
+        }
+        state
+    }
+
+    /// The scheduler the running game builds, for this one place.
+    fn scheduler_source(rules: &Arc<Rules>) -> Arc<dyn Fn() -> Scheduler<GameState> + Send + Sync> {
+        let rules = Arc::clone(rules);
+        let land = BTreeMap::from([("fort".to_owned(), land())]);
+        let quality = BTreeMap::from([(
+            "fort".to_owned(),
+            ck_economy::mean_fertility(&land["fort"]).unwrap(),
+        )]);
+        let shelter = BTreeMap::from([(
+            "fort".to_owned(),
+            ck_economy::natural_shelter(&rules, &land["fort"]).unwrap(),
+        )]);
+        let names = BTreeMap::from([("fort".to_owned(), "Fort".to_owned())]);
+        Arc::new(move || {
+            gameplay_scheduler_with_rules(
+                None,
+                Some(Arc::clone(&rules)),
+                quality.clone(),
+                land.clone(),
+                shelter.clone(),
+                BTreeMap::new(),
+                BTreeMap::new(),
+                names.clone(),
+                None,
+                None,
+            )
+        })
+    }
+
+    fn new_game(
+        rules: &Arc<Rules>,
+        make: &Arc<dyn Fn() -> Scheduler<GameState> + Send + Sync>,
+    ) -> Simulation<GameState, GameCommand> {
+        Simulation::new(
+            GameTime::from_date(Date {
+                year: 768,
+                month: 1,
+                day: 2,
+                hour: 0,
+            })
+            .unwrap(),
+            42,
+            GameState {
+                economy: fort(rules),
+                characters: ck_characters::CharacterStore::default(),
+                stretches: BTreeMap::new(),
+            },
+            make(),
+            apply,
+        )
+    }
+
+    /// The load checks of both load paths, on a state and the date of its tick.
+    fn level_checks(rules: &Rules, state: &GameState, date: Date) -> Result<(), String> {
+        let quality = BTreeMap::from([(
+            "fort".to_owned(),
+            ck_economy::mean_fertility(&land()).unwrap(),
+        )]);
+        ck_economy::validate_level_records(rules, &quality, &state.economy)?;
+        ck_economy::validate_switch_years(&state.economy, date.year)
+    }
+
+    /// A start from the saved bytes: the checks of a start, then the simulation.
+    fn started(
+        rules: &Arc<Rules>,
+        make: &Arc<dyn Fn() -> Scheduler<GameState> + Send + Sync>,
+        bytes: &[u8],
+    ) -> Simulation<GameState, GameCommand> {
+        let identity = identity("aa");
+        let save = Save::<GameState>::from_bytes(bytes, &identity.expected()).unwrap();
+        let date = save.time.date().unwrap();
+        level_checks(rules, &save.state, date).unwrap();
+        Simulation::from_save(save, make(), apply).unwrap()
+    }
+
+    /// A load during play of the saved bytes, into a core that runs the game's own systems.
+    fn playing(
+        rules: &Arc<Rules>,
+        make: &Arc<dyn Fn() -> Scheduler<GameState> + Send + Sync>,
+        bytes: &[u8],
+    ) -> Core<GameState, GameCommand> {
+        let dir = crate::testing::Dir::new();
+        let saves = dir.0.join("saves");
+        let path = super::super::saves::quicksave_path(&saves);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, bytes).unwrap();
+        let (for_scheduler, for_checks) = (Arc::clone(make), Arc::clone(rules));
+        let mut core = Core::new_with_views_and_layers(
+            new_game(rules, make),
+            identity("aa"),
+            saves,
+            Rebuild {
+                scheduler: Box::new(move || for_scheduler()),
+                reset: Box::new(|_| {}),
+                apply,
+            },
+            Outputs {
+                log: Box::new(|_, _| {}),
+                publish: Box::new(|_| {}),
+                fail: Box::new(|e| panic!("{e}")),
+            },
+            None,
+            ck_sim::MapLayers::default(),
+        )
+        .with_state_validation(move |state: &GameState, date| {
+            level_checks(&for_checks, state, date)
+        });
+        core.dispatch(Message::Control(Control::Quickload), Duration::ZERO);
+        // The temporary directory outlives the load: the core has read the file.
+        drop(dir);
+        core
+    }
+
+    struct Branch {
+        label: String,
+        started: Simulation<GameState, GameCommand>,
+        playing: Core<GameState, GameCommand>,
+    }
+
+    fn methods(state: &GameState) -> Vec<(usize, u32, u32, Option<u16>)> {
+        let mut all = Vec::new();
+        for (index, building) in state.economy.places[0].buildings.iter().enumerate() {
+            for record in &building.level_records {
+                all.push((index, record.number, record.method, record.last_switch_year));
+            }
+        }
+        all
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "One replay is saved at each named point, loaded both ways and compared tick by tick."
+    )]
+    fn five_years_of_switching_saved_at_the_named_points_follow_the_unbroken_game_by_both_load_paths()
+     {
+        let rules = Arc::new(rules());
+        let make = scheduler_source(&rules);
+        let mut unbroken = new_game(&rules, &make);
+        let save = |game: &Simulation<GameState, GameCommand>| {
+            game.save(identity("aa").meta(42)).to_bytes().unwrap()
+        };
+        let end = GameTime::from_date(Date {
+            year: 773,
+            month: 1,
+            day: 2,
+            hour: 13,
+        })
+        .unwrap();
+        let mut branches: Vec<Branch> = Vec::new();
+        let mut candidate: Option<Vec<u8>> = None;
+        let mut found = false;
+        let mut year_end_done = [false; 3];
+        let mut moves: Vec<(Date, usize, u32, u32, u32)> = Vec::new();
+        let mut snapshot = methods(unbroken.state());
+        while unbroken.time() < end {
+            let now = unbroken.date().unwrap();
+            // The named points. Before the first move has been found, each 1st at 11:00 is kept in case that noon moves a level.
+            if !found && now.day == 1 && now.hour == 11 {
+                candidate = Some(save(&unbroken));
+            }
+            let errors = unbroken.step().unwrap();
+            assert!(errors.is_empty(), "{errors:?}");
+            let after = unbroken.date().unwrap();
+            // Every loaded game taken so far steps with the unbroken one, and holds its state after every tick.
+            for branch in &mut branches {
+                let errors = branch.started.step().unwrap();
+                assert!(errors.is_empty(), "{errors:?}");
+                branch.playing.step_for_tests();
+                let digest = unbroken.digest().unwrap();
+                assert_eq!(
+                    branch.started.digest().unwrap(),
+                    digest,
+                    "{}: a start from the save, at {after:?}",
+                    branch.label
+                );
+                assert_eq!(
+                    branch.playing.digest(),
+                    digest,
+                    "{}: a load during play, at {after:?}",
+                    branch.label
+                );
+            }
+            let current = methods(unbroken.state());
+            if after.hour == 13 && after.day == 1 {
+                for (was, is) in snapshot.iter().zip(&current) {
+                    if was.2 != is.2 {
+                        moves.push((after, is.0, is.1, was.2, is.2));
+                    }
+                }
+                snapshot.clone_from(&current);
+            }
+            let take = |label: &str, bytes: Vec<u8>, branches: &mut Vec<Branch>| {
+                branches.push(Branch {
+                    label: label.to_owned(),
+                    started: started(&rules, &make, &bytes),
+                    playing: playing(&rules, &make, &bytes),
+                });
+            };
+            if !found && after.day == 1 && after.hour == 13 && !moves.is_empty() {
+                found = true;
+                // The 11:00 save is stepped through the noon that moved the level, and holds the unbroken game's state after it.
+                let at_eleven = candidate.take().unwrap();
+                take(
+                    "11:00 on the first 1st with a move",
+                    at_eleven,
+                    &mut branches,
+                );
+                let branch = branches.last_mut().unwrap();
+                for _ in 0..2 {
+                    branch.started.step().unwrap();
+                    branch.playing.step_for_tests();
+                }
+                assert_eq!(branch.started.digest().unwrap(), unbroken.digest().unwrap());
+                assert_eq!(branch.playing.digest(), unbroken.digest().unwrap());
+                take(
+                    "13:00 on the first 1st with a move",
+                    save(&unbroken),
+                    &mut branches,
+                );
+            }
+            if found {
+                let years_end = (after.month, after.day, after.hour) == (12, 31, 13);
+                let jan_eleven = (after.month, after.day, after.hour) == (1, 1, 11);
+                let jan_thirteen = (after.month, after.day, after.hour) == (1, 1, 13);
+                if years_end && !year_end_done[0] {
+                    year_end_done[0] = true;
+                    assert!(
+                        current.iter().any(|level| level.3 == Some(after.year)),
+                        "a level that switched this year is locked at its end"
+                    );
+                    take("31 December", save(&unbroken), &mut branches);
+                } else if jan_eleven && year_end_done[0] && !year_end_done[1] {
+                    year_end_done[1] = true;
+                    take("11:00 on 1 January", save(&unbroken), &mut branches);
+                } else if jan_thirteen && year_end_done[1] && !year_end_done[2] {
+                    year_end_done[2] = true;
+                    take("13:00 on 1 January", save(&unbroken), &mut branches);
+                }
+            }
+        }
+        // The branches took their saves at the named points, each one on a different tick: no branch is the unbroken game.
+        let labels: Vec<_> = branches.iter().map(|b| b.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            [
+                "11:00 on the first 1st with a move",
+                "13:00 on the first 1st with a move",
+                "31 December",
+                "11:00 on 1 January",
+                "13:00 on 1 January"
+            ]
+        );
+        // The replay moved levels in more than one year, and every move carried its year as its lock.
+        assert!(moves.len() >= 5, "{moves:?}");
+        let years: std::collections::BTreeSet<_> = moves.iter().map(|m| m.0.year).collect();
+        assert!(years.len() >= 2, "{years:?}");
+        // Both productive buildings moved levels, so the compare tells them apart.
+        let buildings: std::collections::BTreeSet<_> = moves.iter().map(|m| m.1).collect();
+        assert_eq!(buildings.len(), 2, "{moves:?}");
+        // Each loaded game holds the unbroken game's levels (method and lock) at the end, as the compare each tick implies.
+        for branch in &branches {
+            assert_eq!(methods(branch.started.state()), methods(unbroken.state()));
+            assert_eq!(methods(branch.playing.state()), methods(unbroken.state()));
+        }
+        // No level moved twice in a calendar year.
+        let mut seen = std::collections::BTreeSet::new();
+        for (date, building, level, _, _) in &moves {
+            assert!(seen.insert((date.year, *building, *level)));
         }
     }
 }

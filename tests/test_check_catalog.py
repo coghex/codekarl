@@ -1600,12 +1600,17 @@ class MethodsYearGroup(unittest.TestCase):
         )
         command = step.commands()[0]
         self.assertIn("shipped_yearly_monthly_looks_report_passing_moves", command)
+        self.assertIn("the_shipped_game_runs_ten_years_without_an_error", command)
         self.assertIn("--ignored", command)
         self.assertIn("--nocapture", command)
         source = (REPO / "apps/codekarl/src/game/setup.rs").read_text()
         self.assertRegex(
             source,
             r'#\[ignore = "[^"\n]+"\]\s*fn shipped_yearly_monthly_looks_report_passing_moves',
+        )
+        self.assertRegex(
+            (REPO / "apps/codekarl/src/game/tests/switch_run.rs").read_text(),
+            r'#\[ignore = "[^"\n]+"\]\s*fn the_shipped_game_runs_ten_years_without_an_error',
         )
 
 
@@ -2440,6 +2445,7 @@ GUARDS: tuple[Guard, ...] = (
             "crates/gpu-vulkan/build.rs",
             "apps/codekarl/src/main.rs",
             "apps/codekarl/src/game/setup.rs",
+            "apps/codekarl/src/game/tests/switch_run.rs",
             *TOOLCHAIN_FILES[:2],
             "apps/codekarl/Cargo.toml",
             "crates/log/Cargo.toml",
@@ -2554,6 +2560,12 @@ GUARDS: tuple[Guard, ...] = (
         ),
     ),
     Guard("apps/codekarl/src/game/stretch.rs", "rust.app", ("crates/map/tests/network/",)),
+    # CK-409: the ten-year run and the card test load the shipped rules and Ireland 768's start.
+    Guard(
+        "apps/codekarl/src/game/tests/switch_run.rs",
+        "rust.app",
+        ("assets/scenarios/ireland-768/", "assets/game/economy.toml"),
+    ),
     # CK-277: tooltip widget tests read the shipped glossary for the date explanation contract.
     Guard("apps/codekarl/src/widget_tests.rs", "rust.app", ("assets/ui/glossary.toml",)),
     # The shipped UI witness reads the shipped script, so the narrow app.ui-witness group owns that dependency.

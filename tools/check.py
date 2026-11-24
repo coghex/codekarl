@@ -1434,15 +1434,16 @@ STEPS = [
                 "-p",
                 "codekarl",
                 "--lib",
-                "shipped_yearly_monthly_looks_report_passing_moves",
                 "--locked",
                 "--",
                 "--ignored",
                 "--nocapture",
+                "shipped_yearly_monthly_looks_report_passing_moves",
+                "the_shipped_game_runs_ten_years_without_an_error",
             ]
         ],
         category="optional",
-        description="The shipped Ireland year's monthly production-method look, including the method-pair counts.",
+        description="The shipped Ireland year's monthly production-method look, including the method-pair counts, and ten years of the shipped game with levels that switch (CK-409).",
         paths=("apps/codekarl/src/game/setup.rs", "crates/economy/"),
     ),
     # CK-130: each optional scale group owns one crate. Both stay outside every level and run only when named.

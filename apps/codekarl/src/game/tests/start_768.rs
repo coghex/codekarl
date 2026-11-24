@@ -152,9 +152,9 @@ fn shipped_herds_start_at_two_thirds_of_their_maximum() {
     assert!(demesnes > 0);
 }
 
-/// A running digest of the economy, with every field a building or a place keeps but the level records (which are new): the
-/// stores and the storehouse's per-pop and communal accounts, herds, wages, fees, staffing, the product carries and the
-/// production carries in the old unit, and every pop whole.
+/// A running digest of the economy, with every field a building or a place keeps: the stores and the storehouse's per-pop and
+/// communal accounts, herds, wages, fees, staffing, the product carries, the production carries, the level records (their
+/// methods, grounds, completed paydays, accounts and years of last switch) and every pop whole.
 struct EconomyDigest(u64);
 
 impl std::fmt::Write for EconomyDigest {
@@ -165,9 +165,6 @@ impl std::fmt::Write for EconomyDigest {
         Ok(())
     }
 }
-
-/// Production carries come in twelfths of the old unit from CK-406 on.
-const CARRY_UNIT: u128 = 12;
 
 fn economy_digest(economy: &EconomyState) -> u64 {
     use std::fmt::Write as _;
@@ -187,19 +184,9 @@ fn economy_digest(economy: &EconomyState) -> u64 {
         )
         .unwrap();
         for building in &place.buildings {
-            let scaled: Vec<u128> = building
-                .production_carries
-                .iter()
-                .flatten()
-                .map(|carry| {
-                    let carry = *carry;
-                    assert_eq!(carry % CARRY_UNIT, 0);
-                    carry / CARRY_UNIT
-                })
-                .collect();
             write!(
                 digest,
-                " {} {} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?}",
+                " {} {} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?}",
                 building.kind,
                 building.levels,
                 building.method_levels,
@@ -220,7 +207,8 @@ fn economy_digest(economy: &EconomyState) -> u64 {
                     &building.paid_history,
                     &building.paid_years
                 ),
-                scaled
+                building.production_carries,
+                building.level_records
             )
             .unwrap();
         }
@@ -229,7 +217,7 @@ fn economy_digest(economy: &EconomyState) -> u64 {
 }
 
 #[test]
-fn a_year_of_the_shipped_game_from_its_first_noon_is_day_for_day_the_build_before_levels_were_records()
+fn a_year_of_the_shipped_game_from_its_first_noon_is_day_for_day_the_accepted_year_with_levels_that_switch()
  {
     use std::fmt::Write as _;
 

@@ -131,7 +131,8 @@ type ExternalStorage<S> = (
     fn(&std::path::Path, &S) -> std::io::Result<()>,
 );
 
-type StateValidation<S> = Box<dyn Fn(&S) -> Result<(), String> + Send>;
+/// The check a loaded state passes before it is installed, with the date of the save's tick.
+type StateValidation<S> = Box<dyn Fn(&S, Date) -> Result<(), String> + Send>;
 
 /// The game: a [`Simulation`], its clock, why it is paused and the means to save and load it.
 pub(crate) struct Core<S, C> {
@@ -166,7 +167,7 @@ where
 {
     pub(super) fn with_state_validation(
         mut self,
-        validate: impl Fn(&S) -> Result<(), String> + Send + 'static,
+        validate: impl Fn(&S, Date) -> Result<(), String> + Send + 'static,
     ) -> Self {
         self.state_validation = Some(Box::new(validate));
         self
@@ -730,7 +731,8 @@ where
                 storage.log_cell.clone(),
             );
             if let Some(validate) = &self.state_validation {
-                validate(&save.state)?;
+                let date = save.time.date().map_err(|e| e.to_string())?;
+                validate(&save.state, date)?;
             }
             validate(&staged.path, &save.state).map_err(|e| e.to_string())?;
             let layers = save.meta.layers;
@@ -746,7 +748,8 @@ where
             let save = Save::<S>::from_bytes(&bytes, &self.identity.expected())
                 .map_err(|e| e.to_string())?;
             if let Some(validate) = &self.state_validation {
-                validate(&save.state)?;
+                let date = save.time.date().map_err(|e| e.to_string())?;
+                validate(&save.state, date)?;
             }
             let layers = save.meta.layers;
             Simulation::from_save(save, (self.rebuild.scheduler)(), self.rebuild.apply)
@@ -773,5 +776,17 @@ where
     #[cfg(test)]
     pub(crate) fn time(&self) -> ck_sim::GameTime {
         self.simulation.time()
+    }
+
+    /// The date and hour that run next, for tests.
+    #[cfg(test)]
+    pub(crate) fn date(&self) -> Date {
+        self.simulation.date().expect("a date in the calendar")
+    }
+
+    /// One whole tick as the game runs it, for tests of a game that runs after a load.
+    #[cfg(test)]
+    pub(crate) fn step_for_tests(&mut self) {
+        self.tick();
     }
 }
