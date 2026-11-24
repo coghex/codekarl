@@ -152,6 +152,167 @@ fn shipped_herds_start_at_two_thirds_of_their_maximum() {
     assert!(demesnes > 0);
 }
 
+/// A running digest of the economy, with every field a building or a place keeps but the level records (which are new): the
+/// stores and the storehouse's per-pop and communal accounts, herds, wages, fees, staffing, the product carries and the
+/// production carries in the old unit, and every pop whole.
+struct EconomyDigest(u64);
+
+impl std::fmt::Write for EconomyDigest {
+    fn write_str(&mut self, text: &str) -> std::fmt::Result {
+        for byte in text.bytes() {
+            self.0 = (self.0 ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+        }
+        Ok(())
+    }
+}
+
+/// Production carries come in twelfths of the old unit from CK-406 on.
+const CARRY_UNIT: u128 = 12;
+
+fn economy_digest(economy: &EconomyState) -> u64 {
+    use std::fmt::Write as _;
+
+    let mut digest = EconomyDigest(0xcbf2_9ce4_8422_2325);
+    for place in &economy.places {
+        write!(
+            digest,
+            "{} {:?} {} {} {:?} {:?} {:?}",
+            place.id,
+            place.prices_milli,
+            place.prepared_m2,
+            place.development_pm,
+            place.price_drift_carries,
+            place.counters,
+            place.pops
+        )
+        .unwrap();
+        for building in &place.buildings {
+            let scaled: Vec<u128> = building
+                .production_carries
+                .iter()
+                .flatten()
+                .map(|carry| {
+                    let carry = *carry;
+                    assert_eq!(carry % CARRY_UNIT, 0);
+                    carry / CARRY_UNIT
+                })
+                .collect();
+            write!(
+                digest,
+                " {} {} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?}",
+                building.kind,
+                building.levels,
+                building.method_levels,
+                building.herds,
+                building.employment,
+                building.stock,
+                building.storehouse_accounts,
+                building.method_suitability,
+                building.herd_birth_carries,
+                building.herd_death_carries,
+                building.herd_product_carries,
+                building.herd_grazing_sums,
+                building.wage_carries,
+                building.pay_carries,
+                (
+                    &building.fee_carries,
+                    &building.wage_history,
+                    &building.paid_history,
+                    &building.paid_years
+                ),
+                scaled
+            )
+            .unwrap();
+        }
+    }
+    digest.0
+}
+
+#[test]
+fn a_year_of_the_shipped_game_from_its_first_noon_is_day_for_day_the_build_before_levels_were_records()
+ {
+    use std::fmt::Write as _;
+
+    // The prepared game as the game runs it: its own clock from 00:00 on 9 October 768, its scheduler with each place's mean
+    // fertility, shelter, nearby places, the character phases and the population floors. The economy after each noon step, from
+    // the first noon through the noon of the next anniversary.
+    let (_dir, mut prepared, _) = shipped(42);
+    let first = prepared.simulation.date().unwrap();
+    assert_eq!(
+        (first.year, first.month, first.day, first.hour),
+        (768, 10, 9, 0)
+    );
+    let end = ck_sim::GameTime::from_date(ck_sim::Date {
+        year: 769,
+        month: 10,
+        day: 9,
+        hour: 13,
+    })
+    .unwrap();
+    let mut lines = String::new();
+    let mut noons = 0_u32;
+    while prepared.simulation.time() < end {
+        let errors = prepared.simulation.step().unwrap();
+        assert!(errors.is_empty(), "{errors:?}");
+        let now = prepared.simulation.date().unwrap();
+        if now.hour == 13 {
+            writeln!(
+                lines,
+                "{}-{:02}-{:02} {:016x}",
+                now.year,
+                now.month,
+                now.day,
+                economy_digest(&prepared.simulation.state().economy)
+            )
+            .unwrap();
+            noons += 1;
+        }
+    }
+    assert_eq!(
+        noons, 366,
+        "every noon from 9 October 768 through 9 October 769"
+    );
+    assert_eq!(lines, include_str!("shipped_game_year_accepted.txt"));
+}
+
+#[test]
+fn shipped_start_keeps_a_mature_record_for_every_level_and_they_add_up() {
+    let directory = assets().join("scenarios/ireland-768");
+    let scenario = ck_map::load_scenario(&directory).unwrap();
+    let (economy, _) = starting_economy(&assets(), &directory, &scenario).unwrap();
+    let rules = ck_economy::Rules::load(assets().join("game/economy.toml")).unwrap();
+    let mut records = 0;
+    for building in economy.places.iter().flat_map(|place| &place.buildings) {
+        let definition = rules
+            .buildings
+            .iter()
+            .find(|b| b.id == building.kind)
+            .unwrap();
+        if definition.methods.is_empty() {
+            assert!(building.level_records.is_empty(), "{}", building.kind);
+            continue;
+        }
+        // A level cut at the start has no record: the records are the levels that stand.
+        assert_eq!(
+            building.level_records.len(),
+            building.levels as usize,
+            "{}",
+            building.kind
+        );
+        let mut counts = vec![0; definition.methods.len()];
+        for (number, record) in building.level_records.iter().enumerate() {
+            assert_eq!(record.number as usize, number);
+            assert_eq!(record.paydays, ck_economy::MATURE_PAYDAYS);
+            counts[record.method as usize] += 1;
+            records += 1;
+        }
+        assert_eq!(counts, building.method_levels, "{}", building.kind);
+    }
+    assert!(records > 0);
+    ck_economy::validate_level_records(&rules, &std::collections::BTreeMap::new(), &economy)
+        .unwrap();
+}
+
 #[test]
 fn shipped_start_assigns_fuel_methods_and_all_farm_levels() {
     let directory = assets().join("scenarios/ireland-768");

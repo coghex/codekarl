@@ -226,6 +226,10 @@ pub(crate) fn prepare(
             .into_keys()
             .collect();
         super::stretch::validate(&save.state.stretches, &expected)?;
+        if let Some(rules) = economy_rules.as_deref() {
+            ck_economy::validate_level_records(rules, &quality_by_place, &save.state.economy)
+                .map_err(|error| format!("save {}: {error}", path.display()))?;
+        }
         super::character_storage::Storage::validate(&storage.path, &save.state)
             .map_err(|e| e.to_string())?;
         let layers = save.meta.layers;
@@ -421,6 +425,25 @@ impl Prepared {
     }
 }
 
+impl ViewWiring {
+    /// The check a loaded state's building levels pass before it is installed (CK-406): every level record fits its method, and the
+    /// carries are below their denominators, which depend on each place's mean fertility.
+    pub(super) fn level_validation(
+        &self,
+    ) -> impl Fn(&GameState) -> Result<(), String> + Send + 'static {
+        let rules = self.rules.clone();
+        let quality = self
+            .land_by_place
+            .iter()
+            .filter_map(|(id, land)| Some((id.clone(), ck_economy::mean_fertility(land).ok()?)))
+            .collect::<BTreeMap<_, _>>();
+        move |state| match rules.as_deref() {
+            Some(rules) => ck_economy::validate_level_records(rules, &quality, &state.economy),
+            None => Ok(()),
+        }
+    }
+}
+
 /// The economy view of a state, with the characters built with it so that they carry the same revision (CK-375 §1) and, for the relations tab,
 /// the live records and the archive as published now (CK-377 §1).
 pub(super) fn view_builder(wiring: ViewWiring) -> super::core::ViewBuilder<GameState> {
@@ -490,6 +513,7 @@ pub(super) fn test_core(
     outputs: Outputs,
 ) -> Core<GameState, GameCommand> {
     let wiring = prepared.view_wiring();
+    let level_validation = wiring.level_validation();
     let fuel_rules = prepared.economy_rules.clone();
     let stretch_ids = prepared
         .simulation
@@ -520,6 +544,7 @@ pub(super) fn test_core(
     )
     .with_state_validation(move |state: &GameState| {
         super::stretch::validate(&state.stretches, &stretch_ids)?;
+        level_validation(state)?;
         if let Some(rules) = fuel_rules.as_deref() {
             ck_economy::validate_fuel_state(rules, &state.economy).map_err(|e| e.to_string())?;
         }
@@ -546,6 +571,7 @@ pub(crate) struct Connected {
 )]
 pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> Connected {
     let wiring = prepared.view_wiring();
+    let level_validation = wiring.level_validation();
     let stretch_ids = prepared
         .simulation
         .state()
@@ -645,6 +671,7 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
             )
             .with_state_validation(move |state: &GameState| {
                 super::stretch::validate(&state.stretches, &stretch_ids)?;
+                level_validation(state)?;
                 if let Some(rules) = fuel_rules.as_deref() {
                     ck_economy::validate_fuel_state(rules, &state.economy)
                         .map_err(|e| e.to_string())?;
@@ -1761,6 +1788,347 @@ mod stretch_save_tests {
                 &before_logs
             ));
         }
+    }
+
+    /// The first farm with two or more levels: the building each level-record case changes.
+    fn target(save: &mut Save<GameState>) -> &mut ck_economy::BuildingState {
+        save.state
+            .economy
+            .places
+            .iter_mut()
+            .flat_map(|place| &mut place.buildings)
+            .find(|building| building.kind == "farm" && building.level_records.len() >= 2)
+            .expect("the start has a farm of two levels")
+    }
+
+    /// A field level's ground changed, as a played game's field on forest or bog ground would have it.
+    fn field_on(building: &mut ck_economy::BuildingState, ground: &str) {
+        let at = building
+            .level_records
+            .iter()
+            .position(|record| record.method == 0)
+            .expect("the farm has a field level");
+        building.level_records[at].ground = Some(ground.to_owned());
+    }
+
+    /// A farm whose every level was cut at the start: no levels, no records, no counts.
+    fn cut_farm(building: &mut ck_economy::BuildingState) {
+        building.levels = 0;
+        building.level_records.clear();
+        building.method_levels.fill(0);
+    }
+
+    /// The sums of a building follow its records, as a played game's do.
+    fn fix_sums(rules: &Rules, building: &mut ck_economy::BuildingState) {
+        let definition = rules
+            .buildings
+            .iter()
+            .find(|item| item.id == building.kind)
+            .unwrap();
+        (building.method_suitability, building.herd_grazing_sums) =
+            ck_economy::derive_level_sums(rules, definition, &building.level_records).unwrap();
+    }
+
+    /// A running game's quickload of the save written last installs it, with no refusal logged.
+    fn assert_quickload_installs(
+        game: &GameConfig,
+        new_game: &impl Fn() -> Prepared,
+        label: &str,
+        expected: &ck_economy::EconomyState,
+    ) {
+        let running = new_game();
+        let records = Arc::new(Mutex::new(Vec::new()));
+        let output = Arc::clone(&records);
+        let mut core = test_core(
+            running,
+            game.saves.clone(),
+            Outputs {
+                log: Box::new(move |_, line| output.lock().unwrap().push(line)),
+                publish: Box::new(|_| {}),
+                fail: Box::new(|e| panic!("{e}")),
+            },
+        );
+        let before = core.digest();
+        core.dispatch(Message::Control(Control::Quickload), Duration::ZERO);
+        let lines = records.lock().unwrap();
+        assert!(
+            !lines.iter().any(|line| line.contains("refused")),
+            "{label}: {lines:?}"
+        );
+        assert_ne!(core.digest(), before, "{label}: the save is installed");
+        assert_eq!(
+            &core.state().economy,
+            expected,
+            "{label}: exactly the saved economy"
+        );
+    }
+
+    type LevelChange = fn(&mut ck_economy::BuildingState);
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Each invalid level record is checked through both real load paths and their storage readers."
+    )]
+    fn both_load_paths_refuse_invalid_level_records_and_accept_land_levels_on_forest_and_bog() {
+        let dir = crate::testing::Dir::new();
+        let game = GameConfig {
+            scenario: Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../assets/scenarios/ireland-768"),
+            saves: dir.0.join("saves"),
+        };
+        let rules = Rules::load(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/game/economy.toml"),
+        )
+        .unwrap();
+        let new_game = || {
+            prepare(
+                &Request {
+                    game: &game,
+                    vms: &[],
+                    load: None,
+                    seed: Some(42),
+                },
+                || Ok(42),
+                &mut |_, _| {},
+            )
+            .unwrap()
+        };
+        let source = new_game();
+        let path = super::super::saves::quicksave_path(&game.saves);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // The first farm with two or more levels is the building each case changes.
+        let write = |save: &Save<GameState>| {
+            let mut archive = fs::File::open(source.storage.path.join("ARCH")).unwrap();
+            let mut logs = fs::File::open(source.storage.path.join("LOGS")).unwrap();
+            let lengths = (
+                archive.metadata().unwrap().len(),
+                logs.metadata().unwrap().len(),
+            );
+            let mut file = fs::File::create(&path).unwrap();
+            save.write_with_sections(
+                &mut file,
+                &mut [
+                    (*b"ARCH", lengths.0, &mut archive),
+                    (*b"LOGS", lengths.1, &mut logs),
+                ],
+            )
+            .unwrap();
+        };
+        let start_from = || {
+            prepare(
+                &Request {
+                    game: &game,
+                    vms: &[],
+                    load: Some(&path),
+                    seed: None,
+                },
+                || Ok(42),
+                &mut |_, _| {},
+            )
+        };
+        // Each fault of rule 12 in turn: the method, the ground against the resource, the paydays, the numbers, the counts and the
+        // carries (a farm's methods are the field, the sea, the wood focus and the turf cutting).
+        let refusals: [(&str, LevelChange); 14] = [
+            ("is not one of the building's", |b| {
+                b.level_records[0].method = 99;
+            }),
+            ("does not fit", |b| b.level_records[0].ground = None),
+            ("does not fit", |b| {
+                // A field level on ground that is no land terrain.
+                b.level_records[0].ground = Some("sea".to_owned());
+            }),
+            ("does not fit", |b| {
+                // A wood level on bog ground.
+                b.level_records[0].method = 2;
+                b.level_records[0].ground = Some("bog".to_owned());
+            }),
+            ("does not fit", |b| {
+                // A turf level on forest ground.
+                b.level_records[0].method = 3;
+                b.level_records[0].ground = Some("forest".to_owned());
+            }),
+            ("does not fit", |b| {
+                // A sea level with ground.
+                b.level_records[0].method = 1;
+                b.level_records[0].ground = Some("pasture".to_owned());
+            }),
+            ("completed paydays", |b| b.level_records[0].paydays = 14),
+            ("the number is used twice", |b| {
+                b.level_records[0].number = b.level_records[1].number;
+            }),
+            ("the number is not below", |b| {
+                b.level_records[0].number = b.levels;
+            }),
+            ("the level records count", |b| b.method_levels[0] += 1),
+            ("level records for", |b| {
+                b.level_records.pop();
+            }),
+            ("the saved suitability sums are not those", |b| {
+                // The values in order are the derived ones, but one has moved from a method's row to the next one's.
+                let moved = b.method_suitability[0].pop().unwrap();
+                b.method_suitability[1].insert(0, moved);
+            }),
+            ("is not below its denominator", |b| {
+                b.production_carries[0][0] = u128::MAX;
+            }),
+            ("method mixed_farming good", |b| {
+                // A farm whose every level was cut, with one carry above nothing.
+                cut_farm(b);
+                b.method_suitability
+                    .iter_mut()
+                    .flatten()
+                    .for_each(|v| *v = 0);
+                b.herd_grazing_sums.fill(0);
+                b.production_carries[0][0] = 1;
+            }),
+        ];
+        for (expected, change) in refusals {
+            let mut save = source.simulation.save(source.identity.meta(42));
+            change(target(&mut save));
+            write(&save);
+            let result = start_from();
+            let message = result.err().expect("a start from the save refuses it");
+            assert!(message.contains(expected), "{message}");
+            assert!(message.contains("building farm"), "{message}");
+            let running = new_game();
+            let handle = Arc::clone(running.storage.handle.as_ref().unwrap());
+            let archive = Arc::clone(running.storage.cell.as_ref().unwrap());
+            let logs = Arc::clone(running.storage.log_cell.as_ref().unwrap());
+            let before_path = handle.lock().unwrap().clone();
+            let before_archive = archive.lock().unwrap().clone().unwrap();
+            let before_logs = logs.lock().unwrap().clone().unwrap();
+            let records = Arc::new(Mutex::new(Vec::new()));
+            let output = Arc::clone(&records);
+            let mut core = test_core(
+                running,
+                game.saves.clone(),
+                Outputs {
+                    log: Box::new(move |_, line| output.lock().unwrap().push(line)),
+                    publish: Box::new(|_| {}),
+                    fail: Box::new(|e| panic!("{e}")),
+                },
+            );
+            let before = core.digest();
+            core.dispatch(Message::Control(Control::Quickload), Duration::ZERO);
+            assert!(
+                records
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|line| line.contains(expected)),
+                "{expected}"
+            );
+            assert_eq!(core.digest(), before, "the running game is as it was");
+            assert_eq!(*handle.lock().unwrap(), before_path);
+            assert!(Arc::ptr_eq(
+                archive.lock().unwrap().as_ref().unwrap(),
+                &before_archive
+            ));
+            assert!(Arc::ptr_eq(
+                logs.lock().unwrap().as_ref().unwrap(),
+                &before_logs
+            ));
+        }
+        // Saves that are good records, loaded by both ways: a field level on forest ground and one on bog ground (when the sums follow
+        // them as a played game's do), a farm whose every level was cut with its carries written as nothing and with them left
+        // out, and a carry wider than 64 bits at a place whose denominator holds it.
+        let definition = rules.buildings.iter().find(|b| b.id == "farm").unwrap();
+        let goods = rules.goods.len();
+        let good: Vec<(&str, LevelChange)> = vec![
+            ("forest ground", |b| field_on(b, "forest")),
+            ("bog ground", |b| field_on(b, "bog")),
+            ("a farm with every level cut, carries as nothing", |b| {
+                cut_farm(b);
+                b.production_carries.iter_mut().for_each(|row| row.fill(0));
+            }),
+            ("a farm with every level cut, carries left out", |b| {
+                cut_farm(b);
+                b.production_carries.clear();
+            }),
+        ];
+        for (label, change) in good {
+            let mut save = source.simulation.save(source.identity.meta(42));
+            let farm = target(&mut save);
+            change(farm);
+            fix_sums(&rules, farm);
+            write(&save);
+            let loaded = start_from().unwrap_or_else(|e| panic!("{label}: {e}"));
+            assert_eq!(
+                loaded.simulation.state().economy,
+                save.state.economy,
+                "{label}"
+            );
+            assert_quickload_installs(&game, &new_game, label, &save.state.economy);
+        }
+        // The same cut farm with one carry above nothing is refused, naming the building, the method and the good.
+        let mut save = source.simulation.save(source.identity.meta(42));
+        let farm = target(&mut save);
+        cut_farm(farm);
+        farm.production_carries = vec![vec![0; goods]; farm.method_levels.len()];
+        farm.production_carries[0][0] = 1;
+        fix_sums(&rules, farm);
+        write(&save);
+        let message = start_from().err().expect("the carry is refused");
+        assert!(
+            message.contains("building farm method mixed_farming good"),
+            "{message}"
+        );
+        // A carry past 2^64, at the place whose denominator (positions, twelve thousand million, and the quality's own factor)
+        // holds it: the levels are enough in number to make it.
+        let mut save = source.simulation.save(source.identity.meta(42));
+        let place = save
+            .state
+            .economy
+            .places
+            .iter()
+            .position(|place| {
+                place
+                    .buildings
+                    .iter()
+                    .any(|b| b.kind == "farm" && b.level_records.len() >= 2)
+            })
+            .unwrap();
+        let factor = {
+            let wiring = source.view_wiring();
+            let land = &wiring.land_by_place[&save.state.economy.places[place].id];
+            let quality = u128::from(ck_economy::mean_fertility(land).unwrap());
+            let reference = u128::from(rules.fertility_reference_pm);
+            let (mut a, mut b) = (quality, reference);
+            while b != 0 {
+                (a, b) = (b, a % b);
+            }
+            reference / a.max(1)
+        };
+        assert!(
+            factor >= 100,
+            "this place's quality gives a factor of {factor}"
+        );
+        let wanted = 19_800_000_000_000_000_001_u128;
+        let per_level = u128::from(definition.workers_per_level) * 12_000_000_000 * factor;
+        let levels = u32::try_from(wanted / per_level + 1000).unwrap();
+        let farm = save.state.economy.places[place]
+            .buildings
+            .iter_mut()
+            .find(|b| b.kind == "farm")
+            .unwrap();
+        farm.levels = levels;
+        farm.method_levels = vec![0; farm.method_levels.len()];
+        farm.method_levels[0] = levels;
+        farm.level_records = (0..levels)
+            .map(|number| ck_economy::LevelRecord {
+                number,
+                method: 0,
+                ground: Some("pasture".to_owned()),
+                paydays: ck_economy::MATURE_PAYDAYS,
+            })
+            .collect();
+        farm.production_carries[0][0] = 19_800_000_000_000_000_000;
+        fix_sums(&rules, farm);
+        write(&save);
+        let loaded = start_from().expect("a wide carry below its denominator loads");
+        assert_eq!(loaded.simulation.state().economy, save.state.economy);
+        assert_quickload_installs(&game, &new_game, "a carry of 19.8e18", &save.state.economy);
     }
 
     #[test]

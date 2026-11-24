@@ -1825,6 +1825,7 @@ pub fn starting_state(
                 kind: kind.to_owned(),
                 levels: actual,
                 method_levels: assignment.method_levels,
+                level_records: assignment.level_records,
                 herds,
                 employment: vec![Employment::default(); pops.len()],
                 stock: stock_vector(rules, &defaults.building_stock),
@@ -1896,6 +1897,7 @@ pub fn starting_state(
                 kind: "storehouse".to_owned(),
                 levels: store_levels,
                 method_levels: kinds,
+                level_records: Vec::new(),
                 herds: Vec::new(),
                 employment: vec![Employment::default(); pops.len()],
                 stock: storehouse_physical_stock(rules, &accounts),
@@ -2308,6 +2310,7 @@ fn stock_vector(rules: &Rules, stock: &BTreeMap<String, u64>) -> Vec<u64> {
 
 struct BuildingAssignment {
     method_levels: Vec<u32>,
+    level_records: Vec<LevelRecord>,
     method_suitability: Vec<Vec<u64>>,
     herd_grazing_sums: Vec<u64>,
     used_land: u32,
@@ -2386,10 +2389,6 @@ fn level_candidates(
 
 /// Give each of a building's `wanted` levels a method, one at a time, by the place's needs and then
 /// its empty orders (economy design §3.4); `demand` carries from building to building.
-#[expect(
-    clippy::too_many_lines,
-    reason = "Each level is placed, raised for or cut in one pass over the shared land, sea and demand budgets."
-)]
 fn assign_building_levels(
     rules: &Rules,
     building: &BuildingType,
@@ -2400,8 +2399,7 @@ fn assign_building_levels(
     quality_pm: u16,
 ) -> Result<BuildingAssignment, DataError> {
     let mut assigned = vec![0_u32; building.methods.len()];
-    let mut method_suitability = vec![vec![0_u64; rules.goods.len()]; building.methods.len()];
-    let mut herd_grazing_sums = vec![0_u64; rules.herd_species.len()];
+    let mut level_records = Vec::<LevelRecord>::new();
     let mut used_land = 0_u32;
     let mut used_sea = 0_u32;
     let mut output = BTreeMap::<String, u64>::new();
@@ -2435,42 +2433,15 @@ fn assign_building_levels(
             .expect("the chosen candidate exists");
         let method = &building.methods[index];
         assigned[index] += 1;
+        level_records.push(LevelRecord {
+            number: u32::try_from(level_records.len())
+                .map_err(|_| missing_data("projection".to_owned(), "level count overflow"))?,
+            method: u32::try_from(index)
+                .map_err(|_| missing_data("projection".to_owned(), "method count overflow"))?,
+            ground: terrain.clone(),
+            paydays: MATURE_PAYDAYS,
+        });
         demand.provide(rules, &level_output);
-        for good_id in method.annual_output.keys() {
-            let good_index = rules
-                .goods
-                .iter()
-                .position(|good| &good.id == good_id)
-                .ok_or_else(|| {
-                    missing_data(
-                        format!("goods.{good_id}"),
-                        "method output references unknown good",
-                    )
-                })?;
-            let suitability =
-                method_suitability_pm(rules, building, method, good_id, terrain.as_deref());
-            method_suitability[index][good_index] = method_suitability[index][good_index]
-                .checked_add(u64::from(suitability))
-                .ok_or_else(|| missing_data("projection".to_owned(), "suitability sum overflow"))?;
-        }
-        if let Some(terrain) = terrain.as_deref() {
-            for (species, animal) in rules.herd_species.iter().enumerate() {
-                let grazing = rules
-                    .grazing
-                    .get(terrain)
-                    .and_then(|values| values.get(&animal.animal))
-                    .copied()
-                    .unwrap_or(0);
-                herd_grazing_sums[species] = herd_grazing_sums[species]
-                    .checked_add(u64::from(grazing))
-                    .ok_or_else(|| {
-                        missing_data(
-                            "projection.grazing".to_owned(),
-                            "grazing suitability sum overflow",
-                        )
-                    })?;
-            }
-        }
         if method.resource == "sea" {
             used_sea = used_sea.saturating_add(1);
         } else if method.resource == "usable_land" {
@@ -2494,8 +2465,11 @@ fn assign_building_levels(
             })?;
         }
     }
+    let (method_suitability, herd_grazing_sums) =
+        derive_level_sums(rules, building, &level_records)?;
     Ok(BuildingAssignment {
         method_levels: assigned,
+        level_records,
         method_suitability,
         herd_grazing_sums,
         used_land,
@@ -2503,6 +2477,261 @@ fn assign_building_levels(
         output,
         cut_for_room,
     })
+}
+
+/// What a producing building knows as sums, derived from its level records: the suitability of each method for each of its goods
+/// (each level's own, on its own ground, added up) and the grazing of each species (each level's ground, added up).
+///
+/// # Errors
+/// Returns a [`DataError`] when a record names no method of `building`, or a sum overflows.
+pub fn derive_level_sums(
+    rules: &Rules,
+    building: &BuildingType,
+    records: &[LevelRecord],
+) -> Result<(Vec<Vec<u64>>, Vec<u64>), DataError> {
+    let mut method_suitability = vec![vec![0_u64; rules.goods.len()]; building.methods.len()];
+    let mut herd_grazing_sums = vec![0_u64; rules.herd_species.len()];
+    for record in records {
+        let index = usize::try_from(record.method).unwrap_or(usize::MAX);
+        let method = building.methods.get(index).ok_or_else(|| {
+            missing_data(
+                format!("buildings.{}.levels", building.id),
+                "level record names no method",
+            )
+        })?;
+        let ground = record.ground.as_deref();
+        for good_id in method.annual_output.keys() {
+            let good_index = rules
+                .goods
+                .iter()
+                .position(|good| &good.id == good_id)
+                .ok_or_else(|| {
+                    missing_data(
+                        format!("goods.{good_id}"),
+                        "method output references unknown good",
+                    )
+                })?;
+            let suitability = method_suitability_pm(rules, building, method, good_id, ground);
+            method_suitability[index][good_index] = method_suitability[index][good_index]
+                .checked_add(u64::from(suitability))
+                .ok_or_else(|| missing_data("projection".to_owned(), "suitability sum overflow"))?;
+        }
+        if let Some(ground) = ground {
+            for (species, animal) in rules.herd_species.iter().enumerate() {
+                let grazing = rules
+                    .grazing
+                    .get(ground)
+                    .and_then(|values| values.get(&animal.animal))
+                    .copied()
+                    .unwrap_or(0);
+                herd_grazing_sums[species] = herd_grazing_sums[species]
+                    .checked_add(u64::from(grazing))
+                    .ok_or_else(|| {
+                        missing_data(
+                            "projection.grazing".to_owned(),
+                            "grazing suitability sum overflow",
+                        )
+                    })?;
+            }
+        }
+    }
+    Ok((method_suitability, herd_grazing_sums))
+}
+
+/// Check every producing building's level records and production carries in a loaded economy before it is installed.
+///
+/// `quality_by_place` is the mean fertility of each place, as the monthly step reads it (a farming method's carry
+/// denominator depends on it).
+///
+/// # Errors
+/// Returns a message naming the place, the building and the level (or the method and good of a carry) at fault, when:
+/// a level's method is not one of the building's; its ground does not fit its method's resource; its completed paydays are
+/// not 0 to 13; the numbers are not each of 0 to one less than the building's levels once, or the records do not add up
+/// to the building's levels or method counts or to its stored sums; or a production carry is not below its denominator
+/// (or is not nothing where the building has no positions).
+pub fn validate_level_records(
+    rules: &Rules,
+    quality_by_place: &BTreeMap<String, u16>,
+    state: &EconomyState,
+) -> Result<(), String> {
+    for place in &state.places {
+        let quality_pm = quality_by_place
+            .get(&place.id)
+            .copied()
+            .unwrap_or(rules.fertility_reference_pm);
+        for building in &place.buildings {
+            let Some(definition) = rules.buildings.iter().find(|item| item.id == building.kind)
+            else {
+                continue;
+            };
+            let name = format!("place {} building {}", place.id, building.kind);
+            if definition.methods.is_empty() {
+                if let Some(record) = building.level_records.first() {
+                    return Err(format!(
+                        "{name} level {}: the building has no methods",
+                        record.number
+                    ));
+                }
+                continue;
+            }
+            check_level_records(rules, definition, building, &name)?;
+            check_production_carries(rules, definition, building, quality_pm, &name)?;
+        }
+    }
+    Ok(())
+}
+
+fn check_level_records(
+    rules: &Rules,
+    definition: &BuildingType,
+    building: &BuildingState,
+    name: &str,
+) -> Result<(), String> {
+    let mut counts = vec![0_u32; definition.methods.len()];
+    let mut seen = vec![false; building.levels as usize];
+    for record in &building.level_records {
+        let level = format!("{name} level {}", record.number);
+        let Some(method) = usize::try_from(record.method)
+            .ok()
+            .and_then(|index| definition.methods.get(index))
+        else {
+            return Err(format!(
+                "{level}: method {} is not one of the building's",
+                record.method
+            ));
+        };
+        let ground = record.ground.as_deref();
+        let fits = match method.resource.as_str() {
+            "usable_land" => {
+                ground.is_some_and(|ground| rules.terrain_order.iter().any(|t| t == ground))
+            }
+            "forest" => ground == Some("forest"),
+            "bog" => ground == Some("bog"),
+            "sea" => ground.is_none(),
+            _ => false,
+        };
+        if !fits {
+            return Err(format!(
+                "{level}: ground {} does not fit the {} method {}",
+                ground.unwrap_or("(none)"),
+                method.resource,
+                method.id
+            ));
+        }
+        if record.paydays > MATURE_PAYDAYS {
+            return Err(format!(
+                "{level}: {} completed paydays is more than {MATURE_PAYDAYS}",
+                record.paydays
+            ));
+        }
+        match seen.get_mut(record.number as usize) {
+            Some(slot) if !*slot => *slot = true,
+            Some(_) => return Err(format!("{level}: the number is used twice")),
+            None => {
+                return Err(format!(
+                    "{level}: the number is not below the building's {} levels",
+                    building.levels
+                ));
+            }
+        }
+        counts[record.method as usize] += 1;
+    }
+    if building.level_records.len() != building.levels as usize {
+        return Err(format!(
+            "{name}: {} level records for {} levels",
+            building.level_records.len(),
+            building.levels
+        ));
+    }
+    if counts != building.method_levels {
+        return Err(format!(
+            "{name}: the level records count {counts:?} by method, not the saved {:?}",
+            building.method_levels
+        ));
+    }
+    let (suitability, grazing) = derive_level_sums(rules, definition, &building.level_records)
+        .map_err(|error| format!("{name}: {}", error.problem))?;
+    let differs = |stored: &[u64], derived: &[u64]| {
+        (0..stored.len().max(derived.len())).any(|index| {
+            stored.get(index).copied().unwrap_or(0) != derived.get(index).copied().unwrap_or(0)
+        })
+    };
+    // A building that can produce keeps the matrix whole, a row for each method and a value for each good, and the monthly step
+    // refuses anything else; a building with no positions keeps nothing but zeros, in whatever shape.
+    let has_positions = building.levels != 0 && definition.workers_per_level != 0;
+    let stored_suitability = building
+        .method_suitability
+        .iter()
+        .flatten()
+        .copied()
+        .collect::<Vec<_>>();
+    let derived_suitability = suitability.iter().flatten().copied().collect::<Vec<_>>();
+    if (has_positions && building.method_suitability != suitability)
+        || differs(&stored_suitability, &derived_suitability)
+    {
+        return Err(format!(
+            "{name}: the saved suitability sums are not those of the level records"
+        ));
+    }
+    if !building.herds.is_empty() && building.herd_grazing_sums.len() != grazing.len() {
+        return Err(format!(
+            "{name}: the saved grazing sums are not one for each species"
+        ));
+    }
+    if differs(&building.herd_grazing_sums, &grazing) {
+        return Err(format!(
+            "{name}: the saved grazing sums are not those of the level records"
+        ));
+    }
+    Ok(())
+}
+
+fn check_production_carries(
+    rules: &Rules,
+    definition: &BuildingType,
+    building: &BuildingState,
+    quality_pm: u16,
+    name: &str,
+) -> Result<(), String> {
+    let positions = u128::from(building.levels) * u128::from(definition.workers_per_level);
+    for (method_index, carries) in building.production_carries.iter().enumerate() {
+        let method = definition.methods.get(method_index);
+        let reference_factor = if method.is_some_and(|method| method.resource == "usable_land") {
+            u128::from(reduced_ratio(quality_pm, rules.fertility_reference_pm).1)
+        } else {
+            1
+        };
+        let denominator = positions * 12_000_000_000 * reference_factor;
+        for (good_index, carry) in carries.iter().enumerate() {
+            let good = rules
+                .goods
+                .get(good_index)
+                .map_or("?", |good| good.id.as_str());
+            let method_id = method.map_or("?", |method| method.id.as_str());
+            if positions == 0 && *carry != 0 {
+                return Err(format!(
+                    "{name} method {method_id} good {good}: a carry of {carry} where the building has no positions"
+                ));
+            }
+            if positions != 0 && *carry >= denominator {
+                return Err(format!(
+                    "{name} method {method_id} good {good}: the carry {carry} is not below its denominator {denominator}"
+                ));
+            }
+        }
+    }
+    if positions != 0
+        && (building.production_carries.len() != definition.methods.len()
+            || building
+                .production_carries
+                .iter()
+                .any(|carries| carries.len() != rules.goods.len()))
+    {
+        return Err(format!(
+            "{name}: the saved production carries do not match the methods and goods"
+        ));
+    }
+    Ok(())
 }
 
 fn starting_method_output(
@@ -3979,6 +4208,25 @@ pub struct PopConsumption {
     pub dependent_drift_carry: i64,
 }
 
+/// Completed paydays at which a level is mature: it earns its seasonal goods in full.
+pub const MATURE_PAYDAYS: u8 = 13;
+
+/// One level of a producing building: the method it works by, the ground it stands on and its completed paydays.
+///
+/// A level cut at the start has no record, and a storehouse's levels (kinds of storage) have none.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LevelRecord {
+    /// The level's place in the order the start placed the building's levels, from 0. It never changes.
+    pub number: u32,
+    /// Index of the method in the building definition's methods.
+    pub method: u32,
+    /// The terrain the level stands on: a land terrain for a usable-land method, forest for a forest method, bog for a bog method
+    /// and nothing for a sea method.
+    pub ground: Option<String>,
+    /// Paydays completed on this method without a break, from 0 to [`MATURE_PAYDAYS`].
+    pub paydays: u8,
+}
+
 /// A building in the initial economy state.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BuildingState {
@@ -3986,8 +4234,11 @@ pub struct BuildingState {
     pub kind: String,
     /// Total authored levels after resource cuts.
     pub levels: u32,
-    /// Levels per method in method order.
+    /// Levels per method in method order. For a producing building these are the counts of [`Self::level_records`] by method (a load
+    /// refuses a save where they differ); a storehouse's are its kinds of storage.
     pub method_levels: Vec<u32>,
+    /// A record for each level of a producing building, in level-number order; empty for a storehouse.
+    pub level_records: Vec<LevelRecord>,
     /// Herd counts in species order.
     pub herds: Vec<u64>,
     /// Employment by pop index.
@@ -3997,9 +4248,10 @@ pub struct BuildingState {
     /// Storehouse claims in pop order plus the communal account.
     /// Present only for storehouses; inner vectors use goods order.
     pub storehouse_accounts: Option<StorehouseAccounts>,
-    /// Fractional seasonal production carries, in method and good order.
-    pub production_carries: Vec<Vec<u64>>,
-    /// Sum of per-level product suitability in per-mille, by method and good.
+    /// Fractional seasonal production carries, in method and good order, in twelfths of the old unit (the denominator is twelve
+    /// times the old one, so a carry can pass 64 bits).
+    pub production_carries: Vec<Vec<u128>>,
+    /// Sum of per-level product suitability in per-mille, by method and good, derived from the level records' grounds.
     pub method_suitability: Vec<Vec<u64>>,
     /// Fractional herd births per species, in 1e12ths of an animal.
     pub herd_birth_carries: Vec<u64>,
@@ -4007,7 +4259,7 @@ pub struct BuildingState {
     pub herd_death_carries: Vec<u64>,
     /// Fractional dairy and wool product carries in good order.
     pub herd_product_carries: Vec<u64>,
-    /// Sum of per-level grazing suitability in species order.
+    /// Sum of per-level grazing suitability in species order, derived from the level records' grounds.
     pub herd_grazing_sums: Vec<u64>,
     /// Fractional wage shares in millionths, in good order.
     pub wage_carries: Vec<u64>,
@@ -6552,9 +6804,11 @@ pub fn run_monthly_production_with_quality(
             if definition.methods.is_empty() {
                 continue;
             }
+            let has_positions = building.levels != 0 && definition.workers_per_level != 0;
             if definition.methods.len() != building.method_levels.len()
-                || building.production_carries.len() != definition.methods.len()
-                || building.method_suitability.len() != definition.methods.len()
+                || (has_positions
+                    && (building.production_carries.len() != definition.methods.len()
+                        || building.method_suitability.len() != definition.methods.len()))
                 || building.stock.len() != rules.goods.len()
             {
                 return Err(missing_data(
@@ -6594,6 +6848,12 @@ pub fn run_monthly_production_with_quality(
                         "coverage efficiency underflow",
                     )
                 })?;
+            // A payday counts itself first: each level's count for the day is its completed paydays and one more, at most
+            // thirteen, and after the day that is the number it has completed.
+            let level_groups = payday_groups(&place.id, building, definition)?;
+            for record in &mut building.level_records {
+                record.paydays = (record.paydays + 1).min(MATURE_PAYDAYS);
+            }
             if positions == 0 {
                 continue;
             }
@@ -6656,24 +6916,23 @@ pub fn run_monthly_production_with_quality(
                                 )
                             })?,
                     );
-                    let suitability =
-                        u128::from(building.method_suitability[method_index][good_index]);
-                    let farming = method.resource == "usable_land";
-                    let (quality_factor, reference_factor) = if farming {
-                        reduced_ratio(quality_pm, rules.fertility_reference_pm)
-                    } else {
-                        (1, 1)
-                    };
-                    let numerator = u128::from(*annual)
-                        .checked_mul(suitability)
-                        .and_then(|value| value.checked_mul(month_share))
-                        .and_then(|value| value.checked_mul(u128::from(staffed)))
-                        .and_then(|value| value.checked_mul(u128::from(coverage_efficiency)))
-                        .and_then(|value| value.checked_mul(u128::from(quality_factor)))
-                        .and_then(|value| {
-                            value.checked_add(u128::from(
-                                building.production_carries[method_index][good_index],
-                            ))
+                    // Each level's suitability for the good on its own ground is multiplied by its count for the day
+                    // less one (its share, in twelfths) before the levels are added.
+                    let suitability = level_groups[method_index]
+                        .iter()
+                        .try_fold(0_u128, |sum, ((ground, count), levels)| {
+                            let level_suitability = u128::from(method_suitability_pm(
+                                rules,
+                                definition,
+                                method,
+                                good_id,
+                                ground.as_deref(),
+                            ));
+                            sum.checked_add(
+                                level_suitability
+                                    .checked_mul(u128::from(*count - 1))?
+                                    .checked_mul(u128::from(*levels))?,
+                            )
                         })
                         .ok_or_else(|| {
                             missing_data(
@@ -6681,11 +6940,18 @@ pub fn run_monthly_production_with_quality(
                                     "places.{}.buildings.{}.production.{good_id}",
                                     place.id, building.kind
                                 ),
-                                "monthly output numerator overflow",
+                                "level suitability sum overflow",
                             )
                         })?;
+                    let farming = method.resource == "usable_land";
+                    let (quality_factor, reference_factor) = if farming {
+                        reduced_ratio(quality_pm, rules.fertility_reference_pm)
+                    } else {
+                        (1, 1)
+                    };
+                    // Twelve times the old denominator: the level counts are in twelfths.
                     let denominator = u128::from(positions)
-                        .checked_mul(1_000_000_000)
+                        .checked_mul(12_000_000_000)
                         .and_then(|value| value.checked_mul(u128::from(reference_factor)))
                         .ok_or_else(|| {
                             missing_data(
@@ -6693,7 +6959,28 @@ pub fn run_monthly_production_with_quality(
                                 "production denominator overflow",
                             )
                         })?;
-                    let output = u64::try_from(numerator / denominator).map_err(|_| {
+                    let (quotient, remainder) = payday_division(
+                        &[
+                            u128::from(*annual),
+                            suitability,
+                            month_share,
+                            u128::from(staffed),
+                            u128::from(coverage_efficiency),
+                            u128::from(quality_factor),
+                        ],
+                        building.production_carries[method_index][good_index],
+                        denominator,
+                    )
+                    .ok_or_else(|| {
+                        missing_data(
+                            format!(
+                                "places.{}.buildings.{}.production.{good_id}",
+                                place.id, building.kind
+                            ),
+                            "monthly output numerator overflow",
+                        )
+                    })?;
+                    let output = u64::try_from(quotient).map_err(|_| {
                         missing_data(
                             format!(
                                 "places.{}.buildings.{}.production.{good_id}",
@@ -6702,13 +6989,7 @@ pub fn run_monthly_production_with_quality(
                             "monthly output exceeds u64",
                         )
                     })?;
-                    building.production_carries[method_index][good_index] =
-                        u64::try_from(numerator % denominator).map_err(|_| {
-                            missing_data(
-                                "production.carry".to_owned(),
-                                "production carry exceeds u64",
-                            )
-                        })?;
+                    building.production_carries[method_index][good_index] = remainder;
                     monthly_output[good_index] = monthly_output[good_index]
                         .checked_add(output)
                         .ok_or_else(|| {
@@ -9450,6 +9731,59 @@ fn charge_storehouse_fees(
     Ok(())
 }
 
+/// The month's output and the carry that is left: `factors` multiplied together and the carry added, divided by `denominator`.
+///
+/// The product is worked in 128 bits when it fits and exactly in arbitrary size when it does not: the factor of twelve a level's
+/// count brings may take a legal payday past 128 bits that the old units held, and what is paid and kept is the same.
+fn payday_division(factors: &[u128], carry: u128, denominator: u128) -> Option<(u128, u128)> {
+    let narrow = factors
+        .iter()
+        .try_fold(1_u128, |total, factor| total.checked_mul(*factor))
+        .and_then(|total| total.checked_add(carry));
+    if let Some(numerator) = narrow {
+        return Some((numerator / denominator, numerator % denominator));
+    }
+    let numerator = bigint::product(factors).add(&bigint::Big::new(carry));
+    let (quotient, remainder) = numerator.divmod(&bigint::Big::new(denominator));
+    Some((quotient.to_u128()?, remainder.to_u128()?))
+}
+
+/// A method's levels grouped by ground and by the day's count: the levels' completed paydays and one more, at most
+/// [`MATURE_PAYDAYS`]. Each group holds its number of levels. The records must agree with the building's counts.
+type PaydayGroups = Vec<BTreeMap<(Option<String>, u8), u64>>;
+
+fn payday_groups(
+    place_id: &str,
+    building: &BuildingState,
+    definition: &BuildingType,
+) -> Result<PaydayGroups, DataError> {
+    let mut groups = vec![BTreeMap::new(); definition.methods.len()];
+    let mut counts = vec![0_u32; definition.methods.len()];
+    for record in &building.level_records {
+        let method = usize::try_from(record.method).unwrap_or(usize::MAX);
+        if method >= groups.len() || record.paydays > MATURE_PAYDAYS {
+            return Err(missing_data(
+                format!("places.{place_id}.buildings.{}.levels", building.kind),
+                "saved level record names no method or has too many paydays",
+            ));
+        }
+        counts[method] += 1;
+        *groups[method]
+            .entry((
+                record.ground.clone(),
+                (record.paydays + 1).min(MATURE_PAYDAYS),
+            ))
+            .or_insert(0_u64) += 1;
+    }
+    if counts != building.method_levels {
+        return Err(missing_data(
+            format!("places.{place_id}.buildings.{}.levels", building.kind),
+            "saved level records do not add up to the method levels",
+        ));
+    }
+    Ok(groups)
+}
+
 fn reduced_ratio(value: u16, reference: u16) -> (u16, u16) {
     if value == 0 {
         return (0, 1);
@@ -9495,6 +9829,7 @@ impl Canonical for EconomyState {
                 building.kind.encode(out)?;
                 building.levels.encode(out)?;
                 building.method_levels.encode(out)?;
+                encode_level_records(&building.level_records, out)?;
                 building.herds.encode(out)?;
                 encode_employment(&building.employment, out)?;
                 building.stock.encode(out)?;
@@ -9560,6 +9895,7 @@ impl Canonical for EconomyState {
                     kind: String::decode(input)?,
                     levels: u32::decode(input)?,
                     method_levels: Vec::<u32>::decode(input)?,
+                    level_records: decode_level_records(input)?,
                     herds: Vec::<u64>::decode(input)?,
                     employment: decode_employment(input)?,
                     stock: Vec::<u64>::decode(input)?,
@@ -9571,7 +9907,7 @@ impl Canonical for EconomyState {
                     } else {
                         None
                     },
-                    production_carries: Vec::<Vec<u64>>::decode(input)?,
+                    production_carries: Vec::<Vec<u128>>::decode(input)?,
                     method_suitability: Vec::<Vec<u64>>::decode(input)?,
                     herd_birth_carries: Vec::<u64>::decode(input)?,
                     herd_death_carries: Vec::<u64>::decode(input)?,
@@ -9599,6 +9935,41 @@ impl Canonical for EconomyState {
         }
         Ok(Self { places })
     }
+}
+
+fn encode_level_records(records: &[LevelRecord], out: &mut Vec<u8>) -> Result<(), CanonicalError> {
+    encode_length(records.len(), out)?;
+    for record in records {
+        record.number.encode(out)?;
+        record.method.encode(out)?;
+        match &record.ground {
+            Some(ground) => {
+                true.encode(out)?;
+                ground.encode(out)?;
+            }
+            None => false.encode(out)?,
+        }
+        record.paydays.encode(out)?;
+    }
+    Ok(())
+}
+
+fn decode_level_records(input: &mut Reader<'_>) -> Result<Vec<LevelRecord>, CanonicalError> {
+    let count = input.length()?;
+    let mut records = Vec::with_capacity(count);
+    for _ in 0..count {
+        records.push(LevelRecord {
+            number: u32::decode(input)?,
+            method: u32::decode(input)?,
+            ground: if bool::decode(input)? {
+                Some(String::decode(input)?)
+            } else {
+                None
+            },
+            paydays: u8::decode(input)?,
+        });
+    }
+    Ok(records)
 }
 
 fn encode_pop_consumption(value: &PopConsumption, out: &mut Vec<u8>) -> Result<(), CanonicalError> {
@@ -10105,6 +10476,7 @@ pub(crate) mod tests {
             kind: "storehouse".to_owned(),
             levels: 1,
             method_levels: vec![1, 0, 0],
+            level_records: Vec::new(),
             herds: Vec::new(),
             employment: vec![Employment::default(); 2],
             stock: storehouse_stock,
@@ -10129,6 +10501,12 @@ pub(crate) mod tests {
             kind: "farm".to_owned(),
             levels: 1,
             method_levels: vec![1],
+            level_records: vec![LevelRecord {
+                number: 0,
+                method: 0,
+                ground: Some("pasture".to_owned()),
+                paydays: MATURE_PAYDAYS,
+            }],
             herds: vec![0, 1, 0],
             employment: vec![
                 Employment::default(),
@@ -10170,11 +10548,101 @@ pub(crate) mod tests {
         (rules, state)
     }
 
+    /// The ground fixture levels stand on: pasture, which `flatten_pasture` gives a suitability of 1000 for every good and
+    /// the first three species grazing of 1000, 400 and 1000, so a fixture level on it makes what the old fixtures' hand-set
+    /// sums of 1000 did.
+    const FLAT: &str = "pasture";
+
+    fn flatten_pasture(rules: &mut Rules) {
+        let mut table = BTreeMap::new();
+        for good in &rules.goods {
+            table.insert(good.id.clone(), 1000_u16);
+        }
+        for building in &rules.buildings {
+            for method in &building.methods {
+                table.insert(method.suitability.clone(), 1000);
+            }
+        }
+        rules.suitability.insert(FLAT.to_owned(), table);
+        let grazing = rules
+            .herd_species
+            .iter()
+            .enumerate()
+            .map(|(index, species)| {
+                (
+                    species.animal.clone(),
+                    [1000, 400, 1000].get(index).copied().unwrap_or(1000),
+                )
+            })
+            .collect();
+        rules.grazing.insert(FLAT.to_owned(), grazing);
+    }
+
+    /// Rebuild a fixture building's level records from its method counts, every level mature on the flat ground (forest and bog
+    /// levels on their own), and its derived sums from the records.
+    fn sync_levels(rules: &Rules, building: &mut BuildingState) {
+        let definition = rules
+            .buildings
+            .iter()
+            .find(|item| item.id == building.kind)
+            .unwrap();
+        if definition.methods.is_empty() {
+            return;
+        }
+        building.level_records.clear();
+        for (method, count) in definition
+            .methods
+            .iter()
+            .zip(building.method_levels.clone())
+        {
+            let ground = match method.resource.as_str() {
+                "usable_land" => Some(FLAT.to_owned()),
+                "sea" => None,
+                other => Some(other.to_owned()),
+            };
+            let method_index = definition
+                .methods
+                .iter()
+                .position(|item| item.id == method.id)
+                .unwrap();
+            for _ in 0..count {
+                building.level_records.push(LevelRecord {
+                    number: u32::try_from(building.level_records.len()).unwrap(),
+                    method: u32::try_from(method_index).unwrap(),
+                    ground: ground.clone(),
+                    paydays: MATURE_PAYDAYS,
+                });
+            }
+        }
+        let (suitability, grazing) =
+            derive_level_sums(rules, definition, &building.level_records).unwrap();
+        building.method_suitability = suitability;
+        building.herd_grazing_sums = grazing;
+    }
+
+    fn sync_all_levels(rules: &Rules, state: &mut EconomyState) {
+        for place in &mut state.places {
+            for building in &mut place.buildings {
+                sync_levels(rules, building);
+            }
+        }
+    }
+
+    fn shipped_production_fixture(rules: &Rules) -> EconomyState {
+        assert_eq!(
+            rules.suitability[FLAT]["oats"], 1000,
+            "flatten the fixture's rules with flatten_pasture"
+        );
+        let mut state = shipped_production_fixture_unsynced(rules);
+        sync_all_levels(rules, &mut state);
+        state
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "The shipped production fixture keeps all rules-indexed state dimensions visible to its literal season test."
     )]
-    fn shipped_production_fixture(rules: &Rules) -> EconomyState {
+    fn shipped_production_fixture_unsynced(rules: &Rules) -> EconomyState {
         let goods = rules.goods.len();
         let empty_stock = vec![0; goods];
         let pop = |kind: &str, workers, employment| PopState {
@@ -10240,6 +10708,12 @@ pub(crate) mod tests {
                         kind: "farm".to_owned(),
                         levels: 1,
                         method_levels: vec![1, 0, 0, 0],
+                        level_records: vec![LevelRecord {
+                            number: 0,
+                            method: 0,
+                            ground: Some("pasture".to_owned()),
+                            paydays: MATURE_PAYDAYS,
+                        }],
                         herds: (0..rules.herd_species.len())
                             .map(|i| [9, 6, 5].get(i).copied().unwrap_or(0))
                             .collect(),
@@ -10279,6 +10753,7 @@ pub(crate) mod tests {
                         kind: "holdings".to_owned(),
                         levels: 1,
                         method_levels: vec![0, 1],
+                        level_records: Vec::new(),
                         herds: Vec::new(),
                         employment: vec![
                             Employment::default(),
@@ -10310,6 +10785,7 @@ pub(crate) mod tests {
                         kind: "storehouse".to_owned(),
                         levels: 1,
                         method_levels: vec![1, 1, 1],
+                        level_records: Vec::new(),
                         herds: Vec::new(),
                         employment: vec![Employment::default(); 3],
                         stock: empty_stock,
@@ -10357,12 +10833,14 @@ pub(crate) mod tests {
         rules.seasons.insert("grain".to_owned(), season.clone());
         rules.seasons.insert("fish".to_owned(), season);
 
+        flatten_pasture(&mut rules);
         let mut state = shipped_production_fixture(&rules);
         let place = &mut state.places[0];
         place.buildings[0].levels = 0;
         place.buildings[0].method_levels = vec![0, 0, 0, 0];
         place.buildings[1].levels = 2;
         place.buildings[1].method_levels = vec![1, 1];
+        sync_all_levels(&rules, &mut state);
         (rules, state)
     }
 
@@ -10388,6 +10866,7 @@ pub(crate) mod tests {
         let assets = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
         let mut rules = Rules::load(assets.join("game/economy.toml")).unwrap();
         rules.price_k_pm = 0;
+        flatten_pasture(&mut rules);
         let mut state = shipped_production_fixture(&rules);
         let place = &mut state.places[0];
         place.prices_milli = rules
@@ -10425,6 +10904,7 @@ pub(crate) mod tests {
         let mut first = place.buildings[0].clone();
         first.herds.clear();
         first.method_levels.fill(0);
+        first.level_records.clear();
         first.production_carries = vec![vec![0; rules.goods.len()]];
         first.method_suitability = vec![vec![1_000; rules.goods.len()]];
         first.wage_carries = vec![0; rules.goods.len()];
@@ -10489,6 +10969,7 @@ pub(crate) mod tests {
         let mut source = place.buildings[0].clone();
         source.herds.clear();
         source.method_levels.fill(0);
+        source.level_records.clear();
         source.production_carries = vec![vec![0; rules.goods.len()]];
         source.method_suitability = vec![vec![1_000; rules.goods.len()]];
         source.wage_carries = vec![0; rules.goods.len()];
@@ -10728,6 +11209,12 @@ pub(crate) mod tests {
             kind: "farm".to_owned(),
             levels: 1,
             method_levels: vec![1],
+            level_records: vec![LevelRecord {
+                number: 0,
+                method: 0,
+                ground: Some("pasture".to_owned()),
+                paydays: MATURE_PAYDAYS,
+            }],
             herds: Vec::new(),
             employment: vec![Employment {
                 owners: 0,
@@ -10759,6 +11246,7 @@ pub(crate) mod tests {
             kind: "storehouse".to_owned(),
             levels: 1,
             method_levels: vec![1, 0, 0],
+            level_records: Vec::new(),
             herds: Vec::new(),
             employment: vec![Employment::default()],
             stock: vec![0],
@@ -10800,6 +11288,7 @@ pub(crate) mod tests {
             kind: "holdings".to_owned(),
             levels: 1,
             method_levels: vec![1],
+            level_records: Vec::new(),
             herds: Vec::new(),
             employment: vec![Employment {
                 owners: 2,
@@ -10831,6 +11320,10 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "The overflow witness lists every account it moves in one literal flow."
+    )]
     fn overflow_moves_from_building_through_alms_then_source_accounts() {
         let mut rules = tiny_rules();
         rules.goods[0].id = "oats".to_owned();
@@ -10858,6 +11351,12 @@ pub(crate) mod tests {
             kind: "farm".to_owned(),
             levels: 1,
             method_levels: vec![1],
+            level_records: vec![LevelRecord {
+                number: 0,
+                method: 0,
+                ground: Some("pasture".to_owned()),
+                paydays: MATURE_PAYDAYS,
+            }],
             herds: Vec::new(),
             employment: vec![
                 Employment {
@@ -10885,6 +11384,7 @@ pub(crate) mod tests {
             kind: "storehouse".to_owned(),
             levels: 1,
             method_levels: vec![1, 0, 0],
+            level_records: Vec::new(),
             herds: Vec::new(),
             employment: vec![Employment::default()],
             stock: vec![0],
@@ -11258,6 +11758,7 @@ pub(crate) mod tests {
             kind: "farm".to_owned(),
             levels: 1,
             method_levels: vec![0],
+            level_records: Vec::new(),
             herds: Vec::new(),
             employment: vec![Employment { owners, workers: 0 }],
             stock: vec![food_stock],
@@ -11418,6 +11919,7 @@ pub(crate) mod tests {
             kind: "storehouse".to_owned(),
             levels: 1,
             method_levels: vec![1, 0, 0],
+            level_records: Vec::new(),
             herds: Vec::new(),
             employment: vec![Employment::default()],
             stock: physical,
@@ -11441,6 +11943,12 @@ pub(crate) mod tests {
             kind: "farm".to_owned(),
             levels: 1,
             method_levels: vec![1],
+            level_records: vec![LevelRecord {
+                number: 0,
+                method: 0,
+                ground: Some("pasture".to_owned()),
+                paydays: MATURE_PAYDAYS,
+            }],
             herds: vec![0; 3],
             employment: vec![Employment {
                 owners: 10,
@@ -11791,7 +12299,8 @@ pub(crate) mod tests {
     #[test]
     fn linen_and_hemp_are_fixed_seasonal_farm_outputs() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/game/economy.toml");
-        let rules = Rules::load(path).unwrap();
+        let mut rules = Rules::load(path).unwrap();
+        flatten_pasture(&mut rules);
         let index = |id: &str| rules.goods.iter().position(|g| g.id == id).unwrap();
         for (id, volume, price, unit) in [
             ("linen", 2000, 120, "pound of cloth"),
@@ -11889,7 +12398,8 @@ pub(crate) mod tests {
     fn herd_daily_trace(fed: bool) -> (String, [[u64; 6]; 3]) {
         use std::fmt::Write as _;
 
-        let rules = shipped_rules();
+        let mut rules = shipped_rules();
+        flatten_pasture(&mut rules);
         assert_eq!(rules.herd_species.len(), 4);
         assert_eq!(rules.herd_species[3].animal, "horses");
         let mut state = shipped_production_fixture(&rules);
@@ -11927,6 +12437,7 @@ pub(crate) mod tests {
         let farm = place.buildings[0].clone();
         let holdings = &mut place.buildings[1];
         holdings.method_levels = vec![1, 0];
+        sync_levels(&rules, holdings);
         holdings.herds = vec![9, 6, 5, 0];
         holdings.herd_birth_carries = vec![0; 4];
         holdings.herd_death_carries = vec![0; 4];
@@ -11935,6 +12446,7 @@ pub(crate) mod tests {
         let mut demesne = farm;
         demesne.kind = "demesne".to_owned();
         demesne.method_levels = vec![1];
+        sync_levels(&rules, &mut demesne);
         demesne.production_carries.truncate(1);
         demesne.method_suitability.truncate(1);
         place.buildings.push(demesne);
@@ -11962,6 +12474,7 @@ pub(crate) mod tests {
                             {
                                 if other != index {
                                     building.method_levels.fill(0);
+                                    building.level_records.clear();
                                     building.herds.clear();
                                     building.herd_birth_carries.clear();
                                     building.herd_death_carries.clear();
@@ -12082,7 +12595,8 @@ pub(crate) mod tests {
     #[test]
     fn category_labels_do_not_change_production() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/game/economy.toml");
-        let rules = Rules::load(path).unwrap();
+        let mut rules = Rules::load(path).unwrap();
+        flatten_pasture(&mut rules);
         let mut unlabelled = rules.clone();
         for good in &mut unlabelled.goods {
             good.tags.retain(|tag| tag != "fabric");
@@ -13062,6 +13576,12 @@ pub(crate) mod tests {
                         kind: "farm".to_owned(),
                         levels: 1,
                         method_levels: vec![1],
+                        level_records: vec![LevelRecord {
+                            number: 0,
+                            method: 0,
+                            ground: Some("pasture".to_owned()),
+                            paydays: MATURE_PAYDAYS
+                        }],
                         herds: Vec::new(),
                         employment: vec![Employment {
                             owners: 1,
@@ -13086,6 +13606,7 @@ pub(crate) mod tests {
                         kind: "storehouse".to_owned(),
                         levels: 1,
                         method_levels: vec![1, 0, 0],
+                        level_records: Vec::new(),
                         herds: Vec::new(),
                         employment: vec![Employment {
                             owners: 0,
@@ -14012,7 +14533,7 @@ pub(crate) mod tests {
         );
         assert_eq!(
             state.places[0].buildings[farm].production_carries[0][0],
-            5_000_000_000
+            60_000_000_000
         );
         run_monthly_production(
             &rules,
@@ -14094,6 +14615,7 @@ pub(crate) mod tests {
 
         state.places[0].buildings[1].levels = 1;
         state.places[0].buildings[1].method_levels = vec![1, 0];
+        sync_levels(&rules, &mut state.places[0].buildings[1]);
         let ledger = run_monthly_production(&rules, &mut state, Date { month: 2, ..date }).unwrap();
         assert_eq!(ledger.produced[oats], 120);
         assert_eq!(ledger.produced[fish], 0);
@@ -14104,6 +14626,7 @@ pub(crate) mod tests {
         let (rules, mut state) = two_method_staffing_fixture(1000);
         state.places[0].buildings[1].levels = 3;
         state.places[0].buildings[1].method_levels = vec![2, 1];
+        sync_levels(&rules, &mut state.places[0].buildings[1]);
         let oats = rules
             .goods
             .iter()
@@ -14117,8 +14640,8 @@ pub(crate) mod tests {
             .position(|good| good.id == "fish")
             .unwrap();
         let expected = [
-            (46, 20_000_000_000, 23, 10_000_000_000),
-            (47, 10_000_000_000, 23, 20_000_000_000),
+            (46, 240_000_000_000, 23, 120_000_000_000),
+            (47, 120_000_000_000, 23, 240_000_000_000),
             (47, 0, 24, 0),
         ];
 
@@ -14154,6 +14677,7 @@ pub(crate) mod tests {
         let (rules, mut state) = two_method_staffing_fixture(1000);
         state.places[0].buildings[1].levels = 3;
         state.places[0].buildings[1].method_levels = vec![2, 1];
+        sync_levels(&rules, &mut state.places[0].buildings[1]);
         let oats = rules
             .goods
             .iter()
@@ -14246,7 +14770,7 @@ pub(crate) mod tests {
                 .map(|quality| BTreeMap::from([("farm".to_owned(), quality)]))
                 .unwrap_or_default();
             let mut output = 0_u64;
-            let mut final_carry = 0_u64;
+            let mut final_carry = 0_u128;
             for month in 1..=12 {
                 let ledger = if quality_pm.is_some() {
                     run_monthly_production_with_quality(
@@ -14287,9 +14811,11 @@ pub(crate) mod tests {
     #[test]
     fn zero_fertility_suppresses_farm_output_but_keeps_fishing_unchanged() {
         let assets = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
-        let rules = Rules::load(assets.join("game/economy.toml")).unwrap();
+        let mut rules = Rules::load(assets.join("game/economy.toml")).unwrap();
+        flatten_pasture(&mut rules);
         let mut reference = shipped_production_fixture(&rules);
         reference.places[0].buildings[1].method_levels = vec![1, 0];
+        sync_levels(&rules, &mut reference.places[0].buildings[1]);
         let mut barren = reference.clone();
         let date = Date {
             year: 768,
@@ -15029,8 +15555,9 @@ pub(crate) mod tests {
 
     #[test]
     fn fuel_levels_contribute_to_the_emergency_breeding_floor() {
-        let rules = shipped_rules();
+        let mut rules = shipped_rules();
         for levels in [vec![0, 0, 1, 1], vec![1, 0, 1, 0]] {
+            flatten_pasture(&mut rules);
             let mut state = shipped_production_fixture(&rules);
             let place = &mut state.places[0];
             place.pops[0].consumption.necessities_pm = 400;
@@ -15131,7 +15658,8 @@ pub(crate) mod tests {
 
     #[test]
     fn storehouse_refuses_both_fuel_goods() {
-        let rules = shipped_rules();
+        let mut rules = shipped_rules();
+        flatten_pasture(&mut rules);
         let mut building = shipped_production_fixture(&rules)
             .places
             .remove(0)
@@ -15149,7 +15677,8 @@ pub(crate) mod tests {
 
     #[test]
     fn fuel_orders_choose_cheapest_per_unit_and_preserve_fractional_target() {
-        let rules = shipped_rules();
+        let mut rules = shipped_rules();
+        flatten_pasture(&mut rules);
         let mut state = shipped_production_fixture(&rules);
         let place = &mut state.places[0];
         place.pops.truncate(1);
@@ -15177,7 +15706,8 @@ pub(crate) mod tests {
 
     #[test]
     fn fuel_burning_carries_balance_and_never_repays_missed_days() {
-        let rules = shipped_rules();
+        let mut rules = shipped_rules();
+        flatten_pasture(&mut rules);
         let mut state = shipped_production_fixture(&rules);
         let place = &mut state.places[0];
         place.pops.truncate(1);
@@ -15217,7 +15747,8 @@ pub(crate) mod tests {
 
     #[test]
     fn noon_burn_uses_the_price_before_the_price_step() {
-        let rules = shipped_rules();
+        let mut rules = shipped_rules();
+        flatten_pasture(&mut rules);
         let mut state = shipped_production_fixture(&rules);
         let place = &mut state.places[0];
         place.pops.truncate(1);
@@ -15263,7 +15794,8 @@ pub(crate) mod tests {
 
     #[test]
     fn noon_draw_uses_the_opening_price_and_respects_owner_reserve() {
-        let rules = shipped_rules();
+        let mut rules = shipped_rules();
+        flatten_pasture(&mut rules);
         let mut state = shipped_production_fixture(&rules);
         let place = &mut state.places[0];
         place.pops.truncate(1);
@@ -15322,6 +15854,7 @@ pub(crate) mod tests {
     #[test]
     fn fuel_draw_uses_building_order_and_obeys_the_pop_cap() {
         let mut rules = shipped_rules();
+        flatten_pasture(&mut rules);
         let mut state = shipped_production_fixture(&rules);
         let place = &mut state.places[0];
         place.pops.truncate(1);
@@ -15428,7 +15961,8 @@ pub(crate) mod tests {
 
     #[test]
     fn one_person_starts_with_five_wood_or_seven_peat_loads() {
-        let rules = shipped_rules();
+        let mut rules = shipped_rules();
+        flatten_pasture(&mut rules);
         let original = shipped_production_fixture(&rules);
         let wood = good_at(&rules, "hardwood");
         let peat = good_at(&rules, "peat");
@@ -15459,6 +15993,7 @@ pub(crate) mod tests {
             kind.worker_deaths_pm_year = 0;
             kind.dependent_deaths_pm_year = 0;
         }
+        flatten_pasture(&mut rules);
         let mut state = shipped_production_fixture(&rules);
         let place = &mut state.places[0];
         place.pops.truncate(1);
@@ -15497,7 +16032,8 @@ pub(crate) mod tests {
 
     #[test]
     fn saved_fuel_state_refuses_each_invalid_field_with_pop_location() {
-        let rules = shipped_rules();
+        let mut rules = shipped_rules();
+        flatten_pasture(&mut rules);
         let mut state = shipped_production_fixture(&rules);
         assert!(validate_fuel_state(&rules, &state).is_ok());
         state.places[0].pops[0].consumption.hearth_milli = 1000;
@@ -15525,7 +16061,8 @@ pub(crate) mod tests {
 
     #[test]
     fn fuel_burns_two_windows_with_exact_remainders() {
-        let rules = shipped_rules();
+        let mut rules = shipped_rules();
+        flatten_pasture(&mut rules);
         let mut state = shipped_production_fixture(&rules);
         let place = &mut state.places[0];
         place.pops.truncate(1);
@@ -15591,7 +16128,8 @@ pub(crate) mod tests {
 
     #[test]
     fn fuel_orders_follow_price_and_abundant_fuels_settle_apart() {
-        let rules = shipped_rules();
+        let mut rules = shipped_rules();
+        flatten_pasture(&mut rules);
         let mut initial = shipped_production_fixture(&rules);
         let place = &mut initial.places[0];
         place.pops.truncate(1);
@@ -15664,7 +16202,8 @@ pub(crate) mod tests {
 
     #[test]
     fn fuel_owner_reserve_spares_whole_loads_at_mixed_boundary() {
-        let rules = shipped_rules();
+        let mut rules = shipped_rules();
+        flatten_pasture(&mut rules);
         let mut state = shipped_production_fixture(&rules);
         let place = &mut state.places[0];
         place.pops.truncate(1);
@@ -15691,7 +16230,8 @@ pub(crate) mod tests {
 
     #[test]
     fn fuel_need_is_in_the_start_projection_but_live_orders_buy_peat() {
-        let rules = shipped_rules();
+        let mut rules = shipped_rules();
+        flatten_pasture(&mut rules);
         let mut state = shipped_production_fixture(&rules);
         let place = &mut state.places[0];
         place.pops.truncate(1);
@@ -15739,7 +16279,8 @@ pub(crate) mod tests {
 
     #[test]
     fn fuel_output_and_estimates_ignore_field_quality() {
-        let rules = shipped_rules();
+        let mut rules = shipped_rules();
+        flatten_pasture(&mut rules);
         let farm = rules.buildings.iter().find(|b| b.id == "farm").unwrap();
         for (method_index, terrain, good, monthly) in
             [(2, "forest", "hardwood", 750), (3, "bog", "peat", 2000)]
@@ -15790,6 +16331,7 @@ pub(crate) mod tests {
                 let mut state = shipped_production_fixture(&rules);
                 let building = &mut state.places[0].buildings[0];
                 building.method_levels = assignment.method_levels;
+                building.level_records = assignment.level_records;
                 building.method_suitability = assignment.method_suitability;
                 building.herd_grazing_sums = assignment.herd_grazing_sums;
                 for month in 1..=12 {
@@ -15918,6 +16460,7 @@ pub(crate) mod tests {
             .unwrap()
             .herds
             .insert("goats".into(), HerdCapacity { maximum: 2 });
+        flatten_pasture(&mut rules);
         let mut state = shipped_production_fixture(&rules);
         let farm = &mut state.places[0].buildings[0];
         farm.herds = vec![0, 0, 0, 10];
@@ -15996,11 +16539,16 @@ pub(crate) mod tests {
             .unwrap(),
             602
         );
+        flatten_pasture(&mut rules);
+        rules
+            .suitability
+            .get_mut(FLAT)
+            .unwrap()
+            .insert("dairy".to_owned(), 700);
         let mut state = shipped_production_fixture(&rules);
         let dairy = good_at(&rules, "dairy");
         let farm = &mut state.places[0].buildings[0];
         farm.herds = vec![0, 0, 1, 0];
-        farm.method_suitability[0][dairy] = 700;
         let mut total = 0;
         let mut wool = 0;
         for month in 1..=12 {
@@ -16038,6 +16586,7 @@ pub(crate) mod tests {
             .unwrap(),
             645
         );
+        flatten_pasture(&mut rules);
         let mut with_cattle = shipped_production_fixture(&rules);
         with_cattle.places[0].buildings[0].herds = vec![1, 0, 1, 0];
         let january = run_monthly_production(
@@ -16093,6 +16642,7 @@ pub(crate) mod tests {
             .unwrap()
             .herds
             .insert("goats".into(), HerdCapacity { maximum: 10 });
+        flatten_pasture(&mut rules);
         let mut state = shipped_production_fixture(&rules);
         let place = &mut state.places[0];
         place.buildings[0].herds = vec![1, 1, 0, 1];
@@ -16158,6 +16708,7 @@ pub(crate) mod tests {
             .unwrap()
             .herds
             .insert("goats".into(), HerdCapacity { maximum: 10 });
+        flatten_pasture(&mut rules);
         let mut state = shipped_production_fixture(&rules);
         let farm = &mut state.places[0].buildings[0];
         farm.herds = vec![1, 0, 1, 1];
@@ -16245,7 +16796,8 @@ pub(crate) mod tests {
 
     #[test]
     fn economy_save_preserves_herds_and_product_carries_through_production() {
-        let rules = shipped_rules();
+        let mut rules = shipped_rules();
+        flatten_pasture(&mut rules);
         let mut uninterrupted = shipped_production_fixture(&rules);
         uninterrupted.places[0].buildings[0].herd_product_carries[0] = 123_456;
         let bytes = uninterrupted.to_bytes().unwrap();
@@ -16465,12 +17017,16 @@ pub(crate) mod tests {
 
     #[test]
     fn horses_breed_die_and_the_surplus_yields_hides() {
-        let rules = shipped_rules();
+        let mut rules = shipped_rules();
+        flatten_pasture(&mut rules);
         let mut state = shipped_production_fixture(&rules);
         let building = &mut state.places[0].buildings[0];
         building.kind = "demesne".into();
         building.levels = 2;
         building.method_levels = vec![2];
+        sync_levels(&rules, building);
+        // The accepted witness below counts one level's grazing for these two levels, as the fixture always has.
+        building.herd_grazing_sums = vec![1000, 400, 1000, 1000];
         building.production_carries.truncate(1);
         building.method_suitability.truncate(1);
         building.herds = vec![0, 0, 0, 4];
@@ -16502,11 +17058,12 @@ pub(crate) mod tests {
 
     #[test]
     fn starving_demesne_never_butchers_horses_even_when_floor_is_waived() {
-        let rules = shipped_rules();
+        let mut rules = shipped_rules();
         for (necessities, expected_herds, expected_slaughter) in [
             (400, [4, 4, 4, 6], [20, 12, 10, 0]),
             (200, [0, 0, 0, 6], [24, 16, 14, 0]),
         ] {
+            flatten_pasture(&mut rules);
             let mut state = shipped_production_fixture(&rules);
             let place = &mut state.places[0];
             let building = &mut place.buildings[0];
@@ -17229,6 +17786,12 @@ pub(crate) mod tests {
                         kind: "farm".to_owned(),
                         levels: 1,
                         method_levels: vec![1],
+                        level_records: vec![LevelRecord {
+                            number: 0,
+                            method: 0,
+                            ground: Some("pasture".to_owned()),
+                            paydays: MATURE_PAYDAYS,
+                        }],
                         herds: vec![9, 6, 5],
                         employment: vec![Employment {
                             owners: 1,
@@ -17253,6 +17816,7 @@ pub(crate) mod tests {
                         kind: "storehouse".to_owned(),
                         levels: 1,
                         method_levels: vec![1, 0, 0],
+                        level_records: Vec::new(),
                         herds: Vec::new(),
                         employment: vec![Employment::default()],
                         stock: vec![3],
@@ -17629,6 +18193,12 @@ pub(crate) mod tests {
             kind: kind.to_owned(),
             levels: 1,
             method_levels: vec![1],
+            level_records: vec![LevelRecord {
+                number: 0,
+                method: 0,
+                ground: Some("pasture".to_owned()),
+                paydays: MATURE_PAYDAYS,
+            }],
             herds: Vec::new(),
             employment: vec![
                 Employment {
@@ -17770,6 +18340,12 @@ pub(crate) mod tests {
                     kind: "farm".to_owned(),
                     levels: 1,
                     method_levels: vec![1],
+                    level_records: vec![LevelRecord {
+                        number: 0,
+                        method: 0,
+                        ground: Some("pasture".to_owned()),
+                        paydays: MATURE_PAYDAYS,
+                    }],
                     herds: vec![20, 0, 0],
                     employment: vec![Employment::default()],
                     stock: vec![0; rules.goods.len()],
@@ -17826,7 +18402,8 @@ pub(crate) mod tests {
     #[test]
     fn shipped_seasons_drive_grain_apples_fish_and_herd_births() {
         let assets = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
-        let rules = Rules::load(assets.join("game/economy.toml")).unwrap();
+        let mut rules = Rules::load(assets.join("game/economy.toml")).unwrap();
+        flatten_pasture(&mut rules);
         let mut spring = shipped_production_fixture(&rules);
         let ledger = run_monthly_production(
             &rules,
@@ -17847,8 +18424,11 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(ledger.produced[fish], 232);
 
+        flatten_pasture(&mut rules);
         let mut harvest = shipped_production_fixture(&rules);
         harvest.places[0].buildings[1].method_levels = vec![1, 0];
+        sync_levels(&rules, &mut harvest.places[0].buildings[1]);
+        flatten_pasture(&mut rules);
         let mut fishing = shipped_production_fixture(&rules);
         let mut apples_by_month = Vec::new();
         for month in 8..=11 {
@@ -17920,6 +18500,12 @@ pub(crate) mod tests {
             kind: "farm".to_owned(),
             levels: 1,
             method_levels: vec![1],
+            level_records: vec![LevelRecord {
+                number: 0,
+                method: 0,
+                ground: Some("pasture".to_owned()),
+                paydays: MATURE_PAYDAYS,
+            }],
             herds: Vec::new(),
             employment: vec![Employment {
                 owners: 0,
@@ -17944,6 +18530,7 @@ pub(crate) mod tests {
             kind: "storehouse".to_owned(),
             levels: 1,
             method_levels: vec![1, 0, 0],
+            level_records: Vec::new(),
             herds: Vec::new(),
             employment: vec![Employment::default()],
             stock: vec![50],
@@ -18791,6 +19378,7 @@ pub(crate) mod tests {
             kind: "storehouse".to_owned(),
             levels: 1,
             method_levels: vec![1, 0, 0],
+            level_records: Vec::new(),
             herds: Vec::new(),
             employment: vec![Employment::default()],
             stock: vec![2],
@@ -18815,6 +19403,12 @@ pub(crate) mod tests {
             kind: "farm".to_owned(),
             levels: 1,
             method_levels: vec![1],
+            level_records: vec![LevelRecord {
+                number: 0,
+                method: 0,
+                ground: Some("pasture".to_owned()),
+                paydays: MATURE_PAYDAYS,
+            }],
             herds: vec![0, 0, 0],
             employment: vec![Employment {
                 owners: 1,
@@ -19106,6 +19700,12 @@ pub(crate) mod tests {
                 kind: "farm".to_owned(),
                 levels: 1,
                 method_levels: vec![1],
+                level_records: vec![LevelRecord {
+                    number: 0,
+                    method: 0,
+                    ground: Some("pasture".to_owned()),
+                    paydays: MATURE_PAYDAYS,
+                }],
                 herds: vec![0, 2, 0],
                 employment: vec![Employment {
                     owners: 1,
@@ -19349,6 +19949,12 @@ pub(crate) mod tests {
             kind: "farm".to_owned(),
             levels: 1,
             method_levels: vec![1],
+            level_records: vec![LevelRecord {
+                number: 0,
+                method: 0,
+                ground: Some("pasture".to_owned()),
+                paydays: MATURE_PAYDAYS,
+            }],
             herds: Vec::new(),
             employment: vec![Employment {
                 owners: 1,
@@ -19417,6 +20023,12 @@ pub(crate) mod tests {
             kind: "farm".to_owned(),
             levels: 1,
             method_levels: vec![1],
+            level_records: vec![LevelRecord {
+                number: 0,
+                method: 0,
+                ground: Some("pasture".to_owned()),
+                paydays: MATURE_PAYDAYS,
+            }],
             herds: Vec::new(),
             employment: vec![Employment::default()],
             stock: vec![0],
@@ -19472,6 +20084,7 @@ pub(crate) mod tests {
                 kind: "farm".to_owned(),
                 levels: *level,
                 method_levels: vec![1],
+                level_records: Vec::new(),
                 herds: Vec::new(),
                 employment: employment_by_pop
                     .iter()
@@ -19883,6 +20496,12 @@ pub(crate) mod tests {
             kind: "farm".to_owned(),
             levels: 1,
             method_levels: vec![1],
+            level_records: vec![LevelRecord {
+                number: 0,
+                method: 0,
+                ground: Some("pasture".to_owned()),
+                paydays: MATURE_PAYDAYS,
+            }],
             herds: Vec::new(),
             employment: vec![Employment::default()],
             stock: vec![0],
@@ -20850,6 +21469,7 @@ pub(crate) mod tests {
             kind: "holdings".to_owned(),
             levels: 1,
             method_levels: Vec::new(),
+            level_records: Vec::new(),
             herds: Vec::new(),
             employment: vec![
                 Employment::default(),
@@ -21239,6 +21859,12 @@ pub(crate) mod tests {
             kind: "farm".to_owned(),
             levels: 1,
             method_levels: vec![1],
+            level_records: vec![LevelRecord {
+                number: 0,
+                method: 0,
+                ground: Some("pasture".to_owned()),
+                paydays: MATURE_PAYDAYS,
+            }],
             herds: Vec::new(),
             employment: vec![Employment::default(); 3],
             stock: vec![0],
@@ -21444,6 +22070,831 @@ pub(crate) mod tests {
             places, before,
             "a refusal cannot partially commit either place"
         );
+    }
+
+    // ---------------------------------------------------------------- CK-406: levels as records, paydays and wide carries
+
+    fn level_rules() -> Rules {
+        let mut rules = shipped_rules();
+        flatten_pasture(&mut rules);
+        rules
+    }
+
+    const SEPTEMBER_DAY: Date = Date {
+        year: 768,
+        month: 9,
+        day: 1,
+        hour: 12,
+    };
+
+    fn level(number: u32, method: u32, ground: Option<&str>, paydays: u8) -> LevelRecord {
+        LevelRecord {
+            number,
+            method,
+            ground: ground.map(str::to_owned),
+            paydays,
+        }
+    }
+
+    /// The fixture's farm with exactly these records: its counts, level total, sums and employment follow them.
+    fn farm_with(rules: &Rules, state: &mut EconomyState, records: Vec<LevelRecord>) {
+        let farm = &mut state.places[0].buildings[0];
+        let definition = rules.buildings.iter().find(|b| b.id == "farm").unwrap();
+        farm.levels = u32::try_from(records.len()).unwrap();
+        farm.method_levels = vec![0; definition.methods.len()];
+        for record in &records {
+            farm.method_levels[record.method as usize] += 1;
+        }
+        farm.level_records = records;
+        (farm.method_suitability, farm.herd_grazing_sums) =
+            derive_level_sums(rules, definition, &farm.level_records).unwrap();
+        farm.employment[0].workers =
+            u64::from(farm.levels) * u64::from(definition.workers_per_level);
+    }
+
+    /// The farm's oats numerator for one payday on these records (its quality is the reference, so no factor remains).
+    fn oats_numerator(
+        rules: &Rules,
+        records: Vec<LevelRecord>,
+        date: Date,
+    ) -> (u128, EconomyState) {
+        let mut state = shipped_production_fixture(rules);
+        farm_with(rules, &mut state, records);
+        let oats = good_at(rules, "oats");
+        let before = state.clone();
+        let ledger = run_monthly_production(rules, &mut state, date).unwrap();
+        let positions = u128::from(state.places[0].buildings[0].levels) * 10;
+        let carry = |s: &EconomyState| s.places[0].buildings[0].production_carries[0][oats];
+        let denominator = positions * 12_000_000_000;
+        let numerator =
+            u128::from(ledger.produced[oats]) * denominator + carry(&state) - carry(&before);
+        (numerator, state)
+    }
+
+    #[test]
+    fn a_building_derives_its_sums_from_levels_on_mixed_ground() {
+        let rules = level_rules();
+        let farm = rules.buildings.iter().find(|b| b.id == "farm").unwrap();
+        let index = |id: &str| {
+            u32::try_from(farm.methods.iter().position(|m| m.id == id).unwrap()).unwrap()
+        };
+        let (field, sea, wood, turf) = (
+            index("mixed_farming"),
+            index("coastal_subsistence"),
+            index("wood_focus"),
+            index("turf_cutting"),
+        );
+        // Field levels on pasture, on forest ground and on bog ground; a wood level on forest; a turf level on bog; one at sea.
+        let records = vec![
+            level(0, field, Some("pasture"), 13),
+            level(1, field, Some("forest"), 13),
+            level(2, field, Some("bog"), 13),
+            level(3, wood, Some("forest"), 13),
+            level(4, turf, Some("bog"), 13),
+            level(5, sea, None, 13),
+        ];
+        let (suitability, grazing) = derive_level_sums(&rules, farm, &records).unwrap();
+        let crops = |terrain: &str| u64::from(rules.suitability[terrain]["crops"]);
+        let oats = good_at(&rules, "oats");
+        // The field's oats are the crops of each level's own ground, added up.
+        assert_eq!(
+            suitability[field as usize][oats],
+            1000 + crops("forest") + crops("bog")
+        );
+        assert_eq!(
+            suitability[wood as usize][good_at(&rules, "hardwood")],
+            u64::from(rules.suitability["forest"]["hardwood"])
+        );
+        assert_eq!(
+            suitability[turf as usize][good_at(&rules, "peat")],
+            u64::from(rules.suitability["bog"]["peat"])
+        );
+        assert_eq!(suitability[sea as usize][good_at(&rules, "fish")], 1000);
+        // Every level that stands on ground, the wood and the turf level among them, adds its ground's grazing; the sea level none.
+        let species = |animal: &str| {
+            rules
+                .herd_species
+                .iter()
+                .position(|s| s.animal == animal)
+                .unwrap()
+        };
+        for (animal, expected) in [
+            ("cattle", 1000 + 300 + 400 + 300 + 400),
+            ("pigs", 400 + 1000 + 200 + 1000 + 200),
+        ] {
+            assert_eq!(grazing[species(animal)], expected, "{animal}");
+        }
+        let without_sea = derive_level_sums(&rules, farm, &records[..5]).unwrap().1;
+        assert_eq!(grazing, without_sea, "a sea level adds no grazing");
+    }
+
+    #[test]
+    fn a_started_building_keeps_a_record_for_each_level_in_order_and_all_are_mature() {
+        let rules = shipped_rules();
+        let land = LandCounts {
+            land_cells: BTreeMap::from([
+                ("pasture".to_owned(), 400),
+                ("forest".to_owned(), 400),
+                ("bog".to_owned(), 400),
+            ]),
+            fertility_pm: BTreeMap::from([
+                ("pasture".to_owned(), 400_000),
+                ("forest".to_owned(), 400_000),
+                ("bog".to_owned(), 400_000),
+            ]),
+            fertile_cells: 1200,
+            fertile_cells_by_terrain: BTreeMap::new(),
+            sea: 400,
+        };
+        let data = ScenarioEconomy {
+            defaults: BTreeMap::from([(
+                "ringfort".to_owned(),
+                BTreeMap::from([(
+                    "1".to_owned(),
+                    StartDefaults {
+                        peasants: 100,
+                        monks: 0,
+                        labourers: 0,
+                        farm_levels: 12,
+                        holdings_levels: 0,
+                        storehouse_levels: 0,
+                        pop_stock: BTreeMap::from([("oats".to_owned(), 3)]),
+                        building_stock: BTreeMap::from([("oats".to_owned(), 2)]),
+                    },
+                )]),
+            )]),
+            places: BTreeMap::from([(
+                "fort".to_owned(),
+                StartOverride {
+                    culture: Some("ulaid".to_owned()),
+                    religion: Some("christianity".to_owned()),
+                    monk_religion: Some("christianity".to_owned()),
+                    ..StartOverride::default()
+                },
+            )]),
+            nobles: BTreeMap::new(),
+        };
+        let (state, _) = starting_state(
+            &rules,
+            &data,
+            &[StartLocation {
+                id: "fort".to_owned(),
+                kind: "ringfort".to_owned(),
+                size: 1,
+                land,
+            }],
+            9,
+        )
+        .unwrap();
+        let farm = state.places[0]
+            .buildings
+            .iter()
+            .find(|b| b.kind == "farm")
+            .unwrap();
+        let definition = rules.buildings.iter().find(|b| b.id == "farm").unwrap();
+        assert_eq!(farm.level_records.len(), farm.levels as usize);
+        assert!(farm.levels > 0);
+        for (number, record) in farm.level_records.iter().enumerate() {
+            assert_eq!(record.number as usize, number);
+            assert_eq!(record.paydays, MATURE_PAYDAYS);
+            let method = &definition.methods[record.method as usize];
+            let fits = match method.resource.as_str() {
+                "usable_land" => record
+                    .ground
+                    .as_deref()
+                    .is_some_and(|g| rules.terrain_order.iter().any(|t| t == g)),
+                "sea" => record.ground.is_none(),
+                other => record.ground.as_deref() == Some(other),
+            };
+            assert!(fits, "{record:?}");
+        }
+        // The counts are the records' counts, and the sums are the records' own.
+        let mut counts = vec![0; definition.methods.len()];
+        for record in &farm.level_records {
+            counts[record.method as usize] += 1;
+        }
+        assert_eq!(counts, farm.method_levels);
+        let (suitability, grazing) =
+            derive_level_sums(&rules, definition, &farm.level_records).unwrap();
+        assert_eq!(suitability, farm.method_suitability);
+        assert_eq!(grazing, farm.herd_grazing_sums);
+        validate_level_records(&rules, &BTreeMap::new(), &state).unwrap();
+    }
+
+    #[test]
+    fn a_level_with_two_paydays_makes_fourteen_twenty_fourths_of_two_mature_levels() {
+        let rules = level_rules();
+        let mature = |n, p| level(n, 0, Some("pasture"), p);
+        let (both, _) = oats_numerator(&rules, vec![mature(0, 13), mature(1, 13)], SEPTEMBER_DAY);
+        let (young, state) =
+            oats_numerator(&rules, vec![mature(0, 13), mature(1, 2)], SEPTEMBER_DAY);
+        assert!(both > 0);
+        assert_eq!(young * 24, both * 14, "to the unit and the carry");
+        let building = &state.places[0].buildings[0];
+        assert_eq!(
+            building
+                .level_records
+                .iter()
+                .map(|r| r.paydays)
+                .collect::<Vec<_>>(),
+            [13, 3]
+        );
+    }
+
+    #[test]
+    fn each_levels_suitability_is_weighted_by_its_own_share_not_averaged() {
+        let rules = level_rules();
+        let (base, _) = oats_numerator(
+            &rules,
+            vec![
+                level(0, 0, Some("pasture"), 13),
+                level(1, 0, Some("pasture"), 13),
+            ],
+            SEPTEMBER_DAY,
+        );
+        // Oats are 1,000 on pasture (the fixture's flat ground) and 200 on marsh: the weighted sums are literals.
+        assert_eq!(rules.suitability["marsh"]["crops"], 200);
+        let (good_then_poor, _) = oats_numerator(
+            &rules,
+            vec![
+                level(0, 0, Some("pasture"), 13),
+                level(1, 0, Some("marsh"), 2),
+            ],
+            SEPTEMBER_DAY,
+        );
+        let (poor_then_good, _) = oats_numerator(
+            &rules,
+            vec![
+                level(0, 0, Some("marsh"), 13),
+                level(1, 0, Some("pasture"), 2),
+            ],
+            SEPTEMBER_DAY,
+        );
+        // Two mature levels on pasture weigh 2 × 12 × 1,000 = 24,000.
+        assert_eq!(good_then_poor * 24_000, base * 12_400);
+        assert_eq!(poor_then_good * 24_000, base * 4_400);
+        // The product of the two averages (600 per level, 7 twelfths per level, two levels) would be 8,400 for both.
+        assert_ne!(good_then_poor, poor_then_good);
+    }
+
+    fn two_year_end_rules() -> Rules {
+        let mut rules = level_rules();
+        rules.seasons.insert(
+            "grain".to_owned(),
+            vec![500, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 500],
+        );
+        rules
+    }
+
+    #[test]
+    fn two_paydays_in_a_row_pay_by_the_count_and_the_stored_number_follows() {
+        let rules = two_year_end_rules();
+        let oats = good_at(&rules, "oats");
+        let run = |paydays: u8| {
+            let mut state = shipped_production_fixture(&rules);
+            farm_with(
+                &rules,
+                &mut state,
+                vec![level(0, 0, Some("pasture"), paydays)],
+            );
+            let mut paid = Vec::new();
+            for (year, month) in [(768, 12), (769, 1)] {
+                let before = state.clone();
+                let ledger = run_monthly_production(
+                    &rules,
+                    &mut state,
+                    Date {
+                        year,
+                        month,
+                        day: 1,
+                        hour: 12,
+                    },
+                )
+                .unwrap();
+                let building = &state.places[0].buildings[0];
+                let carry = |s: &EconomyState| s.places[0].buildings[0].production_carries[0][oats];
+                let denominator = 10_u128 * 12_000_000_000;
+                paid.push((
+                    u128::from(ledger.produced[oats]) * denominator + carry(&state)
+                        - carry(&before),
+                    building.level_records[0].paydays,
+                ));
+            }
+            paid
+        };
+        // A whole payday of a mature level: twelve twelfths. Everything else is counted against it.
+        let whole = run(12)[0].0;
+        assert!(whole > 0);
+        for (paydays, twelfths, after) in [
+            (2, [2, 3], [3, 4]),
+            (0, [0, 1], [1, 2]),
+            (12, [12, 12], [13, 13]),
+            (13, [12, 12], [13, 13]),
+        ] {
+            let paid = run(paydays);
+            assert_eq!(
+                paid[0].0 * 12,
+                whole * twelfths[0],
+                "paydays {paydays}, December"
+            );
+            assert_eq!(
+                paid[1].0 * 12,
+                whole * twelfths[1],
+                "paydays {paydays}, January"
+            );
+            assert_eq!([paid[0].1, paid[1].1], after, "paydays {paydays}");
+        }
+    }
+
+    #[test]
+    fn herd_products_do_not_depend_on_paydays() {
+        let rules = two_year_end_rules();
+        let run = |paydays: u8| {
+            let mut state = shipped_production_fixture(&rules);
+            farm_with(
+                &rules,
+                &mut state,
+                vec![level(0, 0, Some("pasture"), paydays)],
+            );
+            let ledger = run_monthly_production(&rules, &mut state, SEPTEMBER_DAY).unwrap();
+            let farm = state.places[0].buildings[0].clone();
+            (
+                ledger.herd_births,
+                ledger.herd_deaths,
+                ledger.herd_slaughter,
+                farm.herds,
+                farm.herd_product_carries,
+            )
+        };
+        assert_eq!(run(0), run(13));
+        assert_eq!(run(2), run(13));
+    }
+
+    #[test]
+    fn a_carry_wider_than_64_bits_is_kept_exactly_for_a_year() {
+        let mut rules = level_rules();
+        rules.fertility_reference_pm = 999;
+        rules.seasons.insert(
+            "grain".to_owned(),
+            vec![0, 0, 0, 0, 0, 0, 0, 0, 1000, 0, 0, 0],
+        );
+        let farm = rules.buildings.iter_mut().find(|b| b.id == "farm").unwrap();
+        farm.workers_per_level = 2000;
+        farm.penalty_pm = 0;
+        farm.methods[0].annual_output = BTreeMap::from([("oats".to_owned(), 3000)]);
+        let oats = good_at(&rules, "oats");
+        flatten_pasture(&mut rules);
+        let mut state = shipped_production_fixture(&rules);
+        let records: Vec<_> = (0..1000)
+            .map(|n| level(n, 0, Some("pasture"), 13))
+            .collect();
+        farm_with(&rules, &mut state, records);
+        let farm = &mut state.places[0].buildings[0];
+        farm.herds.clear();
+        farm.herd_birth_carries.clear();
+        farm.herd_death_carries.clear();
+        farm.employment[0].workers = 1;
+        let quality = BTreeMap::from([("fixture".to_owned(), 550)]);
+        let run = |year, month, state: &mut EconomyState| {
+            let ledger = run_monthly_production_with_quality(
+                &rules,
+                state,
+                Date {
+                    year,
+                    month,
+                    day: 1,
+                    hour: 12,
+                },
+                &quality,
+            )
+            .unwrap();
+            (
+                ledger.produced[oats],
+                state.places[0].buildings[0].production_carries[0][oats],
+            )
+        };
+        // The month's share is 1,000: the output is nothing, and the carry is twelve times the old one, past 2^64.
+        let first = run(768, 9, &mut state);
+        assert_eq!(first, (0, 19_800_000_000_000_000_000));
+        assert!(first.1 > u128::from(u64::MAX));
+        // The wide carry is a good record: below its denominator (positions times twelve thousand million times 999).
+        validate_level_records(&rules, &quality, &state).unwrap();
+        for month in 10..=12 {
+            assert_eq!(
+                run(768, month, &mut state),
+                (0, 19_800_000_000_000_000_000),
+                "{month}"
+            );
+        }
+        for month in 1..=8 {
+            assert_eq!(
+                run(769, month, &mut state),
+                (0, 19_800_000_000_000_000_000),
+                "{month}"
+            );
+        }
+        // A year on, at the same month: one unit, and the rest is kept whole.
+        assert_eq!(run(769, 9, &mut state), (1, 15_624_000_000_000_000_000));
+        // And a save keeps it exactly.
+        let bytes = state.to_bytes().unwrap();
+        assert_eq!(EconomyState::from_bytes(&bytes).unwrap(), state);
+    }
+
+    #[test]
+    fn a_mature_payday_the_old_units_held_is_paid_in_full_though_its_scaled_numerator_passes_128_bits()
+     {
+        // 100 mature levels of 65,535 positions, fully staffed, in a September share of 1,000 at fertility 550 over 999: the build
+        // before CK-406 paid 5,505,505,505,505,505,505 oats and kept a carry. Twelve times the numerator passes u128::MAX, but the
+        // quotient and the scaled remainder fit, and they are paid and kept.
+        let mut rules = level_rules();
+        rules.fertility_reference_pm = 999;
+        rules.seasons.insert(
+            "grain".to_owned(),
+            vec![0, 0, 0, 0, 0, 0, 0, 0, 1000, 0, 0, 0],
+        );
+        let farm = rules.buildings.iter_mut().find(|b| b.id == "farm").unwrap();
+        farm.workers_per_level = 65_535;
+        farm.penalty_pm = 0;
+        farm.methods[0].annual_output =
+            BTreeMap::from([("oats".to_owned(), 100_000_000_000_000_000)]);
+        let oats = good_at(&rules, "oats");
+        flatten_pasture(&mut rules);
+        let mut state = shipped_production_fixture(&rules);
+        farm_with(
+            &rules,
+            &mut state,
+            (0..100).map(|n| level(n, 0, Some("pasture"), 13)).collect(),
+        );
+        let farm = &mut state.places[0].buildings[0];
+        farm.herds.clear();
+        farm.herd_birth_carries.clear();
+        farm.herd_death_carries.clear();
+        let quality = BTreeMap::from([("fixture".to_owned(), 550)]);
+        let ledger = run_monthly_production_with_quality(
+            &rules,
+            &mut state,
+            Date {
+                year: 768,
+                month: 9,
+                day: 1,
+                hour: 12,
+            },
+            &quality,
+        )
+        .unwrap();
+        assert_eq!(ledger.produced[oats], 5_505_505_505_505_505_505);
+        assert_eq!(
+            state.places[0].buildings[0].production_carries[0][oats],
+            39_714_210_000_000_000_000
+        );
+        validate_level_records(&rules, &quality, &state).unwrap();
+    }
+
+    #[test]
+    fn a_building_without_levels_has_no_carries_and_the_step_passes_it() {
+        let rules = level_rules();
+        let mut state = shipped_production_fixture(&rules);
+        farm_with(&rules, &mut state, Vec::new());
+        let farm = &mut state.places[0].buildings[0];
+        farm.production_carries.clear();
+        farm.method_suitability.clear();
+        farm.herds.clear();
+        farm.herd_birth_carries.clear();
+        farm.herd_death_carries.clear();
+        farm.herd_grazing_sums.clear();
+        validate_level_records(&rules, &BTreeMap::new(), &state).unwrap();
+        run_monthly_production(&rules, &mut state, SEPTEMBER_DAY).unwrap();
+        assert!(state.places[0].buildings[0].production_carries.is_empty());
+        // The same save with one carry above nothing is refused, naming the building, the method and the good.
+        let farm = &mut state.places[0].buildings[0];
+        farm.production_carries = vec![vec![0; rules.goods.len()]; 4];
+        farm.production_carries[0][good_at(&rules, "oats")] = 1;
+        let error = validate_level_records(&rules, &BTreeMap::new(), &state).unwrap_err();
+        assert!(
+            error.contains("fixture")
+                && error.contains("farm")
+                && error.contains("mixed_farming")
+                && error.contains("oats"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn each_fault_of_a_saved_level_record_is_refused_naming_the_building_and_the_level() {
+        let rules = level_rules();
+        let mut state = shipped_production_fixture(&rules);
+        let records = vec![
+            level(0, 0, Some("pasture"), 13),
+            level(1, 0, Some("forest"), 13),
+            level(2, 0, Some("bog"), 13),
+            level(3, 2, Some("forest"), 13),
+            level(4, 3, Some("bog"), 13),
+            level(5, 1, None, 13),
+        ];
+        farm_with(&rules, &mut state, records);
+        validate_level_records(&rules, &BTreeMap::new(), &state)
+            .expect("land levels on forest and bog ground are good records");
+        let refused = |change: &dyn Fn(&mut BuildingState), needle: &str| {
+            let mut bad = state.clone();
+            change(&mut bad.places[0].buildings[0]);
+            let error = validate_level_records(&rules, &BTreeMap::new(), &bad).unwrap_err();
+            assert!(error.contains("place fixture building farm"), "{error}");
+            assert!(error.contains(needle), "{error}");
+        };
+        refused(
+            &|b| b.level_records[0].method = 9,
+            "level 0: method 9 is not one of the building's",
+        );
+        refused(
+            &|b| b.level_records[0].ground = None,
+            "level 0: ground (none) does not fit",
+        );
+        refused(
+            &|b| b.level_records[0].ground = Some("sea".into()),
+            "level 0: ground sea does not fit",
+        );
+        refused(
+            &|b| b.level_records[3].ground = Some("bog".into()),
+            "level 3: ground bog does not fit",
+        );
+        refused(
+            &|b| b.level_records[4].ground = Some("forest".into()),
+            "level 4: ground forest does not fit",
+        );
+        refused(
+            &|b| b.level_records[5].ground = Some("pasture".into()),
+            "level 5: ground pasture does not fit",
+        );
+        refused(
+            &|b| b.level_records[2].paydays = 14,
+            "level 2: 14 completed paydays",
+        );
+        refused(
+            &|b| b.level_records[2].number = 1,
+            "the number is used twice",
+        );
+        refused(
+            &|b| b.level_records[2].number = 6,
+            "level 6: the number is not below",
+        );
+        refused(
+            &|b| {
+                b.level_records.pop();
+            },
+            "5 level records for 6 levels",
+        );
+        refused(&|b| b.method_levels[0] = 4, "the level records count");
+        refused(
+            &|b| b.production_carries[0][0] = u128::MAX,
+            "is not below its denominator",
+        );
+        // The values in order are the derived ones, but a value has moved from one method's row to the next one's.
+        refused(
+            &|b| {
+                let moved = b.method_suitability[0].pop().unwrap();
+                b.method_suitability[1].insert(0, moved);
+            },
+            "the saved suitability sums are not those of the level records",
+        );
+    }
+
+    // ---------------------------------------------------------------- CK-406: two years of the real start, day by day
+
+    /// A production carry's unit against the build before levels were records: twelve times finer from CK-406 on.
+    const CARRY_UNIT: u128 = 12;
+
+    /// The real start of one place on mixed ground, with its farm, holdings, demesne and storehouse, and its pops partly staffed.
+    fn levels_witness_state(rules: &Rules) -> EconomyState {
+        let data = ScenarioEconomy {
+            defaults: BTreeMap::from([(
+                "ringfort".to_owned(),
+                BTreeMap::from([(
+                    "1".to_owned(),
+                    StartDefaults {
+                        peasants: 1500,
+                        monks: 24,
+                        labourers: 0,
+                        farm_levels: 12,
+                        holdings_levels: 6,
+                        storehouse_levels: 3,
+                        pop_stock: BTreeMap::from([
+                            ("oats".to_owned(), 30),
+                            ("dairy".to_owned(), 4),
+                        ]),
+                        building_stock: BTreeMap::from([("oats".to_owned(), 20)]),
+                    },
+                )]),
+            )]),
+            places: BTreeMap::from([(
+                "fort".to_owned(),
+                StartOverride {
+                    culture: Some("ulaid".to_owned()),
+                    religion: Some("christianity".to_owned()),
+                    monk_religion: Some("christianity".to_owned()),
+                    ..StartOverride::default()
+                },
+            )]),
+            nobles: BTreeMap::from([(
+                "fort".to_owned(),
+                NobleStart {
+                    culture: "ulaid".to_owned(),
+                    religion: "christianity".to_owned(),
+                    people: 40,
+                    demesne_levels: 4,
+                    labourers: 40,
+                },
+            )]),
+        };
+        let cells = |terrain: &str| (terrain.to_owned(), 300_u32);
+        let fertility = |terrain: &str| (terrain.to_owned(), 300_000_u64);
+        let (mut state, _) = starting_state(
+            rules,
+            &data,
+            &[StartLocation {
+                id: "fort".to_owned(),
+                kind: "ringfort".to_owned(),
+                size: 1,
+                land: LandCounts {
+                    land_cells: BTreeMap::from([cells("pasture"), cells("forest"), cells("bog")]),
+                    fertility_pm: BTreeMap::from([
+                        fertility("pasture"),
+                        fertility("forest"),
+                        fertility("bog"),
+                    ]),
+                    fertile_cells: 900,
+                    fertile_cells_by_terrain: BTreeMap::new(),
+                    sea: 300,
+                },
+            }],
+            9,
+        )
+        .unwrap();
+        // Partly staffed: every building has half of the workers its start gave it.
+        for place in &mut state.places {
+            for (index, building) in place.buildings.iter_mut().enumerate() {
+                for (slot, employment) in building.employment.iter_mut().enumerate() {
+                    employment.workers /= 2;
+                    place.pops[slot].employment[index].workers = employment.workers;
+                }
+            }
+        }
+        state
+    }
+
+    /// A building with none of its levels, so that a month's production is one other building's alone.
+    fn clear_levels(building: &mut BuildingState) {
+        building.method_levels.fill(0);
+        building.level_records.clear();
+    }
+
+    /// Each day of two years, as a digest of everything the daily economy changes: prices, stores, herds, wages, staffing and
+    /// the production carries in the old unit. The recording of the build before CK-406 is in `levels_daily_accepted.txt`.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "The witness keeps its wage units and its digest of every quantity in one literal pass over two years."
+    )]
+    fn levels_two_year_trace() -> String {
+        use std::fmt::Write as _;
+
+        let rules = shipped_rules();
+        let mut state = levels_witness_state(&rules);
+        let mut trace = String::new();
+        let mut any_carry = false;
+        for year in 768..=769 {
+            for month in 1..=12 {
+                for day in 1..=days_in_month(year, month).unwrap() {
+                    let date = Date {
+                        year,
+                        month,
+                        day,
+                        hour: 12,
+                    };
+                    // The in-kind units each producing building's payday will share (the way the herd trace works them out): the
+                    // month's output of that building alone, less the overhead, with the wage carries and the pay carries.
+                    let mut wage_units: Vec<Vec<u64>> = Vec::new();
+                    if day == 1 {
+                        for index in 0..state.places[0].buildings.len() {
+                            let building = &state.places[0].buildings[index];
+                            let definition = rules
+                                .buildings
+                                .iter()
+                                .find(|b| b.id == building.kind)
+                                .unwrap();
+                            if definition.methods.is_empty() {
+                                continue;
+                            }
+                            let mut isolated = state.clone();
+                            for (other, building) in
+                                isolated.places[0].buildings.iter_mut().enumerate()
+                            {
+                                if other != index {
+                                    clear_levels(building);
+                                    building.herds.clear();
+                                    building.herd_birth_carries.clear();
+                                    building.herd_death_carries.clear();
+                                    building.herd_grazing_sums.clear();
+                                }
+                            }
+                            let output = run_monthly_production(&rules, &mut isolated, date)
+                                .unwrap()
+                                .produced;
+                            let unstaffed = building.employment.iter().all(|e| e.workers == 0);
+                            wage_units.push(
+                                output
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(good, amount)| {
+                                        if unstaffed {
+                                            0
+                                        } else {
+                                            (amount
+                                                * u64::from(1000 - definition.overhead_pm)
+                                                * 1000
+                                                + building.wage_carries[good])
+                                                / 1_000_000
+                                                + building.pay_carries[good]
+                                        }
+                                    })
+                                    .collect(),
+                            );
+                        }
+                    }
+                    let ledger = run_daily_economy(&rules, &mut state, date).unwrap();
+                    let place = &state.places[0];
+                    let mut text = format!(
+                        "{:?} {:?} {wage_units:?}",
+                        place.prices_milli, ledger.produced
+                    );
+                    for building in &place.buildings {
+                        let scaled: Vec<u128> = building
+                            .production_carries
+                            .iter()
+                            .flatten()
+                            .map(|carry| {
+                                let carry = *carry;
+                                assert_eq!(carry % CARRY_UNIT, 0);
+                                carry / CARRY_UNIT
+                            })
+                            .collect();
+                        any_carry |= scaled.iter().any(|carry| *carry > 0);
+                        write!(
+                            text,
+                            " {} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?}",
+                            building.kind,
+                            building.stock,
+                            building.herds,
+                            building.wage_carries,
+                            building.pay_carries,
+                            building.wage_history,
+                            building.employment,
+                            building.herd_product_carries,
+                            scaled
+                        )
+                        .unwrap();
+                    }
+                    for pop in &place.pops {
+                        write!(
+                            text,
+                            " {} {} {} {:?} {:?}",
+                            pop.kind, pop.workers, pop.dependents, pop.stock, pop.employment
+                        )
+                        .unwrap();
+                    }
+                    let digest = text.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+                        (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+                    });
+                    writeln!(trace, "{year}-{month:02}-{day:02} {digest:016x}").unwrap();
+                }
+            }
+        }
+        assert!(
+            any_carry,
+            "the witness has production carries above nothing"
+        );
+        trace
+    }
+
+    #[test]
+    fn the_witness_start_has_field_wood_turf_and_sea_levels_partly_staffed() {
+        let rules = shipped_rules();
+        let state = levels_witness_state(&rules);
+        let definition = rules.buildings.iter().find(|b| b.id == "farm").unwrap();
+        let place = &state.places[0];
+        let farm = place.buildings.iter().find(|b| b.kind == "farm").unwrap();
+        let used = |resource: &str| {
+            definition
+                .methods
+                .iter()
+                .zip(&farm.method_levels)
+                .any(|(method, levels)| method.resource == resource && *levels > 0)
+        };
+        assert!(used("usable_land") && used("sea") && used("forest") && used("bog"));
+    }
+
+    #[test]
+    fn two_years_of_the_real_start_are_day_for_day_the_build_before_levels_were_records() {
+        let trace = levels_two_year_trace();
+        assert_eq!(trace, include_str!("../tests/levels_daily_accepted.txt"));
     }
 }
 

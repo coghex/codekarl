@@ -13,6 +13,12 @@ fn integers_are_little_endian_at_their_declared_width() {
     round_trip(&0x1234_u16, &[0x34, 0x12]);
     round_trip(&0x1234_5678_u32, &[0x78, 0x56, 0x34, 0x12]);
     round_trip(&0x0102_0304_0506_0708_u64, &[8, 7, 6, 5, 4, 3, 2, 1]);
+    round_trip(
+        &0x0102_0304_0506_0708_090a_0b0c_0d0e_0f10_u128,
+        &[
+            0x10, 0x0f, 0x0e, 0x0d, 0x0c, 0x0b, 0x0a, 0x09, 8, 7, 6, 5, 4, 3, 2, 1,
+        ],
+    );
     round_trip(&-2_i8, &[0xfe]);
     round_trip(&-2_i16, &[0xfe, 0xff]);
     round_trip(&-2_i32, &[0xfe, 0xff, 0xff, 0xff]);

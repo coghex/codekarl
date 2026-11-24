@@ -399,6 +399,131 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
+    /// A running digest of everything the daily economy changes: prices, stores, herds, wages, staffing, the product carries and
+    /// the production carries in the old unit, and every pop's numbers and stores.
+    struct Digest(u64);
+
+    impl std::fmt::Write for Digest {
+        fn write_str(&mut self, text: &str) -> std::fmt::Result {
+            for byte in text.bytes() {
+                self.0 = (self.0 ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+            }
+            Ok(())
+        }
+    }
+
+    /// Production carries come in twelfths of the old unit from CK-406 on.
+    const CARRY_UNIT: u128 = 12;
+
+    fn state_digest(state: &EconomyState) -> u64 {
+        let mut digest = Digest(0xcbf2_9ce4_8422_2325);
+        for place in &state.places {
+            write!(digest, "{} {:?}", place.id, place.prices_milli).unwrap();
+            for building in &place.buildings {
+                let scaled: Vec<u128> = building
+                    .production_carries
+                    .iter()
+                    .flatten()
+                    .map(|carry| {
+                        let carry = *carry;
+                        assert_eq!(carry % CARRY_UNIT, 0);
+                        carry / CARRY_UNIT
+                    })
+                    .collect();
+                write!(
+                    digest,
+                    " {} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?}",
+                    building.kind,
+                    building.stock,
+                    building.herds,
+                    building.wage_carries,
+                    building.pay_carries,
+                    building.wage_history,
+                    building.employment,
+                    building.herd_product_carries,
+                    scaled
+                )
+                .unwrap();
+            }
+            for pop in &place.pops {
+                write!(
+                    digest,
+                    " {} {} {} {:?} {:?}",
+                    pop.kind, pop.workers, pop.dependents, pop.stock, pop.employment
+                )
+                .unwrap();
+            }
+        }
+        digest.0
+    }
+
+    /// The soak's own inputs for the shipped scenario, as `run` makes them: the start, the map's fertility, shelter and nearby
+    /// places, and the first noon the soak runs on.
+    #[test]
+    fn a_year_of_the_shipped_scenario_from_its_start_is_day_for_day_the_build_before_levels_were_records()
+     {
+        let scenario = PathBuf::from(DEFAULT_SCENARIO).canonicalize().unwrap();
+        let assets = scenario.parent().and_then(Path::parent).unwrap();
+        let map = ck_map::load_scenario(&scenario).unwrap();
+        let rules = Rules::load(assets.join("game/economy.toml")).unwrap();
+        let (state, _) = crate::game::economy::starting_economy(assets, &scenario, &map).unwrap();
+        let land_by_place = crate::game::economy::land_counts(&map, &rules.terrain_order).unwrap();
+        let quality_by_place = land_by_place
+            .iter()
+            .enumerate()
+            .map(|(index, land)| {
+                (
+                    map.locations[index].id.clone(),
+                    ck_economy::mean_fertility(land).unwrap(),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let shelter_by_place = land_by_place
+            .iter()
+            .enumerate()
+            .map(|(index, land)| {
+                (
+                    map.locations[index].id.clone(),
+                    ck_economy::natural_shelter(&rules, land).unwrap(),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let nearby_by_place = crate::game::setup::nearby_places(
+            &map,
+            crate::game::setup::max_recruit_range_m(&rules),
+        );
+        let mut date = Date {
+            year: map.start.year,
+            month: map.start.month,
+            day: 1,
+            hour: 12,
+        };
+        if map.start.day > 1 {
+            advance_month(&mut date).unwrap();
+        }
+        // The state each day starts from, a year of them from the scenario's own start: production reads each place's mean
+        // fertility here, as the game's own scheduler gives it.
+        let mut lines = String::new();
+        let mut day = 0_u32;
+        simulate_with_supply(
+            &rules,
+            state,
+            date,
+            1,
+            1,
+            &quality_by_place,
+            &shelter_by_place,
+            &nearby_by_place,
+            |_, state| {
+                writeln!(lines, "{day} {:016x}", state_digest(state)).unwrap();
+                day += 1;
+            },
+        )
+        .unwrap();
+        assert!(day >= 365);
+        assert_eq!(lines, include_str!("economy_soak_year_accepted.txt"));
+    }
+
     #[test]
     fn fixed_seed_and_horizon_produce_byte_identical_csv() {
         let scenario = Path::new(env!("CARGO_MANIFEST_DIR"))
