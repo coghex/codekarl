@@ -5,8 +5,9 @@
 //! a swap spends the starter's. Nothing here is saved: spare, want and capacity are worked out afresh at each exchange.
 
 use crate::{
-    DataError, EconomyState, PlaceState, Rules, missing_data, pop_market_holding, pop_store_limits,
-    pop_target_units, receive_pop, volume_used,
+    DataError, EconomyState, PlaceState, Rules, building_market_holding, building_market_sells,
+    missing_data, mul_div_floor, pop_market_holding, pop_store_limits, pop_target_units,
+    receive_pop, volume_used,
 };
 
 /// Runs every place's exchange.
@@ -210,10 +211,228 @@ impl Book {
     /// Follows a made swap: the starter gave one good and received the other, the partner the other way about.
     fn settle(&mut self, trade: Trade) {
         let (give, get) = (u128::from(trade.give_units), u128::from(trade.get_units));
-        self.holding[trade.starter][trade.give_good] -= give;
+        if trade.starter_source == 0 {
+            self.holding[trade.starter][trade.give_good] -= give;
+        }
         self.holding[trade.starter][trade.get_good] += get;
         self.holding[trade.partner][trade.give_good] += give;
-        self.holding[trade.partner][trade.get_good] -= get;
+        if trade.partner_source == 0 {
+            self.holding[trade.partner][trade.get_good] -= get;
+        }
+    }
+}
+
+/// Building shares are fixed at the start of the exchange and only decrease.
+struct BuildingParts {
+    spare: Vec<Vec<Vec<u128>>>,
+    held: Vec<Vec<Vec<u128>>>,
+}
+
+impl BuildingParts {
+    fn new(rules: &Rules, place: &PlaceState) -> Result<Self, DataError> {
+        let sells = building_market_sells(rules, place)?;
+        let mut spare =
+            vec![vec![vec![0; rules.goods.len()]; place.pops.len()]; place.buildings.len()];
+        let mut held = spare.clone();
+        for (b, building) in place.buildings.iter().enumerate() {
+            let weights: Vec<_> = building.employment.iter().map(|job| job.owners).collect();
+            for good in 0..rules.goods.len() {
+                let amount = building_market_holding(rules, place, building, good)?;
+                let offer = if rules.goods[good].category_supplied("fuel", 1) > 0 {
+                    0
+                } else {
+                    sells[b][good]
+                };
+                let shares = wide_shares(offer, &weights)
+                    .map_err(|e| missing_data("swap.parts".to_owned(), e))?;
+                let holdings = wide_shares(amount, &weights)
+                    .map_err(|e| missing_data("swap.parts".to_owned(), e))?;
+                for pop in 0..place.pops.len() {
+                    spare[b][pop][good] = shares[pop];
+                    held[b][pop][good] = holdings[pop];
+                }
+            }
+        }
+        Ok(Self { spare, held })
+    }
+
+    fn source(&self, book: &Book, source: usize, pop: usize, good: usize) -> u128 {
+        if source == 0 {
+            book.position(pop, good).spare
+        } else {
+            self.spare[source - 1][pop][good]
+        }
+    }
+
+    fn total(&self, book: &Book, pop: usize, good: usize) -> u128 {
+        self.spare
+            .iter()
+            .fold(book.position(pop, good).spare, |sum, b| {
+                sum.saturating_add(b[pop][good])
+            })
+    }
+}
+
+/// Daily ceilings for scarce goods. Non-scarce goods have no ceiling.
+struct Shares {
+    scarce: Vec<bool>,
+    left: Vec<Vec<u128>>,
+    claimants: Vec<Vec<bool>>,
+    wealth: Vec<(u128, u128)>,
+}
+
+impl Shares {
+    fn eligible(book: &Book, parts: &BuildingParts, pop: usize, good: usize) -> bool {
+        book.position(pop, good).want > 0
+            && (0..book.holding.len()).any(|holder| {
+                holder != pop
+                    && parts.total(book, holder, good) > 0
+                    && (0..book.target[pop].len()).any(|payment| {
+                        payment != good
+                            && parts.total(book, pop, payment) > 0
+                            && book.position(holder, payment).want > 0
+                    })
+            })
+    }
+
+    fn new(book: &Book, parts: &BuildingParts, place: &PlaceState) -> Result<Self, DataError> {
+        let pops = place.pops.len();
+        let goods = place.prices_milli.len();
+        let overflow = || missing_data("swap.shares".to_owned(), "share or wealth overflow");
+        let mut wealth = Vec::with_capacity(pops);
+        for pop in 0..pops {
+            let mut value = 0_u128;
+            for good in 0..goods {
+                let mut held = pop_market_holding(place, pop, good)?;
+                for building in &parts.held {
+                    held = held.checked_add(building[pop][good]).ok_or_else(overflow)?;
+                }
+                value = held
+                    .checked_mul(u128::from(place.prices_milli[good]))
+                    .and_then(|v| value.checked_add(v))
+                    .ok_or_else(overflow)?;
+            }
+            let people = Exchange::people(place, pop)?;
+            wealth.push((value, u128::from(people.max(1))));
+        }
+        let mut result = Self {
+            scarce: vec![false; goods],
+            left: vec![vec![0; goods]; pops],
+            claimants: vec![vec![false; goods]; pops],
+            wealth,
+        };
+        for good in 0..goods {
+            let eligible: Vec<bool> = (0..pops)
+                .map(|p| Self::eligible(book, parts, p, good))
+                .collect();
+            let mut demand = 0_u128;
+            let mut supply = 0_u128;
+            for (p, &is_eligible) in eligible.iter().enumerate() {
+                if is_eligible {
+                    demand = demand
+                        .checked_add(book.position(p, good).want)
+                        .ok_or_else(overflow)?;
+                }
+                supply = supply
+                    .checked_add(parts.total(book, p, good))
+                    .ok_or_else(overflow)?;
+                result.claimants[p][good] = is_eligible;
+            }
+            if demand > supply {
+                result.scarce[good] = true;
+                result.allocate(book, good, &eligible, supply, demand)?;
+            }
+        }
+        Ok(result)
+    }
+
+    fn allocate(
+        &mut self,
+        book: &Book,
+        good: usize,
+        eligible: &[bool],
+        supply: u128,
+        demand: u128,
+    ) -> Result<(), DataError> {
+        let overflow = || missing_data("swap.shares".to_owned(), "share overflow");
+        let mut assigned = 0_u128;
+        for (p, &yes) in eligible.iter().enumerate() {
+            let want = book.position(p, good).want;
+            let share = if !yes {
+                0
+            } else if supply >= demand {
+                want
+            } else {
+                mul_div_floor(supply, want, demand).ok_or_else(overflow)?
+            };
+            self.left[p][good] = share;
+            assigned = assigned.checked_add(share).ok_or_else(overflow)?;
+        }
+        if supply < demand {
+            let mut order: Vec<usize> = (0..eligible.len()).filter(|&p| eligible[p]).collect();
+            order.sort_by(|&a, &b| {
+                let (av, ap) = self.wealth[a];
+                let (bv, bp) = self.wealth[b];
+                (bv / bp)
+                    .cmp(&(av / ap))
+                    .then_with(|| ((bv % bp) * ap).cmp(&((av % ap) * bp)))
+                    .then(a.cmp(&b))
+            });
+            let mut remain = supply - assigned;
+            for p in order {
+                if remain == 0 {
+                    break;
+                }
+                if self.left[p][good] < book.position(p, good).want {
+                    self.left[p][good] += 1;
+                    remain -= 1;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn second_pass(&mut self, book: &Book, parts: &BuildingParts) -> Result<(), DataError> {
+        let overflow = || missing_data("swap.shares".to_owned(), "second share overflow");
+        for good in 0..self.scarce.len() {
+            if !self.scarce[good] {
+                continue;
+            }
+            let eligible: Vec<bool> = (0..book.holding.len())
+                .map(|p| {
+                    self.claimants[p][good]
+                        && self.left[p][good] == 0
+                        && Self::eligible(book, parts, p, good)
+                })
+                .collect();
+            let mut demand = 0_u128;
+            let mut supply = 0_u128;
+            for (p, &yes) in eligible.iter().enumerate() {
+                if yes {
+                    demand = demand
+                        .checked_add(book.position(p, good).want)
+                        .ok_or_else(overflow)?;
+                }
+                supply = supply
+                    .checked_add(parts.total(book, p, good))
+                    .ok_or_else(overflow)?;
+            }
+            self.allocate(book, good, &eligible, supply, demand)?;
+        }
+        Ok(())
+    }
+
+    fn limit(&self, pop: usize, good: usize) -> u128 {
+        if self.scarce[good] {
+            self.left[pop][good]
+        } else {
+            u128::MAX
+        }
+    }
+    fn receive(&mut self, pop: usize, good: usize, units: u64) {
+        if self.scarce[good] {
+            self.left[pop][good] -= u128::from(units);
+        }
     }
 }
 
@@ -226,6 +445,8 @@ struct Trade {
     give_units: u64,
     get_good: usize,
     get_units: u64,
+    starter_source: usize,
+    partner_source: usize,
 }
 
 pub(crate) struct Exchange<'a> {
@@ -291,10 +512,45 @@ impl Exchange<'_> {
         Ok(())
     }
 
+    fn pay_source(
+        &self,
+        place: &mut PlaceState,
+        source: usize,
+        pop: usize,
+        good: usize,
+        units: u64,
+    ) -> Result<(), DataError> {
+        if source == 0 {
+            return self.pay(place, pop, good, units);
+        }
+        let building = &mut place.buildings[source - 1];
+        if let Some(accounts) = &mut building.storehouse_accounts {
+            accounts.communal[good] = accounts.communal[good]
+                .checked_sub(units)
+                .ok_or_else(|| missing_data("swap.parts".to_owned(), "communal stock underflow"))?;
+        }
+        building.stock[good] = building.stock[good]
+            .checked_sub(units)
+            .ok_or_else(|| missing_data("swap.parts".to_owned(), "building stock underflow"))?;
+        Ok(())
+    }
+
     /// Makes a swap: both loads leave their pops, and what each pop receives goes into its own store and nowhere else (rule 13).
     fn apply(&self, place: &mut PlaceState, trade: Trade) -> Result<(), DataError> {
-        self.pay(place, trade.starter, trade.give_good, trade.give_units)?;
-        self.pay(place, trade.partner, trade.get_good, trade.get_units)?;
+        self.pay_source(
+            place,
+            trade.starter_source,
+            trade.starter,
+            trade.give_good,
+            trade.give_units,
+        )?;
+        self.pay_source(
+            place,
+            trade.partner_source,
+            trade.partner,
+            trade.get_good,
+            trade.get_units,
+        )?;
         for (pop, good, units) in [
             (trade.starter, trade.get_good, trade.get_units),
             (trade.partner, trade.give_good, trade.give_units),
@@ -388,6 +644,7 @@ const fn gcd(mut left: u128, mut right: u128) -> u128 {
 /// Otherwise that payment is small (a payment of at least `1,000 / limit` always passes), so the payments below it are tried, largest
 /// first, each with the most it is worth, and the first that passes gives the receipt. A limit of nothing admits only pairs of equal
 /// worth, the multiples of one smallest pair.
+#[cfg(test)]
 pub(crate) fn best_pair(
     exchange: &Exchange<'_>,
     place: &PlaceState,
@@ -395,6 +652,31 @@ pub(crate) fn best_pair(
     [starter, partner]: [usize; 2],
     [give_good, get_good]: [usize; 2],
     capacity_left: u128,
+) -> Result<Option<(u64, u64)>, DataError> {
+    best_pair_capped(
+        exchange,
+        place,
+        book,
+        [starter, partner],
+        [give_good, get_good],
+        capacity_left,
+        [
+            book.position(starter, give_good).spare,
+            book.position(partner, get_good).spare,
+            u128::MAX,
+            u128::MAX,
+        ],
+    )
+}
+
+pub(crate) fn best_pair_capped(
+    exchange: &Exchange<'_>,
+    place: &PlaceState,
+    book: &Book,
+    [starter, partner]: [usize; 2],
+    [give_good, get_good]: [usize; 2],
+    capacity_left: u128,
+    [give_stock, get_stock, give_limit, get_limit]: [u128; 4],
 ) -> Result<Option<(u64, u64)>, DataError> {
     let rules = exchange.rules;
     let prices = Prices {
@@ -406,11 +688,11 @@ pub(crate) fn best_pair(
     let most_get = book
         .position(starter, get_good)
         .want
-        .min(book.position(partner, get_good).spare)
+        .min(get_stock)
+        .min(get_limit)
         .min(exchange.room(place, starter, get_good)?);
-    let most_give = book
-        .position(starter, give_good)
-        .spare
+    let most_give = give_stock
+        .min(give_limit)
         .min(book.position(partner, give_good).want)
         .min(exchange.room(place, partner, give_good)?);
     if most_get == 0 || most_give == 0 || prices.give_price == 0 || prices.get_price == 0 {
@@ -493,25 +775,30 @@ fn run_place_exchange(rules: &Rules, place: &mut PlaceState) -> Result<(), DataE
             .iter()
             .position(|building| building.storehouse_accounts.is_some()),
     };
-    for (starter, left) in capacity.iter_mut().enumerate() {
-        // A pop with no capacity has no turn (rule 8).
-        if *left == 0 {
-            continue;
+    let mut parts = BuildingParts::new(rules, place)?;
+    let mut shares = Shares::new(&book, &parts, place)?;
+    for pass in 0..2 {
+        if pass == 1 {
+            shares.second_pass(&book, &parts)?;
         }
-        for &get_good in &order {
-            // A hungry starter works only its wants for goods with a hunger value (rule 18).
-            if book.hungry[starter] && rules.goods[get_good].hunger_centi == 0 {
+        for (starter, left) in capacity.iter_mut().enumerate() {
+            if *left == 0 {
                 continue;
             }
-            let mut turn = Turn {
-                exchange: &exchange,
-                order: &order,
-                starter,
-                get_good,
-            };
-            turn.work(place, &mut book, left)?;
-            if *left == 0 {
-                break;
+            for &get_good in &order {
+                if book.hungry[starter] && rules.goods[get_good].hunger_centi == 0 {
+                    continue;
+                }
+                let mut turn = Turn {
+                    exchange: &exchange,
+                    order: &order,
+                    starter,
+                    get_good,
+                };
+                turn.work(place, &mut book, &mut parts, &mut shares, left, pass == 1)?;
+                if *left == 0 {
+                    break;
+                }
             }
         }
     }
@@ -532,49 +819,118 @@ impl Turn<'_> {
         &mut self,
         place: &mut PlaceState,
         book: &mut Book,
+        parts: &mut BuildingParts,
+        shares: &mut Shares,
         capacity: &mut u128,
+        second: bool,
     ) -> Result<(), DataError> {
         let rules = self.exchange.rules;
         for partner in 0..place.pops.len() {
-            if partner == self.starter || book.position(partner, self.get_good).spare == 0 {
+            if partner == self.starter || parts.total(book, partner, self.get_good) == 0 {
                 continue;
             }
             for &give_good in self.order {
-                // Until the want is met or the capacity is used up.
                 if *capacity == 0 || book.position(self.starter, self.get_good).want == 0 {
                     return Ok(());
                 }
                 if give_good == self.get_good
                     || book.position(partner, give_good).want == 0
-                    || book.position(self.starter, give_good).spare == 0
+                    || parts.total(book, self.starter, give_good) == 0
+                    || (second && !shares.scarce[give_good] && !shares.scarce[self.get_good])
                 {
                     continue;
                 }
-                let Some((give, get)) = best_pair(
-                    self.exchange,
-                    place,
-                    book,
-                    [self.starter, partner],
-                    [give_good, self.get_good],
-                    *capacity,
-                )?
-                else {
-                    continue;
-                };
-                let trade = Trade {
-                    starter: self.starter,
-                    partner,
-                    give_good,
-                    give_units: give,
-                    get_good: self.get_good,
-                    get_units: get,
-                };
-                self.exchange.apply(place, trade)?;
-                book.settle(trade);
-                *capacity -= u128::from(give) * u128::from(rules.goods[give_good].volume_ml)
-                    + u128::from(get) * u128::from(rules.goods[self.get_good].volume_ml);
+                for starter_source in 0..=place.buildings.len() {
+                    for partner_source in 0..=place.buildings.len() {
+                        let give_spare =
+                            parts.source(book, starter_source, self.starter, give_good);
+                        let get_spare = parts.source(book, partner_source, partner, self.get_good);
+                        let Some((give, get)) = best_pair_capped(
+                            self.exchange,
+                            place,
+                            book,
+                            [self.starter, partner],
+                            [give_good, self.get_good],
+                            *capacity,
+                            [
+                                give_spare,
+                                get_spare,
+                                shares.limit(partner, give_good),
+                                shares.limit(self.starter, self.get_good),
+                            ],
+                        )?
+                        else {
+                            continue;
+                        };
+                        let trade = Trade {
+                            starter: self.starter,
+                            partner,
+                            give_good,
+                            give_units: give,
+                            get_good: self.get_good,
+                            get_units: get,
+                            starter_source,
+                            partner_source,
+                        };
+                        self.exchange.apply(place, trade)?;
+                        book.settle(trade);
+                        if starter_source > 0 {
+                            parts.spare[starter_source - 1][self.starter][give_good] -=
+                                u128::from(give);
+                        }
+                        if partner_source > 0 {
+                            parts.spare[partner_source - 1][partner][self.get_good] -=
+                                u128::from(get);
+                        }
+                        shares.receive(partner, give_good, give);
+                        shares.receive(self.starter, self.get_good, get);
+                        *capacity -= u128::from(give)
+                            * u128::from(rules.goods[give_good].volume_ml)
+                            + u128::from(get) * u128::from(rules.goods[self.get_good].volume_ml);
+                    }
+                }
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod share_tests {
+    use super::*;
+    use crate::swap_tests;
+
+    #[test]
+    fn wealth_counts_personal_accounts_and_whole_building_holdings_once() {
+        let rules = swap_tests::rules();
+        let mut place = swap_tests::place(&rules, 2);
+        for pop in &mut place.pops {
+            pop.stock.fill(0);
+            pop.dependents = 0;
+        }
+        place.pops[0].workers = 2;
+        place.pops[1].workers = 3;
+        let fish = swap_tests::good(&rules, "fish");
+        let wood = swap_tests::good(&rules, "hardwood");
+        place.prices_milli.fill(1);
+        place.pops[0].stock[fish] = 10;
+        place.pops[0].stock[wood] = 7;
+        place.pops[1].stock[fish] = 20;
+        let house = swap_tests::storehouse(&rules, &mut place);
+        place.buildings[house].employment[0].owners = 2;
+        place.buildings[house].employment[1].owners = 1;
+        let accounts = place.buildings[house].storehouse_accounts.as_mut().unwrap();
+        accounts.pops[0][fish] = 5;
+        accounts.communal[fish] = 30;
+        accounts.communal[wood] = 9_000;
+        place.buildings[house].stock[fish] = 35;
+        place.buildings[house].stock[wood] = 9_000;
+        let book = Book::new(&rules, &place).unwrap();
+        let parts = BuildingParts::new(&rules, &place).unwrap();
+        let shares = Shares::new(&book, &parts, &place).unwrap();
+        assert!(building_market_sells(&rules, &place).unwrap()[house][wood] > 0);
+        assert_eq!(parts.total(&book, 0, wood), 0);
+        assert_eq!(parts.total(&book, 1, wood), 0);
+        assert_eq!(shares.wealth, [(6_042, 2), (3_030, 3)]);
     }
 }

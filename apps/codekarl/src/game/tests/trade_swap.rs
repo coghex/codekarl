@@ -279,3 +279,79 @@ fn the_noon_exchange_makes_one_capacity_cut_swap_and_a_save_at_eleven_or_thirtee
     run_to(&mut late, at(3, 13));
     assert_eq!(canonical(&late), after_second_noon);
 }
+
+#[test]
+fn a_building_payment_for_scarce_fish_survives_saves_around_noon() {
+    let rules = rules();
+    let mut economy = fort(&rules);
+    let place = &mut economy.places[0];
+    let oats = rules.goods.iter().position(|g| g.id == "oats").unwrap();
+    let fish = rules.goods.iter().position(|g| g.id == "fish").unwrap();
+    let peasants = place.pops.iter().position(|p| p.kind == "peasant").unwrap();
+    let nobles = place.pops.iter().position(|p| p.kind == "noble").unwrap();
+    let labourers = place
+        .pops
+        .iter()
+        .position(|p| p.kind == "labourer")
+        .unwrap();
+    let demesne = place
+        .buildings
+        .iter()
+        .position(|b| b.kind == "demesne")
+        .unwrap();
+    place.pops[nobles].stock[oats] = 0;
+    place.pops[labourers].stock[oats] = 400;
+    place.pops[peasants].stock[fish] = 1_300;
+    place.buildings[demesne].stock[oats] = 1_000;
+    let before = at(2, 0);
+    let mut unbroken = game(&rules, economy.clone(), before);
+    run_to(&mut unbroken, at(2, 11));
+    let eleven = canonical(&unbroken);
+    run_to(&mut unbroken, at(2, 13));
+    let thirteen = canonical(&unbroken);
+    let mut no_capacity = rules.clone();
+    for building in &mut no_capacity.buildings {
+        building.market_capacity_ml_per_level = 0;
+    }
+    let mut control = game(&no_capacity, economy.clone(), before);
+    run_to(&mut control, at(2, 13));
+    let actual = &unbroken.state().economy.places[0];
+    let idle = &control.state().economy.places[0];
+    let orders = actual.last_market_orders.as_ref().unwrap();
+    assert_eq!(orders.sell_units[fish], 100);
+    assert!(orders.buy_units[fish] > orders.sell_units[fish]);
+    let moved = (
+        i128::from(actual.buildings[demesne].stock[oats])
+            - i128::from(idle.buildings[demesne].stock[oats]),
+        i128::from(actual.pops[nobles].stock[fish]) - i128::from(idle.pops[nobles].stock[fish]),
+    );
+    assert_eq!(moved, (-4, 14));
+    let mut larger = rules.clone();
+    for building in &mut larger.buildings {
+        building.market_capacity_ml_per_level = 1_000_000_000;
+    }
+    let mut larger_turn = game(&larger, economy.clone(), before);
+    run_to(&mut larger_turn, at(2, 13));
+    let extra_fish = i128::from(larger_turn.state().economy.places[0].pops[nobles].stock[fish])
+        - i128::from(idle.pops[nobles].stock[fish]);
+    assert!(
+        extra_fish > moved.1,
+        "capacity must cut the swap short: {extra_fish}"
+    );
+    run_to(&mut unbroken, at(3, 13));
+    let next = canonical(&unbroken);
+    let mut early = game(&rules, economy.clone(), before);
+    run_to(&mut early, at(2, 11));
+    let mut early = reloaded(&rules, &early);
+    assert_eq!(canonical(&early), eleven);
+    run_to(&mut early, at(2, 13));
+    assert_eq!(canonical(&early), thirteen);
+    run_to(&mut early, at(3, 13));
+    assert_eq!(canonical(&early), next);
+    let mut late = game(&rules, economy, before);
+    run_to(&mut late, at(2, 13));
+    let mut late = reloaded(&rules, &late);
+    assert_eq!(canonical(&late), thirteen);
+    run_to(&mut late, at(3, 13));
+    assert_eq!(canonical(&late), next);
+}
