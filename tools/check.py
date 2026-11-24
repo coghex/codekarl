@@ -770,7 +770,7 @@ def cargo_test(selection: Sequence[str], after: Sequence[str] = ()) -> list[str]
 UNITTEST_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     # CK-351: the production drainage helper is deliberately stdlib-only so its valley-flow rule can
     # be checked whenever either the map scripts or this retained contract changes.
-    ("map", ("test_map_drainage",)),
+    ("map", ("test_map_drainage", "test_map_weather")),
     (
         "batch",
         (
@@ -834,7 +834,7 @@ def unittest_step(group: str, modules: Sequence[str]) -> Step:
         FAST,
         lambda: [
             [
-                sys.executable,
+                hub_tool("python") if module == "test_map_weather" else sys.executable,
                 "-m",
                 "unittest",
                 "discover",
@@ -901,11 +901,17 @@ UNITTEST_PATHS = {
     "batch": PYTHON_PATHS,
     "catalog": CATALOG_PATHS,
     # CK-351: edits to the production map scripts and the stdlib drainage contract select its retained tests.
-    "map": ("assets/map/", "tests/test_map_drainage.py"),
+    "map": (
+        "assets/map/",
+        "assets/game/weather.toml",
+        "tools/generate_weather.py",
+        "tests/test_map_drainage.py",
+        "tests/test_map_weather.py",
+    ),
     # `.rgignore` and `.ignore` are read by `test_rgignore` and copied into the real-toolchain workload;
     # `test_rgignore` also runs ripgrep over the real `docs/` tree. Registering it selects the test when a
     # code change is checked; documentation publication stays ungated (the docs lane runs no check).
-    "check": (*PYTHON_PATHS, ".rgignore", ".ignore", "docs/"),
+    "check": (*PYTHON_PATHS, ".rgignore", ".ignore", "docs/", "assets/game/weather.toml"),
     # This is a Python tooling test. Rust source changes run the unconditional Clippy floor; they do not
     # select a test group owned by the tools area.
     "lints": (*PYTHON_PATHS, "clippy.toml", "tests/test_rust_lints.py"),
@@ -1480,7 +1486,7 @@ STEPS = [
         ],
         description="The backend-neutral simulation core: the Julian calendar, the tick scheduler, command timing and the "
         "real-time clock under a fake time (no GPU or window).",
-        paths=("crates/sim/",),
+        paths=("crates/sim/", "assets/game/weather.toml"),
     ),
     # CK-225: the starting economy is backend-neutral and owns only its crate's unit and doc tests.
     Step(

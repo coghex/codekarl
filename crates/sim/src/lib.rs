@@ -13,6 +13,7 @@ mod random;
 mod save;
 mod scheduler;
 mod simulation;
+pub mod weather;
 
 pub use calendar::{
     CalendarError, Date, FIRST_YEAR, GameTime, LAST_YEAR, days_in_month, is_leap_year,

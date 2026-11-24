@@ -954,3 +954,20 @@ Seven island edits each paint one cell:
 | `island-inishmacsaint` | (418, 258) | lake |
 | `island-inis-patraic` | (640, 450) | sea |
 | `island-inishglora` | (102, 310) | sea |
+
+### CK-407 weather layers
+
+The climate derivation now also writes the seasonal half-range in tenths of a degree to
+`climate_half_range.png` and sea nearness in thousandths to `climate_sea_nearness.png`.
+Nearness uses the great-circle distance to the nearest sea cell centre inside the crop and a
+40 km exponential falloff. Lakes are excluded. `map.toml` records the warmest-month phase in
+hundredths. `--layers-only` reproduces these outputs without reapplying terrain edits or
+changing `edits.applied`; the five previously generated layers remain byte-identical to the
+CK-358 table above. The marker now records the digest of the changed `edits.toml`.
+
+| File | SHA-256 |
+|---|---|
+| `climate_half_range.png` | `224576955f4712bf00de431fd1d8b3fe0a6484956ef0c50436c6842790a37508` |
+| `climate_sea_nearness.png` | `dce77ac82fcab97fff8ccedf5ea88a6f91984ce51a012bd3de5bb8a452b2487f` |
+| `edits.toml` | `15fd58fbe5c90ebba0776e93a91e50923a9940942b59002ec8bcc1fcc10d7a47` |
+| `edits.applied` | `4181be74da8d511030af59baaf2a836c89c2036006d65dab0f2368a93ef7cc5e` |

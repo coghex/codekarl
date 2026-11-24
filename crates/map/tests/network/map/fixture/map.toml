@@ -4,11 +4,15 @@ cell_metres = 839.0
 origin = [22436, 14979]
 width = 14
 height = 10
+[climate]
+warmest_month_phase_hundredths = 650
 [layers]
 terrain = "terrain.png"
 fertility = "fertility.png"
 elevation = "elevation.png"
 climate_temperature = "climate_temperature.png"
+climate_half_range = "climate_half_range.png"
+climate_sea_nearness = "climate_sea_nearness.png"
 climate_gdd = "climate_gdd.png"
 climate_rainfall = "climate_rainfall.png"
 climate_glacier = "climate_glacier.png"

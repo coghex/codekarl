@@ -842,7 +842,7 @@ fn building_table(building: &BuildingView) -> ConfigValue {
 
 /// A place's view as the table `game.place` returns. Volumes are whole litres, prices are in thousandths of a value unit.
 pub(crate) fn place_table(place: &PlaceView) -> ConfigValue {
-    table([
+    let mut result = table([
         ("id", text(&place.id)),
         ("workers", integer(place.workers)),
         ("dependents", integer(place.dependents)),
@@ -933,7 +933,22 @@ pub(crate) fn place_table(place: &PlaceView) -> ConfigValue {
             "buildings",
             ConfigValue::Array(place.buildings.iter().map(building_table).collect()),
         ),
-    ])
+    ]);
+    add_temperature(&mut result, place.temperature);
+    result
+}
+
+fn add_temperature(result: &mut ConfigValue, temperature: Option<(i64, u8, i64)>) {
+    if let (Some((mean, month, expected)), ConfigValue::Table(fields)) = (temperature, result) {
+        fields.insert(
+            "temperature".to_owned(),
+            table([
+                ("mean", ConfigValue::Integer(mean)),
+                ("month", ConfigValue::Integer(i64::from(month))),
+                ("expected", ConfigValue::Integer(expected)),
+            ]),
+        );
+    }
 }
 
 /// `game.place(id, revision)`: the economy view of the place `id` at `revision`, from the cache and never from live state. It
@@ -1802,6 +1817,7 @@ mod tests {
     fn a_places_table_carries_every_tab_field_with_litres_for_volumes() {
         let place = PlaceView {
             id: "fixture".to_owned(),
+            temperature: None,
             workers: 80,
             dependents: 40,
             food_days: 215,

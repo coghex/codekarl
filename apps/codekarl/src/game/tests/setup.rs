@@ -384,6 +384,8 @@ fn the_map_hash_covers_the_map_file_every_layer_and_the_location_kinds() {
             "fertility.png",
             "elevation.png",
             "climate_temperature.png",
+            "climate_half_range.png",
+            "climate_sea_nearness.png",
             "climate_gdd.png",
             "climate_rainfall.png",
             "climate_glacier.png",
@@ -420,6 +422,7 @@ fn the_rules_hash_changes_when_a_building_footprint_changes() {
 }
 
 fn write_genetics(root: &Path, haplogroups: &str, traits: &str) {
+    fs::write(root.join("game/weather.toml"), "weather").unwrap();
     let genetics = root.join("game/genetics");
     fs::create_dir_all(&genetics).unwrap();
     fs::write(genetics.join("haplogroups.toml"), haplogroups).unwrap();
@@ -791,4 +794,51 @@ fn the_build_id_is_the_version_and_the_simulation_source_hash() {
     changed[offset] ^= 1;
     assert_ne!(fnv1a(&changed), fnv1a(&framed));
     assert!(files.iter().any(|file| file == "crates/map/src/lib.rs"));
+}
+
+#[test]
+fn weather_is_ignored_when_economy_rules_are_absent() {
+    let (_dir, game) = fixture();
+    let root = game.scenario.parent().unwrap().parent().unwrap();
+    let empty_hash = hashes::rules_hash(root).unwrap();
+    fs::create_dir_all(root.join("game")).unwrap();
+    fs::write(root.join("game/weather.toml"), "not = [valid").unwrap();
+    assert_eq!(hashes::rules_hash(root).unwrap(), empty_hash);
+    let game = prepared(&game, None, Some(42)).0.unwrap();
+    let view = crate::game::setup::view_builder(game.view_wiring())(
+        game.simulation.state(),
+        date(768, 1, 1, 0),
+    );
+    assert!(view.places.iter().all(|place| place.temperature.is_none()));
+}
+
+#[test]
+fn weather_map_changes_refuse_existing_saves_through_real_loader() {
+    for (name, replacement) in [
+        (
+            "climate_half_range.png",
+            include_bytes!("../../../tests/fixtures/map/climate_half_range_changed.png").as_slice(),
+        ),
+        (
+            "climate_sea_nearness.png",
+            include_bytes!("../../../tests/fixtures/map/climate_sea_nearness_changed.png")
+                .as_slice(),
+        ),
+    ] {
+        let (_dir, game) = fixture();
+        let (save, _) = write_save(&game, 0, 42);
+        fs::write(map_directory(&game).join(name), replacement).unwrap();
+        let error = prepared(&game, Some(&save), None).0.err().unwrap();
+        assert!(error.contains("map hash"), "{name}: {error}");
+    }
+    let (_dir, game) = fixture();
+    let (save, _) = write_save(&game, 0, 42);
+    let manifest = map_directory(&game).join("map.toml");
+    let text = fs::read_to_string(&manifest).unwrap().replace(
+        "warmest_month_phase_hundredths = 650",
+        "warmest_month_phase_hundredths = 651",
+    );
+    fs::write(manifest, text).unwrap();
+    let error = prepared(&game, Some(&save), None).0.err().unwrap();
+    assert!(error.contains("map hash"), "{error}");
 }

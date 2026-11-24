@@ -18,6 +18,7 @@ import math
 import sys
 import tomllib
 from collections import deque
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -94,6 +95,7 @@ SETTINGS = ("climate", "fertility")
 POLYGON_SUPERSAMPLE = 4
 POLYGON_COVER = 0.5
 KM_PER_DEGREE = 111.0
+PHASE_HUNDREDTHS_PER_YEAR = 1200
 LAND_ELEVATION = 2
 SEA_DEPTH = 2
 NEIGHBOURS4 = ((-1, 0), (1, 0), (0, -1), (0, 1))
@@ -678,6 +680,39 @@ def check_bounds(layer: str, values: Array, lower: float, upper: float) -> None:
         )
 
 
+def sea_nearness(state: State, length_km: float) -> Array:
+    """Great-circle distance to the nearest sea cell centre, within the crop."""
+    sea = state.terrain == SEA
+    result = np.zeros(sea.shape, dtype=np.float64)
+    if not sea.any():
+        return result
+    lon = np.radians(state.longitude[0])
+    lat = np.radians(state.latitude[:, 0])
+    sea_rows = [(row, np.flatnonzero(sea[row])) for row in range(len(lat)) if sea[row].any()]
+    for row in range(len(lat)):
+        columns = np.flatnonzero(~sea[row])
+        result[row, sea[row]] = 1000
+        if not len(columns):
+            continue
+        best = np.full(len(columns), np.inf)
+        for other, sea_columns in sea_rows:
+            # Neighbours in longitude and the two row ends cover the antimeridian too.
+            pos = np.searchsorted(sea_columns, columns)
+            left = sea_columns[np.maximum(pos - 1, 0)]
+            right = sea_columns[np.minimum(pos, len(sea_columns) - 1)]
+            delta = np.minimum(np.abs(lon[columns] - lon[left]), np.abs(lon[columns] - lon[right]))
+            delta = np.minimum(delta, 2 * math.pi - np.abs(lon[columns] - lon[sea_columns[0]]))
+            delta = np.minimum(delta, 2 * math.pi - np.abs(lon[columns] - lon[sea_columns[-1]]))
+            hav = (
+                np.sin((lat[row] - lat[other]) / 2) ** 2
+                + np.cos(lat[row]) * np.cos(lat[other]) * np.sin(delta / 2) ** 2
+            )
+            best = np.minimum(best, hav)
+        distance = 2 * 6378137.0 * np.arcsin(np.sqrt(np.clip(best, 0, 1)))
+        result[row, columns] = np.floor(1000 * np.exp(-distance / (length_km * 1000)) + 0.5)
+    return result
+
+
 def compute_layers(state: State, settings: dict[str, Any]) -> None:
     """Compute and write fertility, glacier and climate layers from the edited terrain."""
     if set(settings) != set(SETTINGS):
@@ -692,7 +727,11 @@ def compute_layers(state: State, settings: dict[str, Any]) -> None:
     if offending.any():
         row, column = np.argwhere(offending)[0]
         raise SystemExit(f"terrain crop edge must be water; first offending cell ({row}, {column})")
-    mean, _half, gdd, rainfall, glacier = climate_fields(state, climate_settings)
+    phase = Decimal(str(climate_settings["warmest_month_phase"])) * 100
+    if phase != phase.to_integral_value() or not 0 <= phase < PHASE_HUNDREDTHS_PER_YEAR:
+        raise SystemExit("warmest_month_phase must be whole hundredths from 0 through 1199")
+    mean, half, gdd, rainfall, glacier = climate_fields(state, climate_settings)
+    nearness = sea_nearness(state, float(climate_settings["sea_nearness_length_km"]))
     fertility = fertility_field(state, fertility_settings, gdd, rainfall, glacier)
     check_bounds("climate_temperature", mean, -60.0, 50.0)
     check_bounds("climate_gdd", gdd, 0.0, 12_000.0)
@@ -706,6 +745,8 @@ def compute_layers(state: State, settings: dict[str, Any]) -> None:
     fertility_stored = np.minimum(250, np.floor((fertility + 2.0) / 4.0))
     for name, values, lower, upper in (
         ("climate_temperature", temperature_stored, 400, 1500),
+        ("climate_half_range", np.floor(half * 10 + 0.5), 0, 300),
+        ("climate_sea_nearness", nearness, 0, 1000),
         ("climate_gdd", gdd_stored, 0, 12000),
         ("climate_rainfall", rainfall_stored, 0, 15000),
         ("fertility", fertility_stored, 0, 250),
@@ -715,11 +756,35 @@ def compute_layers(state: State, settings: dict[str, Any]) -> None:
         "fertility.png": fertility_stored.astype(np.uint8),
         "climate_glacier.png": glacier.astype(np.uint8) * 255,
         "climate_temperature.png": temperature_stored.astype(np.uint16),
+        "climate_half_range.png": np.floor(half * 10 + 0.5).astype(np.uint16),
+        "climate_sea_nearness.png": nearness.astype(np.uint16),
         "climate_gdd.png": gdd_stored.astype(np.uint16),
         "climate_rainfall.png": rainfall_stored.astype(np.uint16),
     }
     for filename, values in output.items():
         Image.fromarray(values).save(state.directory / filename)
+    manifest = state.directory / "map.toml"
+    text = manifest.read_text(encoding="utf-8")
+    import re  # noqa: PLC0415 -- used only while writing the manifest
+
+    if "[climate]" not in text:
+        text = text.replace(
+            "[layers]", f"[climate]\nwarmest_month_phase_hundredths = {int(phase)}\n\n[layers]", 1
+        )
+    elif not re.search(r"(?m)^warmest_month_phase_hundredths\s*=", text):
+        text = text.replace(
+            "[climate]", f"[climate]\nwarmest_month_phase_hundredths = {int(phase)}", 1
+        )
+    else:
+        text = re.sub(
+            r"(?m)^warmest_month_phase_hundredths\s*=.*$",
+            f"warmest_month_phase_hundredths = {int(phase)}",
+            text,
+        )
+    for key in ("climate_half_range", "climate_sea_nearness"):
+        if not re.search(rf"(?m)^{key}\s*=", text):
+            text = text.replace("[layers]", f'[layers]\n{key} = "{key}.png"', 1)
+    manifest.write_text(text, encoding="utf-8")
     state.fertility = fertility
     state.glacier = glacier
 

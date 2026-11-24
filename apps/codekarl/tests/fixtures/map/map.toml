@@ -6,10 +6,15 @@ origin = [23882, 23882]
 width = 4
 height = 4
 
+[climate]
+warmest_month_phase_hundredths = 650
+
 [layers]
 terrain = "terrain.png"
 fertility = "fertility.png"
 climate_temperature = "climate_temperature.png"
+climate_half_range = "climate_half_range.png"
+climate_sea_nearness = "climate_sea_nearness.png"
 climate_gdd = "climate_gdd.png"
 climate_rainfall = "climate_rainfall.png"
 climate_glacier = "climate_glacier.png"

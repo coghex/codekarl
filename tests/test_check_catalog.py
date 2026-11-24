@@ -2393,6 +2393,12 @@ GUARDS: tuple[Guard, ...] = (
             "assets/map/ireland/map.toml",
         ),
     ),
+    Guard(
+        "tests/test_map_weather.py",
+        "unittest-map",
+        ("assets/map/ireland/", "assets/game/weather.toml", "tools/generate_weather.py"),
+    ),
+    Guard("crates/sim/src/weather.rs", "sim.core", ("assets/game/weather.toml",)),
     # CK-105: the renderer's re-export test checks its window fixture against the resource component's copy.
     Guard(
         "crates/render-2d/src/tests/resources.rs",
@@ -2441,7 +2447,12 @@ GUARDS: tuple[Guard, ...] = (
     Guard(
         "apps/codekarl/src/game/setup.rs",
         "rust.app",
-        ("assets/scenarios/ireland-768/", "assets/game/economy.toml", "crates/map/tests/network/"),
+        (
+            "assets/scenarios/ireland-768/",
+            "assets/game/economy.toml",
+            "assets/game/weather.toml",
+            "crates/map/tests/network/",
+        ),
     ),
     Guard("apps/codekarl/src/game/stretch.rs", "rust.app", ("crates/map/tests/network/",)),
     # CK-277: tooltip widget tests read the shipped glossary for the date explanation contract.
@@ -3158,6 +3169,7 @@ GUARDS: tuple[Guard, ...] = (
             "rust-toolchain.toml",
             ".ignore",
             "specs/bootstrap.json",
+            "assets/game/weather.toml",
         ),
         unselected=(
             (

@@ -755,9 +755,23 @@ local function clip_column(value, width)
   return ".."
 end
 
+local function temperature_line(place)
+  if place.temperature == nil then return nil end
+  local months = {"January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"}
+  local function degrees(value)
+    local sign = value < 0 and "-" or ""
+    value = math.abs(value)
+    return sign .. (value // 10) .. "." .. (value % 10) .. "°"
+  end
+  local value = place.temperature
+  return "temperature " .. degrees(value.mean) .. " · " .. months[value.month] .. " " .. degrees(value.expected)
+end
+
 local function location_lines(place, width)
   if place.state == "abandoned" then
-    return {(tostring(place.kind):gsub("_", " ")), {tooltip_parts = {{text = "abandoned", term = "abandoned"}}, place = place.id}}
+    local lines = {(tostring(place.kind):gsub("_", " ")), {tooltip_parts = {{text = "abandoned", term = "abandoned"}}, place = place.id}}
+    if place.temperature ~= nil then lines[#lines + 1] = temperature_line(place) end
+    return lines
   end
   local content_width = math.max(1, (width or 412) // P)
   local lines = {
@@ -804,6 +818,7 @@ local function location_lines(place, width)
       {text = tostring(place.overflow_lost), class = "overflow", over_limit = place.overflow_lost > 0},
     }, place = place.id},
   }
+  if place.temperature ~= nil then lines[#lines + 1] = temperature_line(place) end
   local price_right = content_width - 82
   local base_right = content_width - 56
   local bar_x = content_width - 48
