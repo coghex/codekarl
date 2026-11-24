@@ -1225,3 +1225,285 @@ to = "moynagh"
 category = "path"
 level = 0
 note = "short cut: Lú to Maigh nEach"
+
+[[crossing]]
+river = "boyne"
+at = [553, 455]
+kind = "ford"
+note = "owner direction r43; assail,mor-1"
+
+[[crossing]]
+river = "inny"
+at = [425, 452]
+kind = "ford"
+note = "owner direction r102; assail"
+
+[[crossing]]
+river = "shannon"
+at = [385, 432]
+kind = "ford"
+note = "owner direction r43; assail"
+
+[[crossing]]
+river = "liffey"
+at = [603, 502]
+kind = "ford"
+note = "owner direction r43; chualann-1"
+
+[[crossing]]
+river = "liffey"
+at = [555, 551]
+kind = "ford"
+note = "owner direction r102; chualann-2"
+
+[[crossing]]
+river = "clare"
+at = [253, 504]
+kind = "ford"
+note = "owner direction r43; cut-aidne_seat-annaghdown"
+
+[[crossing]]
+river = "shannon"
+at = [369, 545]
+kind = "none"
+note = "owner direction r43; cut-clonfert-lorrha"
+
+[[crossing]]
+river = "brosna"
+at = [444, 503]
+kind = "ford"
+note = "owner direction r102; cut-durrow-uisneach"
+
+[[crossing]]
+river = "liffey"
+at = [545, 540]
+kind = "ford"
+note = "owner direction r102; dala-1"
+
+[[crossing]]
+river = "mulkear"
+at = [314, 652]
+kind = "ford"
+note = "owner direction r102; dala-2"
+
+[[crossing]]
+river = "barrow"
+at = [522, 628]
+kind = "ford"
+note = "owner direction r43; leinster"
+
+[[crossing]]
+river = "boyne"
+at = [577, 423]
+kind = "ford"
+note = "owner direction r43; midluachra-1"
+
+[[crossing]]
+river = "dee"
+at = [595, 389]
+kind = "ford"
+note = "owner direction r102; midluachra-1"
+
+[[crossing]]
+river = "cusher"
+at = [594, 266]
+kind = "ford"
+note = "owner direction r102; midluachra-2"
+
+[[crossing]]
+river = "bann"
+at = [594, 265]
+kind = "ford"
+note = "owner direction r102; midluachra-2"
+
+[[crossing]]
+river = "main"
+at = [610, 173]
+kind = "ford"
+note = "owner direction r102; midluachra-2"
+
+[[crossing]]
+river = "boyne"
+at = [522, 480]
+kind = "ford"
+note = "owner direction r102; mor-2"
+
+[[crossing]]
+river = "liffey"
+at = [585, 500]
+kind = "ford"
+note = "owner direction r102; mor-2"
+
+[[crossing]]
+river = "brosna"
+at = [427, 508]
+kind = "ford"
+note = "owner direction r102; mor-3"
+
+[[crossing]]
+river = "shannon"
+at = [379, 521]
+kind = "none"
+note = "owner direction r43; mor-4"
+
+[[crossing]]
+river = "lee"
+at = [317, 821]
+kind = "ford"
+note = "owner direction r43; munster-2"
+
+[[crossing]]
+river = "suir"
+at = [393, 685]
+kind = "ford"
+note = "owner direction r102; munster-3"
+
+[[crossing]]
+river = "blackwater-ulster"
+at = [542, 273]
+kind = "ford"
+note = "owner direction r102; north-1"
+
+[[crossing]]
+river = "owenkillew"
+at = [469, 192]
+kind = "ford"
+note = "owner direction r102; north-1"
+
+[[crossing]]
+river = "camowen"
+at = [479, 220]
+kind = "ford"
+note = "owner direction r102; north-1"
+
+[[crossing]]
+river = "finn-donegal"
+at = [452, 170]
+kind = "ford"
+note = "owner direction r102; north-1"
+
+[[crossing]]
+river = "mourne"
+at = [460, 189]
+kind = "ford"
+note = "owner direction r43; north-1"
+
+[[crossing]]
+river = "bann"
+at = [600, 270]
+kind = "ford"
+note = "owner direction r102; north-2"
+
+[[crossing]]
+river = "laune"
+at = [152, 777]
+kind = "ford"
+note = "owner direction r102; path-church_island_valentia"
+
+[[crossing]]
+river = "feale"
+at = [181, 704]
+kind = "ford"
+note = "owner direction r102; path-ciarraige_seat"
+
+[[crossing]]
+river = "deel-limerick"
+at = [255, 677]
+kind = "ford"
+note = "owner direction r102; path-ciarraige_seat"
+
+[[crossing]]
+river = "maigue"
+at = [282, 676]
+kind = "ford"
+note = "owner direction r102; path-ciarraige_seat"
+
+[[crossing]]
+river = "erne"
+at = [429, 275]
+kind = "ford"
+note = "owner direction r104; path-devenish"
+
+[[crossing]]
+river = "shannon"
+at = [325, 627]
+kind = "ford"
+note = "owner direction r103; path-iniscealtra"
+
+[[crossing]]
+river = "corrib"
+at = [245, 520]
+kind = "ford"
+note = "owner direction r43; path-killeany"
+
+[[crossing]]
+river = "little-brosna"
+at = [394, 559]
+kind = "ford"
+note = "owner direction r102; path-lorrha"
+
+[[crossing]]
+river = "bandon"
+at = [275, 854]
+kind = "ford"
+note = "owner direction r102; path-ross_carbery"
+
+[[crossing]]
+river = "blackwater-kells"
+at = [558, 434]
+kind = "ford"
+note = "owner direction r102; path-tailtiu"
+
+[[crossing]]
+river = "boyne"
+at = [560, 435]
+kind = "ford"
+note = "owner direction r43; path-tailtiu"
+
+[[crossing]]
+river = "boyne"
+at = [545, 457]
+kind = "ford"
+note = "owner direction r43; path-trim"
+
+[[crossing]]
+river = "clare"
+at = [268, 464]
+kind = "ford"
+note = "owner direction r102; path-tuam"
+
+[[crossing]]
+river = "drumragh"
+at = [479, 223]
+kind = "ford"
+note = "owner direction r102; path-white_island"
+
+[[crossing]]
+river = "deel-mayo"
+at = [234, 365]
+kind = "ford"
+note = "owner direction r102; west-1"
+
+[[crossing]]
+river = "garavogue"
+at = [323, 296]
+kind = "ford"
+note = "owner direction r102; west-2"
+
+[[crossing]]
+river = "slaney"
+at = [560, 652]
+kind = "ford"
+note = "owner direction r102; chualann-2"
+
+[[crossing]]
+river = "suir"
+at = [395, 721]
+kind = "ford"
+note = "owner direction r43; munster-2"
+
+[[crossing]]
+river = "blackwater-munster"
+at = [393, 767]
+kind = "ford"
+note = "owner direction r43; munster-2"

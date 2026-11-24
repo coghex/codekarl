@@ -339,7 +339,7 @@ fn a_network_changes_the_content_hash_but_not_the_simulation() {
     }
     let crop = before.scenario.map.data.crop;
     let mut roads = String::from(
-        "format = 1\nhand_list_sha256 = \"cadb7f67e609caf88b363089d58964a35c2621a970915dc72fbd70449f1c4c4d\"\nbaseline_sha256 = \"unused\"\nnext_node_id = 3\nnext_stretch_id = 1\n",
+        "format = 2\nhand_list_sha256 = \"cadb7f67e609caf88b363089d58964a35c2621a970915dc72fbd70449f1c4c4d\"\nbaseline_sha256 = \"unused\"\nnext_node_id = 3\nnext_stretch_id = 1\n",
     );
     for (index, location) in before.scenario.locations.iter().enumerate() {
         use std::fmt::Write as _;

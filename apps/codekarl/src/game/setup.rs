@@ -1684,6 +1684,23 @@ mod stretch_save_tests {
         let network = prepared.scenario.network.as_ref().unwrap();
         let states = &prepared.simulation.state().stretches;
         assert_eq!(states.len(), network.stretches.len());
+        let crossing_stretches: Vec<_> = network
+            .stretches
+            .iter()
+            .filter(|s| s.crossings.is_some())
+            .collect();
+        assert_eq!(crossing_stretches.len(), 45);
+        assert_eq!(
+            crossing_stretches.iter().filter(|s| s.is_land()).count(),
+            43
+        );
+        assert_eq!(
+            crossing_stretches
+                .iter()
+                .map(|s| s.crossings.as_ref().unwrap().len())
+                .sum::<usize>(),
+            47
+        );
         let roads: std::collections::BTreeSet<_> = network
             .roads
             .iter()

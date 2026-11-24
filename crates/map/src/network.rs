@@ -49,6 +49,8 @@ pub enum LandNodeKind {
     Landing,
     /// A junction between stretches.
     Junction,
+    /// A bank at the end of a crossing stretch.
+    Bank,
 }
 /// A stored node; cells are crop-relative column and row.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -92,6 +94,53 @@ pub struct LandStretch {
     pub level: u8,
     /// Whether this connects a tidal place to its landing.
     pub tidal: bool,
+    /// Wide crossings, present only on a crossing stretch.
+    pub crossings: Option<Vec<LandCrossing>>,
+    /// Narrow crossings along this stretch.
+    #[serde(default)]
+    pub wades: Vec<LandWade>,
+}
+/// An approved wide crossing.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LandCrossing {
+    /// River identifier.
+    pub river: String,
+    /// Width in tenths of a metre.
+    pub width_tenths_m: u64,
+    /// The approved crossing kind.
+    pub kind: LandCrossingKind,
+}
+/// Whether a wide crossing has a ford.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LandCrossingKind {
+    /// An approved ford.
+    Ford,
+    /// No land crossing.
+    None,
+}
+/// A narrow crossing along a stretch.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LandWade {
+    /// River identifier.
+    pub river: String,
+    /// Width in tenths of a metre.
+    pub width_tenths_m: u64,
+    /// Distance along the stretch in metres.
+    pub along_m: u64,
+}
+impl LandStretch {
+    /// Whether a cart can traverse the stretch by land.
+    #[must_use]
+    pub fn is_land(&self) -> bool {
+        !self.tidal
+            && self
+                .crossings
+                .as_ref()
+                .is_none_or(|items| items.iter().all(|c| c.kind == LandCrossingKind::Ford))
+    }
 }
 /// Direction along a stored stretch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
@@ -210,8 +259,8 @@ pub(crate) fn load(
     let hand_bytes = fs::read(&hand).map_err(|e| LoadError::at("network.toml", "file", e))?;
     let source = fs::read_to_string(&roads).map_err(|e| LoadError::at("roads.toml", "file", e))?;
     let mut network: LandNetwork = toml::from_str(&source).map_err(|e| parse_error(&source, &e))?;
-    if network.format != 1 {
-        return Err(error("format", "must be 1"));
+    if network.format != 2 {
+        return Err(error("format", "must be 2"));
     }
     if network.hand_list_sha256 != format!("{:x}", Sha256::digest(hand_bytes)) {
         return Err(error("hand_list_sha256", "does not match network.toml"));
@@ -290,7 +339,7 @@ fn validate(n: &LandNetwork, locations: &[Location], crop: Crop) -> Result<(), L
             return Err(error(&at, "cell outside crop"));
         }
         match (node.kind, node.place.as_deref()) {
-            (LandNodeKind::Junction, None) => (),
+            (LandNodeKind::Junction | LandNodeKind::Bank, None) => (),
             (LandNodeKind::Place | LandNodeKind::Landing, Some(id)) => {
                 locations
                     .get(id)
@@ -329,6 +378,23 @@ fn validate(n: &LandNetwork, locations: &[Location], crop: Crop) -> Result<(), L
             .ok_or_else(|| error(&at, "unknown to node"))?;
         if s.level > 5 {
             return Err(error(&at, "level outside 0..=5"));
+        }
+        if let Some(crossings) = &s.crossings {
+            if crossings.is_empty() {
+                return Err(error(&at, "crossing list is empty"));
+            }
+            if s.tidal {
+                return Err(error(&at, "tidal stretch is a crossing"));
+            }
+            if crossings.iter().any(|c| c.width_tenths_m < 200) {
+                return Err(error(&at, "crossing width is under 20 m"));
+            }
+        }
+        if s.wades
+            .iter()
+            .any(|w| w.width_tenths_m >= 200 || w.along_m > s.length_m)
+        {
+            return Err(error(&at, "invalid wade width or distance"));
         }
         if s.cells.first() != Some(&from.cell) || s.cells.last() != Some(&to.cell) {
             return Err(error(&at, "line endpoints differ from nodes"));
@@ -380,6 +446,22 @@ fn validate(n: &LandNetwork, locations: &[Location], crop: Crop) -> Result<(), L
                     return Err(error(&at, "line passes another node"));
                 }
             }
+        }
+    }
+    for node in n
+        .nodes
+        .iter()
+        .filter(|node| node.kind == LandNodeKind::Bank)
+    {
+        if !n
+            .stretches
+            .iter()
+            .any(|s| s.crossings.is_some() && (s.from == node.id || s.to == node.id))
+        {
+            return Err(error(
+                format!("node[{}]", node.id),
+                "bank is not an end of a crossing",
+            ));
         }
     }
     let mut links = BTreeMap::new();
@@ -567,10 +649,10 @@ mod tests {
         fs::write(dir.join("roads.toml"), &roads).unwrap();
         assert!(load(&dir, &scenario.locations, crop).unwrap().is_some());
         for (bad, name) in [
-            (roads.replacen("format = 1", "format = 2", 1), "format"),
-            (roads.replacen("format = 1", "format = 'one'", 1), "format"),
+            (roads.replacen("format = 2", "format = 1", 1), "format"),
+            (roads.replacen("format = 2", "format = 'one'", 1), "format"),
             (
-                roads.replacen("format = 1", "format = 1\nunknown = 2", 1),
+                roads.replacen("format = 2", "format = 2\nunknown = 2", 1),
                 "unknown",
             ),
             (
@@ -663,6 +745,114 @@ mod tests {
             n.stretches_at(n.place_node("tide").unwrap().id)
                 .any(|s| s.tidal)
         );
+    }
+
+    #[test]
+    fn crossing_fields_are_validated_and_control_land_access() {
+        let scenario = fixture();
+        let original = scenario.network.as_ref().unwrap();
+        let check = |network: &LandNetwork, fault: &str| {
+            let message = validate(network, &scenario.locations, scenario.map.data.crop)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                message.contains("roads.toml") && message.contains(fault),
+                "{message}"
+            );
+        };
+        let mut n = original.clone();
+        n.stretches[0].crossings = Some(vec![]);
+        check(&n, "crossing list is empty");
+        n.stretches[0].crossings = Some(vec![LandCrossing {
+            river: "r".into(),
+            width_tenths_m: 199,
+            kind: LandCrossingKind::Ford,
+        }]);
+        check(&n, "crossing width");
+        n.stretches[0].crossings.as_mut().unwrap()[0].width_tenths_m = 200;
+        assert!(n.stretches[0].is_land());
+        assert!(validate(&n, &scenario.locations, scenario.map.data.crop).is_ok());
+        n.stretches[0].crossings.as_mut().unwrap()[0].kind = LandCrossingKind::None;
+        assert!(!n.stretches[0].is_land());
+        n.stretches[0].crossings = None;
+        n.stretches[0].wades = vec![LandWade {
+            river: "r".into(),
+            width_tenths_m: 200,
+            along_m: 0,
+        }];
+        check(&n, "wade");
+        n.stretches[0].wades[0].width_tenths_m = 199;
+        n.stretches[0].wades[0].along_m = n.stretches[0].length_m + 1;
+        check(&n, "wade");
+        let mut n = original.clone();
+        let tidal = n.stretches.iter_mut().find(|s| s.tidal).unwrap();
+        tidal.crossings = Some(vec![LandCrossing {
+            river: "r".into(),
+            width_tenths_m: 200,
+            kind: LandCrossingKind::Ford,
+        }]);
+        check(&n, "tidal stretch is a crossing");
+        let mut n = original.clone();
+        let node = n
+            .nodes
+            .iter_mut()
+            .find(|node| node.kind == LandNodeKind::Junction)
+            .unwrap();
+        node.kind = LandNodeKind::Bank;
+        check(&n, "bank is not an end");
+        n.nodes
+            .iter_mut()
+            .find(|node| node.kind == LandNodeKind::Bank)
+            .unwrap()
+            .place = Some("a".into());
+        check(&n, "kind and place disagree");
+        assert!(
+            toml::from_str::<LandCrossing>("river = 'r'\nwidth_tenths_m = 200\nkind = 'bridge'")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn crossing_fixture_loads_banks_fords_blocked_crossings_and_wades() {
+        let scenario = fixture();
+        let source = include_str!("../tests/network/scenarios/fixture/crossings-roads.toml");
+        let network: LandNetwork = toml::from_str(source).unwrap();
+        validate(&network, &scenario.locations, scenario.map.data.crop).unwrap();
+        let crossings: Vec<_> = network
+            .stretches
+            .iter()
+            .filter(|s| s.crossings.is_some())
+            .collect();
+        assert_eq!(crossings.len(), 2);
+        let ford = crossings
+            .iter()
+            .find(|s| s.crossings.as_ref().unwrap().len() == 2)
+            .unwrap();
+        assert_eq!(
+            ford.crossings
+                .as_ref()
+                .unwrap()
+                .iter()
+                .map(|c| c.river.as_str())
+                .collect::<Vec<_>>(),
+            ["wide-a", "wide-b"]
+        );
+        assert!(ford.is_land());
+        let blocked = crossings.iter().find(|s| !s.is_land()).unwrap();
+        assert_eq!(
+            blocked.crossings.as_ref().unwrap()[0].kind,
+            LandCrossingKind::None
+        );
+        assert!(
+            network
+                .nodes
+                .iter()
+                .any(|n| n.kind == LandNodeKind::Bank && n.place.is_none())
+        );
+        let wades: Vec<_> = network.stretches.iter().flat_map(|s| &s.wades).collect();
+        assert_eq!(wades.len(), 1);
+        assert_eq!(wades[0].river, "narrow");
+        assert_eq!(wades[0].width_tenths_m, 199);
     }
 
     #[test]
