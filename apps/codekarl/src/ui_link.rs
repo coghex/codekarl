@@ -4461,6 +4461,7 @@ mod tests {
             log_choices: ck_sim::LogChoices::default(),
             economy_revision: 0,
             economy: None,
+            weather: BTreeMap::new(),
             events: std::sync::Arc::new(Vec::new()),
             events_revision: 0,
             world: 0,

@@ -1436,6 +1436,7 @@ pub(crate) fn snapshot(hour: u8, speed: u8, paused: Option<PauseReason>) -> SimS
         log_choices: ck_sim::LogChoices::default(),
         economy_revision: 0,
         economy: None,
+        weather: BTreeMap::new(),
         events: Arc::new(Vec::new()),
         events_revision: 0,
         world: 0,

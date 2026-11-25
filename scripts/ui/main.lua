@@ -424,7 +424,7 @@ if game ~= nil then
     require("lib.save_screen").set_time(time)
     current_world = time.world or 0
     find_popup.set_revision(time.economy_revision, current_world)
-    location_panel:set_revision(time.economy_revision)
+    location_panel:set_revision(time.economy_revision, time.weather, time.year, time.month, time.day, time.hour, current_world)
     classes.set_revision(time.economy_revision)
     -- The character screen reads the character again under this snapshot's revision, or closes (a new world, a character no longer live).
     if character_panel ~= nil then character_panel:refresh(time.economy_revision, current_world) end

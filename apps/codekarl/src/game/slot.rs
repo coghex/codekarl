@@ -26,6 +26,9 @@ pub(crate) enum MapLayer {
     Roads,
 }
 
+/// Per-place temperature in tenths of a degree and optional wind in knots and compass direction.
+pub(crate) type HourlyWeather = std::collections::BTreeMap<String, (i64, Option<(i64, String)>)>;
+
 /// What the UI shows of the simulation, at one moment.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SimSnapshot {
@@ -47,6 +50,8 @@ pub(crate) struct SimSnapshot {
     pub(crate) economy_revision: u64,
     /// The economy view of that revision, immutable and published in this same write as the time fields (design §6).
     pub(crate) economy: Option<Arc<EconomyView>>,
+    /// Weather computed from the state at this hour, independent of the economy revision.
+    pub(crate) weather: HourlyWeather,
     /// Event rows at this revision.
     pub(crate) events: Arc<Vec<super::events::Event>>,
     pub(crate) events_revision: u64,

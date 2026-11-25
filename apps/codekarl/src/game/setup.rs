@@ -351,6 +351,7 @@ struct WeatherData {
     rules: ck_sim::weather::WeatherRules,
     places: Vec<(String, ck_sim::weather::WeatherPlace, [i64; 12])>,
     winds: Vec<Option<[(i64, i64, i64); 12]>>,
+    cells: Vec<Option<(u32, u32)>>,
 }
 
 impl WeatherData {
@@ -371,6 +372,7 @@ impl WeatherData {
             .map(|b| super::wind::WindField::new(b, &rules))
             .transpose()?;
         let mut winds = Vec::new();
+        let mut cells = Vec::new();
         let data = &scenario.map.data;
         let crop = data.crop;
         let mut places = Vec::new();
@@ -397,6 +399,11 @@ impl WeatherData {
                 Some(values)
             });
             winds.push(monthly);
+            cells.push(
+                u32::try_from(location.cell.x)
+                    .ok()
+                    .zip(u32::try_from(location.cell.y).ok()),
+            );
             places.push((location.id.clone(), place, expected));
         }
         let steering_cache = field
@@ -409,6 +416,7 @@ impl WeatherData {
             rules,
             places,
             winds,
+            cells,
         })
     }
 
@@ -454,6 +462,46 @@ impl WeatherData {
         self.places
             .iter()
             .map(|(id, place, _)| Ok((id.clone(), place.daily_mean(&self.rules, day)?)))
+            .collect()
+    }
+
+    fn hourly(&self, lows: &super::lows::Lows, date: Date) -> super::slot::HourlyWeather {
+        let day = ck_sim::weather::julian_day(
+            i64::from(date.year),
+            i64::from(date.month),
+            i64::from(date.day),
+        ) - ck_sim::weather::julian_day(1, 1, 1);
+        let (year, month, day_of_month) =
+            ck_sim::weather::gregorian(day).expect("validated weather day");
+        let field = self.backdrop.as_ref().map(|backdrop| {
+            super::wind::WindField::new(backdrop, &self.rules).expect("validated backdrop")
+        });
+        self.places
+            .iter()
+            .enumerate()
+            .map(|(index, (id, place, _))| {
+                let temperature = place
+                    .hour(&self.rules, day, i64::from(date.hour))
+                    .expect("validated weather hour");
+                let wind = field
+                    .as_ref()
+                    .zip(self.cells.get(index).copied().flatten())
+                    .and_then(|(field, (i, j))| {
+                        field.at(
+                            lows,
+                            i,
+                            j,
+                            year,
+                            usize::try_from(month).expect("valid month"),
+                            day_of_month,
+                        )
+                    })
+                    .map(|(u, v, _)| {
+                        let (knots, direction) = super::wind::display(u, v);
+                        (knots, direction.to_owned())
+                    });
+                (id.clone(), (temperature, wind))
+            })
             .collect()
     }
 
@@ -675,6 +723,7 @@ fn core_over(
 ) -> Core<GameState, GameCommand> {
     let wiring = prepared.view_wiring();
     let level_validation = wiring.level_validation();
+    let hourly_weather = wiring.weather.clone();
     let fuel_rules = prepared.economy_rules.clone();
     let stretch_ids = prepared
         .simulation
@@ -703,6 +752,12 @@ fn core_over(
         },
         outputs,
         Some(view_builder(wiring)),
+        Some(Box::new(move |state: &GameState, date| {
+            hourly_weather
+                .as_ref()
+                .map(|weather| weather.hourly(&state.lows, date))
+                .unwrap_or_default()
+        })),
         (layers, events, log_choices),
     )
     .with_state_validation(move |state: &GameState, date| {
@@ -801,6 +856,7 @@ impl SchedulerInputs {
 pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> Connected {
     let wiring = prepared.view_wiring();
     let level_validation = wiring.level_validation();
+    let hourly_weather = wiring.weather.clone();
     let scheduler_inputs = SchedulerInputs::new(&prepared);
     let stretch_ids = prepared
         .simulation
@@ -853,6 +909,12 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
                     fail: Box::new(move |message| failing.fail(message)),
                 },
                 Some(view_builder(wiring)),
+                Some(Box::new(move |state: &GameState, date| {
+                    hourly_weather
+                        .as_ref()
+                        .map(|weather| weather.hourly(&state.lows, date))
+                        .unwrap_or_default()
+                })),
                 (layers, events, log_choices),
             )
             .with_state_validation(move |state: &GameState, date| {
@@ -2414,28 +2476,19 @@ mod stretch_save_tests {
     }
 
     #[test]
-    fn real_wind_view_uses_latest_noon_and_previous_year() {
+    fn real_wind_readback_uses_the_current_day() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
         let scenario = ck_map::load_scenario(root.join("scenarios/ireland-768")).unwrap();
         let weather = WeatherData::load(&root, &scenario).unwrap();
-        let birr = scenario
-            .locations
-            .iter()
-            .position(|p| p.id == "birr")
-            .unwrap();
         for (year, month, day, hour, expected) in [
             (768, 10, 9, 0, (2, "SW")),
             (769, 1, 9, 13, (4, "SW")),
-            (769, 1, 10, 6, (4, "SW")),
-            (769, 1, 10, 12, (4, "SW")),
+            (769, 1, 10, 6, (4, "S")),
+            (769, 1, 10, 12, (4, "S")),
             (769, 1, 10, 13, (4, "S")),
         ] {
-            let mut view = view::EconomyView {
-                places: vec![view::PlaceView::default(); scenario.locations.len()],
-                ..Default::default()
-            };
-            weather.add_to_view(
-                &mut view,
+            let values = weather.hourly(
+                &super::super::lows::Lows::default(),
                 Date {
                     year,
                     month,
@@ -2444,19 +2497,12 @@ mod stretch_save_tests {
                 },
             );
             assert_eq!(
-                view.places[birr]
-                    .wind
-                    .as_ref()
-                    .map(|(k, d)| (*k, d.as_str())),
+                values["birr"].1.as_ref().map(|(k, d)| (*k, d.as_str())),
                 Some(expected)
             );
         }
-        let mut view = view::EconomyView {
-            places: vec![view::PlaceView::default(); scenario.locations.len()],
-            ..Default::default()
-        };
-        weather.add_to_view(
-            &mut view,
+        let values = weather.hourly(
+            &super::super::lows::Lows::default(),
             Date {
                 year: 1,
                 month: 1,
@@ -2464,7 +2510,7 @@ mod stretch_save_tests {
                 hour: 0,
             },
         );
-        assert!(view.places[birr].wind.is_some());
+        assert!(values["birr"].1.is_some());
     }
 
     #[test]
@@ -2513,6 +2559,7 @@ mod stretch_save_tests {
                 rules,
                 places,
                 winds: vec![Some(monthly); count],
+                cells: vec![],
             }));
             let date = Date {
                 year,
@@ -2550,7 +2597,35 @@ mod stretch_save_tests {
     }
 
     #[test]
-    fn weather_view_uses_latest_noon_and_its_month() {
+    fn hourly_weather_reads_the_current_hour() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+        let scenario = ck_map::load_scenario(root.join("scenarios/ireland-768")).unwrap();
+        let weather = WeatherData::load(&root, &scenario).unwrap();
+        let date = Date {
+            year: 768,
+            month: 10,
+            day: 9,
+            hour: 6,
+        };
+        let next = Date { hour: 7, ..date };
+        let lows = super::super::lows::Lows::default();
+        let first = weather.hourly(&lows, date);
+        let second = weather.hourly(&lows, next);
+        let birr = weather.places.iter().position(|p| p.0 == "birr").unwrap();
+        let day = ck_sim::weather::julian_day(768, 10, 9) - ck_sim::weather::julian_day(1, 1, 1);
+        assert_eq!(
+            first["birr"].0,
+            weather.places[birr].1.hour(&weather.rules, day, 6).unwrap()
+        );
+        assert_eq!(
+            second["birr"].0,
+            weather.places[birr].1.hour(&weather.rules, day, 7).unwrap()
+        );
+        assert_ne!(first["birr"].0, second["birr"].0);
+    }
+
+    #[test]
+    fn hourly_temperature_keeps_the_latest_noon_month() {
         let rules = ck_sim::weather::WeatherRules::parse(include_str!(
             "../../../../assets/game/weather.toml"
         ))
@@ -2570,6 +2645,7 @@ mod stretch_save_tests {
             rules,
             places: vec![("coast".to_owned(), coast, expected)],
             winds: vec![],
+            cells: vec![],
         };
         for (hour, value) in [
             (0, (128, 9, 135)),
@@ -2590,6 +2666,18 @@ mod stretch_save_tests {
                 },
             );
             assert_eq!(view.places[0].temperature, Some(value));
+            let date = Date {
+                year: 768,
+                month: 10,
+                day: 1,
+                hour,
+            };
+            let day =
+                ck_sim::weather::julian_day(768, 10, 1) - ck_sim::weather::julian_day(1, 1, 1);
+            assert_eq!(
+                weather.hourly(&super::super::lows::Lows::default(), date)["coast"].0,
+                coast.hour(&weather.rules, day, i64::from(hour)).unwrap()
+            );
         }
     }
 
@@ -2627,6 +2715,7 @@ mod stretch_save_tests {
                 rules,
                 places,
                 winds: vec![Some([(100, 100, 101_000); 12]); prepared.scenario.locations.len()],
+                cells: vec![],
             }));
             let date = Date {
                 year: 768,
@@ -2715,6 +2804,7 @@ mod stretch_save_tests {
             rules,
             places: vec![("north".into(), north, expected)],
             winds: vec![],
+            cells: vec![],
         };
         let mut view = view::EconomyView {
             places: vec![view::PlaceView::default()],
@@ -2758,6 +2848,7 @@ mod stretch_save_tests {
             rules,
             places,
             winds: vec![],
+            cells: vec![],
         }));
         let date = Date {
             year: 769,
@@ -2836,6 +2927,7 @@ mod stretch_save_tests {
             rules: weather_rules,
             places: vec![("fixture".into(), place, expected)],
             winds: vec![],
+            cells: vec![],
         });
         let scheduler = |data| {
             gameplay_scheduler_with_rules(
@@ -3015,6 +3107,67 @@ mod stretch_save_tests {
             &mut |_, _| {},
         )
         .unwrap()
+    }
+
+    #[test]
+    fn hourly_low_wind_survives_a_real_save_and_load() {
+        let dir = crate::testing::Dir::new();
+        let mut prepared = shipped_start(&dir.0, None);
+        let weather = Arc::clone(prepared.weather.as_ref().unwrap());
+        let field =
+            super::super::wind::WindField::new(weather.backdrop.as_ref().unwrap(), &weather.rules)
+                .unwrap();
+        let mut state = prepared.simulation.state().clone();
+        field
+            .place(&mut state.lows, 22833 - 105, 15538 - 105, 300_000, 6000)
+            .unwrap();
+        let date = Date {
+            year: 768,
+            month: 10,
+            day: 9,
+            hour: 6,
+        };
+        let scheduler = move || {
+            let mut scheduler = Scheduler::<GameState>::new();
+            let weather = Arc::clone(&weather);
+            scheduler
+                .register("weather.hourly", Cadence::Hourly, move |state, tick| {
+                    weather.step_lows(&mut state.lows, tick.date());
+                    Ok(())
+                })
+                .unwrap();
+            scheduler
+        };
+        prepared.simulation = Simulation::new(
+            GameTime::from_date(date).unwrap(),
+            42,
+            state,
+            scheduler(),
+            apply,
+        );
+        let mut core = core_over(
+            prepared,
+            dir.0.join("saves"),
+            Outputs {
+                log: Box::new(|_, _| {}),
+                publish: Box::new(|_| {}),
+                fail: Box::new(|error| panic!("{error}")),
+            },
+            scheduler,
+        );
+        let first = core.snapshot();
+        assert_eq!(first.weather["birr"].1, Some((18, "S".into())));
+        core.dispatch(Message::Control(Control::Quicksave), Duration::ZERO);
+        core.dispatch(Message::Control(Control::TogglePause), Duration::ZERO);
+        core.run_wake(Duration::from_secs(1), &mut || None);
+        let second = core.snapshot();
+        assert_eq!(second.date.hour, 7);
+        assert_eq!(second.economy_revision, first.economy_revision);
+        assert_eq!(second.weather["birr"].1, Some((16, "SW".into())));
+        core.dispatch(Message::Control(Control::Quickload), Duration::from_secs(1));
+        let loaded = core.snapshot();
+        assert_eq!(loaded.date.hour, 6);
+        assert_eq!(loaded.weather["birr"], first.weather["birr"]);
     }
 
     #[test]

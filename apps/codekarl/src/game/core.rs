@@ -127,6 +127,7 @@ type FailureProbe<S> = Box<dyn FnMut(&S) -> Option<String> + Send>;
 
 /// How the core builds the immutable economy view of a state (design §6).
 pub(crate) type ViewBuilder<S> = Box<dyn Fn(&S, Date) -> EconomyView + Send>;
+pub(crate) type WeatherBuilder<S> = Box<dyn Fn(&S, Date) -> super::slot::HourlyWeather + Send>;
 
 type ExternalStorage<S> = (
     super::character_storage::Storage,
@@ -156,6 +157,7 @@ pub(crate) struct Core<S, C> {
     terminal_probe: Box<dyn FnMut() -> Option<String> + Send>,
     failed: bool,
     views: Option<ViewBuilder<S>>,
+    weather: Option<WeatherBuilder<S>>,
     /// The revision of `view`; `0` while the core has no view.
     revision: u64,
     view: Option<Arc<EconomyView>>,
@@ -268,6 +270,7 @@ where
             rebuild,
             outputs,
             views,
+            None,
             (
                 layers,
                 super::events::Fixture::default(),
@@ -277,6 +280,10 @@ where
     }
 
     /// Builds all view data before publishing the first snapshot.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the two readbacks have independent publication cadences"
+    )]
     pub(crate) fn new_with_events(
         simulation: Simulation<S, C>,
         identity: Identity,
@@ -284,6 +291,7 @@ where
         rebuild: Rebuild<S, C>,
         outputs: Outputs,
         views: Option<ViewBuilder<S>>,
+        weather: Option<WeatherBuilder<S>>,
         initial: (MapLayers, super::events::Fixture, ck_sim::LogChoices),
     ) -> Self {
         let (layers, events_source, log_choices) = initial;
@@ -305,6 +313,7 @@ where
             terminal_probe: Box::new(|| None),
             failed: false,
             views,
+            weather,
             revision: 0,
             view: None,
             world: 0,
@@ -383,6 +392,16 @@ where
             log_choices: self.log_choices,
             economy_revision: self.revision,
             economy: self.view.clone(),
+            weather: self
+                .weather
+                .as_ref()
+                .map(|build| {
+                    build(
+                        self.simulation.state(),
+                        self.simulation.date().unwrap_or(LAST_DATE),
+                    )
+                })
+                .unwrap_or_default(),
             events: Arc::clone(&self.events),
             events_revision: self.events_revision,
             world: self.world,

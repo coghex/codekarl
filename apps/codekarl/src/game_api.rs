@@ -3,6 +3,7 @@
 //! `game.on_time(fn | nil)` registers the callback `game_time` (and exists only when the configuration has `[game] scenario`).
 //! The UI link posts it with the latest [`SimSnapshot`] as a table, `{year, month, day, hour, speed, paused, economy_revision}`,
 //! where `paused` is `false` or the reason as the string `"player"`, `"error"` or `"load"`: see `ui_link` for when.
+//! Its `weather` table maps place ids to the current hour's temperature in tenths and optional wind in knots and compass direction.
 //!
 //! `game.place(id, revision)` returns the economy view of a place at a revision a `game_time` carried (milestone 9, design §6). It
 //! reads only the [`ViewCache`] the UI link fills when it posts a snapshot, never the live simulation.
@@ -1565,6 +1566,34 @@ pub(crate) fn time_table(snapshot: &SimSnapshot) -> ConfigValue {
             "log_descending".to_owned(),
             ConfigValue::Bool(snapshot.log_choices.descending),
         ),
+        (
+            "weather".to_owned(),
+            ConfigValue::Table(
+                snapshot
+                    .weather
+                    .iter()
+                    .map(|(id, (temperature, wind))| {
+                        let mut fields = BTreeMap::from([(
+                            "temperature".to_owned(),
+                            ConfigValue::Integer(*temperature),
+                        )]);
+                        if let Some((knots, direction)) = wind {
+                            fields.insert(
+                                "wind".to_owned(),
+                                ConfigValue::Table(BTreeMap::from([
+                                    ("knots".to_owned(), ConfigValue::Integer(*knots)),
+                                    (
+                                        "direction".to_owned(),
+                                        ConfigValue::String(direction.clone()),
+                                    ),
+                                ])),
+                            );
+                        }
+                        (id.clone(), ConfigValue::Table(fields))
+                    })
+                    .collect(),
+            ),
+        ),
         ("world".to_owned(), integer(snapshot.world)),
     ]))
 }
@@ -1700,7 +1729,11 @@ mod tests {
 
     #[test]
     fn game_time_includes_the_saved_status_with_its_existing_fields() {
-        let value = time_table(&crate::readout_tests::snapshot(3, 2, None));
+        let mut snapshot = crate::readout_tests::snapshot(3, 2, None);
+        snapshot
+            .weather
+            .insert("birr".into(), (108, Some((2, "SW".into()))));
+        let value = time_table(&snapshot);
         let ConfigValue::Table(fields) = value else {
             panic!("game_time gets one table");
         };
@@ -1723,11 +1756,27 @@ mod tests {
                 "roads",
                 "speed",
                 "unsaved",
+                "weather",
                 "world",
                 "year",
             ]
         );
         assert_eq!(fields.get("unsaved"), Some(&ConfigValue::Bool(false)));
+        let Some(ConfigValue::Table(weather)) = fields.get("weather") else {
+            panic!("weather table")
+        };
+        let Some(ConfigValue::Table(birr)) = weather.get("birr") else {
+            panic!("Birr weather")
+        };
+        assert_eq!(birr.get("temperature"), Some(&ConfigValue::Integer(108)));
+        let Some(ConfigValue::Table(wind)) = birr.get("wind") else {
+            panic!("wind table")
+        };
+        assert_eq!(wind.get("knots"), Some(&ConfigValue::Integer(2)));
+        assert_eq!(
+            wind.get("direction"),
+            Some(&ConfigValue::String("SW".into()))
+        );
     }
 
     #[test]

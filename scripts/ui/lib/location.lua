@@ -4,7 +4,7 @@
 --
 -- **The data path.** The panel reads `game.place(id, revision)`, the immutable view of that place at a revision `game_time` carried,
 -- and never anything live. It remembers the newest revision it has been told of: a new selection reads that one, and a `game_time`
--- with another revision refreshes the open panel from its own. A date alone refreshes nothing.
+-- with another revision refreshes the open panel from its own. Hourly weather comes with the time snapshot.
 local ui = require("lib.ui")
 local windows = require("lib.window")
 local lists = require("lib.list")
@@ -1211,7 +1211,13 @@ local function fetch(self)
   if self.revision == nil or self.revision == 0 then
     return nil, "economy: not published yet"
   end
-  return game.place(self.id, self.revision)
+  local place, reason = game.place(self.id, self.revision)
+  local weather = self.weather and self.weather[self.id]
+  if place ~= nil and weather ~= nil then
+    if place.temperature ~= nil then place.temperature.mean = weather.temperature end
+    place.wind = weather.wind
+  end
+  return place, reason
 end
 
 local function destroy_cards(self)
@@ -1561,17 +1567,17 @@ function location:show(selection, tab, revision)
   render(self, false)
 end
 
--- Tells the panel the newest revision `game_time` carried. A new revision refreshes an open panel, keeping its scroll; the same one
--- (a date alone, a speed, a pause) does nothing.
-function location:set_revision(revision)
+-- The economy revision and hourly weather belong to the same time snapshot.
+function location:set_revision(revision, weather, year, month, day, hour, world)
   price_revision = revision
-  if revision == self.revision then
-    return
-  end
+  local changed = revision ~= self.revision
   self.revision = revision
-  if open(self) then
-    render(self, true)
+  if weather ~= nil then
+    local key = table.concat({year or 0, month or 0, day or 0, hour or 0, world or 0}, ":")
+    changed = changed or key ~= self.weather_key
+    self.weather, self.weather_key = weather, key
   end
+  if changed and open(self) then render(self, true) end
 end
 
 -- Re-lays the open panel out for the window's current size.

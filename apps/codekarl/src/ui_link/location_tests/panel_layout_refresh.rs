@@ -362,3 +362,45 @@ note('floor ok')"],
     rig.opened();
     assert!(notes(&rig).iter().any(|line| line == "floor ok"));
 }
+
+#[test]
+fn hourly_weather_refreshes_an_open_panel_without_a_new_economy_revision() {
+    let mut rig = rig(&[
+        "VIEWS[1].rowan.temperature = {mean=128, month=9, expected=135} callbacks.time({year=768, month=10, day=1, hour=6, speed=1, economy_revision=1, weather={rowan={temperature=100, wind={knots=18, direction='S'}}}}) select_place('rowan', 'Rowan')",
+        "callbacks.time({year=768, month=10, day=1, hour=7, speed=1, economy_revision=1, weather={rowan={temperature=110, wind={knots=16, direction='SW'}}}})",
+        "callbacks.time({year=768, month=10, day=1, hour=7, speed=1, paused=true, economy_revision=1, weather={rowan={temperature=110, wind={knots=16, direction='SW'}}}})",
+        "callbacks.time({year=768, month=10, day=1, hour=7, speed=1, paused='load', economy_revision=1, world=1, weather={rowan={temperature=90, wind={knots=0, direction=''}}}})",
+    ]);
+    rig.opened();
+    let first = rows(&rig);
+    assert!(
+        first
+            .last()
+            .unwrap()
+            .contains("temperature 10.0° · September 13.5°"),
+        "{first:?}"
+    );
+    assert!(first.last().unwrap().contains("wind 18 kn S"), "{first:?}");
+    rig.opened();
+    let next = rows(&rig);
+    assert!(
+        next.last()
+            .unwrap()
+            .contains("temperature 11.0° · September 13.5°"),
+        "{next:?}"
+    );
+    assert!(next.last().unwrap().contains("wind 16 kn SW"), "{next:?}");
+    let count = next.len();
+    rig.opened();
+    assert_eq!(rows(&rig).len(), count, "pausing does not redraw the panel");
+    rig.opened();
+    let loaded = rows(&rig);
+    assert!(
+        loaded
+            .last()
+            .unwrap()
+            .contains("temperature 9.0° · September 13.5°"),
+        "{loaded:?}"
+    );
+    assert!(loaded.last().unwrap().contains("wind calm"), "{loaded:?}");
+}

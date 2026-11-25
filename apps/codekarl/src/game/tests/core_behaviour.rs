@@ -559,6 +559,7 @@ fn first_snapshot_contains_fixture_rows_and_saved_choices() {
             fail: Box::new(|_| {}),
         },
         None,
+        None,
         (ck_sim::MapLayers::default(), source, choices),
     );
     let snapshots = snapshots.lock().unwrap();
