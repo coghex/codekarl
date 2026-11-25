@@ -496,6 +496,7 @@ fn the_late_drain_returns_a_failing_game_time_call_and_posts_nothing_new() {
             log_choices: ck_sim::LogChoices::default(),
             economy_revision: 0,
             economy: None,
+            weather: std::collections::BTreeMap::new(),
             events: std::sync::Arc::new(Vec::new()),
             events_revision: 0,
             world: 0,
