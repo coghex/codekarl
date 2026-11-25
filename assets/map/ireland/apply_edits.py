@@ -2,7 +2,10 @@
 
 Run `python3 apply_edits.py [--out DIR] [--force]`; `--layers-only` recomputes
 climate, glacier and fertility from accepted terrain and elevation without
-applying edits; `--self-test` runs the
+applying edits (it leaves `edits.applied` alone; `--refresh-marker` records the
+present `edits.toml`'s hash there, for a change to the settings only). The
+temperature layers read the measured seas of the backdrop that `sea_backdrop` in
+`edits.toml` names, which must be built first; `--self-test` runs the
 stdlib-only equilibrium-line vectors. Terrain edits run in TOML order. Climate
 and fertility are then computed from the edited terrain and elevation using the
 normative algorithm settings in `edits.toml`. The input digest is written to
@@ -18,7 +21,8 @@ import math
 import sys
 import tomllib
 from collections import deque
-from decimal import Decimal
+from collections.abc import Callable
+from decimal import Decimal, localcontext
 from pathlib import Path
 from typing import Any
 
@@ -499,16 +503,397 @@ def flow_accumulation(state: State, settings: dict[str, Any]) -> tuple[Array, Ar
     return np.asarray(accumulated, dtype=np.float64), slope
 
 
+REMOVED_CLIMATE_SETTINGS = ("ocean_effect_c", "ocean_half_range_c")
+# name, lowest, highest, whether the lowest is excluded, whether a whole number is required
+SEA_SETTINGS: tuple[tuple[str, float, float, bool, bool], ...] = (
+    ("sea_pull", 0.0, 1.0, True, False),
+    ("sea_air_cooler_c", 0.0, 10.0, False, False),
+    ("sea_air_swing", 0.1, 3.0, False, False),
+    ("sea_blend_cells", 1, 500, False, True),
+    ("sea_blend_passes", 1, 5, False, True),
+)
+BACKDROP_FORMAT = 2
+BACKDROP_MARGIN_BLOCKS = 3
+LEAST_SEA_SHARE = 1e-9
+LAPSE_DIGITS_LIMIT = 100_000
+_DIGIT_CHUNK = 1000
+MEAN_STEP_BOUND = 1500
+HALF_RANGE_STEP_BOUND = 1
+
+
+def check_sea_settings(climate: dict[str, Any]) -> None:
+    """Refuse a climate table that carries a removed setting, lacks a sea setting or has one outside its range."""
+    for name in REMOVED_CLIMATE_SETTINGS:
+        if name in climate:
+            raise SystemExit(f"[settings.climate]: {name} is no longer read; take it out")
+    backdrop = climate.get("sea_backdrop")
+    if not isinstance(backdrop, str) or not backdrop:
+        raise SystemExit("[settings.climate]: sea_backdrop is missing or not a directory name")
+    for name, lowest, highest, lowest_excluded, whole in SEA_SETTINGS:
+        if name not in climate:
+            raise SystemExit(f"[settings.climate]: {name} is missing")
+        value = climate[name]
+        kind = int if whole else (int, float)
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, kind)
+            or not math.isfinite(value)
+            or value > highest
+            or value < lowest
+            or (lowest_excluded and value == lowest)
+        ):
+            above = "above " if lowest_excluded else ""
+            raise SystemExit(
+                f"[settings.climate]: {name} {value!r} is outside {above}{lowest} to {highest}"
+            )
+
+
+def backdrop_window(
+    origin: tuple[int, int], width: int, height: int, backdrop: dict[str, Any]
+) -> tuple[int, int, int, int]:
+    """First and last backdrop column and row (both included) of the blocks the crop reads."""
+    block = int(backdrop["block_cells"])
+    first_column = origin[0] // block - BACKDROP_MARGIN_BLOCKS
+    last_column = (origin[0] + width - 1) // block + BACKDROP_MARGIN_BLOCKS
+    first_row = origin[1] // block - BACKDROP_MARGIN_BLOCKS
+    last_row = (origin[1] + height - 1) // block + BACKDROP_MARGIN_BLOCKS
+    if (
+        first_column < 0
+        or last_column >= int(backdrop["columns"])
+        or first_row < int(backdrop["first_row"])
+        or last_row >= int(backdrop["first_row"]) + int(backdrop["rows"])
+    ):
+        raise SystemExit(
+            f"sea_backdrop: the window, columns {first_column} to {last_column} and rows {first_row} to "
+            f"{last_row}, is not inside the backdrop's columns 0 to {int(backdrop['columns']) - 1} and rows "
+            f"{backdrop['first_row']} to {int(backdrop['first_row']) + int(backdrop['rows']) - 1}"
+        )
+    return first_column, last_column, first_row, last_row
+
+
+def fill_land_blocks(sea_c: Array, land: Grid) -> tuple[Array, int]:
+    """Give each land block the mean of the values its eight neighbours had before the pass, pass after pass."""
+    field = np.where(land[None], np.nan, sea_c)
+    if land.all():
+        raise SystemExit("sea_backdrop: the window holds no sea block")
+    passes = 0
+    while np.isnan(field).any():
+        padded = np.pad(field, ((0, 0), (1, 1), (1, 1)), constant_values=np.nan)
+        height, width = field.shape[1:]
+        around = np.stack(
+            [
+                padded[:, 1 + a : 1 + a + height, 1 + b : 1 + b + width]
+                for a in (-1, 0, 1)
+                for b in (-1, 0, 1)
+            ]
+        )
+        have = ~np.isnan(around)
+        count = have.sum(axis=0)
+        mean = np.where(
+            count > 0, np.where(have, around, 0).sum(axis=0) / np.maximum(count, 1), np.nan
+        )
+        field = np.where(np.isnan(field), mean, field)
+        passes += 1
+    return field, passes
+
+
+def cell_sea_temperatures(
+    field: Array,
+    block: int,
+    origin: tuple[int, int],
+    size: tuple[int, int],
+    first_block: tuple[int, int],
+) -> Array:
+    """Each cell's sea temperature by month, between the four block centres round the cell's centre.
+
+    `field` holds the window's blocks (month, row, column); `first_block` is the (column, row) of its first block.
+    """
+    width, height = size
+    x = (origin[0] + np.arange(width) + 0.5) / block - 0.5 - first_block[0]
+    y = (origin[1] + np.arange(height) + 0.5) / block - 0.5 - first_block[1]
+    kx, ky = np.floor(x).astype(int), np.floor(y).astype(int)
+    fx, fy = (x - kx)[None, :], (y - ky)[:, None]
+    return (  # type: ignore[no-any-return]
+        field[:, ky][:, :, kx] * (1 - fx) * (1 - fy)
+        + field[:, ky][:, :, kx + 1] * fx * (1 - fy)
+        + field[:, ky + 1][:, :, kx] * (1 - fx) * fy
+        + field[:, ky + 1][:, :, kx + 1] * fx * fy
+    )
+
+
+def _backdrop_image(root: Path, name: str, shape: tuple[int, int], mode: str) -> Array:
+    relative = Path(name)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise SystemExit(f"sea_backdrop: invalid layer path {name}")
+    path = root / relative
+    if not path.is_file():
+        raise SystemExit(f"sea_backdrop: {path} is missing")
+    with Image.open(path) as image:
+        if image.mode != mode or image.size != (shape[1], shape[0]):
+            raise SystemExit(f"sea_backdrop: {name} is not {shape[1]} x {shape[0]} in mode {mode}")
+        return np.asarray(image).copy()
+
+
+def load_sea_temperatures(directory: Path, climate: dict[str, Any]) -> Array:
+    """Every cell of the crop's sea temperature by month (12, rows, columns), read from the backdrop."""
+    manifest = tomllib.loads((directory / "map.toml").read_text(encoding="utf-8"))
+    root = directory / str(climate["sea_backdrop"])
+    path = root / "backdrop.toml"
+    if not path.is_file():
+        raise SystemExit(f"sea_backdrop: {path} is missing")
+    backdrop = tomllib.loads(path.read_text(encoding="utf-8"))
+    if (
+        backdrop.get("format") != BACKDROP_FORMAT
+        or backdrop.get("projection") != manifest["projection"]
+        or backdrop.get("cell_metres") != manifest["cell_metres"]
+    ):
+        raise SystemExit(
+            "sea_backdrop: the backdrop's format, projection or cell size is not the map's"
+        )
+    crop = manifest["crop"]
+    origin = (int(crop["origin"][0]), int(crop["origin"][1]))
+    width, height = int(crop["width"]), int(crop["height"])
+    block, first, rows, columns = (
+        int(backdrop[key]) for key in ("block_cells", "first_row", "rows", "columns")
+    )
+    first_column, last_column, first_row, last_row = backdrop_window(
+        origin, width, height, backdrop
+    )
+    land = _backdrop_image(root, backdrop["layers"]["land"], (rows, columns), "L")
+    sea = _backdrop_image(root, backdrop["layers"]["sea_temperature"], (12 * rows, columns), "I;16")
+    stored = sea.astype(np.float64).reshape(12, rows, columns)
+    rows_in = slice(first_row - first, last_row - first + 1)
+    columns_in = slice(first_column, last_column + 1)
+    celsius = (stored[:, rows_in, columns_in] - 1000) / 10
+    field, _ = fill_land_blocks(celsius, land[rows_in, columns_in] > 0)
+    return cell_sea_temperatures(field, block, origin, (width, height), (first_column, first_row))
+
+
+def sea_in_reach(sea: Grid, radius: int, passes: int) -> Grid:
+    """Whether some sea cell lies within `radius * passes` cells of each cell, down and across (whole numbers)."""
+    reach = radius * passes
+    padded = np.pad(sea.astype(np.int64), reach, mode="constant")
+    total = np.pad(padded.cumsum(0).cumsum(1), ((1, 0), (1, 0)))
+    side = 2 * reach + 1
+    count = (
+        total[side:, side:] - total[:-side, side:] - total[side:, :-side] + total[:-side, :-side]
+    )
+    return count > 0  # type: ignore[no-any-return]
+
+
+def blend_weights(sea: Grid, radius: int, passes: int) -> Array:
+    """The share of sea round each cell: the sea mask through the box mean `passes` times."""
+    reach = sea_in_reach(sea, radius, passes)
+    if not reach.all():
+        row, column = np.argwhere(~reach)[0]
+        raise SystemExit(
+            f"sea_blend_cells: cell ({row}, {column}) has no sea within {radius * passes} cells"
+        )
+    weight = sea.astype(np.float64)
+    for _ in range(passes):
+        weight = box_blur(weight, radius)
+    if weight.min() < LEAST_SEA_SHARE:
+        row, column = np.argwhere(weight < LEAST_SEA_SHARE)[0]
+        raise SystemExit(f"sea_blend_cells: cell ({row}, {column}) has too little sea in reach")
+    return weight
+
+
+def blend_seas(own: Array, sea: Grid, radius: int, passes: int) -> Array:
+    """The seas near each cell by month, the nearer counting more."""
+    weight = blend_weights(sea, radius, passes)
+    months = []
+    for month in range(own.shape[0]):
+        value = own[month] * sea
+        for _ in range(passes):
+            value = box_blur(value, radius)
+        months.append(value / weight)
+    return np.stack(months)
+
+
+def first_pair_in_row_order(
+    across: Grid, down: Grid, step_of: Callable[[Cell, Cell], Any]
+) -> tuple[Cell, Cell, Any] | None:
+    """The first, in row order, of the neighbouring pairs the two masks mark (a pair is its cell and the one right or below)."""
+    found: list[tuple[int, int, int, Cell, Cell]] = []
+    if across.any():
+        row, column = (int(v) for v in np.argwhere(across)[0])
+        found.append((row, column, 0, (row, column), (row, column + 1)))
+    if down.any():
+        row, column = (int(v) for v in np.argwhere(down)[0])
+        found.append((row, column, 1, (row, column), (row + 1, column)))
+    if not found:
+        return None
+    _, _, _, first, second = min(found, key=lambda item: item[:3])
+    return first, second, step_of(first, second)
+
+
+def first_step_over(values: Array, not_sea: Grid, bound: float) -> tuple[Cell, Cell, Any] | None:
+    """The first pair, in row order, of neighbouring cells neither sea whose values differ by more than `bound`."""
+    across = (np.abs(np.diff(values, axis=1)) > bound) & not_sea[:, 1:] & not_sea[:, :-1]
+    down = (np.abs(np.diff(values, axis=0)) > bound) & not_sea[1:] & not_sea[:-1]
+    return first_pair_in_row_order(across, down, lambda a, b: abs(values[b] - values[a]))
+
+
+def mean_step_over(
+    means: Array, heights: Array, not_sea: Grid, lapse: tuple[int, int]
+) -> tuple[Cell, Cell, tuple[int, int]] | None:
+    """The first pair, in row order, whose mean steps by more than 1500 ten-thousandths of a degree once the height is added back.
+
+    The step between two cells is `1000 dm + lapse x 10 x dh` for their stored-mean difference `dm` and height difference `dh`,
+    two small whole numbers, and the lapse (times 10) is the exact decimal `n / 10**k` of `lapse`. So each distinct `(dm, dh)` is
+    judged once, exactly, as `|1000 dm 10**k + n dh| > 1500 10**k`, in Python integers: no array holds a scaled number, whatever
+    the lapse is written as. Returns the cells and the step as `(whole, k)`, that is `whole / 10**k`.
+    """
+    number, digits = lapse
+    scale = 10**digits
+
+    def exceeds(dm: int, dh: int) -> bool:
+        if dh == 0:
+            return abs(1000 * dm) > MEAN_STEP_BOUND
+        return abs(1000 * dm * scale + number * dh) > MEAN_STEP_BOUND * scale
+
+    def violations(dm: Array, dh: Array, valid: Grid) -> Grid:
+        marked = np.zeros(dm.shape, dtype=bool)
+        pairs = np.stack([dm[valid], dh[valid]], axis=1)
+        if len(pairs):
+            unique, inverse = np.unique(pairs, axis=0, return_inverse=True)
+            bad = np.array([exceeds(int(a), int(b)) for a, b in unique], dtype=bool)
+            marked[valid] = bad[inverse.reshape(-1)]
+        return marked
+
+    across = violations(
+        np.diff(means, axis=1), np.diff(heights, axis=1), not_sea[:, 1:] & not_sea[:, :-1]
+    )
+    down = violations(np.diff(means, axis=0), np.diff(heights, axis=0), not_sea[1:] & not_sea[:-1])
+
+    def step(first: Cell, second: Cell) -> tuple[int, int]:
+        dm = int(means[second]) - int(means[first])
+        dh = int(heights[second]) - int(heights[first])
+        return abs(1000 * dm * scale + number * dh), digits
+
+    return first_pair_in_row_order(across, down, step)
+
+
+class ExactFloat(float):
+    """A TOML float that keeps the text it was written as, so that its decimal value is not lost to binary rounding."""
+
+    text: str
+
+    def __new__(cls, text: str) -> ExactFloat:
+        value = super().__new__(cls, text)
+        value.text = text
+        return value
+
+
+def load_toml(text: str) -> dict[str, Any]:
+    """Parse TOML with every float an `ExactFloat`: it is a float everywhere, and `lapse_tenths` can read its text."""
+    return tomllib.loads(text, parse_float=ExactFloat)
+
+
+def lapse_tenths(lapse: float) -> tuple[int, int]:
+    """The lapse rate times 10 as the whole number `n` and the digits `k` that make it so: `n / 10**k`, exactly as written.
+
+    Exact zero is `(0, 0)` however it is spelled. A lapse that is not finite, or is written with more than `LAPSE_DIGITS_LIMIT`
+    digits or exponent, is refused: its scaled integers would be too large to work with.
+    """
+    if not math.isfinite(float(lapse)):
+        raise SystemExit("[settings.climate]: lapse_c_per_km must be a finite number")
+    text = getattr(lapse, "text", None)
+    sign, digits, exponent = Decimal(text if text is not None else repr(float(lapse))).as_tuple()
+    assert isinstance(exponent, int)  # a finite number
+    if not any(digits):
+        return 0, 0  # exact zero, however it is spelled (0.0, -0.0, 0e-100001)
+    if len(digits) > LAPSE_DIGITS_LIMIT or abs(exponent) > LAPSE_DIGITS_LIMIT:
+        raise SystemExit(
+            f"[settings.climate]: lapse_c_per_km is written with more than {LAPSE_DIGITS_LIMIT} digits"
+        )
+    number = 0
+    for start in range(0, len(digits), _DIGIT_CHUNK):  # whole-number parts, never one huge string
+        chunk = digits[start : start + _DIGIT_CHUNK]
+        number = number * 10 ** len(chunk) + int("".join(map(str, chunk)))
+    number *= -1 if sign else 1
+    exponent += 1  # times 10
+    while number % 10 == 0:
+        number //= 10
+        exponent += 1
+    if exponent >= 0:
+        return number * 10**exponent, 0
+    return number, -exponent
+
+
+def scaled_text(whole: int, digits: int) -> str:
+    """`whole / 10**digits` as plain decimal text, without ever turning a huge integer into a string."""
+    with localcontext() as context:
+        context.prec = whole.bit_length() // 3 + 10  # more digits than the number has
+        return format(Decimal(whole).scaleb(-digits).normalize(), "f")
+
+
+def check_no_steps(
+    mean_stored: Array, half_stored: Array, height_m: Array, sea: Grid, lapse_c_per_km: float
+) -> None:
+    """Stop if neighbouring land (a lake counts as land) steps by more than the bounds, the half range first."""
+    not_sea = ~sea
+    over = first_step_over(half_stored, not_sea, HALF_RANGE_STEP_BOUND)
+    if over is not None:
+        (a, b), (c, d), step = over[0], over[1], over[2]
+        raise SystemExit(
+            f"climate_half_range: half range of cells ({a}, {b}) and ({c}, {d}) differs by {step:g} "
+            f"tenths, over the bound of {HALF_RANGE_STEP_BOUND}"
+        )
+    # Exact however the lapse rate is written: see `mean_step_over`.
+    over = mean_step_over(
+        np.rint(mean_stored).astype(np.int64),
+        np.rint(np.maximum(height_m, 0.0)).astype(np.int64),
+        not_sea,
+        lapse_tenths(lapse_c_per_km),
+    )
+    if over is not None:
+        (a, b), (c, d), (whole, digits) = over
+        raise SystemExit(
+            f"climate_temperature: mean of cells ({a}, {b}) and ({c}, {d}) differs by {scaled_text(whole, digits)} "
+            f"ten-thousandths of a degree once the height is added back, over the bound of {MEAN_STEP_BOUND}"
+        )
+
+
+def sea_air_layers(
+    near: Array,
+    pull: Array,
+    inland: tuple[Array, Array],
+    height_m: Array,
+    climate: dict[str, Any],
+) -> tuple[Array, Array]:
+    """The mean and the half range of the air: pulled toward the seas near a cell, by its pull.
+
+    `inland` is the zonal mean and the continental half range of the cell's latitude.
+
+    `near` is the seas near each cell by month; the seas' yearly mean is the mean of the months and their half range half the
+    difference between the largest and the smallest month.
+    """
+    sea_mean = near.mean(axis=0)
+    sea_half = (near.max(axis=0) - near.min(axis=0)) / 2
+    zonal, continent_range = inland
+    mean = (
+        pull * (sea_mean - float(climate["sea_air_cooler_c"]))
+        + (1 - pull) * zonal
+        - float(climate["lapse_c_per_km"]) * height_m / 1000.0
+    )
+    half = pull * (sea_half * float(climate["sea_air_swing"])) + (1 - pull) * continent_range
+    return mean, half
+
+
 def climate_fields(  # noqa: PLR0915 -- keep the prototype's climate, moisture, seasonal and snowline steps together
-    state: State, settings: dict[str, Any]
+    state: State, settings: dict[str, Any], own_sea: Array
 ) -> tuple[Array, Array, Array, Array, Array]:
-    """Compute mean temperature, seasonal half-range, GDD, smoothed rain and glacier mask."""
+    """Compute mean temperature, seasonal half-range, GDD, smoothed rain and glacier mask.
+
+    `own_sea` is every cell's own sea temperature by month, (12, rows, columns), from the backdrop.
+    """
     height, width = state.elevation.shape
     lat = np.abs(state.latitude[:, 0])
     climate_rows = settings
+    check_sea_settings(climate_rows)
     knots = climate_rows["latitude_deg"]
     zonal = interpolate(lat, knots, climate_rows["zonal_mean_c"])[:, None]
-    ocean_range = interpolate(lat, knots, climate_rows["ocean_half_range_c"])[:, None]
     continent_range = interpolate(lat, knots, climate_rows["continental_half_range_c"])[:, None]
     zonal_rain = interpolate(lat, knots, climate_rows["zonal_rainfall_mm"])[:, None]
     ground_km = (float(climate_rows["cell_metres"]) * np.cos(np.radians(lat)) / 1000.0)[:, None]
@@ -516,7 +901,12 @@ def climate_fields(  # noqa: PLR0915 -- keep the prototype's climate, moisture, 
     sea = state.terrain == SEA
     lake = state.terrain == LAKE
     land = state.land()
-    maritime_distance = np.zeros((height, width), dtype=np.float64)
+    near = blend_seas(
+        own_sea, sea, int(climate_rows["sea_blend_cells"]), int(climate_rows["sea_blend_passes"])
+    )
+    pull = float(climate_rows["sea_pull"]) * np.exp(
+        -(sea_distance_m(state) / 1000.0) / float(climate_rows["maritime_length_km"])
+    )
     rain = np.zeros((height, width), dtype=np.float64)
     absolute_lat = np.abs(state.latitude[:, 0])
     for row in range(height):
@@ -526,15 +916,9 @@ def climate_fields(  # noqa: PLR0915 -- keep the prototype's climate, moisture, 
             < float(climate_rows["westerly_max_deg"])
         )
         columns = range(width) if westerly else range(width - 1, -1, -1)
-        distance = 0.0
         moisture = 1.0
         previous = 0.0
         for column in columns:
-            if sea[row, column]:
-                distance = 0.0
-            else:
-                distance += float(ground_km[row, 0])
-            maritime_distance[row, column] = distance
             if sea[row, column] or lake[row, column]:
                 moisture = min(
                     1.0,
@@ -565,13 +949,9 @@ def climate_fields(  # noqa: PLR0915 -- keep the prototype's climate, moisture, 
                 * float(ground_km[row, 0]),
             )
             previous = elevation
-    maritime = np.exp(-maritime_distance / float(climate_rows["maritime_length_km"]))
-    mean = (
-        zonal
-        + float(climate_rows["ocean_effect_c"]) * maritime
-        - float(climate_rows["lapse_c_per_km"]) * np.maximum(state.elevation, 0.0) / 1000.0
+    mean, half = sea_air_layers(
+        near, pull, (zonal, continent_range), np.maximum(state.elevation, 0.0), climate_rows
     )
-    half = ocean_range + (continent_range - ocean_range) * (1.0 - maritime)
     months = np.arange(12, dtype=np.float64)
     phase = np.cos(2.0 * math.pi * (months - float(climate_rows["warmest_month_phase"])) / 12.0)
     south = state.latitude < 0
@@ -680,18 +1060,21 @@ def check_bounds(layer: str, values: Array, lower: float, upper: float) -> None:
         )
 
 
-def sea_nearness(state: State, length_km: float) -> Array:
-    """Great-circle distance to the nearest sea cell centre, within the crop."""
+def sea_distance_m(state: State) -> Array:
+    """Great-circle distance in metres to the nearest sea cell centre, within the crop; nothing on sea.
+
+    Infinite everywhere when the crop holds no sea.
+    """
     sea = state.terrain == SEA
     result = np.zeros(sea.shape, dtype=np.float64)
     if not sea.any():
+        result[:] = np.inf
         return result
     lon = np.radians(state.longitude[0])
     lat = np.radians(state.latitude[:, 0])
     sea_rows = [(row, np.flatnonzero(sea[row])) for row in range(len(lat)) if sea[row].any()]
     for row in range(len(lat)):
         columns = np.flatnonzero(~sea[row])
-        result[row, sea[row]] = 1000
         if not len(columns):
             continue
         best = np.full(len(columns), np.inf)
@@ -708,17 +1091,32 @@ def sea_nearness(state: State, length_km: float) -> Array:
                 + np.cos(lat[row]) * np.cos(lat[other]) * np.sin(delta / 2) ** 2
             )
             best = np.minimum(best, hav)
-        distance = 2 * 6378137.0 * np.arcsin(np.sqrt(np.clip(best, 0, 1)))
-        result[row, columns] = np.floor(1000 * np.exp(-distance / (length_km * 1000)) + 0.5)
+        result[row, columns] = 2 * 6378137.0 * np.arcsin(np.sqrt(np.clip(best, 0, 1)))
     return result
 
 
-def compute_layers(state: State, settings: dict[str, Any]) -> None:
-    """Compute and write fertility, glacier and climate layers from the edited terrain."""
+def sea_nearness(state: State, length_km: float) -> Array:
+    """The stored nearness: 1000 on sea, else `1000 exp(-d / length)` for the distance `d` to the nearest sea cell."""
+    sea = state.terrain == SEA
+    result = np.zeros(sea.shape, dtype=np.float64)
+    if not sea.any():
+        return result
+    distance = sea_distance_m(state)
+    result[sea] = 1000
+    result[~sea] = np.floor(1000 * np.exp(-distance[~sea] / (length_km * 1000)) + 0.5)
+    return result
+
+
+def compute_layers(state: State, settings: dict[str, Any], own_sea: Array | None = None) -> None:
+    """Compute and write fertility, glacier and climate layers from the edited terrain.
+
+    `own_sea` is every cell's sea temperature by month; by default it is read from the backdrop the settings name.
+    """
     if set(settings) != set(SETTINGS):
         raise SystemExit(f"[settings]: expected exactly {SETTINGS}, found {sorted(settings)}")
     climate_settings = settings["climate"]
     fertility_settings = settings["fertility"]
+    check_sea_settings(climate_settings)
     land = state.land()
     edge = np.zeros_like(land)
     edge[0, :] = edge[-1, :] = True
@@ -730,7 +1128,9 @@ def compute_layers(state: State, settings: dict[str, Any]) -> None:
     phase = Decimal(str(climate_settings["warmest_month_phase"])) * 100
     if phase != phase.to_integral_value() or not 0 <= phase < PHASE_HUNDREDTHS_PER_YEAR:
         raise SystemExit("warmest_month_phase must be whole hundredths from 0 through 1199")
-    mean, half, gdd, rainfall, glacier = climate_fields(state, climate_settings)
+    if own_sea is None:
+        own_sea = load_sea_temperatures(state.directory, climate_settings)
+    mean, half, gdd, rainfall, glacier = climate_fields(state, climate_settings, own_sea)
     nearness = sea_nearness(state, float(climate_settings["sea_nearness_length_km"]))
     fertility = fertility_field(state, fertility_settings, gdd, rainfall, glacier)
     check_bounds("climate_temperature", mean, -60.0, 50.0)
@@ -752,6 +1152,15 @@ def compute_layers(state: State, settings: dict[str, Any]) -> None:
         ("fertility", fertility_stored, 0, 250),
     ):
         check_bounds(name, values, lower, upper)
+    check_no_steps(
+        temperature_stored,
+        np.floor(half * 10 + 0.5),
+        state.elevation,
+        state.terrain == SEA,
+        climate_settings[
+            "lapse_c_per_km"
+        ],  # as written: its decimal text is what the exact bound reads
+    )
     output = {
         "fertility.png": fertility_stored.astype(np.uint8),
         "climate_glacier.png": glacier.astype(np.uint8) * 255,
@@ -843,6 +1252,12 @@ def patches(state: State) -> list[str]:
     return lines
 
 
+def write_marker(out: Path) -> None:
+    """Record the SHA-256 of `edits.toml` as the edits these files hold."""
+    digest = hashlib.sha256((out / "edits.toml").read_bytes()).hexdigest()
+    (out / "edits.applied").write_text(f"{digest}  edits.toml\n", encoding="utf-8")
+
+
 def apply(out: Path, *, force: bool) -> None:
     """Applies `edits.toml` to the layers in `out`."""
     source = out / "edits.toml"
@@ -850,7 +1265,7 @@ def apply(out: Path, *, force: bool) -> None:
     if marker.exists() and not force:
         message = "edits.applied exists: the edits were already applied to these files; pass --force to apply them again"
         raise SystemExit(message)
-    document = tomllib.loads(source.read_text(encoding="utf-8"))
+    document = load_toml(source.read_text(encoding="utf-8"))
     edits: list[dict[str, Any]] = document.get("edit", [])
     check_edits(edits)
     state = State(out)
@@ -859,19 +1274,23 @@ def apply(out: Path, *, force: bool) -> None:
         report.append(f"{edit['id']}: {apply_edit(state, edit)} cells -> {edit['paint']}")
     apply_settings(state, document.get("settings", {}))
     state.write(out)
-    marker.write_text(
-        f"{hashlib.sha256(source.read_bytes()).hexdigest()}  edits.toml\n", encoding="utf-8"
-    )
+    write_marker(out)
     print(
         "\n".join([*report, f"{len(edits)} edits applied; after:", *shares(state), *patches(state)])
     )
 
 
-def recompute_layers(out: Path) -> None:
-    """Recompute derived layers over accepted terrain without applying edits."""
-    document = tomllib.loads((out / "edits.toml").read_text(encoding="utf-8"))
+def recompute_layers(out: Path, *, refresh_marker: bool = False) -> None:
+    """Recompute derived layers over accepted terrain without applying edits.
+
+    `edits.applied` is left alone unless `refresh_marker` is set, which records the present `edits.toml`'s hash after the
+    layers are written (for a change to the settings only: the terrain's edits are not applied again).
+    """
+    document = load_toml((out / "edits.toml").read_text(encoding="utf-8"))
     state = State(out)
     apply_settings(state, document.get("settings", {}))
+    if refresh_marker:
+        write_marker(out)
 
 
 def main() -> None:
@@ -888,13 +1307,20 @@ def main() -> None:
         action="store_true",
         help="recompute derived layers without applying terrain edits or changing edits.applied",
     )
+    parser.add_argument(
+        "--refresh-marker",
+        action="store_true",
+        help="with --layers-only, record the present edits.toml's hash in edits.applied once the layers are written",
+    )
     parser.add_argument("--self-test", action="store_true", help="run stdlib-only T_ela vectors")
     arguments = parser.parse_args()
     if arguments.self_test:
         _run_ela_self_test()
         return
+    if arguments.refresh_marker and not arguments.layers_only:
+        parser.error("--refresh-marker is only for --layers-only")
     if arguments.layers_only:
-        recompute_layers(arguments.out)
+        recompute_layers(arguments.out, refresh_marker=arguments.refresh_marker)
         return
     apply(arguments.out, force=arguments.force)
 

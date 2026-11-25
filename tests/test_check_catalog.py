@@ -2467,7 +2467,12 @@ GUARDS: tuple[Guard, ...] = (
     Guard(
         "tests/test_map_weather.py",
         "unittest-map",
-        ("assets/map/ireland/", "assets/game/weather.toml", "tools/generate_weather.py"),
+        (
+            "assets/map/ireland/",
+            "assets/map/backdrop/",
+            "assets/game/weather.toml",
+            "tools/generate_weather.py",
+        ),
     ),
     Guard(
         "tests/test_map_backdrop.py",

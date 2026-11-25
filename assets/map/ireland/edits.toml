@@ -533,13 +533,18 @@ region = { circle = [53.146, -7.646, 1.5] }
 where = { terrain = ["forest"], elevation_min = 1, elevation_max = 120, slope_max = 0.10 }
 
 [settings.climate]
-# World latitude tables (absolute degrees); the signed model has 4.2 C ocean warming for Ireland.
+# World latitude tables (absolute degrees). CK-417: the sea's pull on the temperature comes from the backdrop's measured seas (the
+# `sea_*` settings below), not from a table of the ocean's own half range or a fixed ocean effect.
 latitude_deg = [0, 15, 30, 45, 55, 60, 70, 90]
 zonal_mean_c = [27, 26, 20, 11, 5, 2, -8, -25]
-ocean_half_range_c = [1, 1.5, 2.5, 3.5, 4, 5, 7, 12]
 continental_half_range_c = [1, 4, 10, 14, 17, 19, 22, 25]
 zonal_rainfall_mm = [2000, 1000, 300, 700, 900, 900, 500, 200]
-ocean_effect_c = 4.2
+sea_backdrop = "../backdrop"
+sea_pull = 0.84
+sea_air_cooler_c = 1.25
+sea_air_swing = 0.8
+sea_blend_cells = 100
+sea_blend_passes = 3
 cell_metres = 839.0
 maritime_length_km = 1200.0
 sea_nearness_length_km = 40.0
