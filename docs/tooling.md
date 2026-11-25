@@ -74,7 +74,7 @@ A group's class covers every command it starts, nested checks included.
 - **Three links beyond a group's own paths** (CK-263; owner, 2026-11-10: "ok fine, add the three links"). They amend the owner's "tests
   by crate" rule (CK-186) and the rule that a change to the shared configuration or scripts selects no native window group, only as far
   as stated here:
-  - a change under `crates/economy/` also selects `rust.app` and `rust.app-default`, with the reason "changed economy path ... selects
+  - a change under `crates/economy/` also selects `rust.app`, `app.long` and `rust.app-default`, with the reason "changed economy path ... selects
     application tests": the application's soak and save tests depend on economy behaviour;
   - a change under any Rust source directory the catalog test inventories (`RUST_SOURCE_DIRS`: the application and every crate) also
     selects `unittest-catalog`, whose guard inventory must list what such code reads;
