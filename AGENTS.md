@@ -72,10 +72,10 @@ them.
 The checks are a catalog of groups in `tools/check.py`: each has an id, a category and the paths that
 affect it. **Floor** groups always run (fmt, ruff, ShellCheck, the doctor, Clippy, rustdoc, mypy; none
 opens a window). **Affected** groups run when a changed path matches their patterns: the Rust tests of
-the backend-neutral crates (`rust.core`) and of the application without a real window (`rust.app`,
+the backend-neutral crates (`rust.core`) and of the application without a real window (`rust.app`, `app.long`,
 `rust.app-default`), the Metal tests that need the GPU but no window (`metal.gpu`, `app.metal-gpu`), the native tests
 that open real windows with keyboard and mouse input ignored (`native.window` for Cocoa, `app.native-window` and the presenter's `metal.window-*` groups), the two shipped UI cases (`app.ui-witness`: places list and time bar; skipped as covered when `app.native-window` is selected), each Python test group and the
-chat CI. Economy changes also run `rust.app` and `rust.app-default`. Changes to Rust sources run `unittest-catalog` because it inventories those files.
+chat CI. Economy changes also run `rust.app`, `app.long` and `rust.app-default`. Changes to Rust sources run `unittest-catalog` because it inventories those files.
 **Optional** groups run only when named, except `methods.year` and `travel.scale`, which also run at the full milestone level: the scale runs, the GLFW focus cases (`glfw.window-focus`) and the Vulkan GPU and
 window groups (`glfw.window`, `vulkan.gpu`, `vulkan.window`, `render2d.vulkan-window` and `vulkan.app`). Docs and editor files are
 claimed by the doctor group.

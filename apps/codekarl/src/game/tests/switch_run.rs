@@ -293,7 +293,8 @@ pub(super) fn table(run: &Run) -> String {
 }
 
 #[test]
-fn the_shipped_economy_runs_ten_years_with_levels_that_switch_without_an_error() {
+// Long run: selected by app.long.
+fn app_long_the_shipped_economy_runs_ten_years_with_levels_that_switch_without_an_error() {
     let run = run_shipped(10);
     let text = table(&run);
     if let Ok(path) = std::env::var("CK_SWITCH_TABLE") {

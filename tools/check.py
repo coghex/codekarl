@@ -1047,6 +1047,61 @@ APP_METAL_GPU_FILES = (
     "apps/codekarl/tests/cli_spec.rs",
     "apps/codekarl/tests/cli_spec/",
 )
+# Backend availability, feature records and fake compositions reaching the non-Metal metrics clock.
+APP_DEFAULT_TESTS = (
+    # windowed fake reaches the non-Metal metrics clock.
+    "real_supervise_composition_ends_parent_and_spawn_closure_writers_before_finish",
+    # asserts the feature record in the default build.
+    "a_configuration_without_a_window_backend_runs_headless",
+    # asserts the feature record in the default build.
+    "headless_wins_over_a_configured_backend_and_checks_no_availability",
+    # asserts the feature record in the default build.
+    "the_new_command_line_errors_and_the_bare_option_word_rule_are_usage_errors_before_anything_starts",
+    # asserts the feature record in the default build.
+    "the_checker_accepts_the_expected_output_and_rejects_every_kind_of_difference",
+    # asserts the feature record in the default build.
+    "an_empty_file_is_the_defaults_with_the_file_named",
+    # asserts the feature record in the default build.
+    "the_level_filters_records_and_a_category_level_overrides_it",
+    # asserts the feature record in the default build.
+    "colour_always_wraps_the_level_token_in_ck_logs_escape_codes",
+    # asserts the feature record in the default build.
+    "a_child_cannot_inherit_an_exposed_pipe_from_a_parallel_test",
+    # asserts the feature record in the default build.
+    "a_table_is_still_accepted_as_an_inline_table",
+    # asserts the feature record in the default build.
+    "an_explicit_path_that_looks_like_a_flag_is_still_a_path",
+    # compiled backend availability.
+    "each_backend_is_available_exactly_with_its_own_feature",
+    # real binary rejects unavailable Metal.
+    "a_configured_backend_that_is_not_available_is_a_configuration_error",
+    # real binary checks Metal and Vulkan availability on override.
+    "backend_overrides_the_configuration_and_the_overriding_backend_is_the_one_checked",
+    # asserts the feature record in the default build.
+    "no_configuration_runs_headless_with_the_mode_record_right_after_the_features",
+    # asserts the feature record in the default build.
+    "the_default_run_logs_five_timestamped_records_and_exits_cleanly",
+    # asserts the feature record in the default build.
+    "an_explicit_configuration_without_timestamps_or_colour_gives_the_exact_text",
+    # windowed fake reaches the non-Metal metrics clock.
+    "a_windowed_composition_gives_the_ui_vm_the_texture_scene_and_frame_apis_and_the_publishing_hook",
+    # windowed fake reaches the non-Metal metrics clock.
+    "the_windowed_compositions_send_the_legacy_render_quad_through_the_compatibility_lane",
+    # windowed fake reaches the non-Metal metrics clock.
+    "the_glfw_vulkan_composition_accepts_the_metrics_mark",
+)
+
+APP_PATHS = (
+    "apps/codekarl/",
+    "crates/economy/",
+    "crates/map/tests/network/",
+    "crates/map/tests/fixtures/backdrop/",
+    "config/",
+    "scripts/",
+    "assets/",
+    "specs/",
+)
+
 STEPS = [
     Step(
         "fmt",
@@ -1175,7 +1230,8 @@ STEPS = [
                     # CK-207: the windowless regression for the window tests' output-stream assertions.
                     "--test",
                     "ui_pointer_streams",
-                ]
+                ],
+                ["--skip", "app_long_"],
             ),
             cargo_test(["-p", "codekarl", "--test", "cli_spec"], ["--set", "plain"]),
             # Cargo refuses `--doc` beside other target selectors (CK-131: the library has doctests to run).
@@ -1185,16 +1241,16 @@ STEPS = [
         analyze=True,
         description="The codekarl application's tests without a real window or the GPU, with every feature "
         "(unit and boundary tests over fakes, the CLI spec's plain cases, Lua VMs, modes, signals, runtime).",
-        paths=(
-            "apps/codekarl/",
-            "crates/economy/",
-            "crates/map/tests/network/",
-            "crates/map/tests/fixtures/backdrop/",
-            "config/",
-            "scripts/",
-            "assets/",
-            "specs/",
-        ),
+        paths=APP_PATHS,
+    ),
+    Step(
+        "app.long",
+        FAST,
+        lambda: [cargo_test(["-p", "codekarl", "--lib"], ["app_long_"])],
+        full_spec=True,
+        analyze=True,
+        description="Long application unit tests, selected by their source marker.",
+        paths=APP_PATHS,
     ),
     # CK-44: the application without its `metal` feature. The CLI spec runner's normal mode shows the
     # skipped Metal case without failing it, so this step must not see CK_REQUIRE_FULL_SPEC, not even
@@ -1203,7 +1259,22 @@ STEPS = [
         "rust.app-default",
         FAST,
         lambda: [
-            ["cargo", "test", "-p", "codekarl", "--locked"],
+            ["cargo", "test", "-p", "codekarl", "--all-targets", "--no-run", "--locked"],
+            [
+                "cargo",
+                "test",
+                "-p",
+                "codekarl",
+                "--lib",
+                "--test",
+                "modes",
+                "--test",
+                "runtime",
+                "--locked",
+                "--",
+                *APP_DEFAULT_TESTS,
+            ],
+            ["cargo", "test", "-p", "codekarl", "--test", "cli_spec", "--locked"],
             # CK-162: the application with the `vulkan` feature and no `metal` feature must compile everywhere its
             # sources are (a Linux-only break shows here, on a Mac, as a build error); every target is compiled, none run.
             [
@@ -1222,16 +1293,7 @@ STEPS = [
         description="The codekarl application's tests without its `metal` feature (the Metal CLI case is "
         "shown skipped); its real-window test target is empty without the feature; and a build of every "
         "target with the `vulkan` feature alone (CK-162).",
-        paths=(
-            "apps/codekarl/",
-            "crates/economy/",
-            "crates/map/tests/network/",
-            "crates/map/tests/fixtures/backdrop/",
-            "config/",
-            "scripts/",
-            "assets/",
-            "specs/",
-        ),
+        paths=APP_PATHS,
     ),
     # CK-84: the Metal presenter's static guard. It reads files and opens no window and uses no GPU, so it is
     # its own group, selected by what it reads (the crate and the application's sources), and `metal.gpu`
@@ -1900,7 +1962,7 @@ def matched(step: Step, changed: Sequence[str]) -> tuple[bool, str]:
     hits = [(path, pattern) for path in changed for pattern in step.paths if touches(pattern, path)]
     if not hits:
         return False, "no changed path matches its patterns"
-    if step.name in ("rust.app", "rust.app-default"):
+    if step.name in ("rust.app", "app.long", "rust.app-default"):
         economy_hits = [path for path, _ in hits if path.startswith("crates/economy/")]
         if economy_hits:
             return True, f"changed economy path {economy_hits[0]} selects application tests"

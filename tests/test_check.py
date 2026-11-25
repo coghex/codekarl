@@ -49,6 +49,7 @@ UNITTEST_STEPS = (
 RUST_STEPS = (
     "rust.core",
     "rust.app",
+    "app.long",
     "rust.app-default",
     "metal.isolation",
     "metal.gpu",
@@ -88,6 +89,7 @@ VULKAN_OPTIONAL_STEPS = (
 FULL_SPEC_STEPS = {
     "rust.core",
     "rust.app",
+    "app.long",
     "metal.gpu",
     "app.metal-gpu",
     "native.window",
@@ -466,6 +468,9 @@ class Levels(CheckFixture):
                     "--test",
                     "ui_pointer_streams",
                     *flags,
+                    "--",
+                    "--skip",
+                    "app_long_",
                 ],
                 [
                     "cargo",
@@ -488,7 +493,22 @@ class Levels(CheckFixture):
         self.assertEqual(
             by_name["rust.app-default"].commands(),
             [
-                ["cargo", "test", "-p", "codekarl", "--locked"],
+                ["cargo", "test", "-p", "codekarl", "--all-targets", "--no-run", "--locked"],
+                [
+                    "cargo",
+                    "test",
+                    "-p",
+                    "codekarl",
+                    "--lib",
+                    "--test",
+                    "modes",
+                    "--test",
+                    "runtime",
+                    "--locked",
+                    "--",
+                    *check.APP_DEFAULT_TESTS,
+                ],
+                ["cargo", "test", "-p", "codekarl", "--test", "cli_spec", "--locked"],
                 # CK-162: the `vulkan` feature alone compiles (every target, none run).
                 [
                     "cargo",
