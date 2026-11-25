@@ -2615,6 +2615,7 @@ GUARDS: tuple[Guard, ...] = (
         "apps/codekarl/src/game/tests/setup.rs",
         "rust.app",
         (
+            "assets/game/weather.toml",
             "Cargo.lock",
             "rust-toolchain.toml",
             "crates/sim/Cargo.toml",

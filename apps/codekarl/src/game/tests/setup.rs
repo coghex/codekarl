@@ -480,6 +480,36 @@ fn write_genetics(root: &Path, haplogroups: &str, traits: &str) {
 }
 
 #[test]
+fn each_steering_setting_changes_the_rules_hash() {
+    let dir = Dir::new();
+    fs::create_dir_all(dir.0.join("game")).unwrap();
+    fs::create_dir_all(dir.0.join("map/ireland")).unwrap();
+    fs::write(dir.0.join("game/economy.toml"), "economy").unwrap();
+    fs::write(dir.0.join("game/peoples.toml"), "peoples").unwrap();
+    fs::write(dir.0.join("map/ireland/terrain.toml"), "terrain").unwrap();
+    write_genetics(&dir.0, "haplogroups", "traits");
+    let source = include_str!("../../../../../assets/game/weather.toml");
+    let path = dir.0.join("game/weather.toml");
+    fs::write(&path, source).unwrap();
+    let before = hashes::rules_hash(&dir.0).unwrap();
+    for (name, value) in [
+        ("steer_contrast", 1225),
+        ("steer_smooth_blocks", 5),
+        ("steer_smooth_passes", 3),
+        ("steer_drift_west", 100),
+        ("steer_drift_pole", 200),
+    ] {
+        let changed = source.replace(
+            &format!("{name} = {value}\n"),
+            &format!("{name} = {}\n", value + 1),
+        );
+        assert_ne!(changed, source);
+        fs::write(&path, changed).unwrap();
+        assert_ne!(hashes::rules_hash(&dir.0).unwrap(), before, "{name}");
+    }
+}
+
+#[test]
 fn editing_any_life_cycle_file_changes_the_rules_hash() {
     let dir = Dir::new();
     fs::create_dir_all(dir.0.join("game")).unwrap();

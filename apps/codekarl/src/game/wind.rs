@@ -3,6 +3,49 @@ use ck_map::Backdrop;
 use ck_sim::weather::WeatherRules;
 
 const WORLD: i64 = 47_766;
+type SteeringCache = std::sync::Arc<std::sync::OnceLock<Vec<i64>>>;
+
+fn contrast(temperature: i64, strength: i64) -> i64 {
+    round(i128::from(temperature) * i128::from(strength), 10_000)
+}
+
+fn carrying(wind: (i64, i64), latitude: i64, west: i64, pole: i64) -> (i64, i64) {
+    (
+        wind.0 - west,
+        wind.1 + if latitude >= 0 { pole } else { -pole },
+    )
+}
+
+fn horizontal_mean(values: &[i64], cols: usize, rows: usize, radius: usize) -> Vec<i64> {
+    let width = 2 * radius + 1;
+    let mut horizontal = vec![0; values.len()];
+    for r in 0..rows {
+        for c in 0..cols {
+            let sum: i64 = (0..width)
+                .map(|d| values[r * cols + (c + cols + d - radius) % cols])
+                .sum();
+            horizontal[r * cols + c] = round(i128::from(sum), width as i128);
+        }
+    }
+    horizontal
+}
+
+fn smooth(input: &[i64], cols: usize, rows: usize, radius: usize, passes: usize) -> Vec<i64> {
+    let mut values = input.to_vec();
+    let width = 2 * radius + 1;
+    for _ in 0..passes {
+        let horizontal = horizontal_mean(&values, cols, rows, radius);
+        for r in 0..rows {
+            for c in 0..cols {
+                let sum: i64 = (0..width)
+                    .map(|d| horizontal[(r + d).saturating_sub(radius).min(rows - 1) * cols + c])
+                    .sum();
+                values[r * cols + c] = round(i128::from(sum), width as i128);
+            }
+        }
+    }
+    values
+}
 fn round(n: i128, d: i128) -> i64 {
     let q = (n.abs() + d / 2) / d;
     i64::try_from(if n < 0 { -q } else { q }).expect("validated wind fits i64")
@@ -52,6 +95,7 @@ pub(super) struct WindField<'a> {
     backdrop: &'a Backdrop,
     rules: &'a WeatherRules,
     count: i64,
+    pub(super) steering_cache: SteeringCache,
 }
 impl<'a> WindField<'a> {
     pub(super) fn new(backdrop: &'a Backdrop, rules: &'a WeatherRules) -> Result<Self, String> {
@@ -61,7 +105,11 @@ impl<'a> WindField<'a> {
             backdrop,
             rules,
             count,
+            steering_cache: SteeringCache::default(),
         };
+        if 2 * rules.steer_smooth_blocks + 1 > count {
+            return Err("weather.toml: steer_smooth_blocks too wide for backdrop".into());
+        }
         if 2 * rules.wind_slope_blocks >= count {
             return Err("weather.toml: wind_slope_blocks too wide for backdrop".into());
         }
@@ -119,6 +167,66 @@ impl<'a> WindField<'a> {
             )
             .expect("validated block")
     }
+    fn steering_pressure(&self, k: i64, r: i64, month: usize) -> i64 {
+        let cols = usize::try_from(self.count).expect("valid columns");
+        let rows = usize::try_from(self.backdrop.rows()).expect("valid rows");
+        let values = self.steering_cache.get_or_init(|| {
+            let mut all = Vec::with_capacity(12 * cols * rows);
+            for m in 0..12 {
+                let temperatures: Vec<i64> = (0..rows)
+                    .flat_map(|row| {
+                        (0..cols).map(move |col| {
+                            i64::from(
+                                self.sample(
+                                    i64::try_from(col).expect("valid column"),
+                                    i64::try_from(row).expect("valid row"),
+                                    m,
+                                )
+                                .air_temperature_tenths,
+                            ) * 100
+                        })
+                    })
+                    .collect();
+                let smoothed = smooth(
+                    &temperatures,
+                    cols,
+                    rows,
+                    usize::try_from(self.rules.steer_smooth_blocks).expect("validated radius"),
+                    usize::try_from(self.rules.steer_smooth_passes).expect("validated passes"),
+                );
+                all.extend(smoothed);
+            }
+            all
+        });
+        i64::from(self.sample(k, r, month).pressure_pa)
+            + contrast(
+                values[month * cols * rows
+                    + usize::try_from(r).expect("valid row") * cols
+                    + usize::try_from(k).expect("valid column")],
+                self.rules.steer_contrast,
+            )
+    }
+
+    #[expect(
+        clippy::many_single_char_names,
+        reason = "symbols match the reviewed equations"
+    )]
+    fn steering_rule(&self, k: i64, r: i64, month: usize, pair: (i64, i64)) -> (i64, i64) {
+        let n = self.rules.wind_slope_blocks;
+        let east = (k + n).rem_euclid(self.count);
+        let west = (k - n).rem_euclid(self.count);
+        let sx: i64 = (0..n)
+            .map(|s| self.gap((k + s) % self.count) + self.gap((k - 1 - s).rem_euclid(self.count)))
+            .sum();
+        let north = (r - n).max(0);
+        let south = (r + n).min(i64::from(self.backdrop.rows()) - 1);
+        let sy = (south - north) * i64::from(self.backdrop.block_cells());
+        let dx = self.steering_pressure(east, r, month) - self.steering_pressure(west, r, month);
+        let dy = self.steering_pressure(k, north, month) - self.steering_pressure(k, south, month);
+        let (c, s) = self.trig(r);
+        pressure_wind(dx, dy, sx, sy, c, s, pair)
+    }
+
     #[expect(
         clippy::many_single_char_names,
         reason = "symbols match the reviewed equations"
@@ -340,7 +448,7 @@ impl WindField<'_> {
         let mut months = [(0, 0, 0); 12];
         for (m, value) in months.iter_mut().enumerate() {
             *value = self.interpolate(i, j, m, |field, col, row, m| {
-                let (u, v) = field.belt_block(col, row, m, pair, Self::rule);
+                let (u, v) = field.belt_block(col, row, m, pair, Self::steering_rule);
                 (u, v, 0)
             })?;
         }
@@ -445,7 +553,14 @@ impl WindField<'_> {
             let (u, v) = self
                 .steering(i, j, year, month, date)
                 .expect("valid centre");
-            let c = self.cos(self.point_latitude(low.y).abs());
+            let latitude = self.point_latitude(low.y);
+            let (u, v) = carrying(
+                (u, v),
+                latitude,
+                self.rules.steer_drift_west,
+                self.rules.steer_drift_pole,
+            );
+            let c = self.cos(latitude.abs());
             low.x = (low.x + round(i128::from(u) * 36_000_000_000, i128::from(839 * c)))
                 .rem_euclid(WORLD * 1000);
             low.y -= round(i128::from(v) * 36_000_000_000, i128::from(839 * c));
@@ -821,6 +936,179 @@ pub(super) fn display(u: i64, v: i64) -> (i64, &'static str) {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn contrast_rounding_and_poleward_drift() {
+        for (t, part) in [(-4, -1), (4, 1), (-12, -2)] {
+            assert_eq!(contrast(t, 1250), part);
+        }
+        assert_eq!(contrast(-7400, 1225), -907);
+        assert_eq!(carrying((163, 289), 0, 100, 200), (63, 489));
+        assert_eq!(carrying((163, 289), 8, 100, 200), (63, 489));
+        assert_eq!(carrying((163, 289), -67, 100, 200), (63, 89));
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the backdrop table and travel examples share the loaded field"
+    )]
+    fn steering_reference_on_backdrop() {
+        use ck_sim::Canonical;
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+        let backdrop = ck_map::load_backdrop(&root.join("map/backdrop")).unwrap();
+        let rules =
+            WeatherRules::parse(&std::fs::read_to_string(root.join("game/weather.toml")).unwrap())
+                .unwrap();
+        let field = WindField::new(&backdrop, &rules).unwrap();
+        let first = i64::from(backdrop.first_row());
+        for (m, col, row, pressure) in [
+            (0, 356, 242, 101_912),
+            (0, 357, 243, 101_958),
+            (0, 333, 246, 101_985),
+            (0, 300, 300, 104_346),
+            (0, 0, 242, 99_983),
+            (0, 745, 242, 99_978),
+            (0, 356, 132, 99_316),
+            (0, 356, 529, 98_965),
+            (0, 420, 135, 100_141),
+            (6, 356, 242, 103_309),
+            (6, 333, 246, 103_463),
+            (6, 356, 529, 97_423),
+        ] {
+            assert_eq!(
+                field.steering_pressure(col, row - first, m),
+                pressure,
+                "month {m}, block {col},{row}"
+            );
+        }
+        let temperatures = field.steering_cache.get().unwrap();
+        let cols = usize::try_from(field.count).unwrap();
+        let rows = backdrop.rows() as usize;
+        for (m, col, row, air, smoothed) in [
+            (0, 356, 242, 35, 6184),
+            (0, 357, 243, 39, 6120),
+            (0, 333, 246, 95, 9394),
+            (0, 300, 300, 182, 18_160),
+            (0, 0, 242, 4, 427),
+            (0, 745, 242, 4, 378),
+            (0, 356, 132, -160, -14_939),
+            (0, 356, 529, -10, -849),
+            (0, 420, 135, -84, -7400),
+            (6, 356, 242, 138, 14_422),
+            (6, 333, 246, 149, 14_841),
+            (6, 356, 529, -167, -15_750),
+        ] {
+            assert_eq!(
+                field.sample(col, row - first, m).air_temperature_tenths,
+                air
+            );
+            assert_eq!(
+                temperatures[m * cols * rows
+                    + usize::try_from(row - first).unwrap() * cols
+                    + usize::try_from(col).unwrap()],
+                smoothed
+            );
+        }
+        for (i, j, latitude, steering, carried) in [
+            (21_361, 15_777, 520_003, (1066, 376), (966, 576)),
+            (22_833, 15_538, 530_954, (1028, -171), (928, 29)),
+            (14_196, 18_756, 360_011, (1977, 729), (1877, 929)),
+            (21_361, 23_882, 8, (163, 289), (63, 489)),
+            (21_361, 23_883, -67, (163, 289), (63, 89)),
+            (26_536, 31_565, -499_979, (1808, -58), (1708, -258)),
+        ] {
+            let actual_latitude = field.point_latitude(i64::from(j) * 1000 + 500);
+            let actual_steering = field.steering(i, j, 769, 1, 7).unwrap();
+            assert_eq!(actual_latitude, latitude, "cell {i},{j}");
+            assert_eq!(actual_steering, steering, "cell {i},{j}");
+            assert_eq!(
+                carrying(
+                    actual_steering,
+                    actual_latitude,
+                    rules.steer_drift_west,
+                    rules.steer_drift_pole
+                ),
+                carried,
+                "cell {i},{j}"
+            );
+        }
+        let mut lows = super::super::lows::Lows::default();
+        field
+            .place(&mut lows, 21_361, 15_777, 500_000, 3000)
+            .unwrap();
+        field.step(&mut lows, 769, 1, 7);
+        assert_eq!(
+            (lows.entries[0].x, lows.entries[0].y),
+            (21_428_825, 15_737_356)
+        );
+        for _ in 1..6 {
+            field.step(&mut lows, 769, 1, 7);
+        }
+        assert_eq!(
+            (lows.entries[0].x, lows.entries[0].y),
+            (21_769_841, 15_530_381)
+        );
+        let bytes = lows.to_bytes().unwrap();
+        let mut restored = super::super::lows::Lows::from_bytes(&bytes).unwrap();
+        assert_eq!(restored, lows);
+        assert_eq!(lows.entries[0].to_bytes().unwrap().len(), 6 * 8);
+        field.step(&mut lows, 769, 1, 7);
+        field.step(&mut restored, 769, 1, 7);
+        assert_eq!(restored, lows);
+        let mut half = super::super::lows::Lows::default();
+        field.place(&mut half, 26_912, 8800, 400_000, 1000).unwrap();
+        field.step(&mut half, 769, 1, 7);
+        assert_eq!(
+            (half.entries[0].x, half.entries[0].y),
+            (27_053_172, 8_721_501)
+        );
+        let mut long = super::super::lows::Lows::default();
+        field
+            .place(&mut long, 14_196, 18_756, 600_000, 2000)
+            .unwrap();
+        for hour in 1..=144 {
+            field.step(&mut long, 769, 1, 7 + (hour - 1) / 24);
+            match hour {
+                48 => assert_eq!(
+                    (long.entries[0].x, long.entries[0].y),
+                    (19_078_282, 16_870_254)
+                ),
+                96 => assert_eq!(
+                    (long.entries[0].x, long.entries[0].y),
+                    (22_439_323, 14_971_703)
+                ),
+                144 => assert_eq!(
+                    (long.entries[0].x, long.entries[0].y),
+                    (23_643_532, 13_755_732)
+                ),
+                _ => (),
+            }
+        }
+    }
+
+    #[test]
+    fn smoothing_reference_ring() {
+        let input = vec![1000, 2000, 4000, 8000, 0, 0, 0, 0, -3000, 5000, -3000, 5000];
+        assert_eq!(
+            horizontal_mean(&input, 4, 3, 1),
+            vec![3667, 2333, 4667, 4333, 0, 0, 0, 0, 2333, -333, 2333, -333]
+        );
+        assert_eq!(
+            smooth(&input, 4, 3, 1, 1),
+            vec![
+                2445, 1555, 3111, 2889, 2000, 667, 2333, 1333, 1555, -222, 1555, -222
+            ]
+        );
+        assert_eq!(
+            smooth(&input, 4, 3, 1, 2),
+            vec![
+                1975, 2136, 2160, 2506, 1333, 1667, 1444, 1889, 691, 1198, 728, 1272
+            ]
+        );
+        assert_eq!(smooth(&input, 4, 3, 0, 2), input);
+        assert_eq!(smooth(&input, 4, 3, 1, 0), input);
+    }
+
     use super::*;
     #[test]
     fn turning_balance_and_wind_worked_examples() {
@@ -916,9 +1204,12 @@ mod tests {
         use super::super::lows::{EndKind, Low, Lows};
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
         let backdrop = ck_map::load_backdrop(&root.join("map/backdrop")).unwrap();
-        let rules =
+        let mut rules =
             WeatherRules::parse(&std::fs::read_to_string(root.join("game/weather.toml")).unwrap())
                 .unwrap();
+        rules.steer_contrast = 0;
+        rules.steer_drift_west = 0;
+        rules.steer_drift_pole = 0;
         let field = WindField::new(&backdrop, &rules).unwrap();
         let low = Low {
             number: 1,
@@ -1058,9 +1349,12 @@ mod tests {
     fn trial_b_merges_and_travels() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
         let backdrop = ck_map::load_backdrop(&root.join("map/backdrop")).unwrap();
-        let rules =
+        let mut rules =
             WeatherRules::parse(&std::fs::read_to_string(root.join("game/weather.toml")).unwrap())
                 .unwrap();
+        rules.steer_contrast = 0;
+        rules.steer_drift_west = 0;
+        rules.steer_drift_pole = 0;
         let field = WindField::new(&backdrop, &rules).unwrap();
         let mut list = super::super::lows::Lows::default();
         field.place(&mut list, 21361, 15777, 500_000, 3000).unwrap();
@@ -1096,9 +1390,12 @@ mod tests {
     fn equal_distance_order_is_stable_for_every_input_permutation() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
         let backdrop = ck_map::load_backdrop(&root.join("map/backdrop")).unwrap();
-        let rules =
+        let mut rules =
             WeatherRules::parse(&std::fs::read_to_string(root.join("game/weather.toml")).unwrap())
                 .unwrap();
+        rules.steer_contrast = 0;
+        rules.steer_drift_west = 0;
+        rules.steer_drift_pole = 0;
         let field = WindField::new(&backdrop, &rules).unwrap();
         let mut original = super::super::lows::Lows::default();
         for i in [20002, 19902, 20102] {
@@ -1157,9 +1454,12 @@ mod tests {
     fn merged_low_leaving_in_same_hour_keeps_joined_strength() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
         let backdrop = ck_map::load_backdrop(&root.join("map/backdrop")).unwrap();
-        let rules =
+        let mut rules =
             WeatherRules::parse(&std::fs::read_to_string(root.join("game/weather.toml")).unwrap())
                 .unwrap();
+        rules.steer_contrast = 0;
+        rules.steer_drift_west = 0;
+        rules.steer_drift_pole = 0;
         let field = WindField::new(&backdrop, &rules).unwrap();
         let mut list = super::super::lows::Lows::default();
         for _ in 0..2 {
@@ -1177,13 +1477,20 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the full meeting and save sequence is one example"
+    )]
     fn three_lows_remain_ordered_across_a_save_and_reload() {
         use ck_sim::Canonical;
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
         let backdrop = ck_map::load_backdrop(&root.join("map/backdrop")).unwrap();
-        let rules =
+        let mut rules =
             WeatherRules::parse(&std::fs::read_to_string(root.join("game/weather.toml")).unwrap())
                 .unwrap();
+        rules.steer_contrast = 0;
+        rules.steer_drift_west = 0;
+        rules.steer_drift_pole = 0;
         let field = WindField::new(&backdrop, &rules).unwrap();
         let mut original = super::super::lows::Lows::default();
         for (i, depth) in [(19902, 1500), (20202, 2500), (20462, 2000)] {
@@ -1284,9 +1591,12 @@ mod tests {
     fn wrap_pressure_wind_and_merge_match_worked_example() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
         let backdrop = ck_map::load_backdrop(&root.join("map/backdrop")).unwrap();
-        let rules =
+        let mut rules =
             WeatherRules::parse(&std::fs::read_to_string(root.join("game/weather.toml")).unwrap())
                 .unwrap();
+        rules.steer_contrast = 0;
+        rules.steer_drift_west = 0;
+        rules.steer_drift_pole = 0;
         let field = WindField::new(&backdrop, &rules).unwrap();
         let mut list = super::super::lows::Lows::default();
         field.place(&mut list, 47700, 15776, 500_000, 3000).unwrap();
@@ -1421,9 +1731,12 @@ mod tests {
     fn equal_lows_choose_lower_number_and_clamp_depth() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
         let backdrop = ck_map::load_backdrop(&root.join("map/backdrop")).unwrap();
-        let rules =
+        let mut rules =
             WeatherRules::parse(&std::fs::read_to_string(root.join("game/weather.toml")).unwrap())
                 .unwrap();
+        rules.steer_contrast = 0;
+        rules.steer_drift_west = 0;
+        rules.steer_drift_pole = 0;
         let field = WindField::new(&backdrop, &rules).unwrap();
         for (depth, joined_depth, strongest) in [(2000, 4000, 2648), (9000, 15000, 6147)] {
             let mut list = super::super::lows::Lows {
@@ -1457,9 +1770,12 @@ mod tests {
         use ck_sim::Canonical;
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
         let backdrop = ck_map::load_backdrop(&root.join("map/backdrop")).unwrap();
-        let rules =
+        let mut rules =
             WeatherRules::parse(&std::fs::read_to_string(root.join("game/weather.toml")).unwrap())
                 .unwrap();
+        rules.steer_contrast = 0;
+        rules.steer_drift_west = 0;
+        rules.steer_drift_pole = 0;
         let field = WindField::new(&backdrop, &rules).unwrap();
         let mut list = super::super::lows::Lows {
             next: 7,
@@ -1612,9 +1928,12 @@ mod tests {
     fn trial_a_first_steps_and_birr_at_hour_eighteen() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
         let backdrop = ck_map::load_backdrop(&root.join("map/backdrop")).unwrap();
-        let rules =
+        let mut rules =
             WeatherRules::parse(&std::fs::read_to_string(root.join("game/weather.toml")).unwrap())
                 .unwrap();
+        rules.steer_contrast = 0;
+        rules.steer_drift_west = 0;
+        rules.steer_drift_pole = 0;
         let field = WindField::new(&backdrop, &rules).unwrap();
         let mut list = super::super::lows::Lows::default();
         field.place(&mut list, 21361, 15777, 500_000, 3000).unwrap();
@@ -1965,6 +2284,14 @@ mod tests {
         let mut rules = WeatherRules::parse(&text).unwrap();
         rules.wind_slope_blocks = 5;
         assert!(WindField::new(&fixture, &rules).is_ok());
+        rules.steer_smooth_blocks = 6;
+        assert!(
+            WindField::new(&fixture, &rules)
+                .err()
+                .unwrap()
+                .contains("steer_smooth_blocks")
+        );
+        rules.steer_smooth_blocks = 5;
         rules.wind_slope_blocks = 6;
         assert!(
             WindField::new(&fixture, &rules)

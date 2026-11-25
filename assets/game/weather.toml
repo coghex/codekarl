@@ -11,6 +11,11 @@ wind_slope_blocks = 2
 wind_belt_latitude = 60000
 steer_friction = 1000
 steer_factor = 1000
+steer_contrast = 1225
+steer_smooth_blocks = 5
+steer_smooth_passes = 3
+steer_drift_west = 100
+steer_drift_pole = 200
 meet_share = 500
 
 cosine = [
