@@ -101,56 +101,83 @@ fn pops_of(state: &GameState, place: &str) -> Vec<(usize, String, String, u64)> 
 }
 
 #[test]
-fn shipped_herds_start_at_two_thirds_of_their_maximum() {
+fn shipped_herds_follow_seed_and_respect_capacity() {
     let directory = assets().join("scenarios/ireland-768");
     let scenario = ck_map::load_scenario(&directory).unwrap();
-    let (economy, _) = starting_economy(&assets(), &directory, &scenario).unwrap();
     let rules = ck_economy::Rules::load(assets().join("game/economy.toml")).unwrap();
-    let mut checked = 0;
-    let mut demesnes = 0;
-    for building in economy.places.iter().flat_map(|place| &place.buildings) {
-        let definition = rules
-            .buildings
-            .iter()
-            .find(|b| b.id == building.kind)
-            .unwrap();
-        let levels: u64 = definition
-            .methods
-            .iter()
-            .zip(&building.method_levels)
-            .filter(|(method, _)| method.resource != "sea")
-            .map(|(_, levels)| u64::from(*levels))
-            .sum();
-        let horses = rules
-            .herd_species
-            .iter()
-            .position(|s| s.animal == "horses")
-            .unwrap();
-        if building.kind == "demesne" {
-            demesnes += 1;
-            assert_eq!(definition.herds["horses"].maximum, 3);
-            assert_eq!(building.herds[horses], levels * 3 * 2 / 3);
-        } else {
-            assert_eq!(building.herds.get(horses).copied().unwrap_or(0), 0);
-            assert!(!definition.herds.contains_key("horses"));
-        }
-        for (species, head) in rules.herd_species.iter().zip(&building.herds) {
-            let maximum = definition
-                .herds
-                .get(&species.animal)
-                .map_or(0, |c| c.maximum * levels);
-            assert_eq!(
-                *head,
-                maximum * 2 / 3,
-                "{} {}",
-                building.kind,
-                species.animal
-            );
-            checked += 1;
+    let make = |seed| {
+        super::super::economy::starting_economy_seeded(&assets(), &directory, &scenario, seed)
+            .unwrap()
+            .0
+    };
+    let state = make(42);
+    assert_eq!(state, make(42));
+    assert_ne!(state, make(43));
+    let cattle = rules
+        .herd_species
+        .iter()
+        .position(|s| s.animal == "cattle")
+        .unwrap();
+    let horses = rules
+        .herd_species
+        .iter()
+        .position(|s| s.animal == "horses")
+        .unwrap();
+    for place in &state.places {
+        for building in &place.buildings {
+            let definition = rules
+                .buildings
+                .iter()
+                .find(|b| b.id == building.kind)
+                .unwrap();
+            let levels: u64 = definition
+                .methods
+                .iter()
+                .zip(&building.method_levels)
+                .filter(|(m, _)| m.resource != "sea")
+                .map(|(_, n)| u64::from(*n))
+                .sum();
+            for (species, head) in rules.herd_species.iter().zip(&building.herds) {
+                let maximum = definition
+                    .herds
+                    .get(&species.animal)
+                    .map_or(0, |c| c.maximum * levels);
+                assert!(*head <= maximum, "{} {}", place.id, species.animal);
+            }
+            if definition.herds.contains_key("cattle") && levels > 0 {
+                assert!(building.herds[cattle] > 0);
+            }
         }
     }
-    assert!(checked > 0);
-    assert!(demesnes > 0);
+    for seat in [
+        "ailech",
+        "uisneach",
+        "cashel",
+        "rathcroghan",
+        "lyons_hill",
+        "downpatrick",
+    ] {
+        let place = state.places.iter().find(|p| p.id == seat).unwrap();
+        assert!(
+            place
+                .buildings
+                .iter()
+                .find(|b| b.kind == "demesne")
+                .unwrap()
+                .herds[horses]
+                > 0,
+            "{seat}"
+        );
+    }
+    let restored = EconomyState::from_bytes(&state.to_bytes().unwrap()).unwrap();
+    assert_eq!(state, restored);
+    assert!(
+        state
+            .places
+            .iter()
+            .flat_map(|p| &p.buildings)
+            .any(|b| b.kind == "farm" && (b.herds[1] == 0 || b.herds[2] == 0))
+    );
 }
 
 /// A running digest of the economy, with every field a building or a place keeps: the stores and the storehouse's per-pop and
@@ -219,8 +246,7 @@ fn economy_digest(economy: &EconomyState) -> u64 {
 
 #[test]
 // Long run: selected by app.long.
-fn app_long_a_year_of_the_shipped_game_from_its_first_noon_is_day_for_day_the_accepted_year_with_levels_that_switch()
- {
+fn app_long_a_year_of_the_shipped_game_with_seeded_herds_and_levels_that_switch() {
     use std::fmt::Write as _;
 
     // The prepared game as the game runs it: its own clock from 00:00 on 9 October 768, its scheduler with each place's mean
@@ -901,7 +927,9 @@ fn the_safety_net_report_reconciles_each_pop_with_its_head_moves_and_the_rest_of
  {
     let directory = assets().join("scenarios/ireland-768");
     let scenario = ck_map::load_scenario(&directory).unwrap();
-    let (before, _) = starting_economy(&assets(), &directory, &scenario).unwrap();
+    let (before, _) =
+        super::super::economy::starting_economy_seeded(&assets(), &directory, &scenario, 7)
+            .unwrap();
     let rules = ck_economy::Rules::load(assets().join("game/economy.toml")).unwrap();
     let data = ck_characters::figures::FigureData::parse(
         &fs::read_to_string(directory.join("ireland-768.toml")).unwrap(),

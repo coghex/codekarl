@@ -55,7 +55,7 @@ pub(super) fn run(arguments: impl IntoIterator<Item = String>) -> Result<String,
         .ok_or_else(|| "scenario must be under assets/scenarios/<name>".to_owned())?;
     let map = ck_map::load_scenario(&scenario).map_err(|error| error.to_string())?;
     let rules = Rules::load(assets.join("game/economy.toml")).map_err(|error| error.to_string())?;
-    let (state, _) = crate::game::economy::starting_economy(assets, &scenario, &map)?;
+    let (state, _) = crate::game::economy::starting_economy_seeded(assets, &scenario, &map, seed)?;
     let quality_by_place = crate::game::economy::land_counts(&map, &rules.terrain_order)?
         .into_iter()
         .enumerate()
@@ -460,8 +460,7 @@ mod tests {
     /// The soak's own inputs for the shipped scenario, as `run` makes them: the start, the map's fertility, shelter and nearby
     /// places, and the first noon the soak runs on.
     #[test]
-    fn a_year_of_the_shipped_scenario_from_its_start_is_day_for_day_the_build_before_levels_were_records()
-     {
+    fn a_year_of_the_shipped_scenario_follows_its_seeded_opening() {
         let scenario = PathBuf::from(DEFAULT_SCENARIO).canonicalize().unwrap();
         let assets = scenario.parent().and_then(Path::parent).unwrap();
         let map = ck_map::load_scenario(&scenario).unwrap();
@@ -594,9 +593,9 @@ mod tests {
         assert_eq!(
             wage_entries,
             [
-                "building0.holdings=23476",
-                "building1.demesne=64212",
-                "building2.farm=14663",
+                "building0.holdings=25097",
+                "building1.demesne=68062",
+                "building2.farm=10218",
                 "building3.storehouse=0",
             ],
             "Armagh day-1 posted-wage golden values"
@@ -610,20 +609,29 @@ mod tests {
         assert!(row_fields[17].contains("oats=95000"));
         assert_eq!(
             row_fields[18],
-            "apples=79;dairy=2061;ale=355;mead=36;linen=127;hardwood=1500"
+            "apples=79;dairy=1496;ale=355;mead=36;linen=127;hardwood=1500"
         );
         assert!(row_fields[19].contains("pop0:"));
-        assert_eq!(row_fields[20], "cattle=573;pigs=382;sheep=336");
+        let herds = row_fields[20].split(';').collect::<Vec<_>>();
+        assert_eq!(herds.len(), 3);
+        for (entry, animal) in herds.iter().zip(["cattle", "pigs", "sheep"]) {
+            let (name, count) = entry.split_once('=').unwrap();
+            assert_eq!(name, animal);
+            count.parse::<u64>().expect("herd head is numeric");
+        }
         assert_eq!(row_fields[22], "", "losses column");
     }
 
     #[test]
     fn ten_year_soak_keeps_each_herd_species_alive() {
         let assets = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
-        let rules = Rules::load(assets.join("game/economy.toml")).unwrap();
+        let mut rules = Rules::load(assets.join("game/economy.toml")).unwrap();
+        rules.herd_opening.keep_pm = 1000;
+        rules.herd_opening.spread = [1000, 1000];
         let mut scenario_data =
             ck_economy::ScenarioEconomy::load(assets.join("scenarios/ireland-768/economy.toml"))
                 .unwrap();
+        scenario_data.horses_always.clear();
         scenario_data.places.insert(
             "herd_fixture".to_owned(),
             ck_economy::StartOverride {

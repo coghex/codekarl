@@ -99,10 +99,20 @@ pub(crate) fn load_rules(asset_root: &Path) -> Result<Option<Rules>, String> {
 
 /// Build the scenario's deterministic opening economy; fixture scenarios that
 /// predate M9 deliberately retain the empty state.
+#[cfg(test)]
 pub(crate) fn starting_economy(
     asset_root: &Path,
     scenario_directory: &Path,
     scenario: &Scenario,
+) -> Result<(EconomyState, Vec<String>), String> {
+    starting_economy_seeded(asset_root, scenario_directory, scenario, 0)
+}
+
+pub(crate) fn starting_economy_seeded(
+    asset_root: &Path,
+    scenario_directory: &Path,
+    scenario: &Scenario,
+    seed: u64,
 ) -> Result<(EconomyState, Vec<String>), String> {
     let rules_path = asset_root.join("game/economy.toml");
     if !rules_path.exists() {
@@ -151,7 +161,7 @@ pub(crate) fn starting_economy(
             land,
         })
         .collect::<Vec<_>>();
-    ck_economy::starting_state_at(
+    ck_economy::starting_state_at_seed(
         &rules,
         &data,
         &starts,
@@ -161,6 +171,7 @@ pub(crate) fn starting_economy(
             day: scenario.start.day,
             hour: scenario.start.hour,
         },
+        seed,
     )
     .map_err(|error| error.to_string())
 }

@@ -264,12 +264,49 @@ pub struct BuildingType {
     pub methods: Vec<Method>,
 }
 
+/// Parameters for the seeded opening herd distribution.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct HerdOpening {
+    /// Chance per mille of keeping pigs and sheep.
+    pub keep_pm: u16,
+    /// Court sizes separating the three chances.
+    pub court_thresholds: [u64; 2],
+    /// Horse keeping chances by court size.
+    pub court_chances: [u16; 3],
+    /// Divisor of the grazing bonus.
+    pub grazing_divisor: i64,
+    /// Inclusive per-mille spread bounds.
+    pub spread: [u64; 2],
+    /// Demesne rank multiplier per mille.
+    pub demesne_rank_pm: u64,
+    /// Minimum head per farming level.
+    pub floor_per_level: u64,
+}
+
+impl Default for HerdOpening {
+    fn default() -> Self {
+        Self {
+            keep_pm: 750,
+            court_thresholds: [40, 80],
+            court_chances: [250, 500, 750],
+            grazing_divisor: 4,
+            spread: [500, 1500],
+            demesne_rank_pm: 1500,
+            floor_per_level: 1,
+        }
+    }
+}
+
 /// An authored economy rules file.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Rules {
     /// Opening share of each herd maximum, numerator and denominator.
     pub herd_start_share: [u64; 2],
+    /// Parameters for the opening distribution.
+    #[serde(default)]
+    pub herd_opening: HerdOpening,
     /// Herd species in canonical order.
     #[serde(default)]
     pub herd_species: Vec<HerdSpecies>,
@@ -478,6 +515,35 @@ impl Rules {
                 "herd_start_share".to_owned(),
                 "invalid share".to_owned(),
             ));
+        }
+        let opening = &self.herd_opening;
+        for (entry, bad) in [
+            ("keep_pm", opening.keep_pm > 1000),
+            (
+                "court_chances",
+                opening.court_chances.iter().any(|v| *v > 1000),
+            ),
+            (
+                "court_thresholds",
+                opening.court_thresholds[0] == 0
+                    || opening.court_thresholds[0] >= opening.court_thresholds[1],
+            ),
+            ("grazing_divisor", opening.grazing_divisor <= 0),
+            (
+                "spread",
+                opening.spread[0] == 0
+                    || opening.spread[0] > opening.spread[1]
+                    || opening.spread[1] == u64::MAX,
+            ),
+            ("demesne_rank_pm", opening.demesne_rank_pm == 0),
+            ("floor_per_level", opening.floor_per_level == 0),
+        ] {
+            if bad {
+                return Err(refuse(
+                    format!("herd_opening.{entry}"),
+                    "invalid value".to_owned(),
+                ));
+            }
         }
         unique_ids(
             file,
@@ -1231,6 +1297,9 @@ pub struct ScenarioEconomy {
     /// Noble houses by location id.
     #[serde(default)]
     pub nobles: BTreeMap<String, NobleStart>,
+    /// Seats guaranteed to keep horses.
+    #[serde(default)]
+    pub horses_always: Vec<String>,
 }
 
 impl ScenarioEconomy {
@@ -1278,6 +1347,15 @@ impl ScenarioEconomy {
                         });
                     }
                 }
+            }
+        }
+        for id in &self.horses_always {
+            if !self.nobles.contains_key(id) {
+                return Err(DataError {
+                    file: file.to_owned(),
+                    entry: format!("horses_always.{id}"),
+                    problem: "seat has no noble and demesne".to_owned(),
+                });
             }
         }
         for (id, noble) in &self.nobles {
@@ -1586,7 +1664,7 @@ pub fn starting_state(
     locations: &[StartLocation],
     start_month: u8,
 ) -> Result<(EconomyState, Vec<String>), DataError> {
-    starting_state_with_payday(rules, data, locations, start_month, start_month)
+    starting_state_with_payday(rules, data, locations, start_month, start_month, 0)
 }
 
 /// Builds the starting economy using the scenario's exact date for opening unpaid work.
@@ -1599,6 +1677,20 @@ pub fn starting_state_at(
     locations: &[StartLocation],
     start: Date,
 ) -> Result<(EconomyState, Vec<String>), DataError> {
+    starting_state_at_seed(rules, data, locations, start, 0)
+}
+
+/// Build an opening using the game seed.
+///
+/// # Errors
+/// Returns a data error for invalid input or initialization failure.
+pub fn starting_state_at_seed(
+    rules: &Rules,
+    data: &ScenarioEconomy,
+    locations: &[StartLocation],
+    start: Date,
+    seed: u64,
+) -> Result<(EconomyState, Vec<String>), DataError> {
     ck_sim::GameTime::from_date(start)
         .map_err(|error| missing_data("scenario start".into(), &error.to_string()))?;
     let first_payday = if start.day == 1 && start.hour <= 12 {
@@ -1606,7 +1698,7 @@ pub fn starting_state_at(
     } else {
         start.month % 12 + 1
     };
-    starting_state_with_payday(rules, data, locations, start.month, first_payday)
+    starting_state_with_payday(rules, data, locations, start.month, first_payday, seed)
 }
 
 #[expect(
@@ -1619,6 +1711,7 @@ fn starting_state_with_payday(
     locations: &[StartLocation],
     start_month: u8,
     first_payday: u8,
+    seed: u64,
 ) -> Result<(EconomyState, Vec<String>), DataError> {
     if !(1..=12).contains(&start_month) {
         return Err(DataError {
@@ -1628,6 +1721,15 @@ fn starting_state_with_payday(
         });
     }
     rules.validate("economy rules")?;
+    data.validate("scenario economy data")?;
+    for id in &data.horses_always {
+        if !locations.iter().any(|location| &location.id == id) {
+            return Err(missing_data(
+                format!("horses_always.{id}"),
+                "seat is absent",
+            ));
+        }
+    }
     let months_to_harvest = months_to_grain_harvest(rules, start_month)?;
     let mut state = EconomyState::default();
     let mut report = Vec::new();
@@ -1836,6 +1938,13 @@ fn starting_state_with_payday(
                 });
             }
         }
+        if data.horses_always.contains(&location.id) && noble.is_none_or(|n| n.demesne_levels == 0)
+        {
+            return Err(missing_data(
+                format!("horses_always.{}", location.id),
+                "seat has no demesne",
+            ));
+        }
         let mut land = location.land.clone();
         let mut buildings = Vec::new();
         let mut remaining_sea = land.sea;
@@ -1890,7 +1999,29 @@ fn starting_state_with_payday(
                     problem: "annual supply overflow".to_owned(),
                 })?;
             }
-            let herds = herd_counts(rules, &assignment.method_levels, building)?;
+            let herds = opening_herds(
+                rules,
+                &assignment.method_levels,
+                building,
+                &assignment.herd_grazing_sums,
+                seed,
+                &location.id,
+                noble.map_or(0, |n| n.people),
+                data.horses_always.contains(&location.id),
+            )?;
+            if kind == "demesne"
+                && data.horses_always.contains(&location.id)
+                && rules
+                    .herd_species
+                    .iter()
+                    .position(|s| s.animal == "horses")
+                    .is_none_or(|i| herds[i] == 0)
+            {
+                return Err(missing_data(
+                    format!("horses_always.{}", location.id),
+                    "demesne has no room for horses",
+                ));
+            }
             let herd_carry = vec![0; herds.len()];
             buildings.push(BuildingState {
                 kind: kind.to_owned(),
@@ -3897,6 +4028,113 @@ fn choose_terrain(
     best.map(|(_, _, terrain)| terrain)
 }
 
+// Length-prefix each identifier to keep keys independent of list order and unambiguous.
+fn herd_draw(seed: u64, keys: &[&str]) -> u64 {
+    let mut h = seed ^ 0xcbf2_9ce4_8422_2325;
+    for key in keys {
+        for byte in (key.len() as u64)
+            .to_le_bytes()
+            .iter()
+            .chain(key.as_bytes())
+        {
+            h = (h ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+    h = h.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    h = (h ^ (h >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    h = (h ^ (h >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    h ^ (h >> 31)
+}
+
+fn horse_keep_chance(opening: &HerdOpening, people: u64, grazing: u64) -> u64 {
+    let base = if people >= opening.court_thresholds[1] {
+        opening.court_chances[2]
+    } else if people >= opening.court_thresholds[0] {
+        opening.court_chances[1]
+    } else {
+        opening.court_chances[0]
+    };
+    let bonus = (i128::from(grazing) - 500).div_euclid(i128::from(opening.grazing_divisor));
+    u64::try_from((i128::from(base) + bonus).clamp(0, 1000)).expect("clamped")
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The opening draw is keyed by the building and its place context."
+)]
+fn opening_herds(
+    rules: &Rules,
+    levels: &[u32],
+    building: &BuildingType,
+    grazing: &[u64],
+    seed: u64,
+    place: &str,
+    people: u64,
+    always: bool,
+) -> Result<Vec<u64>, DataError> {
+    let farming: u64 = building
+        .methods
+        .iter()
+        .zip(levels)
+        .filter(|(m, _)| m.resource != "sea")
+        .map(|(_, n)| u64::from(*n))
+        .sum();
+    let o = &rules.herd_opening;
+    rules
+        .herd_species
+        .iter()
+        .enumerate()
+        .map(|(i, species)| {
+            let maximum = farming
+                .checked_mul(building.herds.get(&species.animal).map_or(0, |c| c.maximum))
+                .ok_or_else(|| {
+                    missing_data(
+                        format!("buildings.{}.herds.{}", building.id, species.animal),
+                        "maximum overflow",
+                    )
+                })?;
+            if maximum == 0 {
+                return Ok(0);
+            }
+            let g = grazing[i] / farming;
+            let draw = |purpose| herd_draw(seed, &[place, &building.id, &species.animal, purpose]);
+            let kept = match species.animal.as_str() {
+                "cattle" => true,
+                "horses" => {
+                    building.id == "demesne"
+                        && (always || draw("keep") % 1000 < horse_keep_chance(o, people, g))
+                }
+                _ => draw("keep") % 1000 < u64::from(o.keep_pm),
+            };
+            if !kept {
+                return Ok(0);
+            }
+            let spread = o.spread[0] + draw("spread") % (o.spread[1] - o.spread[0] + 1);
+            let rank = if building.id == "demesne" {
+                o.demesne_rank_pm
+            } else {
+                1000
+            };
+            let count = [
+                u128::from(maximum),
+                u128::from(rules.herd_start_share[0]),
+                u128::from(u64::midpoint(1000, g)),
+                u128::from(spread),
+                u128::from(rank),
+            ]
+            .into_iter()
+            .try_fold(1_u128, u128::checked_mul)
+            .ok_or_else(|| missing_data("herd_opening".to_owned(), "product overflow"))?
+                / (u128::from(rules.herd_start_share[1]) * 1_000_000_000);
+            Ok(u64::try_from(count.min(u128::from(maximum)).max(u128::from(
+                farming.saturating_mul(o.floor_per_level).min(maximum),
+            )))
+            .expect("bounded by maximum"))
+        })
+        .collect()
+}
+
+#[cfg(test)]
 fn herd_counts(
     rules: &Rules,
     method_levels: &[u32],
@@ -10656,6 +10894,7 @@ pub(crate) mod tests {
     pub(crate) fn tiny_rules() -> Rules {
         Rules {
             herd_start_share: [2, 3],
+            herd_opening: HerdOpening::default(),
             herd_species: Vec::new(),
             goods: vec![Good {
                 id: "food".to_owned(),
@@ -11930,6 +12169,7 @@ pub(crate) mod tests {
             ..StartOverride::default()
         };
         ScenarioEconomy {
+            horses_always: Vec::new(),
             defaults: BTreeMap::from([(
                 "ringfort".to_owned(),
                 BTreeMap::from([(
@@ -17297,6 +17537,8 @@ pub(crate) mod tests {
     fn starting_state_creates_the_shipped_head_counts_per_level() {
         let mut rules = tiny_rules();
         install_fixture_herds(&mut rules);
+        rules.herd_opening.spread = [1000, 1000];
+        rules.herd_opening.keep_pm = 1000;
         let mut data = tiny_start_data();
         let defaults = data
             .defaults
@@ -17365,6 +17607,248 @@ pub(crate) mod tests {
             herd_counts(&fixture, &[2], &fixture.buildings[0]).unwrap()[3],
             4
         );
+    }
+
+    #[test]
+    fn seeded_herds_follow_land_rank_and_stable_keys() {
+        let mut rules = shipped_rules();
+        rules.herd_opening.spread = [1000, 1000];
+        rules.herd_opening.keep_pm = 1000;
+        let farm = rules.buildings.iter().find(|b| b.id == "farm").unwrap();
+        let demesne = rules.buildings.iter().find(|b| b.id == "demesne").unwrap();
+        let pasture = vec![1000, 400, 1000, 1000];
+        let forest = vec![300, 400, 300, 300];
+        let levels = |b: &BuildingType| {
+            let mut v = vec![0; b.methods.len()];
+            v[0] = 1;
+            v
+        };
+        let one = opening_herds(&rules, &levels(farm), farm, &pasture, 42, "a", 0, false).unwrap();
+        assert_eq!(one[0], 8);
+        assert_eq!(
+            opening_herds(&rules, &levels(farm), farm, &forest, 42, "a", 0, false).unwrap()[0],
+            5
+        );
+        assert_eq!(
+            opening_herds(
+                &rules,
+                &levels(demesne),
+                demesne,
+                &pasture,
+                42,
+                "a",
+                80,
+                true
+            )
+            .unwrap()[0],
+            12
+        );
+        rules.herd_opening.spread = [1, 1];
+        let farm = rules.buildings.iter().find(|b| b.id == "farm").unwrap();
+        assert_eq!(
+            opening_herds(&rules, &levels(farm), farm, &pasture, 42, "a", 0, false).unwrap()[0],
+            1
+        );
+        rules.herd_opening.spread = [1500, 1500];
+        let demesne = rules.buildings.iter().find(|b| b.id == "demesne").unwrap();
+        // Raw cattle count is 12 * 2/3 * 1 * 1.5 * 1.5 = 18, capped at 12.
+        assert_eq!(
+            opening_herds(
+                &rules,
+                &levels(demesne),
+                demesne,
+                &pasture,
+                42,
+                "a",
+                80,
+                true
+            )
+            .unwrap()[0],
+            12
+        );
+        rules.herd_opening.spread = [800, 1200];
+        let farm = rules.buildings.iter().find(|b| b.id == "farm").unwrap();
+        let mut ten_levels = levels(farm);
+        ten_levels[0] = 10;
+        let ten_grazing = [10_000, 4_000, 10_000, 10_000];
+        let counts: std::collections::BTreeSet<_> = (0..10_000)
+            .map(|seed| {
+                opening_herds(&rules, &ten_levels, farm, &ten_grazing, seed, "a", 0, false).unwrap()
+                    [0]
+            })
+            .collect();
+        assert!(counts.iter().all(|n| (64..=96).contains(n)));
+        assert!(counts.contains(&64) && counts.contains(&96));
+        assert_ne!(
+            herd_draw(42, &["a", "farm", "cattle", "keep"]),
+            herd_draw(42, &["a", "farm", "cattle", "spread"])
+        );
+    }
+
+    #[test]
+    fn opening_draw_is_stable_and_chance_floors_negative_grazing() {
+        let opening = HerdOpening::default();
+        assert_eq!(horse_keep_chance(&opening, 20, 1100 / 3), 216);
+        let rules = shipped_rules();
+        let demesne = rules.buildings.iter().find(|b| b.id == "demesne").unwrap();
+        let mut levels = vec![0; demesne.methods.len()];
+        levels[0] = 3;
+        let grazing = [3000, 1200, 3000, 1100];
+        for (seed, draw, kept) in [(1531, 215, true), (1212, 216, false)] {
+            assert_eq!(
+                herd_draw(seed, &["a", "demesne", "horses", "keep"]) % 1000,
+                draw
+            );
+            let herds =
+                opening_herds(&rules, &levels, demesne, &grazing, seed, "a", 20, false).unwrap();
+            assert_eq!(herds[3] > 0, kept, "draw {draw}");
+        }
+        assert_eq!(u64::midpoint(1000, 367), 683);
+        assert_eq!(
+            herd_draw(42, &["a", "farm", "cattle", "keep"]),
+            11_894_029_966_652_781_520
+        );
+        assert_ne!(herd_draw(42, &["ab", "c"]), herd_draw(42, &["a", "bc"]));
+    }
+
+    #[test]
+    fn opening_draws_are_independent_of_species_order() {
+        let rules = shipped_rules();
+        let farm = rules.buildings.iter().find(|b| b.id == "farm").unwrap();
+        let mut levels = vec![0; farm.methods.len()];
+        levels[0] = 1;
+        let grazing = vec![1000, 400, 1000, 1000];
+        let before = opening_herds(&rules, &levels, farm, &grazing, 42, "a", 0, false).unwrap();
+        let mut reversed = rules.clone();
+        reversed.herd_species.reverse();
+        let mut reverse_grazing = grazing;
+        reverse_grazing.reverse();
+        let farm = reversed.buildings.iter().find(|b| b.id == "farm").unwrap();
+        let mut after = opening_herds(
+            &reversed,
+            &levels,
+            farm,
+            &reverse_grazing,
+            42,
+            "a",
+            0,
+            false,
+        )
+        .unwrap();
+        after.reverse();
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn seed_spreads_herds_and_named_seats_always_keep_horses() {
+        let rules = shipped_rules();
+        let farm = rules.buildings.iter().find(|b| b.id == "farm").unwrap();
+        let demesne = rules.buildings.iter().find(|b| b.id == "demesne").unwrap();
+        let levels = |b: &BuildingType| {
+            let mut v = vec![0; b.methods.len()];
+            v[0] = 1;
+            v
+        };
+        let grazing = [300, 400, 300, 300];
+        let mut horse_presence = std::collections::BTreeSet::new();
+        let mut pig_presence = std::collections::BTreeSet::new();
+        let mut starts = std::collections::BTreeSet::new();
+        for seed in 0..100 {
+            let a =
+                opening_herds(&rules, &levels(farm), farm, &grazing, seed, "a", 0, false).unwrap();
+            let b =
+                opening_herds(&rules, &levels(farm), farm, &grazing, seed, "b", 0, false).unwrap();
+            assert!(a[0] > 0 && b[0] > 0);
+            assert_eq!(
+                b,
+                opening_herds(&rules, &levels(farm), farm, &grazing, seed, "b", 0, false).unwrap()
+            );
+            starts.insert(a.clone());
+            pig_presence.insert(a[1] > 0);
+            let royal = opening_herds(
+                &rules,
+                &levels(demesne),
+                demesne,
+                &grazing,
+                seed,
+                "a",
+                20,
+                true,
+            )
+            .unwrap();
+            let ordinary = opening_herds(
+                &rules,
+                &levels(demesne),
+                demesne,
+                &grazing,
+                seed,
+                "a",
+                20,
+                false,
+            )
+            .unwrap();
+            assert!(royal[3] > 0);
+            horse_presence.insert(ordinary[3] > 0);
+        }
+        assert!(starts.len() > 1);
+        assert_eq!(pig_presence.len(), 2);
+        assert_eq!(horse_presence.len(), 2);
+    }
+
+    #[test]
+    fn an_absent_pig_herd_has_no_births() {
+        let mut rules = shipped_rules();
+        flatten_pasture(&mut rules);
+        let mut state = shipped_production_fixture(&rules);
+        let pig = rules
+            .herd_species
+            .iter()
+            .position(|s| s.animal == "pigs")
+            .unwrap();
+        state.places[0].buildings[0].herds[pig] = 0;
+        let ledger = run_monthly_production(
+            &rules,
+            &mut state,
+            Date {
+                year: 768,
+                month: 1,
+                day: 1,
+                hour: 12,
+            },
+        )
+        .unwrap();
+        assert_eq!(ledger.herd_births[pig], 0);
+        assert_eq!(state.places[0].buildings[0].herds[pig], 0);
+    }
+
+    #[test]
+    fn herd_opening_rejects_invalid_parameters() {
+        let base = shipped_rules();
+        let mut reversed = base.clone();
+        reversed.herd_opening.spread = [1200, 800];
+        assert_eq!(
+            reversed.validate("fixture").unwrap_err().entry,
+            "herd_opening.spread"
+        );
+        for (field, change) in [
+            ("keep_pm", 0),
+            ("court_chances", 1),
+            ("grazing_divisor", 2),
+            ("spread", 3),
+            ("demesne_rank_pm", 4),
+            ("floor_per_level", 5),
+        ] {
+            let mut rules = base.clone();
+            match change {
+                0 => rules.herd_opening.keep_pm = 1001,
+                1 => rules.herd_opening.court_chances[0] = 1001,
+                2 => rules.herd_opening.grazing_divisor = 0,
+                3 => rules.herd_opening.spread[0] = 0,
+                4 => rules.herd_opening.demesne_rank_pm = 0,
+                _ => rules.herd_opening.floor_per_level = 0,
+            }
+            assert!(rules.validate("fixture").unwrap_err().entry.contains(field));
+        }
     }
 
     #[test]
@@ -22717,6 +23201,7 @@ pub(crate) mod tests {
             sea: 400,
         };
         let data = ScenarioEconomy {
+            horses_always: Vec::new(),
             defaults: BTreeMap::from([(
                 "ringfort".to_owned(),
                 BTreeMap::from([(
@@ -24237,6 +24722,7 @@ pub(crate) mod tests {
     /// The real start of one place on mixed ground, with its farm, holdings, demesne and storehouse, and its pops partly staffed.
     fn levels_witness_state(rules: &Rules) -> EconomyState {
         let data = ScenarioEconomy {
+            horses_always: Vec::new(),
             defaults: BTreeMap::from([(
                 "ringfort".to_owned(),
                 BTreeMap::from([(
@@ -24520,7 +25006,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn two_years_of_the_real_start_are_day_for_day_the_build_before_levels_were_records() {
+    fn two_years_of_the_real_start_follow_seeded_opening() {
         let trace = levels_two_year_trace();
         assert_eq!(trace, include_str!("../tests/levels_daily_accepted.txt"));
     }

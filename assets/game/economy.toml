@@ -15,6 +15,15 @@ fertility_reference_pm = 550
 hire_pm = 100
 leave_pm = 50
 
+[herd_opening]
+keep_pm = 750
+court_thresholds = [40, 80]
+court_chances = [250, 500, 750]
+grazing_divisor = 4
+spread = [500, 1500]
+demesne_rank_pm = 1500
+floor_per_level = 1
+
 [[herd_species]]
 animal="cattle"
 births_pm_year=500
