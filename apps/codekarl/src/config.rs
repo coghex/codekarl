@@ -245,6 +245,7 @@ impl<'de> Deserialize<'de> for MapTable {
 struct GameFields {
     scenario: Option<PathBuf>,
     saves: Option<PathBuf>,
+    events_fixture: Option<PathBuf>,
 }
 
 impl<'de> Deserialize<'de> for GameFields {
@@ -254,12 +255,14 @@ impl<'de> Deserialize<'de> for GameFields {
         struct Fields {
             scenario: Option<PathBuf>,
             saves: Option<PathBuf>,
+            events_fixture: Option<PathBuf>,
         }
 
         let fields: Fields = table_only(deserializer, "a table for `game`")?;
         Ok(Self {
             scenario: fields.scenario,
             saves: fields.saves,
+            events_fixture: fields.events_fixture,
         })
     }
 }
@@ -1484,6 +1487,8 @@ pub(crate) struct GameConfig {
     pub(crate) scenario: PathBuf,
     /// The quicksave directory.
     pub(crate) saves: PathBuf,
+    /// Optional event-log fixture, relative to the configuration.
+    pub(crate) events_fixture: Option<PathBuf>,
 }
 
 /// The default quicksave directory, beside the configuration file.
@@ -1966,6 +1971,7 @@ fn parse_game(
     Ok(Some(GameConfig {
         scenario: base.join(scenario),
         saves: base.join(fields.saves.unwrap_or_else(|| PathBuf::from(DEFAULT_SAVES))),
+        events_fixture: fields.events_fixture.map(|p| base.join(p)),
     }))
 }
 
@@ -4560,6 +4566,7 @@ mod tests {
             Some(GameConfig {
                 scenario: PathBuf::from("/tmp/codekarl-test/scenario"),
                 saves: PathBuf::from("/tmp/codekarl-test/saves"),
+                events_fixture: None,
             })
         );
         // The scenario is the map source, with the default camera rates.

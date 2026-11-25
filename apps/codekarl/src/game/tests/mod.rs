@@ -25,7 +25,7 @@ mod character_log;
 mod character_passes;
 mod character_relations;
 mod character_view;
-mod core_behaviour;
+pub(crate) mod core_behaviour;
 mod gameplay_runtime;
 mod life_cycle;
 mod owner;

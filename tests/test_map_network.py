@@ -1810,6 +1810,256 @@ class CommandTests(unittest.TestCase):
             network.check_network(map_dir, scenario)
 
 
+class FertilityKeepsCourseTests(unittest.TestCase):
+    """CK-420: a change of fertility alone leaves an approved course as it was approved (owner decision r131)."""
+
+    WIDTH = 5
+    HEIGHT = 5
+    # Row 1 and row 4 are fertile (cheap) at first, so the approved courses run straight along them.
+    BEFORE = (0, 250, 0, 0, 250)
+    # Then rows 0 and 3 are fertile instead: a course drawn fresh would swing to them.
+    AFTER = (250, 0, 0, 250, 0)
+
+    def fertility_png(self, map_dir: Path, rows: Sequence[int]) -> None:
+        from PIL import Image  # noqa: PLC0415  # PNGs are needed only by this fixture.
+
+        image = Image.new("L", (self.WIDTH, self.HEIGHT))
+        for y, value in enumerate(rows):
+            for x in range(self.WIDTH):
+                image.putpixel((x, y), value)
+        image.save(map_dir / "fertility.png")
+
+    def make_world(self, root: Path, *, via: str = "") -> tuple[Path, Path]:
+        """Two links, `road` along row 1 and `other` along row 4, approved and stored with the fertility of BEFORE."""
+        import math  # noqa: PLC0415  # The fixture projects cell centres to scenario coordinates.
+
+        from PIL import Image  # noqa: PLC0415  # PNGs are needed only by this fixture.
+
+        map_dir, scenario = root / "map", root / "scenario"
+        map_dir.mkdir()
+        scenario.mkdir()
+        origin = (22436, 14979)
+        (map_dir / "map.toml").write_text(
+            f"[crop]\norigin = [22436, 14979]\nwidth = {self.WIDTH}\nheight = {self.HEIGHT}\n"
+        )
+        (map_dir / "terrain.toml").write_text(
+            '[[terrain]]\nname = "pasture"\nkind = "land"\nkey = "010203"\n'
+        )
+        size = (self.WIDTH, self.HEIGHT)
+        Image.new("RGB", size, (1, 2, 3)).save(map_dir / "terrain.png")
+        Image.new("I;16", size, 11000).save(map_dir / "elevation.png")
+        self.fertility_png(map_dir, self.BEFORE)
+        (map_dir / "rivers.toml").write_text("stretch = []\n")
+        radius = 6_378_137.0
+        half_world = math.pi * radius
+
+        def position(x: int, y: int) -> tuple[float, float]:
+            lon = math.degrees(((origin[0] + x + 0.5) * 839 - half_world) / radius)
+            lat = math.degrees(
+                2 * math.atan(math.exp((half_world - (origin[1] + y + 0.5) * 839) / radius))
+                - math.pi / 2
+            )
+            return lat, lon
+
+        places = {"a": (0, 1), "b": (4, 1), "c": (0, 4), "d": (4, 4)}
+        (scenario / "locations.toml").write_text(
+            "".join(
+                f'[[location]]\nid = "{name}"\nlat = {position(*cell)[0]}\nlon = {position(*cell)[1]}\n\n'
+                for name, cell in places.items()
+            )
+        )
+        (scenario / "network.toml").write_text(
+            "[costs]\nterrain = { pasture = 1.0 }\nslope = 10.0\nfertile = 0.5\ncrossing_base = 2.0\n"
+            'crossing_per_m = 0.125\nreuse = 0.6\n\n[[link]]\nid = "road"\nfrom = "a"\nto = "b"\n'
+            f'category = "road"\nlevel = 1\n{via}\n[[link]]\nid = "other"\nfrom = "c"\nto = "d"\n'
+            'category = "road"\nlevel = 1\n'
+        )
+
+        def row(y: int) -> list[list[int]]:
+            return [[x, y] for x in range(self.WIDTH)]
+
+        (scenario / "network-seed.json").write_text(
+            json.dumps(
+                {
+                    "links": [
+                        {"id": "road", "cells": row(1), "pins": []},
+                        {"id": "other", "cells": row(4), "pins": []},
+                    ],
+                    "approved_points": {
+                        "road": [[0, 1], [4, 1]],
+                        "other": [[0, 4], [4, 4]],
+                    },
+                    "approved_joins": {"road": [], "other": []},
+                }
+            )
+        )
+        network.build_network(map_dir, scenario, importing=True)
+        self.accept(map_dir, scenario, importing=True)
+        return map_dir, scenario
+
+    def accept(self, map_dir: Path, scenario: Path, *, importing: bool = False) -> None:
+        network.accept_pending(
+            scenario / "courses-pending.json",
+            network.input_files(map_dir, scenario, include_seed=importing),
+            scenario / "network-report.md",
+            scenario / "network-changes.md",
+            "fixture approval",
+        )
+
+    def files(self, scenario: Path) -> dict[str, bytes]:
+        return {
+            str(path.relative_to(scenario)): path.read_bytes()
+            for path in sorted(scenario.rglob("*"))
+            if path.is_file()
+        }
+
+    def run_main(self, map_dir: Path, scenario: Path, *arguments: str) -> tuple[int, str]:
+        import contextlib  # noqa: PLC0415  # Capture the command's one line of output.
+        import io  # noqa: PLC0415  # Capture the command's one line of output.
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            code = network.main(
+                ["--map-dir", str(map_dir), "--scenario", str(scenario), *arguments]
+            )
+        return code, out.getvalue()
+
+    def baseline_course(self, scenario: Path, link: str) -> list[list[int]]:
+        document = json.loads((scenario / "courses-approved.json").read_bytes())
+        return list(document["links"][link]["course"])
+
+    def test_a_mark_ignores_fertility_and_keeps_terrain_elevation_and_land(self) -> None:
+        def layers(**changes: Any) -> dict[str, Any]:  # noqa: ANN401  # One layer is replaced per case.
+            def grid(value: object) -> list[list[Any]]:
+                return [[value] * 4 for _ in range(3)]
+
+            base = {
+                "terrain": grid(1),
+                "land": grid(True),
+                "elevation": grid(0),
+                "fertility": grid(10),
+            }
+            return {**base, **changes}
+
+        index = network.RiverIndex([], (22436, 14979))
+        course = [(0, 1), (1, 1), (2, 1)]
+        original = network.course_ground_mark(course, layers(), index)
+        fertile = [[10, 10, 10, 10], [10, 250, 0, 10], [10, 10, 10, 10]]
+        self.assertEqual(
+            original, network.course_ground_mark(course, layers(fertility=fertile), index)
+        )
+        under = [[1, 1, 1, 1], [1, 1, 1, 1], [1, 1, 1, 1]]
+        under[1][1] = 2
+        elevated = [[0] * 4 for _ in range(3)]
+        elevated[1][2] = 5
+        wet = [[True] * 4 for _ in range(3)]
+        wet[1][0] = False
+        for name, changed in (("terrain", under), ("elevation", elevated), ("land", wet)):
+            with self.subTest(layer=name):
+                self.assertNotEqual(
+                    original, network.course_ground_mark(course, layers(**{name: changed}), index)
+                )
+
+    def test_one_changed_fertility_cell_or_all_of_them_asks_for_nothing(self) -> None:
+        for rows in (None, self.AFTER):
+            with (
+                self.subTest(whole_map=rows is not None),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                map_dir, scenario = self.make_world(Path(directory))
+                before = self.files(scenario)
+                if rows is None:
+                    from PIL import Image  # noqa: PLC0415  # One cell of the PNG is changed.
+
+                    with Image.open(map_dir / "fertility.png") as image:
+                        edited = image.copy()
+                    edited.putpixel((2, 1), 7)
+                    edited.save(map_dir / "fertility.png")
+                else:
+                    self.fertility_png(map_dir, rows)
+                self.assertEqual(
+                    self.run_main(map_dir, scenario, "build"), (0, "network is up to date\n")
+                )
+                self.assertEqual(self.files(scenario), before)
+                self.assertFalse((scenario / "courses-pending.json").exists())
+                network.check_network(map_dir, scenario)
+
+    def test_a_fresh_course_uses_the_new_fertility_only_when_asked(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            map_dir, scenario = self.make_world(Path(directory))
+            approved = self.baseline_course(scenario, "road")
+            other = self.baseline_course(scenario, "other")
+            self.assertEqual({y for _, y in approved}, {1})
+            self.fertility_png(map_dir, self.AFTER)
+            before = self.files(scenario)
+            self.assertEqual(self.run_main(map_dir, scenario, "build")[0], 0)
+            self.assertEqual(self.files(scenario), before)
+            # Asked for, the link is calculated with the fertility of the day; a link not named keeps its line.
+            plan = network.build_network(map_dir, scenario, recalculate=frozenset({"road"}))
+            self.assertEqual(set(plan["candidates"]), {"road"})
+            proposed = [list(cell) for cell in plan["candidates"]["road"]]
+            self.assertIn(0, {y for _, y in proposed})
+            self.assertNotEqual(proposed, approved)
+            self.accept(map_dir, scenario)
+            self.assertEqual(self.baseline_course(scenario, "road"), proposed)
+            self.assertEqual(self.baseline_course(scenario, "other"), other)
+            network.check_network(map_dir, scenario)
+
+    def test_a_new_pin_draws_the_course_with_the_new_fertility(self) -> None:
+        import math  # noqa: PLC0415  # The pin is given as a latitude and longitude.
+
+        with tempfile.TemporaryDirectory() as directory:
+            map_dir, scenario = self.make_world(Path(directory))
+            self.fertility_png(map_dir, self.AFTER)
+            radius = 6_378_137.0
+            half_world = math.pi * radius
+            lon = math.degrees(((22436 + 2 + 0.5) * 839 - half_world) / radius)
+            lat = math.degrees(
+                2 * math.atan(math.exp((half_world - (14979 + 0 + 0.5) * 839) / radius))
+                - math.pi / 2
+            )
+            hand = (scenario / "network.toml").read_text()
+            pinned = hand.replace(
+                'to = "b"\n',
+                f'to = "b"\nvia = [{{ lat = {lat}, lon = {lon}, note = "a ford" }}]\n',
+                1,
+            )
+            self.assertNotEqual(hand, pinned)
+            (scenario / "network.toml").write_text(pinned)
+            plan = network.build_network(map_dir, scenario)
+            self.assertEqual(set(plan["candidates"]), {"road"})
+            proposed = [tuple(cell) for cell in plan["candidates"]["road"]]
+            self.assertIn((2, 0), proposed)
+            self.assertEqual({y for x, y in proposed if x in (1, 2, 3)}, {0})
+
+    def test_a_proposal_depends_on_the_fertility_it_was_made_with(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            map_dir, scenario = self.make_world(Path(directory))
+            self.fertility_png(map_dir, self.AFTER)
+            network.build_network(map_dir, scenario, recalculate=frozenset({"road"}))
+            self.fertility_png(map_dir, self.BEFORE)
+            before = self.files(scenario)
+            with self.assertRaisesRegex(ValueError, "proposal inputs changed; build again"):
+                self.accept(map_dir, scenario)
+            self.assertEqual(self.files(scenario), before)
+
+    def test_ground_that_changed_still_asks_for_a_new_course(self) -> None:
+        from PIL import Image  # noqa: PLC0415  # One cell of the elevation PNG is changed.
+
+        with tempfile.TemporaryDirectory() as directory:
+            map_dir, scenario = self.make_world(Path(directory))
+            with Image.open(map_dir / "elevation.png") as image:
+                edited = image.copy()
+            edited.putpixel((2, 1), 11300)
+            edited.save(map_dir / "elevation.png")
+            plan = network.build_network(map_dir, scenario)
+            self.assertEqual(set(plan["candidates"]), {"road"})
+
+    def test_ireland_passes_check_with_the_restamped_marks(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        network.check_network(root / "assets/map/ireland", root / "assets/scenarios/ireland-768")
+
+
 class SharedFixtureTests(unittest.TestCase):
     def test_import_unchanged_join_and_repeated_build_do_not_duplicate_history(self) -> None:
         import shutil  # noqa: PLC0415  # Work on the shared fixture without changing it.

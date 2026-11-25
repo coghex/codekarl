@@ -1371,8 +1371,8 @@ fn the_time_bar_routes_its_buttons_through_game_controls() {
             .iter()
             .filter(|entry| entry.starts_with("set_hit button_"))
             .count(),
-        12,
-        "three transports, Help, the three ledger tabs and five map bar buttons: {entries:?}"
+        13,
+        "three transports, Help, the event log, three ledger tabs and five map bar buttons: {entries:?}"
     );
     assert!(
         !entries.iter().any(|entry| entry.contains("time_speed_")),
@@ -4441,4 +4441,170 @@ end)
         )),
     );
     assert_eq!(current_hits(&readout.entries(), "tooltip_span_").len(), 12);
+}
+
+#[test]
+fn event_log_filters_sorts_and_keeps_choices_in_the_real_widgets() {
+    let readout = Readout::script(
+        r"
+local windows = require('lib.window')
+windows.update_viewport(1280, 800)
+game.events = function(revision)
+  window.record('read ' .. revision)
+  return {
+    {year=768,month=10,day=10,hour=6,kind='storm',action='begins',location='52°N 19°W',knots=44},
+    {year=768,month=10,day=11,hour=0,kind='storm',action='begins',location='53°N 27°W',knots=50},
+    {year=768,month=10,day=12,hour=0,kind='storm',action='begins',location='51°N 22°W',knots=34},
+    {year=768,month=10,day=12,hour=9,kind='blight',action='begins',good='oats',place='Cluain Mhic Nóis'},
+  }
+end
+game.set_log_choices = function(a,b,c,d,e) window.record('choices ' .. tostring(a) .. ' ' .. b .. ' ' .. tostring(c) .. ' ' .. d .. ' ' .. tostring(e)) end
+local l = require('lib.event_log').new{view={width=1280,height=800}}
+l:refresh{events_revision=1,log_storms=true,log_threshold=34,log_blights=false,log_sort='default',log_descending=false}
+l:open()
+window.record('shown ' .. l.bar.shown .. ' of ' .. l.bar.total)
+local b = l.bar.filter_button
+b:on_event({kind='down',key=b.key}, true)
+b:on_event({kind='up',key=b.key,inside=true}, true)
+local picker = l.bar.picker
+window.record('picker ' .. tostring(picker ~= nil))
+local slider = picker.slider
+local origin = slider.abs_x
+slider:on_event({kind='down',x=origin + 48*2}, true)
+l:refresh{events_revision=1,log_storms=true,log_threshold=34,log_blights=false,log_sort='default',log_descending=false}
+window.record('drag retained ' .. tostring(l.bar.picker ~= nil) .. ' ' .. l.choices.threshold)
+slider:on_event({kind='move',x=origin + 50*2}, true)
+window.record('move ' .. l.choices.threshold .. ' held ' .. tostring(slider.dragging))
+slider:on_event({kind='up',x=origin + 48*2}, true)
+window.record('threshold ' .. l.choices.threshold .. ' shown ' .. l.bar.shown .. ' picker ' .. tostring(l.bar.picker ~= nil))
+l.bar:toggle_event('storms')
+l.bar:toggle_event('blights')
+window.record('both ' .. l.bar.shown)
+l.bar:choose(2)
+window.record('sort ' .. l.choices.sort .. ' ' .. tostring(l.choices.descending))
+local ordered = l.bar:view(l.rows)
+window.record('descending ' .. ordered[1].knots .. ' ' .. ordered[2].knots .. ' ' .. ordered[3].knots .. ' ' .. ordered[4].kind)
+l.bar:choose(2)
+ordered = l.bar:view(l.rows)
+window.record('ascending ' .. ordered[1].knots .. ' ' .. ordered[2].knots .. ' ' .. ordered[3].knots .. ' ' .. ordered[4].kind)
+l:close(); l:open()
+window.record('reopened ' .. l.bar.shown .. ' ' .. l.choices.sort)
+",
+    );
+    let values = records(&readout);
+    assert!(values.contains(&"shown 3 of 4".to_owned()), "{values:?}");
+    assert!(values.contains(&"picker true".to_owned()), "{values:?}");
+    assert!(
+        values.contains(&"move 42 held true".to_owned()),
+        "{values:?}"
+    );
+    assert!(
+        values.contains(&"drag retained true 40".to_owned()),
+        "{values:?}"
+    );
+    assert!(
+        values
+            .iter()
+            .any(|s| s.starts_with("threshold 40 shown 2 picker true")),
+        "{values:?}"
+    );
+    assert!(values.contains(&"both 4".to_owned()), "{values:?}");
+    assert!(
+        values.contains(&"sort strength true".to_owned()),
+        "{values:?}"
+    );
+    assert!(
+        values.contains(&"descending 50 44 34 blight".to_owned()),
+        "{values:?}"
+    );
+    assert!(
+        values.contains(&"ascending 34 44 50 blight".to_owned()),
+        "{values:?}"
+    );
+    assert!(
+        values.contains(&"reopened 4 strength".to_owned()),
+        "{values:?}"
+    );
+}
+
+#[test]
+fn event_log_resize_closes_picker_and_fits_when_the_view_shrinks() {
+    let readout = Readout::script(
+        r"
+local windows = require('lib.window')
+windows.update_viewport(1280, 800)
+game.events = function() return {} end
+game.set_log_choices = function() end
+local view = {width=1280,height=800}
+local l = require('lib.event_log').new{view=view}
+l:refresh{events_revision=1,log_storms=true,log_threshold=34,log_blights=false,log_sort='default',log_descending=false}
+l:open()
+local x,y = l.window:position(); local w,h = l.window:size()
+window.record('initial ' .. x .. ' ' .. y .. ' ' .. w .. ' ' .. h)
+local b = l.bar.filter_button
+b:on_event({kind='down',key=b.key}, true); b:on_event({kind='up',key=b.key,inside=true}, true)
+local corner = l.corner
+corner:on_event({kind='down',x=x+w,y=y+h}, true)
+corner:on_event({kind='move',x=x+w-1000,y=y+h-1000}, true)
+corner:on_event({kind='up',x=x+w-1000,y=y+h-1000}, true)
+w,h = l.window:size()
+window.record('minimum ' .. w .. ' ' .. h .. ' closed ' .. tostring(l.bar.picker == nil))
+l:close(); l:open(); w,h = l.window:size()
+window.record('reopen ' .. w .. ' ' .. h)
+view.width,view.height=400,200; windows.update_viewport(400,200); l:fit()
+x,y=l.window:position(); w,h=l.window:size()
+window.record('small ' .. x .. ' ' .. y .. ' ' .. w .. ' ' .. h)
+",
+    );
+    let values = records(&readout);
+    assert!(
+        values.contains(&"initial 240 200 800 400".to_owned()),
+        "{values:?}"
+    );
+    assert!(
+        values.contains(&"minimum 600 240 closed true".to_owned()),
+        "{values:?}"
+    );
+    assert!(values.contains(&"reopen 600 240".to_owned()), "{values:?}");
+    assert!(
+        values.contains(&"small 8 8 600 240".to_owned()),
+        "{values:?}"
+    );
+}
+
+#[test]
+fn time_bar_event_button_opens_and_closes_the_log() {
+    let mut readout = Readout::new("game.events = function(_) return {} end");
+    readout.deliver(&crate::readout_tests::snapshot(14, 1, None));
+    let button = "button_13";
+    assert!(
+        readout
+            .entries()
+            .iter()
+            .any(|line| line.contains("ui/theme/icon_event_log.png"))
+    );
+    let click = || {
+        pointer_packet(
+            button,
+            32.0,
+            vec![
+                pointer_event("down", Some(button), None),
+                pointer_event("up", Some(button), None),
+            ],
+        )
+    };
+    readout.update(1280, 800, Some(click()));
+    assert!(
+        readout
+            .entries()
+            .iter()
+            .any(|line| line.starts_with("set_hit event_resize_") && !line.ends_with(" nil"))
+    );
+    let start = readout.entries().len();
+    readout.update(1280, 800, Some(click()));
+    assert!(
+        readout.entries()[start..]
+            .iter()
+            .any(|line| line.starts_with("destroy_group"))
+    );
 }

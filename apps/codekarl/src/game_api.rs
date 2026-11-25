@@ -87,6 +87,10 @@ pub(crate) fn extension_with_select(
             set_find_keyboard_block_function(controls.clone()),
         )
         .function("set_map_layer", set_map_layer_function(controls.clone()))
+        .function(
+            "set_log_choices",
+            set_log_choices_function(controls.clone()),
+        )
         .function("mark_unsaved", mark_unsaved_function(controls.clone()))
         .function("saves", saves_function(controls.clone()))
         .function("save", save_function(controls.clone(), SaveCall::New))
@@ -128,6 +132,42 @@ pub(crate) fn extension_with_select(
                 result_controls.set_save_result_registered(is_registered);
             }),
         )
+}
+
+fn set_log_choices_function(controls: SimControls) -> HostFunction {
+    Arc::new(move |args| {
+        let [
+            Some(ConfigValue::Bool(storms)),
+            Some(ConfigValue::Integer(threshold)),
+            Some(ConfigValue::Bool(blights)),
+            Some(ConfigValue::String(sort)),
+            Some(ConfigValue::Bool(descending)),
+        ] = args
+        else {
+            return Err(
+                "game.set_log_choices: expected storms, threshold, blights, sort and direction"
+                    .into(),
+            );
+        };
+        let threshold = u8::try_from(*threshold)
+            .ok()
+            .filter(|n| *n <= 64)
+            .ok_or("game.set_log_choices: threshold must be 0..64")?;
+        let sort = match sort.as_str() {
+            "default" if !descending => ck_sim::LogSort::Default,
+            "time" => ck_sim::LogSort::Time,
+            "strength" => ck_sim::LogSort::Strength,
+            _ => return Err("game.set_log_choices: invalid sort or direction".into()),
+        };
+        controls.set_log_choices(ck_sim::LogChoices {
+            storms: *storms,
+            threshold,
+            blights: *blights,
+            sort,
+            descending: *descending,
+        });
+        Ok(Vec::new())
+    })
 }
 
 fn set_map_layer_function(controls: SimControls) -> HostFunction {
@@ -522,6 +562,91 @@ pub(crate) fn set_map_mode_function(modes: Arc<crate::map_modes::MapModes>) -> H
     })
 }
 
+/// The immutable event rows belonging to a delivered revision.
+pub(crate) fn events_function(cache: Arc<ViewCache>, places: Vec<Place>) -> HostFunction {
+    Arc::new(move |arguments| {
+        let [Some(ConfigValue::Integer(revision))] = arguments else {
+            return Err("game.events: expected a revision".to_owned());
+        };
+        let revision = u64::try_from(*revision)
+            .map_err(|_| format!("game.events: revision {revision} is missing"))?;
+        let rows = cache.get_events(revision)?;
+        Ok(vec![ConfigValue::Array(
+            rows.iter()
+                .map(|row| {
+                    use crate::game::events::{Action, EventKind};
+                    let date = row.at.date().expect("validated event date");
+                    let mut fields = BTreeMap::from([
+                        ("year".into(), ConfigValue::Integer(i64::from(date.year))),
+                        ("month".into(), ConfigValue::Integer(i64::from(date.month))),
+                        ("day".into(), ConfigValue::Integer(i64::from(date.day))),
+                        ("hour".into(), ConfigValue::Integer(i64::from(date.hour))),
+                        (
+                            "action".into(),
+                            ConfigValue::String(
+                                match row.action {
+                                    Action::Begins => "begins",
+                                    Action::Ends => "ends",
+                                    Action::Merged => "merged",
+                                }
+                                .into(),
+                            ),
+                        ),
+                    ]);
+                    match &row.kind {
+                        EventKind::Storm {
+                            number,
+                            snow,
+                            cell,
+                            knots,
+                        } => {
+                            fields.insert("kind".into(), ConfigValue::String("storm".into()));
+                            fields.insert("number".into(), integer(*number));
+                            fields.insert("snow".into(), ConfigValue::Bool(*snow));
+                            fields.insert("knots".into(), ConfigValue::Integer(i64::from(*knots)));
+                            fields.insert(
+                                "location".into(),
+                                ConfigValue::String(event_location(*cell)),
+                            );
+                        }
+                        EventKind::Blight { good, place, .. } => {
+                            fields.insert("kind".into(), ConfigValue::String("blight".into()));
+                            fields.insert(
+                                "good".into(),
+                                ConfigValue::String(crate::game::events::good_name(good)),
+                            );
+                            let name = places
+                                .iter()
+                                .find(|p| p.id == *place)
+                                .map_or(place, |p| &p.name);
+                            fields.insert("place".into(), ConfigValue::String(name.clone()));
+                        }
+                    }
+                    ConfigValue::Table(fields)
+                })
+                .collect(),
+        )])
+    })
+}
+
+fn event_location(cell: [u32; 2]) -> String {
+    let radius = ck_map::MERCATOR_RADIUS_METRES;
+    let half = std::f64::consts::PI * radius;
+    let x = (f64::from(cell[0]) + 0.5) * ck_map::CELL_METRES - half;
+    let y = half - (f64::from(cell[1]) + 0.5) * ck_map::CELL_METRES;
+    let lon = (x / radius).to_degrees().round();
+    let lat = (2.0 * (y / radius).exp().atan() - std::f64::consts::FRAC_PI_2)
+        .to_degrees()
+        .round();
+    format!(
+        "{:.0}°{} {:.0}°{}",
+        lat.abs(),
+        if lat < 0.0 { "S" } else { "N" },
+        lon.abs(),
+        if lon < 0.0 { "W" } else { "E" }
+    )
+}
+
 /// How many views the cache can hold at most: the views of the `game_time` calls the UI link may have outstanding (at most
 /// [`UI_CALL_LIMIT`] less the place reserved for lifecycle calls) and the one most recently completed. It is the bound, not the rule
 /// by which views leave (see [`ViewCache`]).
@@ -553,8 +678,40 @@ struct CacheInner {
 #[derive(Default)]
 pub(crate) struct ViewCache {
     inner: Mutex<CacheInner>,
+    events: Mutex<EventCache>,
     /// Told of each view as it is posted, once (the map modes' values come from the newest view).
     observer: std::sync::OnceLock<ViewObserver>,
+}
+
+#[derive(Default)]
+struct EventCache {
+    rows: BTreeMap<u64, Arc<Vec<crate::game::events::Event>>>,
+    pins: BTreeMap<u64, usize>,
+    completed: Option<u64>,
+    retired_through: u64,
+}
+
+impl EventCache {
+    fn retire(&mut self) {
+        let gone: Vec<_> = self
+            .rows
+            .keys()
+            .copied()
+            .filter(|r| !self.pins.contains_key(r) && Some(*r) != self.completed)
+            .collect();
+        for revision in gone {
+            self.rows.remove(&revision);
+            self.retired_through = self.retired_through.max(revision);
+        }
+    }
+    fn unpin(&mut self, revision: u64) {
+        if let Some(n) = self.pins.get_mut(&revision) {
+            *n -= 1;
+            if *n == 0 {
+                self.pins.remove(&revision);
+            }
+        }
+    }
 }
 
 /// What a view cache tells of a posted view: its revision and the view.
@@ -580,6 +737,34 @@ impl CacheInner {
 }
 
 impl ViewCache {
+    pub(crate) fn post_events(&self, revision: u64, rows: Arc<Vec<crate::game::events::Event>>) {
+        let mut cache = self.events.lock().unwrap_or_else(PoisonError::into_inner);
+        cache.rows.entry(revision).or_insert(rows);
+        *cache.pins.entry(revision).or_default() += 1;
+    }
+    pub(crate) fn unpost_events(&self, revision: u64) {
+        let mut cache = self.events.lock().unwrap_or_else(PoisonError::into_inner);
+        cache.unpin(revision);
+        cache.retire();
+    }
+    pub(crate) fn complete_events(&self, revision: u64) {
+        let mut cache = self.events.lock().unwrap_or_else(PoisonError::into_inner);
+        cache.unpin(revision);
+        cache.completed = cache.completed.max(Some(revision));
+        cache.retire();
+    }
+    fn get_events(&self, revision: u64) -> Result<Arc<Vec<crate::game::events::Event>>, String> {
+        let cache = self.events.lock().unwrap_or_else(PoisonError::into_inner);
+        cache.rows.get(&revision).cloned().ok_or_else(|| {
+            let state = if revision != 0 && revision <= cache.retired_through {
+                "retired"
+            } else {
+                "missing"
+            };
+            format!("game.events: revision {revision} is {state}")
+        })
+    }
+
     fn locked(&self) -> std::sync::MutexGuard<'_, CacheInner> {
         self.inner.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -1349,6 +1534,37 @@ pub(crate) fn time_table(snapshot: &SimSnapshot) -> ConfigValue {
             "economy_revision".to_owned(),
             integer(snapshot.economy_revision),
         ),
+        (
+            "events_revision".to_owned(),
+            integer(snapshot.events_revision),
+        ),
+        (
+            "log_storms".to_owned(),
+            ConfigValue::Bool(snapshot.log_choices.storms),
+        ),
+        (
+            "log_threshold".to_owned(),
+            ConfigValue::Integer(i64::from(snapshot.log_choices.threshold)),
+        ),
+        (
+            "log_blights".to_owned(),
+            ConfigValue::Bool(snapshot.log_choices.blights),
+        ),
+        (
+            "log_sort".to_owned(),
+            ConfigValue::String(
+                match snapshot.log_choices.sort {
+                    ck_sim::LogSort::Default => "default",
+                    ck_sim::LogSort::Time => "time",
+                    ck_sim::LogSort::Strength => "strength",
+                }
+                .into(),
+            ),
+        ),
+        (
+            "log_descending".to_owned(),
+            ConfigValue::Bool(snapshot.log_choices.descending),
+        ),
         ("world".to_owned(), integer(snapshot.world)),
     ]))
 }
@@ -1357,6 +1573,66 @@ pub(crate) fn time_table(snapshot: &SimSnapshot) -> ConfigValue {
 mod tests {
     use super::*;
     use crate::game::{core::Message, saves::Fit};
+
+    #[test]
+    fn event_cache_pins_each_pending_revision_and_retires_older_rows() {
+        let cache = ViewCache::default();
+        cache.post_events(1, Arc::new(Vec::new()));
+        cache.post_events(2, Arc::new(Vec::new()));
+        cache.complete_events(1);
+        assert!(cache.get_events(1).is_ok());
+        assert!(cache.get_events(2).is_ok());
+        cache.complete_events(2);
+        assert!(cache.get_events(1).unwrap_err().contains("retired"));
+        assert!(cache.get_events(2).is_ok());
+        assert!(cache.get_events(3).unwrap_err().contains("missing"));
+    }
+
+    #[test]
+    fn event_cell_centres_use_projection_and_round_away_from_zero() {
+        for (cell, expected) in [
+            ([21361, 15777], "52°N 19°W"),
+            ([24280, 13323], "62°N 3°E"),
+            ([22821, 15777], "52°N 8°W"),
+            ([22953, 15559], "53°N 7°W"),
+            ([20300, 15559], "53°N 27°W"),
+            ([22157, 15559], "53°N 13°W"),
+            ([21892, 15336], "54°N 15°W"),
+            ([20963, 15990], "51°N 22°W"),
+            ([23883, 23883], "0°N 0°E"),
+            ([23816, 23950], "1°S 0°E"),
+            ([23815, 23951], "1°S 1°W"),
+        ] {
+            assert_eq!(event_location(cell), expected);
+        }
+    }
+
+    #[test]
+    fn set_log_choices_uses_the_ordered_control_channel_and_checks_arguments() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let set = set_log_choices_function(SimControls::new(tx));
+        let args = [
+            Some(ConfigValue::Bool(true)),
+            Some(ConfigValue::Integer(40)),
+            Some(ConfigValue::Bool(true)),
+            Some(ConfigValue::String("strength".into())),
+            Some(ConfigValue::Bool(true)),
+        ];
+        set(&args).unwrap();
+        assert_eq!(
+            rx.recv().unwrap(),
+            Message::SetLogChoices(ck_sim::LogChoices {
+                storms: true,
+                threshold: 40,
+                blights: true,
+                sort: ck_sim::LogSort::Strength,
+                descending: true
+            })
+        );
+        let mut invalid = args;
+        invalid[1] = Some(ConfigValue::Integer(65));
+        assert!(set(&invalid).is_err());
+    }
 
     #[test]
     fn set_map_layer_validates_and_sends_one_ordered_message() {
@@ -1434,7 +1710,13 @@ mod tests {
             [
                 "day",
                 "economy_revision",
+                "events_revision",
                 "hour",
+                "log_blights",
+                "log_descending",
+                "log_sort",
+                "log_storms",
+                "log_threshold",
                 "month",
                 "paused",
                 "rivers",

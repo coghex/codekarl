@@ -340,7 +340,7 @@ struct State {
     pending: RefCell<VecDeque<(CallId, UiEvent)>>,
     /// The `game_time` calls posted and not yet answered (their results are taken and not given to the window loop).
     /// Each with the economy revision its snapshot carried (`0` for none).
-    times: RefCell<Vec<(CallId, u64)>>,
+    times: RefCell<Vec<(CallId, u64, u64)>>,
     /// The `game_hover` calls posted and not yet answered.
     hovers: RefCell<Vec<CallId>>,
     /// The `game_select` calls posted and not yet answered.
@@ -1009,18 +1009,22 @@ impl CodekarlUi {
                 .note_world(snapshot.economy_revision, snapshot.world);
             snapshot.economy_revision
         });
+        sim.views
+            .post_events(snapshot.events_revision, Arc::clone(&snapshot.events));
         let posted = vm.borrow_mut().post(
             crate::game_api::GAME_TIME,
             vec![crate::game_api::time_table(&snapshot)],
         );
         if let Ok(id) = posted {
-            self.state
-                .times
-                .borrow_mut()
-                .push((id, snapshot.economy_revision));
+            self.state.times.borrow_mut().push((
+                id,
+                snapshot.economy_revision,
+                snapshot.events_revision,
+            ));
             *self.state.delivered.borrow_mut() = Some(snapshot);
             return true;
         }
+        sim.views.unpost_events(snapshot.events_revision);
         // No call exists: nothing pins the view it was to be read by.
         if let Some(revision) = pinned {
             sim.views.unpost(revision);
@@ -1190,10 +1194,13 @@ impl CodekarlUi {
                 let mut times = self.state.times.borrow_mut();
                 times
                     .iter()
-                    .position(|(id, _)| *id == result.id)
+                    .position(|(id, _, _)| *id == result.id)
                     .map(|position| times.remove(position))
             };
-            if let Some((_, revision)) = timed {
+            if let Some((_, revision, events_revision)) = timed {
+                if let Some(sim) = &self.sim {
+                    sim.views.complete_events(events_revision);
+                }
                 // This call has completed: older views that no pending call pins are retired.
                 if revision != 0
                     && let Some(sim) = &self.sim
@@ -4451,8 +4458,11 @@ mod tests {
             paused,
             unsaved: false,
             layers: ck_sim::MapLayers::default(),
+            log_choices: ck_sim::LogChoices::default(),
             economy_revision: 0,
             economy: None,
+            events: std::sync::Arc::new(Vec::new()),
+            events_revision: 0,
             world: 0,
         }
     }
@@ -4550,6 +4560,10 @@ mod tests {
             .function(
                 "place",
                 game_api::place_function(Arc::clone(&views), vec![]),
+            )
+            .function(
+                "events",
+                game_api::events_function(Arc::clone(&views), vec![]),
             ),
         );
         let harness = Harness::new(script, extras);
@@ -4602,6 +4616,45 @@ mod tests {
 
     const ON_TIME: &str =
         "game.on_time(function(t) window.record(t.hour, t.speed, tostring(t.paused)) end)";
+
+    #[test]
+    fn load_world_and_event_rows_reach_ui_even_when_the_first_snapshot_is_replaced() {
+        let (before, loaded, later) = crate::game::tests::core_behaviour::event_load_snapshots();
+        assert_eq!(before.events.len(), 10);
+        assert_eq!(loaded.events.len(), 2);
+        assert!(loaded.events_revision > before.events_revision);
+        let mut delivery = timed(
+            "game.on_time(function(t) local rows = game.events(t.events_revision); window.record(t.world, t.events_revision, #rows, rows[1].knots) end)",
+            Extras::default(),
+        );
+        delivery.slot.publish(before.clone());
+        delivery.pump_until(1);
+        delivery.slot.publish(loaded.clone());
+        delivery.pump_until(2);
+        assert_eq!(
+            delivery.seen(),
+            [
+                format!("{} {} 10 44", before.world, before.events_revision),
+                format!("{} {} 2 30", loaded.world, loaded.events_revision),
+            ]
+        );
+        let mut latest = timed(
+            "game.on_time(function(t) local rows = game.events(t.events_revision); window.record(t.world, t.events_revision, #rows, rows[1].knots) end)",
+            Extras::default(),
+        );
+        latest.slot.publish(before.clone());
+        latest.pump_until(1);
+        latest.slot.publish(loaded.clone());
+        latest.slot.publish(later.clone()); // The subsequent tick replaces the load before the link reads its slot.
+        latest.pump_until(2);
+        assert_eq!(
+            latest.seen(),
+            [
+                format!("{} {} 10 44", before.world, before.events_revision),
+                format!("{} {} 2 30", later.world, later.events_revision),
+            ]
+        );
+    }
 
     #[test]
     fn a_changed_snapshot_is_delivered_once_and_an_unchanged_one_not_at_all() {

@@ -42,6 +42,57 @@ pub struct MapLayers {
     pub roads: bool,
 }
 
+/// Sort used by the event log.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LogSort {
+    /// Chronological order.
+    #[default]
+    Default,
+    /// Sort by time.
+    Time,
+    /// Sort by peak strength.
+    Strength,
+}
+
+/// Event-log choices, outside the simulation state and digest.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LogChoices {
+    /// Whether the strength filter is enabled.
+    pub storms: bool,
+    /// Minimum peak strength in knots.
+    pub threshold: u8,
+    /// Whether blights are visible.
+    pub blights: bool,
+    /// The selected sort.
+    pub sort: LogSort,
+    /// Whether that sort runs descending.
+    pub descending: bool,
+}
+impl Default for LogChoices {
+    fn default() -> Self {
+        Self {
+            storms: true,
+            threshold: 34,
+            blights: false,
+            sort: LogSort::Default,
+            descending: false,
+        }
+    }
+}
+impl LogChoices {
+    fn validate(self) -> Result<Self, SaveError> {
+        if self.threshold > 64 {
+            return Err(malformed("log.threshold is outside 0..=64"));
+        }
+        if self.sort == LogSort::Default && self.descending {
+            return Err(malformed("log.direction is invalid for default sort"));
+        }
+        Ok(self)
+    }
+}
+
 /// The header of a save: what identifies the game it belongs to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SaveMeta {
@@ -67,6 +118,8 @@ pub struct SaveMeta {
     pub seed: u64,
     /// Saved view layers.
     pub layers: MapLayers,
+    /// Saved event-log choices.
+    pub log: LogChoices,
 }
 
 /// What a loader insists on: the build and the content hashes of what it has loaded.
@@ -308,6 +361,7 @@ struct HeaderToml {
     seed: String,
     start: StartToml,
     layers: MapLayers,
+    log: Option<toml::Value>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -416,6 +470,7 @@ fn parse_seed(text: &str) -> Result<u64, SaveError> {
 }
 
 fn check_meta(meta: &SaveMeta, tick: u64) -> Result<(), SaveError> {
+    meta.log.validate()?;
     let name_length = meta.name.chars().count();
     if !(1..=48).contains(&name_length)
         || meta.name.chars().any(char::is_control)
@@ -495,6 +550,7 @@ fn write_header(meta: &SaveMeta, tick: u64) -> Result<String, SaveError> {
     check_meta(meta, tick)?;
     let header = HeaderToml {
         layers: meta.layers,
+        log: Some(toml::Value::try_from(meta.log).map_err(malformed)?),
         format: FORMAT,
         name: meta.name.clone(),
         written: meta.written.clone(),
@@ -517,7 +573,7 @@ fn write_header(meta: &SaveMeta, tick: u64) -> Result<String, SaveError> {
     toml::to_string(&header).map_err(malformed)
 }
 
-fn read_header(bytes: &[u8]) -> Result<(SaveMeta, u64), SaveError> {
+fn read_header(bytes: &[u8]) -> Result<(SaveMeta, u64, Option<toml::Value>), SaveError> {
     let text = str::from_utf8(bytes).map_err(malformed)?;
     let probe: toml::Value = toml::from_str(text).map_err(malformed)?;
     let format = probe
@@ -531,6 +587,7 @@ fn read_header(bytes: &[u8]) -> Result<(SaveMeta, u64), SaveError> {
     let tick = u64::try_from(header.tick).map_err(malformed)?;
     let meta = SaveMeta {
         layers: header.layers,
+        log: LogChoices::default(),
         name: header.name,
         written: header.written,
         build: header.build,
@@ -551,7 +608,7 @@ fn read_header(bytes: &[u8]) -> Result<(SaveMeta, u64), SaveError> {
     if header.date != game_date(tick)? {
         return Err(malformed("date does not match the saved tick"));
     }
-    Ok((meta, tick))
+    Ok((meta, tick, header.log))
 }
 
 /// A section as written: its tag, the `u64` length, the bytes and their `u64` FNV-1a checksum.
@@ -671,7 +728,7 @@ impl<S: Canonical> Save<S> {
         let header = input
             .take(header_length)
             .map_err(|_| SaveError::Truncated)?;
-        let (meta, header_tick) = read_header(header)?;
+        let (mut meta, header_tick, log) = read_header(header)?;
         if meta.build != expected.build {
             return Err(SaveError::BuildMismatch {
                 expected: expected.build.clone(),
@@ -700,6 +757,12 @@ impl<S: Canonical> Save<S> {
                 });
             }
         }
+
+        let log = log.ok_or_else(|| malformed("log table is missing"))?;
+        meta.log = log
+            .try_into::<LogChoices>()
+            .map_err(|e| malformed(format!("log: {e}")))?
+            .validate()?;
 
         let mut sections: Vec<([u8; 4], &[u8])> = Vec::new();
         let end_start = loop {

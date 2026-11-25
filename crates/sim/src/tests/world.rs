@@ -172,6 +172,7 @@ pub(super) fn meta(seed: u64) -> SaveMeta {
         start: start_date(),
         seed,
         layers: crate::MapLayers::default(),
+        log: crate::LogChoices::default(),
     }
 }
 

@@ -839,3 +839,86 @@ fn map_layers_are_required_booleans_in_the_header() {
         &with_header(|h| h.replace("roads = false\n", ""))
     ));
 }
+
+#[test]
+fn log_choices_are_required_after_compatibility_and_checked_strictly() {
+    let mut save = valid_save();
+    save.meta.log = crate::LogChoices {
+        storms: false,
+        threshold: 40,
+        blights: true,
+        sort: crate::LogSort::Strength,
+        descending: true,
+    };
+    let bytes = save.to_bytes().unwrap();
+    assert_eq!(load(&bytes).unwrap().meta.log, save.meta.log);
+    let edit = |change: fn(&mut toml::Table)| {
+        let mut parts = take_apart(&bytes);
+        let mut table: toml::Table = parts.header.parse().unwrap();
+        change(&mut table);
+        parts.header = toml::to_string(&table).unwrap();
+        put_together(&parts)
+    };
+    let missing = edit(|table| {
+        table.remove("log");
+    });
+    assert!(
+        matches!(load(&missing), Err(SaveError::MalformedHeader { reason }) if reason.contains("log"))
+    );
+    let older = edit(|table| {
+        table.remove("log");
+        table.insert("build".into(), "older".into());
+    });
+    assert!(matches!(load(&older), Err(SaveError::BuildMismatch { .. })));
+    for bad in [
+        edit(|table| {
+            table["log"]["threshold"] = 65.into();
+        }),
+        edit(|table| {
+            table["log"]["sort"] = "unknown".into();
+        }),
+    ] {
+        assert!(
+            matches!(load(&bad), Err(SaveError::MalformedHeader { reason }) if reason.contains("log"))
+        );
+    }
+}
+
+#[test]
+fn streamed_reader_checks_build_before_the_log_table() {
+    use std::io::Cursor;
+    let mut bytes = Vec::new();
+    valid_save()
+        .write_with_sections(&mut bytes, &mut [(*b"ARCH", 0, &mut std::io::empty())])
+        .unwrap();
+    let original = take_apart(&bytes);
+    let stage = std::env::temp_dir().join(format!("ck-log-header-{}", std::process::id()));
+    for older in [true, false] {
+        let mut table: toml::Table = original.header.parse().unwrap();
+        table.remove("log");
+        if older {
+            table.insert("build".into(), "older".into());
+        }
+        let parts = Parts {
+            header: toml::to_string(&table).unwrap(),
+            sections: original.sections.clone(),
+        };
+        let error = Save::<World>::read_with_sections(
+            &mut Cursor::new(put_together(&parts)),
+            &expected(),
+            &stage,
+            &[*b"ARCH"],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            if older {
+                error.contains("build")
+            } else {
+                error.contains("log")
+            },
+            "{error}"
+        );
+        assert!(!stage.exists());
+    }
+}

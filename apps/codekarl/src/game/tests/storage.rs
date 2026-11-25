@@ -1358,3 +1358,95 @@ fn layer_saves_and_loads_follow_the_ordered_route() {
         }
     }
 }
+
+#[test]
+fn log_choices_follow_named_guarded_and_quick_loads() {
+    use crate::game::core::Message;
+    let mut h = Harness::new(42);
+    let choices = ck_sim::LogChoices {
+        storms: false,
+        threshold: 40,
+        blights: true,
+        sort: ck_sim::LogSort::Time,
+        descending: true,
+    };
+    h.core.dispatch(Message::SetLogChoices(choices), h.now);
+    assert!(matches!(
+        h.save_call(SaveCall::New("Events".into())),
+        SaveReply::Finished(Ok(()))
+    ));
+    h.control(Control::Quicksave);
+    h.core
+        .dispatch(Message::SetLogChoices(ck_sim::LogChoices::default()), h.now);
+    assert_eq!(guarded_load(&mut h, "events.cksave"), Err("unsaved".into()));
+    assert!(matches!(
+        h.save_call(SaveCall::Load("events.cksave".into())),
+        SaveReply::Finished(Ok(()))
+    ));
+    assert_eq!(h.core.snapshot().log_choices, choices);
+    assert_eq!(guarded_load(&mut h, "events.cksave"), Ok(()));
+    assert_eq!(h.core.snapshot().log_choices, choices);
+    h.core
+        .dispatch(Message::SetLogChoices(ck_sim::LogChoices::default()), h.now);
+    h.control(Control::Quickload);
+    assert_eq!(h.core.snapshot().log_choices, choices);
+}
+
+#[test]
+fn missing_log_table_is_checked_after_build_on_both_load_paths() {
+    let mut h = Harness::new(42);
+    h.control(Control::Quicksave);
+    let original = fs::read(h.saves.join(QUICKSAVE)).unwrap();
+    let old_len = u32::from_le_bytes(original[8..12].try_into().unwrap()) as usize;
+    let header = std::str::from_utf8(&original[12..12 + old_len]).unwrap();
+    let mut table: toml::Table = header.parse().unwrap();
+    table.remove("log");
+    for other_build in [true, false] {
+        table.insert(
+            "build".into(),
+            if other_build {
+                "other-build"
+            } else {
+                "test-build"
+            }
+            .into(),
+        );
+        let header = toml::to_string(&table).unwrap();
+        let mut bytes = original[..8].to_vec();
+        bytes.extend_from_slice(&u32::try_from(header.len()).unwrap().to_le_bytes());
+        bytes.extend_from_slice(header.as_bytes());
+        bytes.extend_from_slice(&original[12 + old_len..]);
+        fs::write(h.saves.join(QUICKSAVE), &bytes).unwrap();
+        fs::write(h.saves.join("missing-log.cksave"), &bytes).unwrap();
+        let SaveReply::Listed(Ok(entries)) = h.save_call(SaveCall::List) else {
+            panic!("catalog")
+        };
+        let entry = entries
+            .iter()
+            .find(|e| e.filename == "missing-log.cksave")
+            .unwrap();
+        assert_eq!(
+            entry.fit,
+            if other_build {
+                crate::game::saves::Fit::Version
+            } else {
+                crate::game::saves::Fit::Fits
+            }
+        );
+        h.control(Control::Quickload);
+        let error = h.texts(Level::Error).last().unwrap().clone();
+        assert!(
+            error.contains(if other_build { "build" } else { "log" }),
+            "{error}"
+        );
+        let SaveReply::Finished(Err(error)) =
+            h.save_call(SaveCall::Load("missing-log.cksave".into()))
+        else {
+            panic!("load must refuse")
+        };
+        assert!(
+            error.contains(if other_build { "version" } else { "log" }),
+            "{error}"
+        );
+    }
+}

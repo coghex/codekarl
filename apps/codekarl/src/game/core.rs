@@ -33,6 +33,7 @@ pub(crate) enum Message {
     MarkUnsaved,
     /// Atomically set a view layer and mark a change unsaved.
     SetMapLayer(MapLayer, bool),
+    SetLogChoices(ck_sim::LogChoices),
     /// A named-save API request; the reply carries only the completed operation outcome.
     Save(SaveCall, Sender<SaveReply>),
     /// A guarded named load; the result is returned to the UI link asynchronously.
@@ -51,6 +52,7 @@ impl PartialEq for Message {
         match (self, other) {
             (Self::Control(left), Self::Control(right)) => left == right,
             (Self::SetMapLayer(a, b), Self::SetMapLayer(c, d)) => a == c && b == d,
+            (Self::SetLogChoices(a), Self::SetLogChoices(b)) => a == b,
             (Self::MarkUnsaved, Self::MarkUnsaved)
             | (Self::Stop, Self::Stop)
             | (Self::Cancel, Self::Cancel) => true,
@@ -144,6 +146,7 @@ pub(crate) struct Core<S, C> {
     /// Whether the player's game has changed since its last successful save or load.
     unsaved: bool,
     layers: MapLayers,
+    log_choices: ck_sim::LogChoices,
     identity: Identity,
     saves: PathBuf,
     rebuild: Rebuild<S, C>,
@@ -158,6 +161,10 @@ pub(crate) struct Core<S, C> {
     view: Option<Arc<EconomyView>>,
     /// The world the snapshots carry: it rises each time the simulation is replaced by a load.
     world: u64,
+    events_source: super::events::Fixture,
+    events: Arc<Vec<super::events::Event>>,
+    events_revision: u64,
+    events_world: u64,
 }
 
 impl<S, C> Core<S, C>
@@ -188,6 +195,7 @@ where
     ) -> std::io::Result<()> {
         let mut save = self.save();
         save.meta.layers = self.layers;
+        save.meta.log = self.log_choices;
         if let Some(name) = name {
             save.meta.name = name;
             save.meta.written = saves::utc_now_rfc3339();
@@ -242,7 +250,8 @@ where
         )
     }
 
-    /// Builds the core with its initial saved layer choices before publishing its first snapshot.
+    /// Builds a test core with its initial saved layer choices.
+    #[cfg(test)]
     pub(crate) fn new_with_views_and_layers(
         simulation: Simulation<S, C>,
         identity: Identity,
@@ -252,6 +261,32 @@ where
         views: Option<ViewBuilder<S>>,
         layers: MapLayers,
     ) -> Self {
+        Self::new_with_events(
+            simulation,
+            identity,
+            saves,
+            rebuild,
+            outputs,
+            views,
+            (
+                layers,
+                super::events::Fixture::default(),
+                ck_sim::LogChoices::default(),
+            ),
+        )
+    }
+
+    /// Builds all view data before publishing the first snapshot.
+    pub(crate) fn new_with_events(
+        simulation: Simulation<S, C>,
+        identity: Identity,
+        saves: PathBuf,
+        rebuild: Rebuild<S, C>,
+        outputs: Outputs,
+        views: Option<ViewBuilder<S>>,
+        initial: (MapLayers, super::events::Fixture, ck_sim::LogChoices),
+    ) -> Self {
+        let (layers, events_source, log_choices) = initial;
         let mut core = Self {
             simulation,
             external: None,
@@ -260,6 +295,7 @@ where
             paused: Some(PauseReason::Load),
             unsaved: false,
             layers,
+            log_choices,
             identity,
             saves,
             rebuild,
@@ -272,10 +308,35 @@ where
             revision: 0,
             view: None,
             world: 0,
+            events_source,
+            events: Arc::new(Vec::new()),
+            events_revision: 0,
+            events_world: 0,
         };
         core.refresh_view();
         core.publish_if_changed();
         core
+    }
+
+    #[cfg(test)]
+    pub(super) fn install_events(
+        &mut self,
+        source: super::events::Fixture,
+        choices: ck_sim::LogChoices,
+    ) {
+        self.log_choices = choices;
+        self.events_source = source;
+        self.refresh_events();
+        self.publish_if_changed();
+    }
+
+    fn refresh_events(&mut self) {
+        let rows = self.events_source.at(self.simulation.time());
+        if self.events_revision == 0 || self.events_world != self.world || *self.events != rows {
+            self.events_revision += 1;
+            self.events_world = self.world;
+            self.events = Arc::new(rows);
+        }
     }
 
     /// Builds the economy view of the state as it is now, under the next revision. A core without a view builder has none.
@@ -319,8 +380,11 @@ where
             paused: self.paused,
             unsaved: self.unsaved,
             layers: self.layers,
+            log_choices: self.log_choices,
             economy_revision: self.revision,
             economy: self.view.clone(),
+            events: Arc::clone(&self.events),
+            events_revision: self.events_revision,
             world: self.world,
         }
     }
@@ -337,6 +401,7 @@ where
     }
 
     fn publish_if_changed(&mut self) {
+        self.refresh_events();
         let snapshot = self.snapshot();
         if self
             .published
@@ -378,6 +443,14 @@ where
                 };
                 if *value != shown {
                     *value = shown;
+                    self.unsaved = true;
+                    self.publish_if_changed();
+                }
+                Flow::Continue
+            }
+            Message::SetLogChoices(choices) => {
+                if self.log_choices != choices {
+                    self.log_choices = choices;
                     self.unsaved = true;
                     self.publish_if_changed();
                 }
@@ -655,8 +728,9 @@ where
             return Err(format!("save cannot be loaded: {}", entry.fit.as_str()));
         }
         match self.load_from(&path) {
-            Ok((simulation, layers)) => {
+            Ok((simulation, layers, choices)) => {
                 self.layers = layers;
+                self.log_choices = choices;
                 (self.rebuild.reset)(simulation.seed());
                 self.simulation = simulation;
                 self.clock = Clock::new();
@@ -691,8 +765,9 @@ where
     fn quickload(&mut self) {
         let path = quicksave_path(&self.saves);
         match self.load_from(&path) {
-            Ok((simulation, layers)) => {
+            Ok((simulation, layers, choices)) => {
                 self.layers = layers;
+                self.log_choices = choices;
                 (self.rebuild.reset)(simulation.seed());
                 self.simulation = simulation;
                 self.clock = Clock::new();
@@ -710,7 +785,7 @@ where
     fn load_from(
         &mut self,
         path: &std::path::Path,
-    ) -> Result<(Simulation<S, C>, MapLayers), String> {
+    ) -> Result<(Simulation<S, C>, MapLayers, ck_sim::LogChoices), String> {
         let mut file = saves::open_regular(path)
             .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
         if let Some((storage, validate)) = &self.external {
@@ -736,12 +811,13 @@ where
             }
             validate(&staged.path, &save.state).map_err(|e| e.to_string())?;
             let layers = save.meta.layers;
+            let choices = save.meta.log;
             let simulation =
                 Simulation::from_save(save, (self.rebuild.scheduler)(), self.rebuild.apply)
                     .map_err(|e| e.to_string())?;
             staged.publish();
             self.external = Some((staged, *validate));
-            Ok((simulation, layers))
+            Ok((simulation, layers, choices))
         } else {
             let mut bytes = Vec::new();
             std::io::Read::read_to_end(&mut file, &mut bytes).map_err(|e| e.to_string())?;
@@ -752,8 +828,9 @@ where
                 validate(&save.state, date)?;
             }
             let layers = save.meta.layers;
+            let choices = save.meta.log;
             Simulation::from_save(save, (self.rebuild.scheduler)(), self.rebuild.apply)
-                .map(|simulation| (simulation, layers))
+                .map(|simulation| (simulation, layers, choices))
                 .map_err(|e| e.to_string())
         }
     }

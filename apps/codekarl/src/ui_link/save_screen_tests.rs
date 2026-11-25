@@ -1161,6 +1161,7 @@ impl RealSaves {
                 let line = match &message {
                     Message::Control(control) => format!("control {control:?}"),
                     Message::MarkUnsaved => "mark_unsaved".to_owned(),
+                    Message::SetLogChoices(choices) => format!("set_log_choices {choices:?}"),
                     Message::SetMapLayer(layer, shown) => {
                         format!("set_map_layer {layer:?} {shown}")
                     }

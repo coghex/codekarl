@@ -28,6 +28,7 @@ local theme = require("lib.theme")
 local pointer = require("lib.pointer")
 local tooltip = require("lib.tooltip")
 local scrollbar = require("lib.scrollbar")
+local slider = require("lib.slider")
 
 local P = ui.P
 local ROW = 13 * P
@@ -167,7 +168,10 @@ end
 -- that would look the same.
 local function describe(bar, kind)
   local entries, widest, rows_top, content_width = {}, 0, 0, 0
-  if kind == "filter" then
+  if kind == "filter" and bar.event_choices then
+    entries = {{kind = "event_box", label = "storms from", value = "storms"}, {kind = "event_box", label = "blights", value = "blights"}}
+    content_width = 205 * P
+  elseif kind == "filter" then
     local multiple = #bar.filters > 1
     for group_index, group in ipairs(bar.filters) do
       if multiple then
@@ -241,7 +245,7 @@ local function new_picker(bar, kind)
     on_overflow = function() end,
   }, window)
 
-  if kind == "filter" then
+  if kind == "filter" and not bar.event_choices then
     self.all = button.new{x = 4 * P, y = 3 * P, text = "all", kind = window.kind, group = self.group, owner = window,
       on_click = function() bar:clear() end}
     self.owned[self.all.key] = true
@@ -269,7 +273,11 @@ local function new_picker(bar, kind)
       self.owned[key] = true
       render.set_hit(key, {{x = -3 * P, y = top, width = wide, height = ROW}}, self.rows_group)
       local activate
-      if entry.kind == "box" then
+      if entry.kind == "event_box" then
+        row.box = checkbox(self.rows_group, top, self.colours.text)
+        activate = function() bar:toggle_event(entry.value) end
+        row.line = text.line(12 * P, top + P, self.rows_group, self.colours.text)
+      elseif entry.kind == "box" then
         row.box = checkbox(self.rows_group, top, self.colours.text)
         activate = function() bar:toggle(entry.group, entry.value) end
         row.line = text.line(12 * P, top + P, self.rows_group, self.colours.text)
@@ -280,6 +288,14 @@ local function new_picker(bar, kind)
       text.set(row.line, entry.label)
       pointer.register(key, row_widget(self, key, index, activate), window)
     end
+  end
+  if kind == "filter" and bar.event_choices then
+    local page = {group = self.rows_group, owner = window, x = 0, room = self.content_width}
+    self.slider = slider.new({window = window, controls = {}}, page, "event strength", nil, -P, 0, 64, 1,
+      bar.event_choices.threshold, nil, bar.event_choices.storms, self.colours.text,
+      {x = 70 * P, no_disabled_hit = true, format = function(n) return tostring(n) .. " kn" end,
+        on_change = function(n) bar.event_choices.threshold = n; if bar.on_change then bar.on_change() end end})
+    self.owned[self.slider.key] = true
   end
   self:refresh()
   return self
@@ -322,6 +338,7 @@ function Picker:apply()
   self.s = ui.snap(self.pos)
   self.viewport = viewport
   self:place_rows()
+  if self.slider then self.slider:place_abs(ox + 4 * P, oy + 3 * P + self.rows_top - self.s) end
   render.set_group_clip(self.rows_group, {x = ox + P, y = oy + 3 * P + self.rows_top, width = pw - 2 * P, height = viewport})
   self.scroll_bar:update(viewport, self.rows_height, self.s)
   self.scroll_bar:place(ox + pw - 4 * P, oy + 3 * P + self.rows_top, nil)
@@ -371,11 +388,11 @@ end
 function Picker:refresh()
   local bar = self.bar
   if self.kind == "filter" then
-    self.all:set_selected(bar.ticks == 0)
+    if self.all then self.all:set_selected(bar.ticks == 0) end
     for _, row in ipairs(self.rows) do
       local entry = row.entry
-      if entry.kind == "box" then
-        local ticked = bar.ticked[bar.filters[entry.group].key][entry.value] == true
+      if entry.kind == "box" or entry.kind == "event_box" then
+        local ticked = entry.kind == "event_box" and bar.event_choices[entry.value] or (entry.kind == "box" and bar.ticked[bar.filters[entry.group].key][entry.value] == true)
         if ticked and row.tick == nil then
           row.tick = tick_quad(self.rows_group, row.y, self.colours.text)
         elseif not ticked and row.tick ~= nil then
@@ -384,6 +401,7 @@ function Picker:refresh()
         end
       end
     end
+    if self.slider then self.slider:set_enabled(bar.event_choices.storms) end
     return
   end
   local chosen = bar.sort_index == nil and 1 or bar.sort_index + 1
@@ -424,6 +442,7 @@ function Picker:destroy()
       pointer.unregister(row.key)
     end
   end
+  if self.slider ~= nil then self.slider:destroy() end
   if self.all ~= nil then self.all:destroy() end
   self.scroll_bar:destroy()
   self.panel:destroy()
@@ -468,7 +487,7 @@ local function place_count(self)
 end
 
 local function show_count(self)
-  if self.ticks > 0 then
+  if self.ticks > 0 or self.event_choices then
     text.set_segments(self.count, {
       {text = tostring(self.shown), colour = theme.colour("number")},
       {text = " of ", colour = theme.colour("dim")},
@@ -518,6 +537,7 @@ function listbar.new(spec)
   self.window = window
   self.sorts, self.filters = sorts, groups
   self.on_change = spec.on_change
+  self.event_choices = spec.event_choices
   self.ticked = {} -- group key -> value -> true
   self.group_ticks = {} -- group key -> how many boxes of it are ticked
   self.boxes = {} -- group index -> {{value, label}, ...} in label order
@@ -544,7 +564,7 @@ function listbar.new(spec)
   self.sort_button = button.new{x = 0, y = 0, icons = {"sort"}, icon = "sort", kind = window.kind, group = window.content,
     owner = window, tooltip = "sort", on_click = function() toggle_picker(self, "sort") end}
   self.count = text.line(0, 0, window.content)
-  self.filter_button:set_selected(self.ticks > 0)
+  self.filter_button:set_selected(self.event_choices and (self.event_choices.storms or self.event_choices.blights) or self.ticks > 0)
   window:attach(self)
   return self
 end
@@ -561,6 +581,29 @@ end
 
 -- The rows that pass the filter, in the chosen order, as a new array of the caller's own tables.
 function Bar:view(rows)
+  if self.event_choices then
+    local passed = {}
+    for _, row in ipairs(rows) do
+      local c = self.event_choices
+      if (row.kind == "storm" and (not c.storms or row.knots >= c.threshold)) or (row.kind == "blight" and c.blights) then
+        passed[#passed + 1] = row
+      end
+    end
+    if self.sort_index then
+      local key, descending = self.sorts[self.sort_index].key, self.direction == "descending"
+      local decorated = {}
+      for index, row in ipairs(passed) do decorated[index] = {row = row, index = index, value = row.sort[key]} end
+      table.sort(decorated, function(a, b)
+        if (a.value == nil) ~= (b.value == nil) then return b.value == nil end
+        if a.value == nil or a.value == b.value then return a.index < b.index end
+        return descending and a.value > b.value or (not descending and a.value < b.value)
+      end)
+      passed = {}; for _, item in ipairs(decorated) do passed[#passed + 1] = item.row end
+    end
+    self.shown, self.total = #passed, #rows
+    show_count(self)
+    return passed
+  end
   -- The boxes: the values the rows have, and any value still ticked that no row has now.
   local seen = {}
   for index, group in ipairs(self.filters) do
@@ -635,11 +678,18 @@ function Bar:view(rows)
 end
 
 local function changed(bar)
-  bar.filter_button:set_selected(bar.ticks > 0)
+  bar.filter_button:set_selected(bar.event_choices and (bar.event_choices.storms or bar.event_choices.blights) or bar.ticks > 0)
   bar.sort_button:set_selected(bar.sort_index ~= nil)
   if bar.picker ~= nil then bar.picker:refresh() end
   tooltip.close_all()
   if bar.on_change ~= nil then bar.on_change() end
+end
+
+function Bar:toggle_event(key)
+  self.event_choices[key] = not self.event_choices[key]
+  self.filter_button:set_selected(self.event_choices.storms or self.event_choices.blights)
+  if self.picker then self.picker:refresh() end
+  if self.on_change then self.on_change() end
 end
 
 -- Ticks or unticks the box of `value` in group number `group_index`.

@@ -29,6 +29,7 @@ pub(super) fn shipped(seed: u64) -> (Dir, Prepared, Vec<(Level, String)>) {
     let game = GameConfig {
         scenario: assets().join("scenarios/ireland-768"),
         saves: dir.0.join("saves"),
+        events_fixture: None,
     };
     let mut records = Vec::new();
     let prepared = prepare(
@@ -813,6 +814,7 @@ fn new_game_in(dir: &Dir, scenario: PathBuf, seed: u64) -> Result<Prepared, Stri
     let game = GameConfig {
         scenario,
         saves: dir.0.join("saves"),
+        events_fixture: None,
     };
     prepare(
         &Request {
@@ -1081,6 +1083,7 @@ fn game_without_backdrop_starts_and_steps_with_an_empty_list() {
     let game = GameConfig {
         scenario,
         saves: dir.0.join("saves"),
+        events_fixture: None,
     };
     let mut prepared = prepare(
         &Request {
@@ -1113,6 +1116,7 @@ fn a_changed_weather_rule_refuses_an_existing_save() {
     let game = GameConfig {
         scenario: scenario.clone(),
         saves: dir.0.join("saves"),
+        events_fixture: None,
     };
     let (save, _) = super::setup::write_save(&game, 0, 42);
     let weather = scenario
@@ -1150,6 +1154,7 @@ fn backdrop_identity_and_missing_backdrop_are_checked_on_load() {
         let game = GameConfig {
             scenario: scenario.clone(),
             saves: dir.0.join("saves"),
+            events_fixture: None,
         };
         let (save, _) = super::setup::write_save(&game, 0, 42);
         let backdrop = dir.0.join("assets/map/backdrop");
@@ -1221,4 +1226,119 @@ fn invalid_backdrop_format_refuses_start() {
     fs::write(manifest, source.replacen("format = 2", "format = 1", 1)).unwrap();
     let error = new_game_in(&dir, scenario, 42).err().unwrap();
     assert!(error.contains("backdrop.toml"), "{error}");
+}
+
+#[test]
+fn fixture_rows_come_from_the_real_setup_without_affecting_any_hour_of_simulation() {
+    let (plain_dir, mut plain, _) = shipped(42);
+    let fixture_dir = Dir::new();
+    let config = GameConfig {
+        scenario: assets().join("scenarios/ireland-768"),
+        saves: fixture_dir.0.join("saves"),
+        events_fixture: Some(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../config/event-log-fixture.toml"),
+        ),
+    };
+    let mut with = prepare(
+        &Request {
+            game: &config,
+            vms: &[],
+            load: None,
+            seed: Some(42),
+        },
+        || Ok(42),
+        &mut |_, _| {},
+    )
+    .unwrap();
+    assert_eq!(plain.identity.build, with.identity.build);
+    let end = ck_sim::GameTime::from_date(ck_sim::Date {
+        year: 768,
+        month: 10,
+        day: 13,
+        hour: 0,
+    })
+    .unwrap();
+    while plain.simulation.time() < end {
+        assert_eq!(
+            plain.simulation.digest().unwrap(),
+            with.simulation.digest().unwrap()
+        );
+        assert!(plain.events.at(plain.simulation.time()).is_empty());
+        assert!(plain.simulation.step().unwrap().is_empty());
+        assert!(with.simulation.step().unwrap().is_empty());
+    }
+    assert_eq!(
+        plain.simulation.digest().unwrap(),
+        with.simulation.digest().unwrap()
+    );
+    assert_eq!(with.events.at(end).len(), 10);
+    drop(plain_dir);
+}
+
+#[test]
+fn a_save_made_with_a_fixture_loads_without_it_and_restores_log_choices() {
+    use crate::game::{
+        controls::Control,
+        core::{Message, Outputs},
+        setup::test_core_running,
+    };
+    use std::time::Duration;
+    let dir = Dir::new();
+    let fixture =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../config/event-log-fixture.toml");
+    let mut config = GameConfig {
+        scenario: assets().join("scenarios/ireland-768"),
+        saves: dir.0.join("saves"),
+        events_fixture: Some(fixture),
+    };
+    let started = prepare(
+        &Request {
+            game: &config,
+            vms: &[],
+            load: None,
+            seed: Some(42),
+        },
+        || Ok(42),
+        &mut |_, _| {},
+    )
+    .unwrap();
+    let outputs = Outputs {
+        log: Box::new(|_, _| {}),
+        publish: Box::new(|_| {}),
+        fail: Box::new(|e| panic!("{e}")),
+    };
+    let mut core = test_core_running(started, config.saves.clone(), outputs);
+    let choices = ck_sim::LogChoices {
+        storms: false,
+        threshold: 40,
+        blights: true,
+        sort: ck_sim::LogSort::Time,
+        descending: true,
+    };
+    core.dispatch(Message::SetLogChoices(choices), Duration::ZERO);
+    core.dispatch(Message::Control(Control::TogglePause), Duration::ZERO);
+    for second in 1..=36 {
+        core.run_wake(Duration::from_secs(second), &mut || None);
+    }
+    assert_eq!(core.snapshot().events.len(), 2);
+    core.dispatch(
+        Message::Control(Control::Quicksave),
+        Duration::from_secs(36),
+    );
+    let path = crate::game::saves::quicksave_path(&config.saves);
+    assert!(path.exists());
+    config.events_fixture = None;
+    let loaded = prepare(
+        &Request {
+            game: &config,
+            vms: &[],
+            load: Some(&path),
+            seed: None,
+        },
+        || Ok(42),
+        &mut |_, _| {},
+    )
+    .unwrap();
+    assert_eq!(loaded.log_choices, choices);
+    assert!(loaded.events.at(loaded.simulation.time()).is_empty());
 }
