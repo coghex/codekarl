@@ -29,8 +29,9 @@ author's record, moved here from the design round's notes; the files, hashes and
   by copying.
 - **Approval:** the owner approved both full sets as drawn ("Both approved": freeze B and C as drawn;
   `.pipeline/coordination/ui-polish-design/owner-direction-tooltips-r4.md`).
-- **The frozen art:** `assets/ui/font/tooltip-fonts-art.txt` (sha256 `ec5eeb08…`) is the approved art, one grid per glyph. The two
+- **The art record:** `assets/ui/font/tooltip-fonts-art.txt` (sha256 `d4bca9dff914caa652f539a0e5bb5bcb61269bc82e11c45cf44ea5119f325a00`) contains the originally approved art and the later degree sign, one grid per glyph. The two
   font files are that art padded to the box height, with a space added.
+  - CK-424 added U+00B0 to these fonts and the standard font: ck-worker-3 (Codex) drew the raised ring from the plain shape of the degree sign, without copying another font. The existing glyphs were unchanged.
   - A test (`apps/codekarl/src/font.rs`, `every_small_and_tiny_glyph_matches_the_frozen_art_after_box_padding`) checks every glyph of
     both files against it.
   - `assets/ui/font/make_font.py --check` fails when a glyph image differs from its font file.
