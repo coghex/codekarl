@@ -572,18 +572,19 @@ near 50%):
 **Firm.** The owner chose to build climate now and to compute it ("computing it would be the right move"). It replaces the earlier
 latitude ceiling. Weather, the year-to-year variation, comes later.
 
-- **World tables by absolute latitude** (data):
+- **World tables by absolute latitude** (data). Since CK-417 the temperature of a coast is no longer read from a table of the ocean's
+  own half range (that column is gone): it comes from the measured seas, below.
 
-  | Latitude | Sea-level mean °C | Half annual range, ocean | Half annual range, deep continent | Zonal rainfall (mm) |
-  |---|---|---|---|---|
-  | 0° | 27 | 1 | 1 | 2,000 |
-  | 15° | 26 | 1.5 | 4 | 1,000 |
-  | 30° | 20 | 2.5 | 10 | 300 |
-  | 45° | 11 | 3.5 | 14 | 700 |
-  | 55° | 5 | 4 | 17 | 900 |
-  | 60° | 2 | 5 | 19 | 900 |
-  | 70° | −8 | 7 | 22 | 500 |
-  | 90° | −25 | 12 | 25 | 200 |
+  | Latitude | Sea-level mean °C | Half annual range, deep continent | Zonal rainfall (mm) |
+  |---|---|---|---|
+  | 0° | 27 | 1 | 2,000 |
+  | 15° | 26 | 4 | 1,000 |
+  | 30° | 20 | 10 | 300 |
+  | 45° | 11 | 14 | 700 |
+  | 55° | 5 | 17 | 900 |
+  | 60° | 2 | 19 | 900 |
+  | 70° | −8 | 22 | 500 |
+  | 90° | −25 | 25 | 200 |
 
 - **Prevailing wind by band:**
 
@@ -593,21 +594,72 @@ latitude ceiling. Weather, the year-to-year variation, comes later.
   | 30–60° | westerlies |
   | 60–90° | polar easterlies |
 
-- **Per map:** the ocean temperature effect of its coasts, in °C. Ireland's North Atlantic is +4.2; a cold current is negative.
-  - Western Europe's mildness comes mainly from westerly winds carrying ocean air, more than from the current's own heat (Seager et al.
-    2002), so the wind is the main mechanism and the coast's value an adjustment.
+- **Sea influence from the measured seas** (CK-417, spec `ck417-spec-r2`; owner records r68, r71, r72, r73 in
+  `.pipeline/coordination/weather-design/`). The earlier rule walked each row from due west and counted the land since the last sea
+  cell; a row that crossed an inlet started counting again and its neighbour did not, which left level bands across the island (up to
+  2.5 °C in half range and 0.9 °C in mean between neighbouring rows). It is replaced by the rule the owner signed: **a cell is pulled
+  toward the yearly mean and the yearly swing of the seas near it, read from the backdrop's measured sea temperatures and blended by
+  nearness.** A place beside the Irish Sea is pulled as strongly as one beside the Atlantic, but toward a sea that is measured colder
+  in winter and swings more through the year, so it comes out colder in winter. No class of sea is set by hand.
+  - **The seas' temperatures** come from the backdrop (`assets/map/backdrop/`, CK-412 and CK-415; its `SOURCES.md`), twelve months per block of 64 cells. The blocks
+    the crop reads are those from three blocks before to three blocks after the crop's own, in each direction; a block of land has no
+    sea temperature and takes the mean of its eight neighbours that have one, pass after pass. A cell's own sea temperature by month
+    lies between the four block centres round the cell's centre.
+  - **The seas near a cell, the nearer counting more:** the sea cells' temperatures are passed three times through a box mean of
+    radius 100 cells (about 150 km at Ireland's latitude; the seas within about 50 km count most) and divided by the same blend of the
+    sea mask. A cell with no sea within reach, or with too little sea for the arithmetic, stops the generator, naming
+    `sea_blend_cells`. A lake is not sea. The seas' yearly mean is the mean of the twelve months, and their half range half the
+    difference between the warmest and the coldest month.
+  - **The pull** is `sea_pull × exp(−d ÷ 1,200 km)`, where `d` is the great-circle distance to the nearest sea cell's centre in any
+    direction (no wind is involved).
 - **Per cell:**
-  - **maritime influence** `exp(−d ÷ 1,200 km)`, where `d` is the distance over land along the wind since the sea;
-  - **mean temperature** = the zonal mean + ocean effect × maritime influence − 6.5 °C per km of height;
-  - **the half range** moves from the ocean value to the continental value as maritime influence falls;
-  - **months** follow a cosine, warmest in mid-July in the north and mid-January in the south;
+  - **mean temperature** = pull × (the seas' mean − `sea_air_cooler_c`) + (1 − pull) × the zonal mean − 6.5 °C per km of height;
+  - **the half range** = pull × (the seas' half range × `sea_air_swing`) + (1 − pull) × the continental half range;
+  - **months** follow a cosine, warmest in mid-July in the north and mid-January in the south (the map's own timing, not the sea's);
   - **growing degree-days** = the sum of max(0, monthly mean − 5 °C) × 30.4;
   - **rainfall:**
     - moisture walks along the wind from the sea (recovering over water);
     - each land cell rains `zonal × moisture × (1.2 + min(1.6, 0.02 × uplift in m/km) + 1.5 × height in km)`;
     - the moisture is depleted by 0.0015 × rain × km, which makes rain shadows;
     - it is smoothed with a 7 × 7 box mean (edge replicated), exactly as the signed prototype (spec `m9-s9a-r3`).
-- **The Ireland check (prototype):**
+- **The settings** (`edits.toml` `[settings.climate]`; the fitted numbers are the owner's to tune, a fit to seven stations):
+
+  | Setting | Ireland | Means |
+  |---|---|---|
+  | `sea_backdrop` | `../backdrop` | where the backdrop is, from the map's directory |
+  | `sea_pull` | 0.84 | how far a cell on the coast is pulled toward its seas (above 0, to 1) |
+  | `sea_air_cooler_c` | 1.25 | how much cooler the air is than the sea over the year (0 to 10 °C) |
+  | `sea_air_swing` | 0.8 | the air's yearly swing as a share of the sea's (0.1 to 3) |
+  | `sea_blend_cells` | 100 | the box's radius (1 to 500) |
+  | `sea_blend_passes` | 3 | how many times the box is passed (1 to 5) |
+
+  `maritime_length_km` stays at 1,200. `ocean_effect_c` and `ocean_half_range_c` are gone, and a climate table that still carries
+  either, lacks a new setting or has one out of range is refused, naming it. The westerly settings stay, for the rain's walk, which
+  is unchanged.
+- **No steps (a bound the generator keeps).** After the layers are rounded, over every pair of neighbouring land cells, down or across
+  (a lake counts as land, a sea cell does not), the stored half ranges differ by at most 0.1 °C, and the means differ by at most
+  0.15 °C once each cell's height part (6.5 °C per km) is added back. The generator checks this before it writes and stops,
+  naming the layer and the first pair in row order, if it fails; the comparison is exact in whole numbers, for the lapse rate as
+  it is written in `edits.toml`. The earlier layers failed both (2.5 °C and 0.89 °C); the present ones pass with 0.1 °C and 0.11 °C.
+- **Against real stations** (a measurement, not a test; Met Éireann 1981 to 2010 averages, CC BY 4.0, each month less 0.7 °C to bring
+  it to about the level of 1836 to 1900, the map read at each station's own height). January, July and the year, in °C:
+
+  | Station | Measured | The map |
+  |---|---|---|
+  | Valentia | 6.6, 14.7, 10.2 | 6.0, 14.9, 10.4 |
+  | Belmullet | 5.6, 14.2, 9.6 | 5.4, 14.1, 9.7 |
+  | Malin Head | 5.2, 13.8, 9.1 | 4.1, 13.6, 8.9 |
+  | Dublin Airport | 4.6, 14.9, 9.1 | 3.8, 14.0, 8.9 |
+  | Casement | 4.4, 15.0, 9.1 | 3.6, 14.0, 8.8 |
+  | Cork Airport | 4.9, 14.6, 9.2 | 4.6, 14.2, 9.4 |
+  | Shannon Airport | 5.3, 15.7, 10.0 | 5.7, 14.6, 10.1 |
+
+  Over all twelve months at the seven stations the typical miss is 0.58 °C (the earlier rule: 0.84 °C). The weak spot stays: July in
+  the east runs about a degree cool. The island as a whole is 0.17 °C colder, with a slightly wider yearly swing; growing
+  degree-days fall from 1,564 to 1,519 on average over land, and fertility by about 0.08%, because most land was and stays above the
+  warmth at which its factor is full. Ireland is too small to show how the pull falls off with distance from the sea: 1,200 km is the
+  earlier value kept, and a larger land will test it.
+- **The Ireland check (prototype, for rainfall; the temperatures above replace its temperature column):**
 
   | Station | Model | Approximate real |
   |---|---|---|
@@ -619,6 +671,12 @@ latitude ceiling. Weather, the year-to-year variation, comes later.
   The western mountains reach 2,000+ mm.
 - **The generator** computes climate and fertility after the terrain edits. It writes `fertility.png` and the climate layers, reproduced
   byte for byte (slice 9a). The constants live in `edits.toml` `[settings.climate]` and `[settings.fertility]`.
+  - **The backdrop is an input of Ireland's layers.** The temperature layers (and so growing degree-days and fertility) read the
+    backdrop's `backdrop.toml`, `land.png` and `sea_temperature.png` (named by `sea_backdrop`), which is built first; their hashes are
+    recorded in `assets/map/ireland/SOURCES.md`, and a rebuilt backdrop changes Ireland's layers. The map hash changes with them, so a
+    save made before CK-417 is refused by the save identity rules.
+  - **A settings-only change is regenerated** with `apply_edits.py --layers-only --refresh-marker`: the layers are recomputed without
+    applying the terrain's edits again, and the marker `edits.applied` is rewritten with the present `edits.toml`'s hash.
 
 ### 12.3 The default map: fertility gradient and hillside dither
 
