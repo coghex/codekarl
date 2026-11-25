@@ -1292,6 +1292,7 @@ class AnalyzerEnvironment(unittest.TestCase):
                     "doc",
                     "rust.core",
                     "rust.app",
+                    "app.long",
                     "metal.isolation",
                     "metal.gpu",
                     "app.metal-gpu",

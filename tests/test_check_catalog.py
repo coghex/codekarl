@@ -91,12 +91,14 @@ def full_units(targets: dict[str, list[tuple[str, str, bool]]]) -> set[Unit]:
                 units.add((package, kind, name, ALL_FEATURES, case))
             if kind == "lib" and doctests:
                 units.add((package, "doc", name, ALL_FEATURES, "*"))
-            if package == "codekarl":
+            if package == "codekarl" and kind == "test" and name == "cli_spec":
                 units.add((package, kind, name, DEFAULT_FEATURES, "*"))
-                if (
-                    kind == "lib" and doctests
-                ):  # CK-131: the application is a library now, with doctests
-                    units.add((package, "doc", name, DEFAULT_FEATURES, "*"))
+    units.remove(("codekarl", "lib", "codekarl", ALL_FEATURES, "*"))
+    units |= {("codekarl", "lib", "codekarl", ALL_FEATURES, case) for case in ("short", "long")}
+    units |= {
+        ("codekarl", "selected", name, DEFAULT_FEATURES, "filter")
+        for name in check.APP_DEFAULT_TESTS
+    }
     return units
 
 
@@ -279,12 +281,46 @@ def group_units(step: check.Step, targets: dict[str, list[tuple[str, str, bool]]
         return set()
     units: set[Unit] = set()
     for command in step.commands() if step.action is None else []:
-        if command[:2] == ["cargo", "test"]:
+        if command[:2] != ["cargo", "test"] or "--no-run" in command:
+            continue
+        if step.name == "rust.app" and command[-3:] == ["--", "--skip", "app_long_"]:
+            selected = units_of(command[:-3], targets)
+            selected.remove(("codekarl", "lib", "codekarl", ALL_FEATURES, "*"))
+            units |= selected | {("codekarl", "lib", "codekarl", ALL_FEATURES, "short")}
+        elif step.name == "app.long":
+            assert command[-2:] == ["--", "app_long_"]
+            units.add(("codekarl", "lib", "codekarl", ALL_FEATURES, "long"))
+        elif step.name == "rust.app-default" and "--lib" in command:
+            assert tuple(command[command.index("--") + 1 :]) == check.APP_DEFAULT_TESTS
+            units |= {
+                ("codekarl", "selected", name, DEFAULT_FEATURES, "filter")
+                for name in check.APP_DEFAULT_TESTS
+            }
+        else:
             units |= units_of(command, targets)
     return units
 
 
 TARGETS = workspace_targets()
+
+
+class ApplicationPartition(unittest.TestCase):
+    def test_long_group_has_the_same_paths_and_complementary_marker(self) -> None:
+        steps = {step.name: step for step in check.STEPS}
+        order = [step.name for step in check.STEPS]
+        self.assertEqual(order.index("app.long"), order.index("rust.app") + 1)
+        self.assertEqual(steps["rust.app"].paths, steps["app.long"].paths)
+        self.assertEqual(steps["rust.app"].commands()[0][-3:], ["--", "--skip", "app_long_"])
+        self.assertEqual(steps["app.long"].commands()[0][-2:], ["--", "app_long_"])
+        for path in ("apps/codekarl/src/lib.rs", "crates/economy/src/lib.rs"):
+            chosen = {c.step.name for c in check.plan(check.STEPS, [path]).choices if c.selected}
+            self.assertTrue({"rust.app", "app.long"} <= chosen)
+
+    def test_default_filters_name_real_tests(self) -> None:
+        self.assertTrue(check.APP_DEFAULT_TESTS)
+        sources = "\n".join(p.read_text() for p in (REPO / "apps/codekarl").rglob("*.rs"))
+        for name in check.APP_DEFAULT_TESTS:
+            self.assertRegex(sources, rf"(?m)^\s*fn {re.escape(name)}\s*\(")
 
 
 class Ownership(unittest.TestCase):
@@ -1899,8 +1935,9 @@ class ApplicationLibrary(unittest.TestCase):
     ) -> None:
         step = next(step for step in check.STEPS if step.name == "rust.app")
         units = group_units(step, TARGETS)
-        for kind in ("lib", "doc", "bin"):
+        for kind in ("doc", "bin"):
             self.assertIn(("codekarl", kind, "codekarl", ALL_FEATURES, "*"), units, kind)
+        self.assertIn(("codekarl", "lib", "codekarl", ALL_FEATURES, "short"), units)
         self.assertNotIn("windowed", {unit[2] for unit in units})
 
     def test_03_the_windowed_target_is_a_supervisor_and_worker_executable_that_needs_the_metal_feature(

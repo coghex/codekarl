@@ -1884,7 +1884,8 @@ mod stretch_save_tests {
         clippy::too_many_lines,
         reason = "Each invalid fuel field is checked through both real load paths and their storage readers."
     )]
-    fn both_load_paths_refuse_invalid_saved_fuel_without_installing_storage() {
+    // Long run: selected by app.long.
+    fn app_long_both_load_paths_refuse_invalid_saved_fuel_without_installing_storage() {
         let dir = crate::testing::Dir::new();
         let game = GameConfig {
             scenario: Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -2072,7 +2073,9 @@ mod stretch_save_tests {
         clippy::too_many_lines,
         reason = "Each invalid level record is checked through both real load paths and their storage readers."
     )]
-    fn both_load_paths_refuse_invalid_level_records_and_accept_land_levels_on_forest_and_bog() {
+    // Long run: selected by app.long.
+    fn app_long_both_load_paths_refuse_invalid_level_records_and_accept_land_levels_on_forest_and_bog()
+     {
         let dir = crate::testing::Dir::new();
         let game = GameConfig {
             scenario: Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -3066,7 +3069,8 @@ mod stretch_save_tests {
     }
 
     #[test]
-    fn malformed_weather_lists_are_refused_by_both_load_paths() {
+    // Long run: selected by app.long.
+    fn app_long_malformed_weather_lists_are_refused_by_both_load_paths() {
         let dir = crate::testing::Dir::new();
         let source = shipped_start(&dir.0, None);
         let game = GameConfig {
@@ -3555,7 +3559,8 @@ mod stretch_save_tests {
     }
 
     #[test]
-    fn a_shipped_game_saved_at_a_move_with_founders_and_at_the_year_end_loads_both_ways_and_follows_the_unbroken_game()
+    // Long run: selected by app.long.
+    fn app_long_a_shipped_game_saved_at_a_move_with_founders_and_at_the_year_end_loads_both_ways_and_follows_the_unbroken_game()
      {
         let dir = crate::testing::Dir::new();
         let game = GameConfig {
@@ -4135,7 +4140,8 @@ mod switch_replay_tests {
         clippy::too_many_lines,
         reason = "One replay is saved at each named point, loaded both ways and compared tick by tick."
     )]
-    fn five_years_of_switching_saved_at_the_named_points_follow_the_unbroken_game_by_both_load_paths()
+    // Long run: selected by app.long.
+    fn app_long_five_years_of_switching_saved_at_the_named_points_follow_the_unbroken_game_by_both_load_paths()
      {
         let rules = Arc::new(rules());
         let make = scheduler_source(&rules);

@@ -218,7 +218,8 @@ fn economy_digest(economy: &EconomyState) -> u64 {
 }
 
 #[test]
-fn a_year_of_the_shipped_game_from_its_first_noon_is_day_for_day_the_accepted_year_with_levels_that_switch()
+// Long run: selected by app.long.
+fn app_long_a_year_of_the_shipped_game_from_its_first_noon_is_day_for_day_the_accepted_year_with_levels_that_switch()
  {
     use std::fmt::Write as _;
 
@@ -1147,7 +1148,8 @@ fn a_changed_weather_rule_refuses_an_existing_save() {
 }
 
 #[test]
-fn backdrop_identity_and_missing_backdrop_are_checked_on_load() {
+// Long run: selected by app.long.
+fn app_long_backdrop_identity_and_missing_backdrop_are_checked_on_load() {
     for change in ["latitude", "pressure", "remove"] {
         let dir = Dir::new();
         let scenario = assets_with_scenario(&dir, "ireland-768");
