@@ -121,7 +121,7 @@ with sources, and **Open** what is still to decide.
 - **A starving pop** eats its food first. When the food is gone, it butchers its livestock.
 - **Dairy** is set by the size of the herd, not by the workers or the size of the building.
 - **The herd per level** is based on research, with each head of household (an owner of the subsistence farm) holding the herd. The
-  owner approved: 12 cattle, 8 pigs and 7 sheep per level; a start at two thirds; seasonal dairy; and grain recalculated so that a level still
+  owner approved: 12 cattle, 8 pigs and 7 sheep per level; an opening based on land and a seeded spread; seasonal dairy; and grain recalculated so that a level still
   just feeds its people.
 
 **Methods, markets and barter (owner, 2026-11-08, after review r12)**
@@ -1126,18 +1126,25 @@ any building (Firm: no strict rules), and every value goes into the guesswork lo
 
 **Herds belong to buildings.** Each farm, holdings and demesne keeps a head count for each species its building type names. The ordered
 species list, birth and death rates, slaughter yields, recurring products and emergency-butchering priority are rules data; each building
-type supplies its maximum per farming level. Every herd starts at two thirds of its total maximum, rounded down. The shipped species are cattle, pigs, sheep and horses; only the demesne keeps horses. If pops move, the
+type supplies its maximum per farming level. The shipped species are cattle, pigs, sheep and horses; only the demesne keeps horses. If pops move, the
 herd stays. These are counts, not individual animals, so livestock stays abstract as the vision requires.
 
 | | Cattle | Pigs | Sheep | Horses (demesne only) |
 |---|---|---|---|---|
 | maximum per level | 12 | 8 | 7 | 3 |
-| starting share of maximum | 2/3 | 2/3 | 2/3 | 2/3 |
 | births, ‰ of the herd per year | 500 | 1,500 | 800 | 300 |
 | deaths, ‰ of the herd per year | 80 | 100 | 80 | 60 |
 | slaughter yield per head | 220 lb beef, 1 hide | 88 lb pork | 33 lb mutton | 1 hide |
 | herd products | dairy 72 lb per head per year, by season | – | wool 1.5 lb per head per year, in June | – |
 
+- **Opening:** cattle are kept wherever there is capacity; pigs and sheep each have a 750‰ chance. Horses are kept only at demesnes:
+  the six named great kings' seats always keep them, and other courts have a 250, 500 or 750‰ chance for fewer than 40, 40–79 or
+  at least 80 nobles, adjusted by `floor((horse grazing − 500) / 4)` and clamped to 0–1000. A named seat without a viable demesne is refused.
+  Each draw is keyed by the game seed, place, building, species and purpose. For a kept herd, take two thirds of the maximum times
+  `(1000 + grazing) / 2` (rounded down), a seeded spread from 500–1500‰, and a rank factor of 1500‰ at a demesne or 1000‰ elsewhere.
+  The product is divided once and rounded down, then raised to one head per farming level and capped at the maximum. The chances,
+  thresholds, spread, rank and floor are rules data; named seats are scenario data. A herd not kept starts at zero. Saves restore their
+  stored herds; old saves with different rules or scenario hashes are refused.
 - **Research:** *Críth Gablach* gives the *ócaire*, the smallest free farmer, 7 cows and a bull, 7 pigs and a sow, and 7 sheep. The
   per-level herd is a little above that.
 - **Monthly, at noon on the 1st, per building and species:**
