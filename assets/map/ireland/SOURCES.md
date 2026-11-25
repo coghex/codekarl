@@ -401,8 +401,8 @@ algorithms are the Python implementations checked against the owner-reviewed pro
 not runtime dependencies.
 
 - **Climate:** monthly sea-level temperature and precipitation bands are interpolated by latitude; seasonal temperature uses the
-  configured north/south phases, elevation lapse rate, and maritime influence. Westerly and easterly moisture walks use the configured
-  wind direction and ocean-effect decay. Annual rainfall is accumulated from the configured monthly totals and smoothed with the
+  configured north/south phases, elevation lapse rate, and (since CK-417) the measured seas near each cell, as "CK-417 sea influence"
+  below describes. Westerly and easterly moisture walks use the configured wind direction and ocean-effect decay. Annual rainfall is accumulated from the configured monthly totals and smoothed with the
   configured box radius. Growing degree days sum monthly mean temperature above the base temperature. These are modeled fields, not
   station observations or a downscaled climate product.
 - **Glaciers:** the equilibrium-line temperature solves the configured Ohmura quadratic from annual precipitation; elevation is compared
@@ -971,3 +971,37 @@ CK-358 table above. The marker now records the digest of the changed `edits.toml
 | `climate_sea_nearness.png` | `dce77ac82fcab97fff8ccedf5ea88a6f91984ce51a012bd3de5bb8a452b2487f` |
 | `edits.toml` | `15fd58fbe5c90ebba0776e93a91e50923a9940942b59002ec8bcc1fcc10d7a47` |
 | `edits.applied` | `4181be74da8d511030af59baaf2a836c89c2036006d65dab0f2368a93ef7cc5e` |
+
+### CK-417 sea influence from the measured seas
+
+The mean temperature and the half range no longer come from a walk along each row from due west (which restarted at every inlet and
+left level bands across the island). A cell is pulled toward the yearly mean and the yearly swing of the seas near it: each cell's own
+sea temperature by month is read from the backdrop's measured seas, the seas near a cell are blended by nearness
+(`sea_blend_cells`, `sea_blend_passes`), and the pull falls off with the great-circle distance to the nearest sea cell
+(`sea_pull`, `maritime_length_km`); `sea_air_cooler_c` and `sea_air_swing` turn the sea's mean and half range into the air's. The
+settings `ocean_effect_c` and `ocean_half_range_c` are gone. Growing degree-days, the glacier test and fertility are worked from the
+new mean and half range as before; the rain's walk is unchanged. The tool refuses to write layers in which neighbouring land cells
+differ by more than 1 tenth in half range, or by more than 0.15 °C in mean once the height's part is added back.
+
+**Ireland's layers now depend on the backdrop, which is built first.** The three backdrop inputs the tool reads (the manifest decides how
+the two images are read) are:
+
+| Input | SHA-256 |
+|---|---|
+| `../backdrop/backdrop.toml` | `4e4076bdbf3f25ddf3a1273a00cf6c8a2daaa053cd8e3b271b5d8f26d23c04f4` |
+| `../backdrop/land.png` | `71248a5c4458d28d0e92682a0fef42750473d822df58a425f25edbffe7decb8a` |
+| `../backdrop/sea_temperature.png` | `e47d48628fe6e94c92db877d2374b2d7579853faa36468ab463aea8f6a6d8002` |
+
+The terrain, elevation and waters are not changed, and `climate_rainfall.png`, `climate_sea_nearness.png` and `climate_glacier.png`
+are byte for byte what they were. The layers were regenerated with `python3 apply_edits.py --layers-only --refresh-marker` (the
+option records the present `edits.toml`'s hash in `edits.applied`, since only the settings changed). The chain stays reproducible byte
+for byte.
+
+| File | SHA-256 |
+|---|---|
+| `climate_temperature.png` | `dfebe088e334b4090991b357ab304d5766394821e553c74679c73027fd76be65` |
+| `climate_half_range.png` | `f3d5980898f4e470a0664c49ab570a41a7711c2a3b482e7415f77c3ef6398c10` |
+| `climate_gdd.png` | `c4c07ec92fa17168ceec189bea14b69c5220a7d974ad23139e6726c0d2ad61d1` |
+| `fertility.png` | `8f3668572e300164029186c666a5089486992607395910451af03ed5740b7666` |
+| `edits.toml` | `9f76a3c757f50faad1e3e3ae851fdb3a368e3ef8993525b0c9953e4ad9c3d22d` |
+| `edits.applied` | `b525ae0c08c46be5505a9c6755a1276d166ab2f0659d71ef789975d081ea29d8` |
