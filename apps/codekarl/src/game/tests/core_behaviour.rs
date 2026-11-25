@@ -467,3 +467,126 @@ fn quicksave_restores_layer_choices_without_changing_simulation_digest() {
     assert!(!h.core.has_unsaved_changes());
     assert_eq!(h.digest(), digest);
 }
+
+#[test]
+fn log_choices_are_ordered_saved_and_restored_without_changing_digest() {
+    let mut h = Harness::new(42);
+    let digest = h.digest();
+    let choices = ck_sim::LogChoices {
+        storms: false,
+        threshold: 40,
+        blights: true,
+        sort: ck_sim::LogSort::Strength,
+        descending: true,
+    };
+    h.core.dispatch(Message::SetLogChoices(choices), h.now);
+    assert_eq!(h.core.snapshot().log_choices, choices);
+    assert!(h.core.has_unsaved_changes());
+    h.control(Control::Quicksave);
+    h.core
+        .dispatch(Message::SetLogChoices(ck_sim::LogChoices::default()), h.now);
+    h.control(Control::Quickload);
+    assert_eq!(h.core.snapshot().log_choices, choices);
+    assert!(!h.core.has_unsaved_changes());
+    assert_eq!(h.digest(), digest);
+}
+
+#[test]
+fn fixture_revisions_follow_rows_and_load_replaces_the_world() {
+    let at = |day, hour| GameTime::from_date(date(768, 10, day, hour)).unwrap();
+    let mut h = Harness::starting_at(42, at(10, 12));
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../config/event-log-fixture.toml");
+    let source =
+        crate::game::events::Fixture::load(&path, &["oats".into()], &["clonmacnoise".into()])
+            .unwrap();
+    h.core.install_events(source, ck_sim::LogChoices::default());
+    let early = h.core.snapshot();
+    assert_eq!(early.events.len(), 2);
+    h.control(Control::Quicksave);
+    h.run_until(1, &[1000], at(10, 18));
+    let later = h.core.snapshot();
+    assert!(later.events_revision > early.events_revision);
+    assert!(matches!(
+        later.events[0].kind,
+        crate::game::events::EventKind::Storm { knots: 44, .. }
+    ));
+    h.control(Control::Quickload);
+    let loaded = h.core.snapshot();
+    assert!(loaded.events_revision > later.events_revision);
+    assert_eq!(*loaded.events, *early.events);
+    let before = loaded.events_revision;
+    h.control(Control::Quickload);
+    assert!(h.core.snapshot().events_revision > before);
+}
+
+#[test]
+fn first_snapshot_contains_fixture_rows_and_saved_choices() {
+    use crate::game::core::{Core, Outputs, Rebuild};
+    use std::sync::{Arc, Mutex};
+    let time = GameTime::from_date(date(768, 10, 13, 0)).unwrap();
+    let source = crate::game::events::Fixture::load(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../config/event-log-fixture.toml"),
+        &["oats".into()],
+        &["clonmacnoise".into()],
+    )
+    .unwrap();
+    let choices = ck_sim::LogChoices {
+        blights: true,
+        ..ck_sim::LogChoices::default()
+    };
+    let snapshots = Arc::new(Mutex::new(Vec::new()));
+    let captured = Arc::clone(&snapshots);
+    let _core = Core::new_with_events(
+        ck_sim::Simulation::new(
+            time,
+            42,
+            super::World::default(),
+            super::scheduler(Faults::default()),
+            super::apply_nothing,
+        ),
+        super::identity("aa"),
+        std::path::PathBuf::new(),
+        Rebuild {
+            scheduler: Box::new(|| super::scheduler(Faults::default())),
+            reset: Box::new(|_| {}),
+            apply: super::apply_nothing,
+        },
+        Outputs {
+            log: Box::new(|_, _| {}),
+            publish: Box::new(move |s| captured.lock().unwrap().push(s)),
+            fail: Box::new(|_| {}),
+        },
+        None,
+        (ck_sim::MapLayers::default(), source, choices),
+    );
+    let snapshots = snapshots.lock().unwrap();
+    assert_eq!(snapshots.len(), 1);
+    assert_eq!(snapshots[0].events.len(), 10);
+    assert_eq!(snapshots[0].log_choices, choices);
+}
+
+/// Real core quickload snapshots for the UI link's latest-wins regression.
+pub(crate) fn event_load_snapshots() -> (
+    crate::game::slot::SimSnapshot,
+    crate::game::slot::SimSnapshot,
+    crate::game::slot::SimSnapshot,
+) {
+    let time = |day, hour| GameTime::from_date(date(768, 10, day, hour)).unwrap();
+    let mut h = Harness::starting_at(42, time(10, 12));
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../config/event-log-fixture.toml");
+    let source =
+        crate::game::events::Fixture::load(&path, &["oats".into()], &["clonmacnoise".into()])
+            .unwrap();
+    h.core.install_events(source, ck_sim::LogChoices::default());
+    h.control(Control::Quicksave);
+    h.run_until(1, &[1000], time(13, 0));
+    let before = h.core.snapshot();
+    h.control(Control::Quickload);
+    let loaded = h.core.snapshot();
+    h.run_at(1);
+    h.wake(Duration::from_secs(1));
+    (before, loaded, h.core.snapshot())
+}

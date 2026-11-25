@@ -17,7 +17,6 @@ local WHITE = "ui/theme/white.png"
 local SIDE_TABS = {"general", "graphics", "map", "input", "development"}
 local WIDTH_TABS = {"general", "graphics", "map", "input", "development"}
 local LABEL_WIDTH = 84 * P
-local SLIDER_WIDTH = 80 * P
 local KEY_WIDTH = (font.layout("press a key").width + 8) * P
 local KEY_HEIGHT = 13 * P
 local KEY_GAP = 3 * P
@@ -92,87 +91,7 @@ local function key_name(binding)
   return table.concat(parts, "+")
 end
 
-local function slider(state, page, name, key, y, minimum, maximum, step, value, shown, enabled, colour)
-  local self = {
-    key = ui.key("settings_slider"), owner = page.owner, group = page.group, window = state.window,
-    name = name, setting = key, x = LABEL_WIDTH, y = y + 4 * P,
-    minimum = minimum, maximum = maximum, step = step, value = value,
-    shown = shown, enabled = enabled ~= false, dragging = false, colour = colour,
-  }
-  local track_colour = self.enabled and theme.colour("track") or theme.colour("dim")
-  local fill_colour = self.enabled and theme.colour("text") or theme.colour("dim")
-  self.track = render.create_quad{texture = ui.texture(WHITE), x = self.x, y = self.y + 3 * P,
-    width = SLIDER_WIDTH, height = 2 * P, group = page.group, tint = track_colour}
-  self.fill = render.create_quad{texture = ui.texture(WHITE), x = self.x, y = self.y + 3 * P,
-    width = P, height = 2 * P, group = page.group, tint = fill_colour}
-  self.knob = render.create_quad{texture = ui.texture(WHITE), x = self.x, y = self.y,
-    width = 3 * P, height = 7 * P, group = page.group, tint = fill_colour}
-  local maximum_offset = SLIDER_WIDTH - 3 * P
-  local function offset()
-    local fraction = (self.value - self.minimum) / (self.maximum - self.minimum)
-    return ui.snap(maximum_offset * fraction)
-  end
-  local function place()
-    local dx = offset()
-    render.set_position(self.knob, self.x + dx, self.y)
-    render.set_rect(self.fill, self.x, self.y + 3 * P, math.max(P, dx + 2 * P), 2 * P)
-    local wx = select(1, self.window:content_origin())
-    local wy = select(2, self.window:content_origin())
-    self.abs_x = wx + page.x + self.x
-    self.abs_y = wy + self.y
-  end
-  page.sliders = page.sliders or {}
-  page.sliders[#page.sliders + 1] = self
-  local value_room = math.max(P, page.room - LABEL_WIDTH - 86 * P)
-  local function formatted(next_value)
-    if name == "show delay" or name == "lock timer" then return string.format("%.1f s", next_value) end
-    return tostring(next_value) .. (name == "scroll step" and " points" or "")
-  end
-  self.value_label = label_at(page.group, LABEL_WIDTH + 86 * P, y + 2 * P, shown or formatted(value), colour, value_room)
-  function self:set(next_value)
-    local count = math.floor((next_value - self.minimum) / self.step + 0.5)
-    local snapped = self.minimum + count * self.step
-    snapped = math.max(self.minimum, math.min(self.maximum, snapped))
-    if snapped == self.value then return end
-    self.value = snapped
-    settings.set(self.setting, snapped)
-    -- Keep the captured widget alive across frame updates; only the slider's own visuals change during a drag.
-    place()
-    self.value_label:set_text(fit(formatted(snapped), value_room))
-  end
-  function self:on_event(event, eligible)
-    if not self.enabled or eligible == false then return end
-    if event.kind == "down" then
-      self.dragging = true
-      pointer.pressed(self.key, true)
-      self:set(self.minimum + math.max(0, math.min(1,
-        (event.x - self.abs_x) / maximum_offset)) * (self.maximum - self.minimum))
-    elseif event.kind == "move" and self.dragging then
-      self:set(self.minimum + math.max(0, math.min(1,
-        (event.x - self.abs_x) / maximum_offset)) * (self.maximum - self.minimum))
-    elseif event.kind == "up" and self.dragging then
-      self:set(self.minimum + math.max(0, math.min(1,
-        (event.x - self.abs_x) / maximum_offset)) * (self.maximum - self.minimum))
-      self.dragging = false
-      pointer.pressed(self.key, false)
-    elseif event.kind == "cancel" then
-      self.dragging = false
-      pointer.pressed(self.key, false)
-    end
-  end
-  function self:on_hover() end
-  function self:on_overflow()
-    self.dragging = false
-    pointer.pressed(self.key, false)
-  end
-  function self:functional() return self.enabled end
-  function self:destroy() pointer.unregister(self.key) end
-  render.set_hit(self.key, {{x = self.x - 2 * P, y = self.y, width = SLIDER_WIDTH + 4 * P, height = 7 * P}}, page.group)
-  pointer.register(self.key, self, page.owner)
-  place()
-  state.controls[name] = self
-  return self
-end
+local slider = require("lib.slider").new
 
 local function clear_page(state)
   if state.page ~= nil then

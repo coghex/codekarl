@@ -2626,6 +2626,17 @@ GUARDS: tuple[Guard, ...] = (
             "assets/scenarios/ireland-768/",
         ),
     ),
+    # CK-418: fixture and revision tests read the authored event log sample.
+    Guard(
+        "apps/codekarl/src/game/events.rs",
+        "rust.app",
+        ("config/event-log-fixture.toml",),
+    ),
+    Guard(
+        "apps/codekarl/src/game/tests/core_behaviour.rs",
+        "rust.app",
+        ("config/event-log-fixture.toml",),
+    ),
     # CK-225: the app's Ireland economy-start integration test reads the shared rules and scenario assets.
     Guard(
         "apps/codekarl/src/game/economy.rs",
@@ -2663,6 +2674,7 @@ GUARDS: tuple[Guard, ...] = (
         "apps/codekarl/src/game/tests/start_768.rs",
         "rust.app",
         (
+            "config/event-log-fixture.toml",
             "assets/game/",
             "assets/map/ireland/",
             "assets/scenarios/ireland-768/",

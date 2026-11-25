@@ -1,0 +1,19 @@
+# A runnable game configuration. Paths are relative to this file.
+
+[window]
+backend = "native-metal"
+
+[render]
+assets = "../assets"
+
+[game]
+scenario = "../assets/scenarios/ireland-768"
+saves = "../saves"
+events_fixture = "event-log-fixture.toml"
+
+
+[lua.ui]
+entry = "../scripts/ui/main.lua"
+
+[lua.gameplay]
+entry = "../scripts/gameplay/main.lua"

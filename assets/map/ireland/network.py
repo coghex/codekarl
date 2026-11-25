@@ -3209,7 +3209,11 @@ def accept_pending(
 
 
 def course_ground_mark(course: list[Cell], layers: dict[str, Any], index: RiverIndex) -> str:
-    """Record every supporting cell and every river crossing of a course."""
+    """Record every supporting cell and every river crossing of a course.
+
+    Each cell carries its terrain, its land or water and its elevation. Fertility is a cost of a course, not part of its
+    ground (owner decision r131, CK-420): a change of fertility alone leaves an approved course as it was approved.
+    """
     crossings: list[tuple[Any, ...]] = []
     for position, (start, end) in enumerate(pairwise(course)):
         crossings.extend(
@@ -3220,7 +3224,6 @@ def course_ground_mark(course: list[Cell], layers: dict[str, Any], index: RiverI
         layers["terrain"],
         layers["land"],
         layers["elevation"],
-        layers["fertility"],
         crossings=tuple(crossings),
     )
 

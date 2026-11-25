@@ -1709,3 +1709,216 @@ layer_bar = lb.layers{opener = "layer_opener", position = function() return 300,
     assert!(rig.escape(), "Escape is consumed by the picker");
     rig.opened();
 }
+
+// The complete reviewed fixture, in the default order produced by game.events.
+const EVENT_FIXTURE: &str = r"
+local source = {
+ {year=768,month=10,day=10,hour=6,kind='storm',action='begins',number=1,location='52°N 19°W',knots=44},
+ {year=768,month=10,day=10,hour=11,kind='storm',action='begins',number=2,snow=true,location='52°N 8°W',knots=31},
+ {year=768,month=10,day=11,hour=0,kind='storm',action='begins',number=3,location='53°N 27°W',knots=50},
+ {year=768,month=10,day=11,hour=3,kind='storm',action='ends',number=2,snow=true,location='53°N 7°W',knots=31},
+ {year=768,month=10,day=11,hour=12,kind='storm',action='begins',number=4,location='54°N 15°W',knots=30},
+ {year=768,month=10,day=12,hour=0,kind='storm',action='begins',number=5,location='51°N 22°W',knots=34},
+ {year=768,month=10,day=12,hour=9,kind='storm',action='merged',number=3,location='53°N 13°W',knots=50},
+ {year=768,month=10,day=12,hour=9,kind='blight',action='begins',good='oats',place='Cluain Mhic Nóis'},
+ {year=768,month=10,day=12,hour=14,kind='storm',action='ends',number=1,location='62°N 3°E',knots=44},
+ {year=768,month=10,day=12,hour=20,kind='blight',action='ends',good='oats',place='Cluain Mhic Nóis'},
+}
+game.events = function() local result = {} for i,r in ipairs(source) do local c = {} for k,v in pairs(r) do c[k] = v end result[i] = c end return result end
+game.set_log_choices = function() end
+local view = {width=800,height=600}
+log = require('lib.event_log').new{view=view}
+snap = {events_revision=1,world=0,log_storms=true,log_threshold=34,log_blights=false,log_sort='default',log_descending=false}
+log:refresh(snap); log:open(); bar=log.bar
+function mark_filter() local x,y,w,h=hit_rect(bar.filter_button.key); mark('filter',x+w/2,y+h/2) end
+";
+
+#[test]
+fn event_slider_routes_a_drag_through_the_real_hit_regions() {
+    let mut rig = rig(
+        EVENT_FIXTURE,
+        &[
+            r"eq(bar.shown,5) eq(bar.total,10) mark_filter()",
+            r"expect(bar.picker ~= nil) local s=bar.picker.slider
+           local x,y,w,h=hit_rect(s.key) mark('slider_origin',s.abs_x,s.abs_y) mark('slider',x+w/2,y+h/2)
+           eq(log.choices.storms,true)",
+            r"eq(log.choices.threshold,36) expect(bar.picker.slider.dragging) eq(log.choices.storms,true)",
+            r"eq(log.choices.threshold,38) expect(bar.picker.slider.dragging)",
+            r"eq(log.choices.threshold,40) expect(bar.picker.slider.dragging) eq(bar.shown,4) eq(bar.total,10)
+           eq(line_text(bar.count),'4 of 10') expect(bar.picker ~= nil)",
+            r"eq(log.choices.threshold,40) expect(not bar.picker.slider.dragging) expect(bar.picker ~= nil)
+           bar:toggle_event('storms') expect(not bar.picker.slider.enabled) expect(scene.hits[bar.picker.slider.key] == nil)
+           eq(scene.quads[bar.picker.slider.knob].tint,theme.colour('dim')) eq(bar.shown,8) eq(line_text(bar.count),'8 of 10')
+           expect(not bar.filter_button.selected) bar:toggle_event('blights') expect(bar.filter_button.selected) eq(bar.shown,10)",
+        ],
+    );
+    rig.opened();
+    click(&mut rig, "filter");
+    rig.opened();
+    let origin = point(&rig, "slider_origin");
+    let track = point(&rig, "slider");
+    assert!(
+        rig.key_at(track.0, track.1)
+            .unwrap()
+            .starts_with("settings_slider_")
+    );
+    // 77 UI pixels of knob travel, in points; retain the origin throughout the gesture.
+    let at = |knots: f64| (origin.0 + knots / 64.0 * 154.0, origin.1 + 6.0);
+    let a = at(36.0);
+    let b = at(38.0);
+    let c = at(40.0);
+    rig.feed(&[PointerEvent::Down(points(a.0, a.1))]);
+    frame(&mut rig);
+    rig.opened();
+    rig.feed(&[PointerEvent::Move(points(b.0, b.1))]);
+    frame(&mut rig);
+    rig.opened();
+    rig.feed(&[PointerEvent::Move(points(c.0, c.1))]);
+    frame(&mut rig);
+    rig.opened();
+    rig.feed(&[PointerEvent::Up(points(c.0, c.1))]);
+    frame(&mut rig);
+    rig.opened();
+}
+
+#[test]
+fn event_rows_show_times_sentences_colours_and_empty_state() {
+    let mut rig = rig(
+        EVENT_FIXTURE,
+        &[r"
+local drawn=lines_in(log.stack.group)
+local function find(text)
+  for _, line in ipairs(drawn) do if line_text(line)==text then return line end end
+  error('missing row text ' .. text)
+end
+local stamps={'10 Oct 768 · 06:00','11 Oct 768 · 00:00','12 Oct 768 · 00:00','12 Oct 768 · 09:00','12 Oct 768 · 14:00'}
+for _, stamp in ipairs(stamps) do eq(find(stamp).test_runs[1].colour,theme.colour('dim'),stamp) end
+for _, sentence in ipairs({'storm begins, 52°N 19°W, 44 kn','storm begins, 53°N 27°W, 50 kn',
+  'storm begins, 51°N 22°W, 34 kn','storm ends, 62°N 3°E, 44 kn'}) do
+  eq(find(sentence).test_runs[1].colour,theme.colour('event_storm'),sentence)
+end
+eq(find('storm merged, 53°N 13°W, 50 kn').test_runs[1].colour,theme.colour('event_merge'))
+bar:toggle_event('storms')
+drawn=lines_in(log.stack.group)
+eq(find('snowstorm begins, 52°N 8°W, 31 kn').test_runs[1].colour,theme.colour('event_snow'))
+bar:toggle_event('blights'); drawn=lines_in(log.stack.group)
+eq(find('blight begins, oats, Cluain Mhic Nóis').test_runs[1].colour,theme.colour('event_blight'))
+source={}; snap.events_revision=2; snap.world=1; log:refresh(snap)
+drawn=lines_in(log.stack.group)
+eq(find('nothing yet').test_runs[1].colour,theme.colour('dim'))
+"],
+    );
+    rig.opened();
+}
+
+#[test]
+fn event_sort_ties_and_scroll_follow_each_order_and_live_revision() {
+    let mut rig = rig(
+        EVENT_FIXTURE,
+        &[r"
+bar:toggle_event('storms'); bar:toggle_event('blights')
+local function order() local r=bar:view(log.rows); local s={} for _,v in ipairs(r) do s[#s+1]=(v.number or 'b')..v.action:sub(1,1) end return table.concat(s,',') end
+eq(order(),'1b,2b,3b,2e,4b,5b,3m,bb,1e,be','default and equal-hour tie')
+bar:choose(1); eq(order(),'be,1e,3m,bb,5b,4b,2e,3b,2b,1b','newest time')
+bar:choose(1); eq(order(),'1b,2b,3b,2e,4b,5b,3m,bb,1e,be','oldest time')
+bar:choose(2); eq(order(),'3b,3m,1b,1e,5b,2b,2e,4b,bb,be','strength down')
+bar:choose(2); eq(order(),'4b,2b,2e,5b,1b,1e,3b,3m,bb,be','strength up')
+log:close(); source={}
+for i=1,60 do source[i]={year=768,month=10,day=10,hour=0,kind='storm',action='begins',number=i,location='x',knots=40} end
+log.width,log.height=600,240; snap.world=1; snap.events_revision=2; log:refresh(snap); log:open(); bar=log.bar
+expect(log.stack:at_end(),'default opens at bottom')
+log.stack:set_pos(10); source[61]={year=768,month=10,day=11,hour=0,kind='storm',action='begins',number=61,location='x',knots=40}
+snap.events_revision=3; log:refresh(snap); eq(log.stack:scroll_position(),10,'middle stays')
+log.stack:scroll_to_end(); source[62]={year=768,month=10,day=12,hour=0,kind='storm',action='begins',number=62,location='x',knots=40}
+snap.events_revision=4; log:refresh(snap); expect(log.stack:at_end(),'newest stays')
+bar:choose(1); eq(log.stack:scroll_position(),0,'newest-first sort goes top')
+source[63]={year=768,month=10,day=13,hour=0,kind='storm',action='begins',number=63,location='x',knots=40}
+snap.events_revision=5; snap.log_sort='time'; snap.log_descending=true; log:refresh(snap)
+eq(log.stack:scroll_position(),0,'newest-first remains at top')
+log:close(); log:open(); bar=log.bar; eq(log.stack:scroll_position(),0,'newest-first opens top')
+bar:choose(1); expect(log.stack:at_end(),'oldest-first sort goes bottom')
+bar:choose(2); eq(log.stack:scroll_position(),0,'strength goes top')
+log.stack:set_pos(10); source[64]={year=768,month=10,day=14,hour=0,kind='storm',action='begins',number=64,location='x',knots=40}
+snap.events_revision=6; snap.log_sort='strength'; snap.log_descending=true; log:refresh(snap)
+eq(log.stack:scroll_position(),10,'strength keeps distance')
+bar:toggle_event('blights'); eq(log.stack:scroll_position(),0,'filter resets strength to top')
+log:close(); log:open(); eq(log.stack:scroll_position(),0,'strength opens top')
+"],
+    );
+    rig.opened();
+}
+
+#[test]
+fn event_window_drag_resize_escape_and_closed_view_shrink() {
+    let mut rig = rig(
+        EVENT_FIXTURE,
+        &[
+            r"local x,y,w,h=hit_rect(log.window.title_key); mark('title',x+10,y+h/2)
+           oldx,oldy=log.window:position()",
+            r"local x,y=log.window:position(); eq(x,oldx+40,'title drag x') eq(y,oldy+20,'title drag y')
+           mark_filter()",
+            r"expect(bar.picker ~= nil) local x,y,w,h=hit_rect(log.corner.key); mark('corner',x+w/2,y+h/2)",
+            r"expect(bar.picker == nil,'corner closes picker') local x,y=log.window:position(); local w,h=log.window:size()
+           expect(x+w <= view.width and y+h <= view.height,'resize stays in view')
+           local bx,by,bw,bh=hit_rect(bar.sort_button.key); expect(bx >= x and by >= y and bx+bw <= x+w and by+bh <= y+h,'bar moved')
+           local sx,sy,sw,sh=hit_rect(log.stack.area_key); expect(sx>=x and sy>=y and sx+sw<=x+w and sy+sh<=y+h,'rows moved')",
+            r"expect(not log:is_open(),'escape closes') view.width,view.height=400,200; windows.update_viewport(400,200)
+           log:open(); bar=log.bar; local x,y=log.window:position(); local w,h=log.window:size()
+           eq(x,8) eq(y,8) eq(w,600) eq(h,240) mark_filter()",
+            r"expect(bar.picker ~= nil); lb.update{width=400,height=200}; lb.update{width=500,height=300}; expect(bar.picker == nil,'viewport resize closes picker')",
+        ],
+    );
+    rig.opened();
+    let title = point(&rig, "title");
+    rig.feed(&[
+        PointerEvent::Down(points(title.0, title.1)),
+        PointerEvent::Move(points(title.0 + 40.0, title.1 + 20.0)),
+        PointerEvent::Up(points(title.0 + 40.0, title.1 + 20.0)),
+    ]);
+    frame(&mut rig);
+    rig.opened();
+    click(&mut rig, "filter");
+    rig.opened();
+    let corner = point(&rig, "corner");
+    assert!(
+        rig.key_at(corner.0, corner.1)
+            .unwrap()
+            .starts_with("event_resize_")
+    );
+    rig.feed(&[
+        PointerEvent::Down(points(corner.0, corner.1)),
+        PointerEvent::Move(points(1400.0, 1000.0)),
+        PointerEvent::Up(points(1400.0, 1000.0)),
+    ]);
+    frame(&mut rig);
+    rig.opened();
+    assert!(rig.escape());
+    rig.opened();
+    click(&mut rig, "filter");
+    rig.opened();
+}
+
+#[test]
+fn event_window_restores_snapshot_choices_and_saved_sort_on_reopen() {
+    let mut rig = rig(
+        EVENT_FIXTURE,
+        &[
+            r"
+expect(log:is_open()); snap.world=1; snap.events_revision=2; snap.log_storms=false; snap.log_threshold=40
+snap.log_blights=true; snap.log_sort='strength'; snap.log_descending=false; log:refresh(snap)
+eq(log.choices.threshold,40); expect(not log.choices.storms and log.choices.blights)
+eq(log.choices.sort,'strength'); expect(not log.choices.descending)
+eq(bar.shown,10); expect(bar.filter_button.selected and bar.sort_button.selected)
+log:close(); log:open(); bar=log.bar
+eq(log.stack:scroll_position(),0); eq(bar.direction,'ascending'); eq(bar.sort_index,2)
+eq(bar.shown,10); mark_filter()
+",
+            r"
+local slider=bar.picker.slider; eq(slider.value,40); expect(not slider.enabled); expect(scene.hits[slider.key] == nil)
+",
+        ],
+    );
+    rig.opened();
+    click(&mut rig, "filter");
+    rig.opened();
+}

@@ -222,6 +222,10 @@ impl SimControls {
         let _ = self.sender.send(Message::SetMapLayer(layer, shown));
     }
 
+    pub(crate) fn set_log_choices(&self, choices: ck_sim::LogChoices) {
+        let _ = self.sender.send(Message::SetLogChoices(choices));
+    }
+
     /// Marks a player choice on the core's ordered message route, without waiting for it.
     pub(crate) fn mark_unsaved(&self) {
         let _ = self.sender.send(Message::MarkUnsaved);

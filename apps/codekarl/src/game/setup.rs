@@ -50,10 +50,12 @@ pub(crate) struct Prepared {
     pub(super) identity: Identity,
     pub(super) simulation: Simulation<GameState, GameCommand>,
     pub(super) layers: ck_sim::MapLayers,
+    pub(super) log_choices: ck_sim::LogChoices,
     pub(super) gameplay: Option<GameplayWiring>,
     /// The shared economy rules the view is derived with; `None` for assets that predate M9.
     economy_rules: Option<Arc<Rules>>,
     weather: Option<Arc<WeatherData>>,
+    pub(super) events: super::events::Fixture,
     /// The house names the character view shows (`houses.toml`, CK-375): empty for a scenario that ships no figures.
     houses: Arc<ck_characters::figures::Houses>,
     /// The place of each authored slot by its key (the load file's `[[slot]]`): the character view reads a spouse place there.
@@ -129,6 +131,19 @@ pub(crate) fn prepare(
         Some(Arc::new(WeatherData::load(asset_root, &scenario)?))
     } else {
         None
+    };
+    let events = if let Some(path) = &request.game.events_fixture {
+        let goods = economy_rules.as_ref().map_or_else(Vec::new, |rules| {
+            rules.goods.iter().map(|g| g.id.clone()).collect()
+        });
+        let places = scenario
+            .locations
+            .iter()
+            .map(|p| p.id.clone())
+            .collect::<Vec<_>>();
+        super::events::Fixture::load(path, &goods, &places)?
+    } else {
+        super::events::Fixture::default()
     };
     let houses = Arc::new(load_houses(directory)?);
     let slots = Arc::new(load_slot_locations(directory)?);
@@ -217,7 +232,7 @@ pub(crate) fn prepare(
         )
     };
     let storage_parent = request.game.saves.parent().unwrap_or(Path::new("."));
-    let (simulation, storage, layers) = if let Some(path) = request.load {
+    let (simulation, storage, layers, log_choices) = if let Some(path) = request.load {
         let mut file = std::fs::File::open(path)
             .map_err(|error| format!("cannot read save {}: {error}", path.display()))?;
         let staging = super::character_storage::Storage::fresh_path(storage_parent)
@@ -252,11 +267,12 @@ pub(crate) fn prepare(
         super::character_storage::Storage::validate(&storage.path, &save.state)
             .map_err(|e| e.to_string())?;
         let layers = save.meta.layers;
+        let log_choices = save.meta.log;
         let simulation = Simulation::from_save(save, scheduler(), apply)
             .map_err(|error| format!("save {}: {error}", path.display()))?;
         let date = simulation.date().unwrap_or(start);
         log(Level::Info, format!("loaded {} at {date}", path.display()));
-        (simulation, storage, layers)
+        (simulation, storage, layers, log_choices)
     } else {
         let seed = match request.seed {
             Some(seed) => seed,
@@ -296,6 +312,7 @@ pub(crate) fn prepare(
             ),
             storage,
             ck_sim::MapLayers::default(),
+            ck_sim::LogChoices::default(),
         )
     };
     let mut storage = storage;
@@ -312,9 +329,11 @@ pub(crate) fn prepare(
         identity,
         simulation,
         layers,
+        log_choices,
         gameplay,
         economy_rules,
         weather,
+        events,
         houses,
         slots,
         shelter_by_place,
@@ -662,9 +681,11 @@ fn core_over(
         simulation,
         storage,
         layers,
+        events,
+        log_choices,
         ..
     } = prepared;
-    Core::new_with_views_and_layers(
+    Core::new_with_events(
         simulation,
         identity,
         identity_saves,
@@ -675,7 +696,7 @@ fn core_over(
         },
         outputs,
         Some(view_builder(wiring)),
-        layers,
+        (layers, events, log_choices),
     )
     .with_state_validation(move |state: &GameState, date| {
         super::stretch::validate(&state.stretches, &stretch_ids)?;
@@ -785,8 +806,10 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
         identity,
         simulation,
         layers,
+        log_choices,
         gameplay,
         economy_rules,
+        events,
         saves,
         storage,
         ..
@@ -804,7 +827,7 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
         let terminal_runtime = runtime.clone();
         let reset_runtime = runtime.clone();
         let build = move || {
-            Core::new_with_views_and_layers(
+            Core::new_with_events(
                 simulation,
                 identity,
                 saves,
@@ -823,7 +846,7 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
                     fail: Box::new(move |message| failing.fail(message)),
                 },
                 Some(view_builder(wiring)),
-                layers,
+                (layers, events, log_choices),
             )
             .with_state_validation(move |state: &GameState, date| {
                 super::stretch::validate(&state.stretches, &stretch_ids)?;
@@ -1689,6 +1712,7 @@ mod stretch_save_tests {
             scenario: Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../../crates/map/tests/network/scenarios/fixture"),
             saves: dir.join("saves"),
+            events_fixture: None,
         };
         let prepared = prepare(
             &Request {
@@ -1859,6 +1883,7 @@ mod stretch_save_tests {
             scenario: Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../../assets/scenarios/ireland-768"),
             saves: dir.0.join("saves"),
+            events_fixture: None,
         };
         let new_game = || {
             prepare(
@@ -2046,6 +2071,7 @@ mod stretch_save_tests {
             scenario: Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../../assets/scenarios/ireland-768"),
             saves: dir.0.join("saves"),
+            events_fixture: None,
         };
         let rules = Rules::load(
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/game/economy.toml"),
@@ -2960,6 +2986,7 @@ mod stretch_save_tests {
             scenario: Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../../assets/scenarios/ireland-768"),
             saves: dir.join("saves"),
+            events_fixture: None,
         };
         prepare(
             &Request {
@@ -3033,6 +3060,7 @@ mod stretch_save_tests {
             scenario: Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../../assets/scenarios/ireland-768"),
             saves: dir.0.join("saves"),
+            events_fixture: None,
         };
         let weather = source.weather.as_ref().unwrap();
         let field =
@@ -3102,6 +3130,11 @@ mod stretch_save_tests {
     fn placed_low_follows_clock_and_both_load_paths() {
         let dir = crate::testing::Dir::new();
         let source = shipped_start(&dir.0, None);
+        assert_eq!(
+            hashes::rules_hash(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets"))
+                .unwrap(),
+            "46dd34bf1a07a69f"
+        );
         let mut save = source.simulation.save(source.identity.meta(42));
         let weather = source.weather.as_ref().unwrap();
         let field =
@@ -3110,6 +3143,10 @@ mod stretch_save_tests {
         field
             .place(&mut save.state.lows, 21361, 15777, 500_000, 3000)
             .unwrap();
+        assert_eq!(
+            super::super::wind::display(save.state.lows.entries[0].strongest, 0).0,
+            45
+        );
         let path = super::super::saves::quicksave_path(&dir.0.join("saves"));
         write_save(&source, &save, &path);
         let mut game = shipped_start(&dir.0, Some(&path));
@@ -3117,6 +3154,7 @@ mod stretch_save_tests {
             scenario: Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../../assets/scenarios/ireland-768"),
             saves: dir.0.join("saves"),
+            events_fixture: None,
         };
         let mut loaded = None;
         for (hour, expected) in [
@@ -3475,6 +3513,7 @@ mod stretch_save_tests {
             scenario: Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../../assets/scenarios/ireland-768"),
             saves: dir.0.join("saves"),
+            events_fixture: None,
         };
         let mut unbroken = engineered_start(&dir.0);
         // The first 1st: saved at 11:00 and at 13:00 through the move. Every farm began at sea with no animals, so levels move to
@@ -3574,6 +3613,7 @@ mod stretch_save_tests {
             scenario: Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../../assets/scenarios/ireland-768"),
             saves: dir.0.join("saves"),
+            events_fixture: None,
         };
         let new_game = || shipped_start(&dir.0, None);
         let source = new_game();
@@ -3740,6 +3780,7 @@ mod stretch_save_tests {
             scenario: Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../../assets/scenarios/ireland-768"),
             saves: dir.0.join("saves"),
+            events_fixture: None,
         };
         let prepared = prepare(
             &Request {

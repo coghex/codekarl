@@ -47,7 +47,7 @@ local OPEN_WIDTH, OPEN_HEIGHT = window.open{
 if settings ~= nil and settings.set ~= nil and initial_graphics.mode ~= nil and initial_graphics.mode ~= "windowed" then
   settings.set("window.mode", initial_graphics.mode)
 end
-local view = {width = OPEN_WIDTH, height = OPEN_HEIGHT}
+local view = {width = OPEN_WIDTH, height = OPEN_HEIGHT, margin = MARGIN}
 windows.update_viewport(view.width, view.height)
 
 -- Relayouts of the anchored elements, run when the window's size changes. Each is registered by the element.
@@ -80,6 +80,8 @@ if game ~= nil then
   local layers = {rivers = false, roads = false}
   local speed_boxes = {}
   local time_controls = {}
+  local event_button
+  local event_log = require("lib.event_log").new{view = view, changed = function(open) if event_button then event_button:set_selected(open) end end}
   local shown_speed = nil
   local shown_paused = nil
   local fill_ledger
@@ -90,12 +92,13 @@ if game ~= nil then
 
   -- The panel follows only the date width. The control positions and readout origin stay fixed.
   local function fit_bar()
-    local width = readout_x - time_panel.x + readout.width * P + 5 * P
+    local width = readout_x - time_panel.x + readout.width * P + 20 * P
     local height = 19 * P
     local x, y = ui.anchor("top_left", width, height, MARGIN, MARGIN, view.width, view.height)
     time_panel:set_rect(x, y, width, height)
     render.set_hit("time_bar", {{x = time_panel.x, y = time_panel.y, width = time_panel.width, height = time_panel.height}})
     text.move(readout, readout_x, y + 4 * P)
+    if event_button then event_button:move(readout_x + readout.width * P + 3 * P, y + 2 * P) end
     render.set_hit(readout_key, {{x = readout_x, y = y + 4 * P, width = readout.width * P, height = readout.height * P}})
   end
 
@@ -347,7 +350,7 @@ if game ~= nil then
   local function create_bar(time, content)
     local help_width = select(1, button.measure("?"))
     local date_left = 90 + help_width / P + 4
-    local width = (date_left + font.layout(content).width + 5) * P
+    local width = (date_left + font.layout(content).width + 20) * P
     local height = 19 * P
     local x, y = ui.anchor("top_left", width, height, MARGIN, MARGIN, view.width, view.height)
     -- The panel and broad capture region precede all button regions.
@@ -396,6 +399,8 @@ if game ~= nil then
     render.set_hit(readout_key, {{x = readout_x, y = y + 4 * P, width = readout.width * P, height = readout.height * P}})
     create_places_bar()
     create_modes_bar()
+    event_button = button.new{x = readout_x + readout.width * P + 3 * P, y = row_y, icons = {"event_log"}, icon = "event_log",
+      tooltip = "event log", kind = "time_bar", on_click = function() if event_log:is_open() then event_log:close() else event_log:open() end end}
   end
 
   -- The location panel: the left third of the screen below the time bar, filled from the economy view of the revision `game_time`
@@ -413,6 +418,7 @@ if game ~= nil then
   }
 
   game.on_time(function(time)
+    event_log:refresh(time)
     layers.rivers, layers.roads = not not time.rivers, not not time.roads
     if layers_picker ~= nil then layers_picker:refresh() end
     require("lib.save_screen").set_time(time)
@@ -452,6 +458,7 @@ if game ~= nil then
       fit_bar()
     end
   end
+  relayouts[#relayouts + 1] = function() event_log:fit() end
   relayouts[#relayouts + 1] = fit_places_bar
   relayouts[#relayouts + 1] = fit_modes_bar
 

@@ -257,42 +257,49 @@ impl<'a> WindField<'a> {
 impl WindField<'_> {
     #[expect(
         clippy::many_single_char_names,
-        reason = "symbols match the reviewed weather equations"
+        reason = "symbols match the reviewed equations"
     )]
-    fn low_rule(&self, k: i64, r: i64, pair: (i64, i64), lows: &super::lows::Lows) -> (i64, i64) {
-        let n = self.rules.wind_slope_blocks;
-        let east = (k + n).rem_euclid(self.count);
-        let west = (k - n).rem_euclid(self.count);
-        let sx: i64 = (0..n)
-            .map(|s| self.gap((k + s) % self.count) + self.gap((k - 1 - s).rem_euclid(self.count)))
-            .sum();
-        let north = (r - n).max(0);
-        let south = (r + n).min(i64::from(self.backdrop.rows()) - 1);
-        let b = i64::from(self.backdrop.block_cells());
-        let sy = (south - north) * b;
-        let lowered = |col: i64, row: i64| {
-            let x = (col * b + b / 2) * 1000;
-            let y = ((row + i64::from(self.backdrop.first_row())) * b + b / 2) * 1000;
-            lows.entries
-                .iter()
-                .map(|low| self.lowering(low, x, y))
-                .sum::<i64>()
-        };
-        let dx = lowered(west, r) - lowered(east, r);
-        let dy = lowered(k, south) - lowered(k, north);
-        let (c, sine) = self.trig(r);
-        pressure_wind(dx, dy, sx, sy, c, sine, pair)
-    }
-
     fn low_block(&self, k: i64, r: i64, month: usize, lows: &super::lows::Lows) -> (i64, i64) {
         let pair = if self.sample(k, r, month).land {
             (self.rules.wind_land_friction, self.rules.wind_land_factor)
         } else {
             (self.rules.wind_sea_friction, self.rules.wind_sea_factor)
         };
-        self.belt_block(k, r, month, pair, |field, col, row, _, pair| {
-            field.low_rule(col, row, pair, lows)
-        })
+        let f = self.low_turning(r);
+        let b = i64::from(self.backdrop.block_cells());
+        let x = (k * b + b / 2) * 1000;
+        let y = ((r + i64::from(self.backdrop.first_row())) * b + b / 2) * 1000;
+        lows.entries
+            .iter()
+            .map(|low| {
+                let (n, e) = self.displacement(low.x, low.y, x, y);
+                low_wind(n, e, low.radius, low.depth, f, pair)
+            })
+            .fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1))
+    }
+
+    fn low_turning(&self, r: i64) -> i64 {
+        let belt = self.rules.wind_belt_latitude;
+        let lat = self.latitude(r);
+        let row = if belt > 0 && lat.abs() < belt {
+            let north = (0..i64::from(self.backdrop.rows()))
+                .filter(|&q| self.latitude(q) >= belt)
+                .next_back();
+            let south = (0..i64::from(self.backdrop.rows())).find(|&q| self.latitude(q) <= -belt);
+            match (north, south) {
+                (Some(n), Some(s)) => {
+                    if lat >= 0 {
+                        n
+                    } else {
+                        s
+                    }
+                }
+                _ => r,
+            }
+        } else {
+            r
+        };
+        round(i128::from(145_842 * self.trig(row).1), 1_000_000)
     }
 
     #[expect(
@@ -540,7 +547,7 @@ impl WindField<'_> {
         )
     }
 
-    fn distance_squared(&self, ax: i64, ay: i64, bx: i64, by: i64) -> i64 {
+    fn displacement(&self, ax: i64, ay: i64, bx: i64, by: i64) -> (i64, i64) {
         let (la, lb) = (self.point_latitude(ay), self.point_latitude(by));
         let world = WORLD * 1000;
         let mut dx = (ax - bx).rem_euclid(world);
@@ -550,7 +557,12 @@ impl WindField<'_> {
         let c = self.cos(round(i128::from((la + lb).abs()), 2));
         let east = round(i128::from(dx) * 839 * i128::from(c), 1_000_000_000);
         let north = round(i128::from(la - lb) * 11_131_949, 1_000_000);
-        east * east + north * north
+        (north, east)
+    }
+
+    fn distance_squared(&self, ax: i64, ay: i64, bx: i64, by: i64) -> i64 {
+        let (n, e) = self.displacement(ax, ay, bx, by);
+        n * n + e * e
     }
 
     fn lowering(&self, low: &super::lows::Low, x: i64, y: i64) -> i64 {
@@ -575,11 +587,75 @@ impl WindField<'_> {
         if square - root * root > root {
             root += 1;
         }
-        round(
-            i128::from(self.rules.wind_sea_factor) * 15_396 * i128::from(low.depth) * 10_000_000,
-            i128::from(low.radius) * 1_225 * i128::from(root),
-        )
+        (1..64)
+            .map(|j| {
+                let r = round(i128::from(low.radius * j), 64);
+                round(
+                    i128::from(balance(low.depth, low.radius, r, f))
+                        * i128::from(self.rules.wind_sea_factor)
+                        * i128::from(f.abs()),
+                    1000 * i128::from(root),
+                )
+            })
+            .max()
+            .unwrap_or(0)
     }
+}
+
+fn nearest_root(n: u128) -> i64 {
+    let q = n.isqrt();
+    i64::try_from(q + u128::from(n - q * q > q)).expect("root fits")
+}
+
+#[expect(
+    clippy::many_single_char_names,
+    reason = "symbols match the reviewed equations"
+)]
+fn balance(depth: i64, radius: i64, r: i64, f: i64) -> i64 {
+    let (d, radius, r) = (i128::from(depth), i128::from(radius), i128::from(r));
+    let a = round(i128::from(f.abs()) * r, 20_000_000);
+    let b = round(
+        4 * d * r * r * (radius * radius - r * r) * 10_000_000,
+        1225 * radius.pow(4),
+    );
+    let q = nearest_root(
+        u128::try_from(i128::from(a) * i128::from(a) + i128::from(b)).expect("positive balance"),
+    );
+    if a + q == 0 {
+        0
+    } else {
+        round(i128::from(b), i128::from(a + q))
+    }
+}
+
+#[expect(
+    clippy::many_single_char_names,
+    reason = "symbols match the reviewed equations"
+)]
+fn low_wind(n: i64, e: i64, radius: i64, depth: i64, f: i64, pair: (i64, i64)) -> (i64, i64) {
+    let square = n * n + e * e;
+    if f == 0 || square == 0 || square >= radius * radius {
+        return (0, 0);
+    }
+    let r = nearest_root(u128::try_from(square).expect("positive distance"));
+    if r >= radius {
+        return (0, 0);
+    }
+    let g = i128::from(balance(depth, radius, r, f));
+    let (friction, factor, f) = (i128::from(pair.0), i128::from(pair.1), i128::from(f));
+    let den = 1000 * (friction * friction + f * f);
+    let a = round(g * factor * f * f, den);
+    let inward = round(g * factor * friction * f.abs(), den);
+    (
+        round(
+            i128::from(a) * f.signum() * i128::from(n) + i128::from(inward) * i128::from(e),
+            i128::from(r),
+        ),
+        round(
+            -i128::from(a) * f.signum() * i128::from(e) + i128::from(inward) * i128::from(n),
+            i128::from(r),
+        ),
+    )
 }
 
 type SteadyCache =
@@ -747,6 +823,212 @@ pub(super) fn display(u: i64, v: i64) -> (i64, &'static str) {
 mod tests {
     use super::*;
     #[test]
+    fn turning_balance_and_wind_worked_examples() {
+        for (f, r, radius, depth, expected) in [
+            (116_749, 288_675, 500_000, 3000, 3275),
+            (116_749, 100_000, 500_000, 3000, 1441),
+            (116_749, 499_000, 500_000, 3000, 66),
+            (116_749, 577_350, 1_000_000, 4000, 2985),
+            (49881, 288_675, 500_000, 3000, 4001),
+            (-116_749, 288_675, 500_000, 3000, 3275),
+            (0, 288_675, 500_000, 3000, 4665),
+            (15493, 288_675, 500_000, 3000, 4447),
+            (116_749, 1, 500_000, 3000, 0),
+            (116_749, 28868, 50000, 15000, 10266),
+        ] {
+            assert_eq!(balance(depth, radius, r, f), expected);
+        }
+        let sea = (15000, 690);
+        let land = (70000, 330);
+        for (n, e, f, pair, want) in [
+            (0, -100_565, 116_749, sea, (-126, 984)),
+            (0, 100_565, 116_749, sea, (126, -984)),
+            (-111_319, 0, 116_749, sea, (-1083, -139)),
+            (111_319, 0, 116_749, sea, (1083, 139)),
+            (0, -100_565, 116_749, land, (-211, 352)),
+            (0, -100_565, -116_749, sea, (-126, -984)),
+            (0, -100_565, 0, sea, (0, 0)),
+            (0, 0, 116_749, sea, (0, 0)),
+            (0, -500_000, 116_749, sea, (0, 0)),
+            // The reference point 1,000 cells east, beyond the radius.
+            (0, -502_824, 116_749, sea, (0, 0)),
+        ] {
+            assert_eq!(low_wind(n, e, 500_000, 3000, f, pair), want);
+        }
+        // The squared distance is inside, but its rounded root reaches the radius.
+        assert_eq!(
+            low_wind(148_055, -302_785, 337_045, 3000, 116_749, sea),
+            (0, 0)
+        );
+    }
+
+    #[test]
+    fn turning_rows_and_strength_rings() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+        let backdrop = ck_map::load_backdrop(&root.join("map/backdrop")).unwrap();
+        let mut rules =
+            WeatherRules::parse(&std::fs::read_to_string(root.join("game/weather.toml")).unwrap())
+                .unwrap();
+        let field = WindField::new(&backdrop, &rules).unwrap();
+        let first = i64::from(backdrop.first_row());
+        for (row, expected) in [
+            (242, 116_749),
+            (330, 50243),
+            (360, 15493),
+            (361, 15493),
+            (372, 15493),
+            (373, -16303),
+            (385, -16303),
+            (386, -16303),
+            (482, -105_898),
+        ] {
+            assert_eq!(field.low_turning(row - first), expected, "row {row}");
+        }
+        let f = 116_749;
+        let root = nearest_root((15000_u128.pow(2)) + u128::try_from(f).unwrap().pow(2));
+        let values: Vec<_> = (36..=42)
+            .map(|j| {
+                let r = round(500_000 * i128::from(j), 64);
+                round(
+                    i128::from(balance(3000, 500_000, r, f)) * 690 * i128::from(f),
+                    1000 * i128::from(root),
+                )
+            })
+            .collect();
+        assert_eq!(values, [2221, 2243, 2260, 2274, 2284, 2290, 2291]);
+        rules.wind_belt_latitude = 0;
+        let field = WindField::new(&backdrop, &rules).unwrap();
+        for row in [360, 372, 373, 386] {
+            let r = row - first;
+            assert_eq!(
+                field.low_turning(r),
+                round(i128::from(145_842 * field.trig(r).1), 1_000_000)
+            );
+        }
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one reviewed fixture covers the cutoff and the resulting meeting"
+    )]
+    fn storm_cutoff_two_lows_and_reversal() {
+        use super::super::lows::{EndKind, Low, Lows};
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+        let backdrop = ck_map::load_backdrop(&root.join("map/backdrop")).unwrap();
+        let rules =
+            WeatherRules::parse(&std::fs::read_to_string(root.join("game/weather.toml")).unwrap())
+                .unwrap();
+        let field = WindField::new(&backdrop, &rules).unwrap();
+        let low = Low {
+            number: 1,
+            x: 22_272_508,
+            y: 15_286_864,
+            radius: 500_000,
+            depth: 3000,
+            strongest: 2302,
+        };
+        let mut list = Lows::from_entries(2, vec![low.clone()]);
+        assert_eq!(
+            field.at(&list, 23256, 15505, 769, 1, 7),
+            Some((363, 437, 101_292))
+        );
+        assert_eq!(
+            field.at(&list, 21173, 15050, 769, 1, 7),
+            Some((416, 304, 100_470))
+        );
+        list.entries[0].radius = 337_045;
+        assert_eq!(
+            field.distance_squared(low.x, low.y, (357 * 64 + 32) * 1000, (243 * 64 + 32) * 1000),
+            113_599_039_250
+        );
+        assert_eq!(
+            field.low_block(357, 243 - i64::from(backdrop.first_row()), 0, &list),
+            (0, 0)
+        );
+        let mut first = Lows::default();
+        field
+            .place(&mut first, 22400, 15538, 500_000, 3000)
+            .unwrap();
+        let mut second = Lows::default();
+        field
+            .place(&mut second, 23600, 15538, 800_000, 2000)
+            .unwrap();
+        let part = |list: &Lows| {
+            let (u, v, _) = field
+                .interpolate(22833, 15538, 0, |f, c, r, m| {
+                    let (u, v) = f.low_block(c, r, m, list);
+                    (u, v, 0)
+                })
+                .unwrap();
+            (u, v)
+        };
+        assert_eq!(part(&first), (-409, 682));
+        assert_eq!(part(&second), (268, -446));
+        assert_eq!(
+            (
+                field.strength(&first.entries[0]),
+                field.strength(&second.entries[0])
+            ),
+            (2291, 1361)
+        );
+        let mut other = second.entries[0].clone();
+        other.number = 2;
+        first.entries.push(other);
+        assert_eq!(part(&first), (-141, 236));
+        let total = field.at(&first, 22833, 15538, 769, 1, 7).unwrap();
+        assert_eq!((total.0, total.1), (-50, 426));
+        let a = Low {
+            number: 1,
+            x: 22_833_499,
+            y: 23_072_000,
+            radius: 500_000,
+            depth: 3000,
+            strongest: 2322,
+        };
+        let b = Low {
+            number: 2,
+            x: 22_834_500,
+            y: 23_008_000,
+            radius: 500_000,
+            depth: 3000,
+            strongest: 2394,
+        };
+        let mut list = Lows::from_entries(3, vec![a, b]);
+        assert_eq!(
+            (
+                field.strength(&list.entries[0]),
+                field.strength(&list.entries[1])
+            ),
+            (2322, 2394)
+        );
+        let events = field.step(&mut list, 769, 1, 7);
+        assert_eq!(
+            (
+                events[0].number,
+                &events[0].kind,
+                events[0].cell,
+                events[0].strongest
+            ),
+            (1, &EndKind::Merged(2), (22833, 23040), 2322)
+        );
+        let low = &list.entries[0];
+        assert_eq!(
+            (
+                low.number,
+                low.x,
+                low.y,
+                low.radius,
+                low.depth,
+                low.strongest
+            ),
+            (2, 22_840_173, 23_084_510, 500_000, 6000, 3393)
+        );
+        assert_eq!(field.steering(22833, 23040, 769, 1, 7), Some((143, -1031)));
+        assert_eq!(field.at(&list, 22450, 22800, 769, 1, 7).unwrap().2, 100_204);
+    }
+
+    #[test]
     fn placed_low_has_reviewed_strength_and_shape() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
         let backdrop = ck_map::load_backdrop(&root.join("map/backdrop")).unwrap();
@@ -761,7 +1043,7 @@ mod tests {
         let low = &list.entries[0];
         assert_eq!(
             (low.number, low.x, low.y, low.strongest),
-            (1, 21_361_500, 15_777_500, 4489)
+            (1, 21_361_500, 15_777_500, 2302)
         );
         assert_eq!(field.lowering(low, low.x, low.y), 3000);
         assert_eq!(field.distance_squared(low.x, low.y, low.x, low.y), 0);
@@ -806,7 +1088,7 @@ mod tests {
                 low.depth,
                 low.strongest
             ),
-            (1, 21_746_472, 15_468_291, 800_000, 3172, 4489)
+            (1, 21_746_472, 15_468_291, 800_000, 3172, 2302)
         );
     }
 
@@ -844,7 +1126,19 @@ mod tests {
             let low = &list.entries[0];
             assert_eq!(
                 (low.x, low.y, low.depth, low.strongest),
-                (20_003_699, 16_182_679, 4000, 5129)
+                (20_003_699, 16_182_679, 4000, 2648)
+            );
+            let other = &list.entries[1];
+            assert_eq!(
+                (
+                    other.number,
+                    other.x,
+                    other.y,
+                    other.radius,
+                    other.depth,
+                    other.strongest
+                ),
+                (3, 20_155_768, 16_182_211, 600_000, 2000, 1621)
             );
             let events = field.step(&mut list, 769, 1, 7);
             assert_eq!(
@@ -854,7 +1148,7 @@ mod tests {
             let low = &list.entries[0];
             assert_eq!(
                 (low.x, low.y, low.depth, low.strongest),
-                (20_106_478, 16_165_338, 6000, 7684)
+                (20_106_478, 16_165_338, 6000, 3467)
             );
         }
     }
@@ -873,10 +1167,10 @@ mod tests {
         }
         let endings = field.step(&mut list, 769, 1, 7);
         assert_eq!(endings.len(), 2);
-        assert_eq!((endings[0].number, endings[0].strongest), (2, 1531));
+        assert_eq!((endings[0].number, endings[0].strongest), (2, 1054));
         assert_eq!(
             (endings[1].number, endings[1].cell, endings[1].strongest),
-            (1, (17058, 8327), 3061)
+            (1, (17058, 8327), 1757)
         );
         assert!(list.entries.is_empty());
         assert_eq!(list.next, 3);
@@ -922,12 +1216,19 @@ mod tests {
                     3,
                     &super::super::lows::EndKind::Merged(2),
                     (20318, 16199),
-                    2564
+                    1621
                 )
             );
             assert_eq!(
-                (list.entries[0].x, list.entries[0].y),
-                (19_953_298, 16_183_146)
+                (
+                    list.entries[0].number,
+                    list.entries[0].x,
+                    list.entries[0].y,
+                    list.entries[0].radius,
+                    list.entries[0].depth,
+                    list.entries[0].strongest
+                ),
+                (1, 19_953_298, 16_183_146, 600_000, 1500, 1307)
             );
             assert_eq!(
                 (
@@ -935,9 +1236,10 @@ mod tests {
                     list.entries[1].x,
                     list.entries[1].y,
                     list.entries[1].depth,
+                    list.entries[1].radius,
                     list.entries[1].strongest
                 ),
-                (2, 20_369_922, 16_179_608, 4500, 5770)
+                (2, 20_369_922, 16_179_608, 4500, 600_000, 2868)
             );
             list = super::super::lows::Lows::from_bytes(&list.to_bytes().unwrap()).unwrap();
             let events = field.step(&mut list, 769, 1, 7);
@@ -952,7 +1254,7 @@ mod tests {
                     1,
                     &super::super::lows::EndKind::Merged(2),
                     (20265, 16180),
-                    1923
+                    1307
                 )
             );
             assert_eq!(
@@ -961,9 +1263,10 @@ mod tests {
                     list.entries[0].x,
                     list.entries[0].y,
                     list.entries[0].depth,
+                    list.entries[0].radius,
                     list.entries[0].strongest
                 ),
-                (2, 20_318_334, 16_161_165, 6000, 7683)
+                (2, 20_318_334, 16_161_165, 6000, 600_000, 3467)
             );
             field.step(&mut list, 769, 1, 7);
             assert_eq!(
@@ -972,7 +1275,7 @@ mod tests {
                     list.entries[0].y,
                     list.entries[0].strongest
                 ),
-                (20_369_865, 16_140_526, 7683)
+                (20_369_865, 16_140_526, 3467)
             );
         }
     }
@@ -989,12 +1292,12 @@ mod tests {
         field.place(&mut list, 47700, 15776, 500_000, 3000).unwrap();
         let picture = PictureField::new(&field, &list);
         for (i, pressure, u, v) in [
-            (47200, 98958, 3112, -3368),
-            (47600, 97756, 3643, -551),
-            (47765, 97724, 3413, 1121),
-            (0, 97725, 3411, 1129),
-            (200, 98098, 2925, 3032),
-            (600, 99632, 1433, 3472),
+            (47200, 98958, 1709, -1784),
+            (47600, 97756, 1814, -250),
+            (47765, 97724, 1690, 545),
+            (0, 97725, 1689, 550),
+            (200, 98098, 1494, 1467),
+            (600, 99632, 913, 2148),
         ] {
             assert_eq!(field.at(&list, i, 16076, 769, 1, 7), Some((u, v, pressure)));
             assert_eq!(picture.at(i, 16076, 769, 1, 7), Some((u, v, pressure)));
@@ -1004,8 +1307,15 @@ mod tests {
         let events = field.step(&mut list, 769, 1, 7);
         assert_eq!(events[0].cell, (39, 15776));
         assert_eq!(
-            (list.entries[0].x, list.entries[0].y, list.entries[0].depth),
-            (55_829, 15_776_221, 3172)
+            (
+                list.entries[0].number,
+                list.entries[0].x,
+                list.entries[0].y,
+                list.entries[0].radius,
+                list.entries[0].depth,
+                list.entries[0].strongest
+            ),
+            (1, 55_829, 15_776_221, 800_000, 3172, 2302)
         );
     }
 
@@ -1038,14 +1348,17 @@ mod tests {
             strongest: 0,
         };
         for (row, radius, depth, expected) in [
-            (242, 500_000, 3000, 4420),
-            (242, 1_200_000, 3000, 1842),
-            (242, 800_000, 2000, 1842),
-            (330, 500_000, 3000, 9923),
-            (373, 500_000, 3000, 24329),
-            (360, 500_000, 3000, 24128),
+            (242, 500_000, 3000, 2291),
+            (242, 1_200_000, 3000, 1465),
+            (242, 800_000, 2000, 1360),
+            (242, 1_000_000, 4000, 2063),
+            (330, 500_000, 3000, 2746),
+            (373, 500_000, 3000, 2305),
+            (360, 500_000, 3000, 2322),
+            (482, 500_000, 3000, 2365),
             (242, 3_000_000, 1, 0),
-            (360, 50_000, 15000, 1_206_404),
+            (360, 50_000, 15000, 5472),
+            (242, 50_000, 15000, 7434),
         ] {
             low.y = (row * 64 + 32) * 1000;
             low.radius = radius;
@@ -1057,7 +1370,7 @@ mod tests {
         low.y = (373 * 64 + 32) * 1000;
         low.radius = 500_000;
         low.depth = 3000;
-        assert_eq!(field.strength(&low), 34_674);
+        assert_eq!(field.strength(&low), 93);
     }
 
     #[test]
@@ -1078,14 +1391,14 @@ mod tests {
         };
         let list = super::super::lows::Lows::from_entries(2, vec![low]);
         for (col, row, expected) in [
-            (356, 242, (4, 2)),
-            (360, 242, (-559, 971)),
-            (352, 242, (393, -2682)),
-            (356, 238, (-943, -557)),
-            (356, 246, (981, 598)),
-            (362, 236, (-3263, 2643)),
-            (348, 246, (2544, -3560)),
-            (370, 242, (-355, 662)),
+            (356, 242, (0, 0)),
+            (360, 242, (-265, 443)),
+            (352, 242, (159, -1237)),
+            (356, 238, (-439, -259)),
+            (356, 246, (446, 272)),
+            (362, 236, (-1705, 1325)),
+            (348, 246, (1265, -1874)),
+            (370, 242, (-298, 497)),
         ] {
             assert_eq!(
                 field.low_block(col, row - i64::from(backdrop.first_row()), 0, &list),
@@ -1098,10 +1411,10 @@ mod tests {
             .unwrap();
         let row = 246 - i64::from(backdrop.first_row());
         assert_eq!(field.block(333, row, 0), (470, 258));
-        assert_eq!(field.low_block(333, row, 0, &trial), (19, -205));
+        assert_eq!(field.low_block(333, row, 0, &trial), (4, -93));
         let steady = field.block(333, row, 0);
         let added = field.low_block(333, row, 0, &trial);
-        assert_eq!((steady.0 + added.0, steady.1 + added.1), (489, 53));
+        assert_eq!((steady.0 + added.0, steady.1 + added.1), (474, 165));
     }
 
     #[test]
@@ -1112,7 +1425,7 @@ mod tests {
             WeatherRules::parse(&std::fs::read_to_string(root.join("game/weather.toml")).unwrap())
                 .unwrap();
         let field = WindField::new(&backdrop, &rules).unwrap();
-        for (depth, joined_depth, strongest) in [(2000, 4000, 5129), (9000, 15000, 19233)] {
+        for (depth, joined_depth, strongest) in [(2000, 4000, 2648), (9000, 15000, 6147)] {
             let mut list = super::super::lows::Lows {
                 next: 4,
                 entries: vec![],
@@ -1274,10 +1587,10 @@ mod tests {
         let list = super::super::lows::Lows::from_entries(2, vec![low]);
         let first = i64::from(backdrop.first_row());
         for (col, row, expected) in [
-            (360, 242, (-559, 971)),
-            (361, 242, (-351, 3231)),
-            (360, 243, (-319, 1113)),
-            (361, 243, (290, 3311)),
+            (360, 242, (-265, 443)),
+            (361, 242, (-194, 1507)),
+            (360, 243, (-155, 509)),
+            (361, 243, (108, 1547)),
         ] {
             assert_eq!(field.low_block(col, row - first, 0, &list), expected);
         }
@@ -1287,10 +1600,10 @@ mod tests {
                 (u, v, 0)
             })
             .unwrap();
-        assert_eq!((du, dv), (-447, 1310));
+        assert_eq!((du, dv), (-216, 602));
         assert_eq!(
             field.at(&list, 23080, 15538, 769, 1, 7),
-            Some((-308, 1465, 98679))
+            Some((-77, 757, 98679))
         );
         assert_eq!(shape(0, 800_000, 1), 1);
     }
@@ -1339,12 +1652,29 @@ mod tests {
                 expected
             );
         }
+        // Rule 4's independent worked distances and balance at the four block centres.
+        for (col, row, north, east, distance, f, speed) in [
+            (356, 242, 115_761, -269_956, 293_729, 116_749, 3293),
+            (357, 242, 115_761, -301_746, 323_189, 116_749, 3347),
+            (356, 243, 148_055, -270_886, 308_706, 116_305, 3336),
+            (357, 243, 148_055, -302_785, 337_045, 116_305, 3343),
+        ] {
+            let (n, e) =
+                field.displacement(low.x, low.y, (col * 64 + 32) * 1000, (row * 64 + 32) * 1000);
+            assert_eq!((n, e), (north, east));
+            assert_eq!(
+                nearest_root(u128::try_from(n * n + e * e).unwrap()),
+                distance
+            );
+            assert_eq!(field.low_turning(row - i64::from(backdrop.first_row())), f);
+            assert_eq!(balance(low.depth, low.radius, distance, f), speed);
+        }
         let first = i64::from(backdrop.first_row());
         for (col, row, expected) in [
-            (356, 242, (-189, 1774)),
-            (357, 242, (-244, 1722)),
-            (356, 243, (-23, 1772)),
-            (357, 243, (-93, 1699)),
+            (356, 242, (-125, 923)),
+            (357, 242, (-164, 933)),
+            (356, 243, (-39, 942)),
+            (357, 243, (-82, 942)),
         ] {
             assert_eq!(field.low_block(col, row - first, 0, &list), expected);
         }
@@ -1354,11 +1684,11 @@ mod tests {
                 (u, v, 0)
             })
             .unwrap();
-        assert_eq!((u, v), (-157, 1758));
+        assert_eq!((u, v), (-111, 930));
         assert_eq!(field.lowering(low, 22_833_500, 15_538_500), 1176);
         assert_eq!(
             field.at(&list, 22833, 15538, 769, 1, 7),
-            Some((-66, 1948, 100_033))
+            Some((-20, 1120, 100_033))
         );
     }
 
@@ -1790,6 +2120,14 @@ mod tests {
         rules.wind_belt_latitude = 300_000;
         let field = WindField::new(&short, &rules).unwrap();
         assert_eq!(field.block(5, 3, 0), field.rule(5, 3, 0, (15_000, 690)));
+        // The truncated backdrop has no southern edge; neither belt row borrows the northern edge's rate.
+        let northern_edge = field.low_turning(2);
+        for (row, expected) in [(3, 25716), (4, -50425)] {
+            let own_rate = round(i128::from(145_842 * field.trig(row).1), 1_000_000);
+            assert_eq!(field.low_turning(row), own_rate);
+            assert_eq!(field.low_turning(row), expected);
+            assert_ne!(field.low_turning(row), northern_edge);
+        }
         let low = super::super::lows::Low {
             number: 1,
             x: 10_000_000,
@@ -1799,7 +2137,7 @@ mod tests {
             strongest: 0,
         };
         assert_eq!(field.point_latitude(low.y), 0);
-        assert_eq!(field.strength(&low), 34_688);
+        assert_eq!(field.strength(&low), 0);
     }
 
     #[test]

@@ -24,6 +24,7 @@ fn game_config(directory: &Path) -> GameConfig {
     GameConfig {
         scenario: directory.join("assets/scenarios/fixture"),
         saves: directory.join("saves"),
+        events_fixture: None,
     }
 }
 
@@ -880,6 +881,7 @@ fn the_shipped_scenario_starts_with_its_landings_and_its_straits() {
     let game = GameConfig {
         scenario: Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/scenarios/ireland-768"),
         saves: dir.0.join("saves"),
+        events_fixture: None,
     };
     let started = prepared(&game, None, Some(42))
         .0
@@ -901,6 +903,7 @@ fn the_scenario_hash_changes_when_one_byte_of_the_sea_distance_layer_changes() {
     let game = GameConfig {
         scenario: Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/scenarios/ireland-768"),
         saves: PathBuf::new(),
+        events_fixture: None,
     };
     let dir = Dir::new();
     let copy = dir.0.join("assets/scenarios/ireland-768");

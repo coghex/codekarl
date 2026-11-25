@@ -832,6 +832,10 @@ fn supervise_with_owner_factory(
                 )
                 .function("places", game_api::places_function(places.clone()))
                 .function(
+                    "events",
+                    game_api::events_function(Arc::clone(&view_cache), places.clone()),
+                )
+                .function(
                     "find_entries",
                     game_api::find_entries_function(
                         Arc::clone(&view_cache),

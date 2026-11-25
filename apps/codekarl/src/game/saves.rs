@@ -256,6 +256,7 @@ impl Identity {
             start: self.start,
             seed,
             layers: ck_sim::MapLayers::default(),
+            log: ck_sim::LogChoices::default(),
         }
     }
 

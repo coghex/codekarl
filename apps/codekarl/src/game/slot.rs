@@ -41,11 +41,15 @@ pub(crate) struct SimSnapshot {
     pub(crate) unsaved: bool,
     /// View layers at this ordered boundary.
     pub(crate) layers: MapLayers,
+    pub(crate) log_choices: ck_sim::LogChoices,
     /// The revision of [`economy`](Self::economy): it rises with every new view, a load included, and is `0` while there is
     /// none.
     pub(crate) economy_revision: u64,
     /// The economy view of that revision, immutable and published in this same write as the time fields (design §6).
     pub(crate) economy: Option<Arc<EconomyView>>,
+    /// Event rows at this revision.
+    pub(crate) events: Arc<Vec<super::events::Event>>,
+    pub(crate) events_revision: u64,
     /// The world: `0` for the session's first, one more each time the simulation is replaced (a named or guarded load, a quickload). It never
     /// falls and is not saved. Every later snapshot carries the risen number, so the UI sees a load even when the snapshot the load
     /// published was replaced before the UI read it (latest wins), and even when the pause reason has changed again (CK-375 §1).
@@ -73,7 +77,9 @@ impl SimSnapshot {
             || self.paused != other.paused
             || self.unsaved != other.unsaved
             || self.layers != other.layers
+            || self.log_choices != other.log_choices
             || self.economy_revision != other.economy_revision
+            || self.events_revision != other.events_revision
             || self.world != other.world
     }
 }
