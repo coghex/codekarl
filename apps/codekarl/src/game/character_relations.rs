@@ -50,6 +50,7 @@ struct Inner {
     archive: Option<ArchiveView>,
     rules: Arc<Rules>,
     places: Arc<BTreeMap<String, String>>,
+    english: Arc<BTreeMap<String, String>>,
     houses: Arc<Houses>,
     slots: Arc<BTreeMap<String, String>>,
     /// The religion and culture of each live character's pop (for the opinion terms of its passions).
@@ -83,6 +84,8 @@ impl Eq for RelationsFacts {}
 pub(crate) struct FactsInputs<'a> {
     pub(crate) rules: &'a Arc<Rules>,
     pub(crate) places: &'a Arc<BTreeMap<String, String>>,
+    /// The English-first name of each place by id (CK-423).
+    pub(crate) english: &'a Arc<BTreeMap<String, String>>,
     pub(crate) houses: &'a Arc<Houses>,
     pub(crate) slots: &'a Arc<BTreeMap<String, String>>,
     pub(crate) archive: Option<ArchiveView>,
@@ -153,6 +156,7 @@ impl RelationsFacts {
             archive: inputs.archive.clone(),
             rules: Arc::clone(inputs.rules),
             places: Arc::clone(inputs.places),
+            english: Arc::clone(inputs.english),
             houses: Arc::clone(inputs.houses),
             slots: Arc::clone(inputs.slots),
             pops,
@@ -291,6 +295,8 @@ pub(crate) struct PassionLine {
     pub(crate) target_kind: &'static str,
     pub(crate) key: String,
     pub(crate) name: String,
+    /// The name with a place's English name where it has one (CK-423); equal to `name` for a house, and for a place with none.
+    pub(crate) name_english: String,
 }
 
 /// The relations tab of one live character.
@@ -738,6 +744,14 @@ impl Inner {
                     .unwrap_or_else(|| key.clone()),
                 _ => String::new(),
             };
+            let name_english = match target_kind {
+                "place" => self
+                    .english
+                    .get(&key)
+                    .cloned()
+                    .unwrap_or_else(|| key.clone()),
+                _ => name.clone(),
+            };
             lines.push((
                 u8::MAX - passion.strength,
                 usize::from(passion.kind),
@@ -749,6 +763,7 @@ impl Inner {
                     target_kind,
                     key,
                     name,
+                    name_english,
                 },
             ));
         }

@@ -130,8 +130,10 @@ pub struct ScenarioStart {
 pub struct Location {
     /// Stable scenario-local identifier.
     pub id: String,
-    /// Display name.
+    /// The place's local (native) name.
     pub name: String,
+    /// The place's English name, when it has an established one (CK-423); the shown name falls back to [`Location::name`].
+    pub name_en: Option<String>,
     /// Projected map cell containing the authored point.
     pub cell: Cell,
     /// The authored point itself, projected: the anchor distances between places are measured from (CK-366).
@@ -810,6 +812,17 @@ fn validate_locations(
                 "must be non-empty and at most 64 characters",
             ));
         }
+        if let Some(name_en) = &entry.name_en
+            && (name_en.trim().is_empty()
+                || name_en.trim() != name_en
+                || name_en.chars().count() > 64)
+        {
+            return Err(LoadError::at(
+                filename,
+                format!("{path}.name_en"),
+                "must be non-empty, without leading or trailing whitespace, and at most 64 characters",
+            ));
+        }
         if entry.source.trim().is_empty() {
             return Err(LoadError::at(
                 filename,
@@ -916,6 +929,7 @@ fn validate_locations(
         locations.push(Location {
             id: entry.id.clone(),
             name: entry.name.clone(),
+            name_en: entry.name_en.clone(),
             cell,
             position,
             latitude_e4: (entry.lat * 10_000.0).round() as i32,
@@ -1710,6 +1724,7 @@ struct LocationsFile {
 struct LocationFile {
     id: String,
     name: String,
+    name_en: Option<String>,
     lat: f64,
     lon: f64,
     kind: String,

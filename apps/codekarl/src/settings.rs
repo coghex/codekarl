@@ -14,6 +14,7 @@ use crate::config::{
 };
 use crate::lifecycle::emit;
 use crate::map_app::{self, SharedController};
+use crate::place_names::PlaceNameSetting;
 
 #[derive(Clone, Copy)]
 struct Values {
@@ -38,6 +39,8 @@ pub(crate) struct Runtime {
     updates: Option<ck_window::UpdateControl>,
     resize: Option<crate::window_api::ResizeSession>,
     relay: Option<ck_render_2d::WakeRelay>,
+    /// The place-name choice every view of a place reads (CK-423).
+    names: PlaceNameSetting,
 }
 
 impl Runtime {
@@ -94,9 +97,14 @@ impl Runtime {
             updates: None,
             resize: None,
             relay: None,
+            names: PlaceNameSetting::new(config.graphics.place_names),
         }))
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the live runtime is wired once, from the application's parts"
+    )]
     pub(crate) fn new_live(
         config: &Config,
         map: Option<SharedController>,
@@ -105,6 +113,7 @@ impl Runtime {
         updates: Option<ck_window::UpdateControl>,
         resize: crate::window_api::ResizeSession,
         relay: ck_render_2d::WakeRelay,
+        names: PlaceNameSetting,
     ) -> Option<Arc<Self>> {
         let mut runtime = Self::new_with_requests(config, map, Some(requests))?;
         let fields = Arc::get_mut(&mut runtime).expect("new runtime is uniquely owned");
@@ -112,6 +121,7 @@ impl Runtime {
         fields.updates = updates;
         fields.resize = Some(resize);
         fields.relay = Some(relay);
+        fields.names = names;
         fields.apply_vsync(config.graphics.vsync);
         fields.apply_debug(config.debug);
         Some(runtime)
@@ -268,6 +278,18 @@ impl Runtime {
                     _ => return Err(format!("settings.set: `{name}` must be cards or rows")),
                 };
                 overrides.ui_list_look = Some(values.graphics.list_look);
+            }
+            "ui.place_names" => {
+                let ConfigValue::String(choice) = value else {
+                    return Err(format!("settings.set: `{name}` must be a string"));
+                };
+                values.graphics.place_names = match choice.as_str() {
+                    crate::place_names::ENGLISH => crate::place_names::ENGLISH,
+                    crate::place_names::LOCAL => crate::place_names::LOCAL,
+                    _ => return Err(format!("settings.set: `{name}` must be english or local")),
+                };
+                overrides.ui_place_names = Some(values.graphics.place_names);
+                self.names.set(values.graphics.place_names);
             }
             "window.mode" => {
                 let ConfigValue::String(mode) = value else {
@@ -538,7 +560,7 @@ impl Runtime {
     fn reset(&self, args: &[Option<ConfigValue>]) -> Result<Vec<ConfigValue>, String> {
         if args.len() != 1 {
             return Err(
-                "settings.reset: expected `tooltips`, `map`, `graphics`, `debug` or `bindings`"
+                "settings.reset: expected `tooltips`, `places`, `map`, `graphics`, `debug` or `bindings`"
                     .to_owned(),
             );
         }
@@ -571,7 +593,10 @@ impl Runtime {
                     .as_ref()
                     .ok_or_else(|| "settings.reset: graphics resize is unavailable".to_owned())?
                     .resize((base.width, base.height), values.graphics.mode)?;
+                // The place names are on the general tab, which resets them separately.
+                let place_names = values.graphics.place_names;
                 values.graphics = base;
+                values.graphics.place_names = place_names;
                 overrides.ui_scale_limit_k = None;
                 overrides.ui_list_look = None;
                 overrides.window_width = None;
@@ -586,6 +611,11 @@ impl Runtime {
                 self.apply_scale(values.graphics.scale_limit_k);
                 self.apply_fps_limit(values.graphics.fps_limit);
                 self.apply_vsync(values.graphics.vsync);
+            }
+            "places" => {
+                values.graphics.place_names = self.base.graphics.place_names;
+                overrides.ui_place_names = None;
+                self.names.set(values.graphics.place_names);
             }
             "debug" => {
                 values.debug = self.base_debug;
@@ -603,7 +633,7 @@ impl Runtime {
             }
             _ => {
                 return Err(format!(
-                    "settings.reset: unknown tab `{tab}`; use tooltips, map, graphics, debug or bindings"
+                    "settings.reset: unknown tab `{tab}`; use tooltips, places, map, graphics, debug or bindings"
                 ));
             }
         }
@@ -657,6 +687,10 @@ impl Runtime {
             (
                 "list_look".into(),
                 ConfigValue::String(values.graphics.list_look.into()),
+            ),
+            (
+                "place_names".into(),
+                ConfigValue::String(values.graphics.place_names.into()),
             ),
             (
                 "width".into(),
@@ -915,19 +949,32 @@ fn map_integer(name: &str, value: &ConfigValue, minimum: u32, maximum: u32) -> R
     .ok_or_else(|| format!("settings.set: `{name}` must be an integer in {minimum}..={maximum}"))
 }
 
+/// The `[ui]` table of the settings file: the scale, the list look and the place names, when any is kept.
+fn push_ui_table(text: &mut String, overrides: &SettingsOverrides) {
+    use std::fmt::Write as _;
+    if overrides.ui_scale_limit_k.is_none()
+        && overrides.ui_list_look.is_none()
+        && overrides.ui_place_names.is_none()
+    {
+        return;
+    }
+    text.push_str("[ui]\n");
+    if let Some(k) = overrides.ui_scale_limit_k {
+        let _ = writeln!(text, "scale = {}", f64::from(k) / 2.0);
+    }
+    if let Some(value) = overrides.ui_list_look {
+        let _ = writeln!(text, "list_look = \"{value}\"");
+    }
+    if let Some(value) = overrides.ui_place_names {
+        let _ = writeln!(text, "place_names = \"{value}\"");
+    }
+    text.push('\n');
+}
+
 fn settings_text(overrides: &SettingsOverrides) -> Vec<u8> {
     use std::fmt::Write as _;
     let mut text = String::new();
-    if overrides.ui_scale_limit_k.is_some() || overrides.ui_list_look.is_some() {
-        text.push_str("[ui]\n");
-        if let Some(k) = overrides.ui_scale_limit_k {
-            let _ = writeln!(text, "scale = {}", f64::from(k) / 2.0);
-        }
-        if let Some(value) = overrides.ui_list_look {
-            let _ = writeln!(text, "list_look = \"{value}\"");
-        }
-        text.push('\n');
-    }
+    push_ui_table(&mut text, overrides);
     if overrides.frame_fps_limit.is_some() || overrides.frame_vsync.is_some() {
         text.push_str("[frame]\n");
         if let Some(limit) = overrides.frame_fps_limit {
@@ -1096,6 +1143,7 @@ mod tests {
                 Some(update_control.clone()),
                 resize,
                 relay.clone(),
+                PlaceNameSetting::new(config.graphics.place_names),
             )
             .expect("live settings runtime");
             Self {
@@ -1250,6 +1298,89 @@ assert(d.level == 1 and d.rate == 'updates')
             let _harness =
                 rig.run("local d = settings.debug(); assert(d.level == 0 and d.rate == 'frames')");
         }
+    }
+
+    #[test]
+    fn the_place_name_choice_defaults_to_english_persists_reloads_and_resets_without_touching_graphics()
+     {
+        let dir = crate::testing::Dir::new();
+        let config_path = dir.0.join("config.toml");
+        fs::write(&config_path, "[game]\nscenario = 'scenario'\n").expect("write config");
+        let config = crate::config::load(&config_path).expect("load config and settings");
+        let path = config.settings_file.clone().expect("settings path");
+        assert_eq!(config.graphics.place_names, "english");
+        let runtime = Runtime::new(&config, None).expect("runtime settings");
+        assert_eq!(runtime.names.choice(), "english");
+        let script = r#"
+assert(settings.graphics().place_names == "english")
+settings.set("ui.place_names", "local")
+assert(settings.graphics().place_names == "local")
+local ok, message = pcall(function() settings.set("ui.place_names", "french") end)
+assert(not ok and string.find(tostring(message), "english or local", 1, true))
+assert(settings.graphics().place_names == "local")
+"#;
+        let harness = crate::testing::Harness::new(
+            script,
+            crate::testing::Extras {
+                extensions: vec![runtime.extension()],
+                ..Default::default()
+            },
+        );
+        drop(harness);
+        assert_eq!(
+            runtime.names.choice(),
+            "local",
+            "the shared handle the views read follows the setting at once"
+        );
+        let written: toml::Value =
+            toml::from_str(&fs::read_to_string(&path).expect("settings were written"))
+                .expect("written TOML parses");
+        assert_eq!(written["ui"]["place_names"].as_str(), Some("local"));
+        // A later start reads it back, and the choice is not in the game's own configuration.
+        let reloaded = crate::config::load(&config_path).expect("reload");
+        assert_eq!(reloaded.graphics.place_names, "local");
+        assert_eq!(reloaded.settings_base_graphics.place_names, "english");
+        let runtime = Runtime::new(&reloaded, None).expect("runtime settings");
+        assert_eq!(runtime.names.choice(), "local");
+        let harness = crate::testing::Harness::new(
+            "settings.reset('places'); assert(settings.graphics().place_names == 'english')",
+            crate::testing::Extras {
+                extensions: vec![runtime.extension()],
+                ..Default::default()
+            },
+        );
+        drop(harness);
+        assert_eq!(runtime.names.choice(), "english");
+        assert!(
+            !fs::read_to_string(&path)
+                .expect("settings file")
+                .contains("place_names"),
+            "a reset removes the kept choice"
+        );
+    }
+
+    #[test]
+    fn the_graphics_defaults_leave_the_place_name_choice_alone() {
+        let rig = LiveRig::with_saved_settings(
+            "[frame]\nvsync = true\n",
+            Some("[ui]\nplace_names = 'local'\nlist_look = 'rows'\n"),
+            Some(ck_window::ScreenSnapshot {
+                backing: 1.0,
+                screen_points: (2560, 1600),
+                visible_points: (2560, 1600),
+            }),
+            false,
+        );
+        assert_eq!(rig.runtime.names.choice(), "local");
+        {
+            let _harness = rig.run(
+                "window.open{title='places', width=1280, height=800, clear={0,0,0}, resizable=true}\nsettings.reset('graphics')\nlocal g = settings.graphics()\nassert(g.list_look == 'cards' and g.place_names == 'local')",
+            );
+        }
+        assert_eq!(rig.runtime.names.choice(), "local");
+        let written = fs::read_to_string(&rig.settings_path).expect("settings file");
+        assert!(written.contains("place_names = \"local\""), "{written}");
+        assert!(!written.contains("list_look"), "{written}");
     }
 
     #[test]

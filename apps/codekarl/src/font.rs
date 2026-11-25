@@ -1074,7 +1074,8 @@ mod tests {
             .collect()
     }
 
-    /// Every unsupported character of every location name of every scenario under `scenarios`, as `scenario: name: chars`.
+    /// Every unsupported character of every location name, local and English (CK-423), of every scenario under `scenarios`, as
+    /// `scenario: name: chars`.
     fn unsupported_names(font: &Font, scenarios: &std::path::Path) -> Vec<String> {
         #[derive(Deserialize)]
         struct Scenario {
@@ -1088,6 +1089,7 @@ mod tests {
         #[derive(Deserialize)]
         struct Named {
             name: String,
+            name_en: Option<String>,
         }
         let mut problems = Vec::new();
         let Ok(entries) = fs::read_dir(scenarios) else {
@@ -1106,13 +1108,15 @@ mod tests {
             )
             .expect("a valid locations file");
             for named in locations.location {
-                let missing = unsupported(font, &named.name);
-                if !missing.is_empty() {
-                    problems.push(format!(
-                        "{}: {}: {missing:?}",
-                        directory.file_name().unwrap().to_string_lossy(),
-                        named.name
-                    ));
+                for shown in std::iter::once(&named.name).chain(named.name_en.as_ref()) {
+                    let missing = unsupported(font, shown);
+                    if !missing.is_empty() {
+                        problems.push(format!(
+                            "{}: {}: {missing:?}",
+                            directory.file_name().unwrap().to_string_lossy(),
+                            shown
+                        ));
+                    }
                 }
             }
         }
@@ -1139,19 +1143,25 @@ mod tests {
         )
         .unwrap();
         let location = |name: &str| format!("[[location]]\nname = \"{name}\"\n");
+        let english =
+            |name: &str| format!("[[location]]\nname = \"Fixture\"\nname_en = \"{name}\"\n");
         fs::write(
             scenario.join("locations.toml"),
             format!(
                 "{}{}",
                 location("Gaillimh \u{b7} Cill \u{c1}ine"),
                 location("Ward\u{175}")
-            ),
+            ) + &english("Cork \u{1e03}")
+                + &english("Cork"),
         )
         .unwrap();
         // The fada and the middle dot are drawn; the w with a circumflex is not.
         assert_eq!(
             unsupported_names(&shipped(), &root.0.join("scenarios")),
-            ["fixture: Ward\u{175}: ['\u{175}']"]
+            [
+                "fixture: Ward\u{175}: ['\u{175}']",
+                "fixture: Cork \u{1e03}: ['\u{1e03}']"
+            ]
         );
         // No scenarios directory is nothing to check.
         assert!(unsupported_names(&shipped(), &root.0.join("none")).is_empty());

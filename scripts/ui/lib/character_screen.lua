@@ -645,6 +645,13 @@ function character_screen:refresh(revision, world)
   fill(self, true)
 end
 
+-- The place names show differently now (CK-423): the record, the tab showing and the log read again at the revision the screen holds, which
+-- gives each place the name the choice shows. No new revision and no tick is needed.
+function character_screen:relabel()
+  if not self:is_open() or self.revision == nil then return end
+  self:refresh(self.revision, self.world)
+end
+
 -- The window's size changed: fits the screen to the left slot again, keeping the tab and the scroll.
 function character_screen:relayout()
   if not self:is_open() then return end

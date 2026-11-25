@@ -294,6 +294,19 @@ fn the_scenario_hash_covers_the_scenario_file_and_its_locations_and_nothing_else
 }
 
 #[test]
+fn adding_an_english_name_changes_the_scenario_hash_so_older_saves_are_refused() {
+    // CK-423: the hash covers the whole locations file, so a file that gains `name_en` is another scenario to a save made before it.
+    let (_dir, game) = fixture();
+    let scenario = game.scenario.clone();
+    let path = scenario.join("locations.toml");
+    let place = "[[location]]\nid = \"birr\"\nname = \"Biorra\"\n";
+    fs::write(&path, place).unwrap();
+    let before = hashes::scenario_hash(&scenario).unwrap();
+    fs::write(&path, format!("{place}name_en = \"Birr\"\n")).unwrap();
+    assert_ne!(hashes::scenario_hash(&scenario).unwrap(), before);
+}
+
+#[test]
 fn the_scenario_hash_covers_all_three_network_files_but_not_the_baseline() {
     let (_dir, game) = fixture();
     let scenario = &game.scenario;

@@ -65,6 +65,7 @@ fn fixture(window_text: &str, steps: &[&str]) -> Fixture {
         None,
         resize,
         ck_render_2d::WakeRelay::default(),
+        crate::place_names::PlaceNameSetting::default(),
     )
     .expect("live settings runtime");
     let script = script(&format!("{MENU}\n{SCRIPT}"), steps);

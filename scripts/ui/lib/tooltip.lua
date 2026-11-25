@@ -577,7 +577,7 @@ local function open_tooltip(candidate, content)
     ui.set_top_group(overlay)
   end
   local record = {target = candidate.target, key = candidate.key, kind = candidate.kind or "lockable",
-    words = candidate.words, parent = candidate.parent, source = candidate.source,
+    words = candidate.words, parent = candidate.parent, source = candidate.source, pinned = candidate.pinned,
     map = candidate.map, hover = candidate.hover, anchor_x = candidate.anchor_x, anchor_y = candidate.anchor_y,
     source_x = candidate.x, source_y = candidate.y,
     lines = lines, locked = false, first = 1, carry = 0,
@@ -614,7 +614,12 @@ local function refresh_record(record)
     end
     return true
   end
-  local content = resolve(record.source, record.source_x or 0, record.source_y or 0)
+  local content
+  if record.pinned ~= nil then
+    content = record.pinned()
+  else
+    content = resolve(record.source, record.source_x or 0, record.source_y or 0)
+  end
   if content == nil or type(content) == "table" and #content == 0 and content.title == nil then
     close_record(record)
     return false
@@ -631,6 +636,11 @@ local function refresh_record(record)
   return true
 end
 
+-- Reads the content of every open tooltip again. A source that is a function may return, after the content and the part, a third value: a
+-- function that gives the content of the very subject the tooltip was opened for (a place's row, a character's card), whatever place a
+-- rebuilt or re-sorted list has given it, and whether or not the list is still there, and a fourth: the subject's identity, which is part of
+-- the hover target. A tooltip with that function is read again from it, so a locked tooltip keeps its subject across every refresh; any other
+-- tooltip is read again from its source at the point it was opened at. Whoever replaces the subjects (a new world) closes the tooltips.
 function tooltip.refresh()
   local snapshot = {}
   for _, record in ipairs(open) do snapshot[#snapshot + 1] = record end
@@ -643,12 +653,16 @@ local function candidate_of(update)
   local y = update.pointer and update.pointer.y or 0
   if key and attached[key] ~= nil then
     local target = attached[key]
-    local content, part
+    local content, part, pinned, subject
     if target.kind == "label" then content = {target.words}
-    elseif type(target.source) == "function" then content, part = target.source(x, y)
+    elseif type(target.source) == "function" then content, part, pinned, subject = target.source(x, y)
     else content = resolve(target.source, x, y) end
     if content == nil or type(content) == "table" and #content == 0 and content.title == nil then return nil end
-    return {target = key .. "\0" .. tostring(part or ""), source = target.source, content = content,
+    -- A source that names its subject (see `refresh`) makes the subject part of what is hovered: after a list is sorted again the row at a key
+    -- may be another subject's, and a tooltip still open for the earlier one must not stand for it.
+    local identity = key .. "\0" .. tostring(part or "")
+    if subject ~= nil then identity = identity .. "\0" .. tostring(subject) end
+    return {target = identity, source = target.source, content = content, pinned = pinned,
       key = key, kind = target.kind or "lockable", words = target.words, part = part,
       parent = target.parent, x = x, y = y, anchor_x = target.anchor_x, anchor_y = target.anchor_y}
   end

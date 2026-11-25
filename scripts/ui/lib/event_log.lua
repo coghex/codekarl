@@ -163,6 +163,15 @@ function log:open()
   self:fit(); self:scroll_edge()
   if self.changed then self.changed(true) end
 end
+-- The place names show differently now (CK-423): the rows are read again at the revision the log holds, so each blight row names its place
+-- as the choice shows it, and the log is laid out again, keeping its scroll.
+function log:relabel()
+  if not self:is_open() or self.revision == nil then return end
+  local rows = game.events(self.revision)
+  self.rows = rows
+  for _, row in ipairs(rows) do row.sort = {time = (((row.year * 13 + row.month) * 32 + row.day) * 24 + row.hour), strength = row.knots} end
+  self:rebuild(false)
+end
 function log:refresh(snapshot)
   if snapshot.events_revision == nil then return end
   local c = self.choices

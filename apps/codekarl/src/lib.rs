@@ -111,6 +111,7 @@ mod metrics_windows_tests;
 mod mode;
 #[cfg(all(feature = "metal", target_os = "macos"))]
 mod native;
+mod place_names;
 #[cfg(test)]
 mod readout_tests;
 mod render_api;
@@ -726,6 +727,8 @@ fn supervise_with_owner_factory(
     // the bridge is the application's to declare (below): a late write is discarded and counted in every kind of
     // run, a headless one included, where no renderer ever attaches.
     let bridge = scene_bridge(config);
+    // Which name of a place every view shows (CK-423): one handle, read by the map, the game calls and the settings.
+    let place_names = place_names::PlaceNameSetting::new(config.graphics.place_names);
     let map_controller = match (&loaded_map, &game, &config.map) {
         (Some(_), Some(prepared), Some(map)) => match map_app::MapController::from_scenario(
             &prepared.scenario,
@@ -756,6 +759,9 @@ fn supervise_with_owner_factory(
         (None, _, _) => None,
         (Some(_), _, None) => unreachable!("map loading follows map configuration"),
     };
+    if let Some(controller) = &map_controller {
+        map_app::lock(controller).set_place_names(place_names.clone());
+    }
     let wake = {
         let notifier = Arc::clone(&shared.notifier);
         Arc::new(move || notifier.wake()) as Arc<dyn Fn() + Send + Sync>
@@ -830,10 +836,17 @@ fn supervise_with_owner_factory(
                         scenario_id.expect("a connected game has a scenario id"),
                     ),
                 )
-                .function("places", game_api::places_function(places.clone()))
+                .function(
+                    "places",
+                    game_api::places_function(places.clone(), place_names.clone()),
+                )
                 .function(
                     "events",
-                    game_api::events_function(Arc::clone(&view_cache), places.clone()),
+                    game_api::events_function(
+                        Arc::clone(&view_cache),
+                        places.clone(),
+                        place_names.clone(),
+                    ),
                 )
                 .function(
                     "find_entries",
@@ -841,23 +854,27 @@ fn supervise_with_owner_factory(
                         Arc::clone(&view_cache),
                         places.clone(),
                         find_rivers,
+                        place_names.clone(),
                     ),
                 )
                 .function(
                     "characters",
-                    game_api::characters_function(Arc::clone(&view_cache)),
+                    game_api::characters_function(Arc::clone(&view_cache), place_names.clone()),
                 )
                 .function(
                     "character",
-                    game_api::character_function(Arc::clone(&view_cache)),
+                    game_api::character_function(Arc::clone(&view_cache), place_names.clone()),
                 )
                 .function(
                     "character_relations",
-                    game_api::character_relations_function(Arc::clone(&view_cache)),
+                    game_api::character_relations_function(
+                        Arc::clone(&view_cache),
+                        place_names.clone(),
+                    ),
                 )
                 .function(
                     "character_pop",
-                    game_api::character_pop_function(Arc::clone(&view_cache)),
+                    game_api::character_pop_function(Arc::clone(&view_cache), place_names.clone()),
                 )
                 .function(
                     "character_log",
@@ -871,7 +888,10 @@ fn supervise_with_owner_factory(
                         go_to_targets.expect("a connected game has a scenario"),
                     ),
                 )
-                .function("place", game_api::place_function(view_cache, places))
+                .function(
+                    "place",
+                    game_api::place_function(view_cache, places, place_names.clone()),
+                )
                 .function("set_map_mode", game_api::set_map_mode_function(map_modes)),
             ),
         ),
@@ -939,6 +959,7 @@ fn supervise_with_owner_factory(
         update_control,
         resize,
         wake_relay.clone(),
+        place_names.clone(),
     ) {
         ui_extensions.push(settings.extension());
         Some(settings)

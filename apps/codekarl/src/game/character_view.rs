@@ -49,8 +49,11 @@ pub(crate) struct CharacterCard {
     pub(crate) age: u32,
     /// The house line (§3); empty for no house.
     pub(crate) house: String,
-    /// The role line (§4).
+    /// The role line (§4), naming places by their local names.
     pub(crate) role: String,
+    /// The same role line naming places by their English names where they have one (CK-423): the line a player who chose English
+    /// names reads. It equals [`CharacterCard::role`] when no place it names has an English name.
+    pub(crate) role_english: String,
     /// The pop's place id.
     pub(crate) place: String,
     /// The pop's slot in its place: with the place, the exact pop (a place can hold two pops of one kind).
@@ -169,8 +172,10 @@ impl CharacterView {
 /// What the view reads besides the characters and their pops.
 pub(crate) struct Inputs<'a> {
     pub(crate) rules: &'a Rules,
-    /// The display name of each place by id.
+    /// The local name of each place by id.
     pub(crate) places: &'a BTreeMap<String, String>,
+    /// The English-first name of each place by id: its English name, else its local one (CK-423).
+    pub(crate) english: &'a BTreeMap<String, String>,
     /// The names of the houses the scenario ships.
     pub(crate) houses: &'a Houses,
     /// The place each authored slot is at, by the slot's key: a spouse place is read at the slot's place, not at the pop its holder lives in now.
@@ -207,6 +212,7 @@ pub(crate) fn build(
             age,
             house: house_line(store, inputs.houses, &c.life.house),
             role: role_line(store, inputs.places, inputs.slots, c, &kind),
+            role_english: role_line(store, inputs.english, inputs.slots, c, &kind),
             place: c.pop.place.clone(),
             slot: c.pop.slot,
             clergy: kind == "monk" || c.office == Some(Office::HighCleric),

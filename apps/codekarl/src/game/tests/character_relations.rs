@@ -80,6 +80,7 @@ fn facts_of(
         &FactsInputs {
             rules: rules_arc(),
             places: &Arc::new(world().1.clone()),
+            english: &Arc::new(world().1.clone()),
             houses: &Arc::new(houses().clone()),
             slots: &Arc::new(slots.clone()),
             archive,
@@ -656,7 +657,10 @@ fn game_character_relations_refuses_by_name_and_answers_from_its_revision() {
     view.characters.relations = facts_of(&store, Some(fixture.view()), &BTreeMap::new());
     let cache = Arc::new(ViewCache::default());
     cache.post(7, Arc::new(view.clone()));
-    let relations = character_relations_function(Arc::clone(&cache));
+    let relations = character_relations_function(
+        Arc::clone(&cache),
+        crate::place_names::PlaceNameSetting::default(),
+    );
     let integer = |value: i64| Some(ConfigValue::Integer(value));
     let answer = relations(&[integer(1), integer(7)]).expect("a record");
     let ConfigValue::Table(fields) = &answer[0] else {
@@ -748,6 +752,7 @@ fn the_shipped_ui_shows_niall_frossachs_real_relations_tab_with_the_dead_inert()
         &Inputs {
             rules: rules(),
             places: &crate::game::setup::place_names(&prepared.scenario),
+            english: &crate::game::setup::english_place_names(&prepared.scenario),
             houses: houses(),
             slots: slots(),
         },
@@ -759,6 +764,7 @@ fn the_shipped_ui_shows_niall_frossachs_real_relations_tab_with_the_dead_inert()
         &FactsInputs {
             rules: rules_arc(),
             places: &Arc::new(crate::game::setup::place_names(&prepared.scenario)),
+            english: &Arc::new(crate::game::setup::english_place_names(&prepared.scenario)),
             houses: &Arc::new(houses().clone()),
             slots: &Arc::new(slots().clone()),
             archive: Some(prepared.storage.source().view().expect("the archive")),
@@ -785,10 +791,21 @@ fn the_shipped_ui_shows_niall_frossachs_real_relations_tab_with_the_dead_inert()
         Some(ConfigValue::Integer(id)),
         Some(ConfigValue::Integer(1)),
     ];
-    let cards =
-        characters_function(Arc::clone(&cache))(&[Some(ConfigValue::Integer(1))]).expect("cards");
-    let record = character_function(Arc::clone(&cache))(&arguments).expect("his record");
-    let relations = character_relations_function(cache)(&arguments).expect("his relations");
+    let cards = characters_function(
+        Arc::clone(&cache),
+        crate::place_names::PlaceNameSetting::default(),
+    )(&[Some(ConfigValue::Integer(1))])
+    .expect("cards");
+    let record = character_function(
+        Arc::clone(&cache),
+        crate::place_names::PlaceNameSetting::default(),
+    )(&arguments)
+    .expect("his record");
+    let relations = character_relations_function(
+        cache,
+        crate::place_names::PlaceNameSetting::default(),
+    )(&arguments)
+    .expect("his relations");
     let (notes, portraits, after_press) =
         crate::ui_link::location_tests::character_relations::real_relations(
             &super::character_view::lua_of(&cards[0]),
@@ -949,7 +966,10 @@ fn a_real_load_publishes_the_new_world_and_a_pinned_old_revision_still_reads_its
     let cache = Arc::new(ViewCache::default());
     cache.post(old.economy_revision, Arc::clone(&old_view));
     cache.post(new.economy_revision, Arc::clone(&new_view));
-    let relations = character_relations_function(Arc::clone(&cache));
+    let relations = character_relations_function(
+        Arc::clone(&cache),
+        crate::place_names::PlaceNameSetting::default(),
+    );
     let father_name = |id: u64, revision: u64| -> String {
         let answer = relations(&[
             Some(ConfigValue::Integer(i64::try_from(id).unwrap())),

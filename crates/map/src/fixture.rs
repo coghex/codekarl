@@ -517,6 +517,7 @@ pub fn location_scenario() -> LoadedScenario {
         Location {
             id: "river-town".into(),
             name: "River Town".into(),
+            name_en: None,
             cell: cell(11, 7),
             latitude_e4: 530_000,
             longitude_e4: -80_000,
@@ -532,6 +533,7 @@ pub fn location_scenario() -> LoadedScenario {
         Location {
             id: "hill-village".into(),
             name: "Hill Village".into(),
+            name_en: None,
             cell: cell(8, 10),
             latitude_e4: 530_000,
             longitude_e4: -80_000,

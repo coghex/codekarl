@@ -550,6 +550,8 @@ pub(super) struct ViewWiring {
     place_ids: Vec<String>,
     land_by_place: BTreeMap<String, ck_economy::LandCounts>,
     place_names: Arc<BTreeMap<String, String>>,
+    /// The English-first name of each place by id: its English name, else its local one (CK-423).
+    place_names_english: Arc<BTreeMap<String, String>>,
     houses: Arc<ck_characters::figures::Houses>,
     slots: Arc<BTreeMap<String, String>>,
     /// Where the current archive reader is: a load replaces what it holds before the next view is built.
@@ -584,6 +586,7 @@ impl Prepared {
             place_ids,
             land_by_place,
             place_names: Arc::new(place_names(&self.scenario)),
+            place_names_english: Arc::new(english_place_names(&self.scenario)),
             houses: Arc::clone(&self.houses),
             slots: Arc::clone(&self.slots),
             archive_cell: Arc::clone(&self.archive_cell),
@@ -652,6 +655,7 @@ pub(super) fn view_builder(wiring: ViewWiring) -> super::core::ViewBuilder<GameS
                 &super::character_view::Inputs {
                     rules,
                     places: &wiring.place_names,
+                    english: &wiring.place_names_english,
                     houses: &wiring.houses,
                     slots: &wiring.slots,
                 },
@@ -679,6 +683,7 @@ pub(super) fn view_builder(wiring: ViewWiring) -> super::core::ViewBuilder<GameS
                 &super::character_relations::FactsInputs {
                     rules: rules_arc,
                     places: &wiring.place_names,
+                    english: &wiring.place_names_english,
                     houses: &wiring.houses,
                     slots: &wiring.slots,
                     archive,
@@ -1468,6 +1473,25 @@ pub(crate) fn place_names(scenario: &ck_map::Scenario) -> BTreeMap<String, Strin
         .collect()
 }
 
+/// The English-first name of each of the scenario's places by id: its English name when it has one, else its local name (CK-423). The
+/// character views carry the role lines and passion names built with these beside the ones built with [`place_names`], and the UI
+/// calls pick between them by the player's choice.
+pub(crate) fn english_place_names(scenario: &ck_map::Scenario) -> BTreeMap<String, String> {
+    scenario
+        .locations
+        .iter()
+        .map(|location| {
+            (
+                location.id.clone(),
+                location
+                    .name_en
+                    .clone()
+                    .unwrap_or_else(|| location.name.clone()),
+            )
+        })
+        .collect()
+}
+
 pub(crate) fn nearby_places(
     scenario: &ck_map::Scenario,
     max_range_m: u32,
@@ -1627,6 +1651,74 @@ mod nearby_place_tests {
         let names = super::place_names(&scenario);
         assert_eq!(names["armagh"], "Ard Mhacha");
         assert_eq!(names.len(), scenario.locations.len());
+    }
+
+    /// The shipped Ireland scenario's English names (CK-423): the four places the hand check could not find, the fallback for a place with
+    /// none, and the local names the character log prose is written with.
+    #[test]
+    fn ireland_has_english_names_where_one_is_established_and_the_log_names_stay_local() {
+        let directory =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/scenarios/ireland-768");
+        let scenario = ck_map::load_scenario(&directory).expect("Ireland scenario loads");
+        let english = |id: &str| {
+            scenario
+                .locations
+                .iter()
+                .find(|location| location.id == id)
+                .unwrap_or_else(|| panic!("{id} is shipped"))
+                .name_en
+                .as_deref()
+        };
+        for (id, name) in [
+            ("armagh", "Armagh"),
+            ("bangor", "Bangor"),
+            ("birr", "Birr"),
+            ("cork", "Cork"),
+            ("skellig_michael", "Skellig Michael"),
+            // From the CK-423 review: sites a first pass missed or named for another monument.
+            ("rathmore", "Rathmore"),
+            ("aidne_seat", "Rath Durlais"),
+            ("dun_ailinne", "Dun Aillinne"),
+            ("ui_maine_seat", "Dunamon"),
+        ] {
+            assert_eq!(english(id), Some(name), "{id}");
+        }
+        // A people's seat has no established English place name, and gets none: nothing is invented.
+        assert_eq!(english("cairpre_seat"), None);
+        let without: Vec<&str> = scenario
+            .locations
+            .iter()
+            .filter(|location| location.name_en.is_none())
+            .map(|location| location.id.as_str())
+            .collect();
+        assert_eq!(
+            without,
+            [
+                "carraig_aille",
+                "tir_amalgaid",
+                "corco_modruad",
+                "tethbae_seat",
+                "cairpre_seat",
+                "loegaire_seat",
+                "uliathain_seat",
+                "ciarraige_seat",
+            ]
+        );
+        // Both maps are by id over every place: the English-first one falls back to the local name, and the one the log prose uses
+        // is the local name whatever the English name is.
+        let local = super::place_names(&scenario);
+        let first = super::english_place_names(&scenario);
+        assert_eq!(local["birr"], "Biorra");
+        assert_eq!(first["birr"], "Birr");
+        assert_eq!(local["cairpre_seat"], first["cairpre_seat"]);
+        assert_eq!(first.len(), scenario.locations.len());
+        for location in &scenario.locations {
+            assert_eq!(local[&location.id], location.name);
+            assert_eq!(
+                first[&location.id],
+                location.name_en.as_ref().unwrap_or(&location.name).as_str()
+            );
+        }
     }
 
     #[test]

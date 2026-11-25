@@ -880,6 +880,7 @@ impl FrameConfig {
 struct UiFields {
     scale: Option<toml::Value>,
     list_look: Option<String>,
+    place_names: Option<String>,
     points_per_pixel: Option<toml::Value>,
     font_points_per_pixel: Option<toml::Value>,
     tooltips: Option<toml::Value>,
@@ -1395,6 +1396,8 @@ pub(crate) struct SettingsOverrides {
     pub(crate) map_scroll_points_per_step: Option<u32>,
     pub(crate) ui_scale_limit_k: Option<u32>,
     pub(crate) ui_list_look: Option<&'static str>,
+    /// The kept `[ui] place_names`: which name of a place the player sees (CK-423).
+    pub(crate) ui_place_names: Option<&'static str>,
     pub(crate) window_width: Option<u32>,
     pub(crate) window_height: Option<u32>,
     pub(crate) window_mode: Option<WindowMode>,
@@ -1414,6 +1417,8 @@ pub(crate) struct SettingsOverrides {
 pub(crate) struct GraphicsSettings {
     pub(crate) scale_limit_k: Option<u32>,
     pub(crate) list_look: &'static str,
+    /// Which name of a place is shown, `"english"` (the default, falling back to the local name) or `"local"` (CK-423).
+    pub(crate) place_names: &'static str,
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) mode: WindowMode,
@@ -1428,6 +1433,7 @@ impl Default for GraphicsSettings {
         Self {
             scale_limit_k: None,
             list_look: "cards",
+            place_names: crate::place_names::ENGLISH,
             width: 1280,
             height: 800,
             mode: WindowMode::Windowed,
@@ -1751,6 +1757,16 @@ fn parse(path: &Path, text: &str) -> Result<Config, String> {
             ));
         }
     };
+    let place_names = match file.ui.0.place_names.as_deref() {
+        None | Some(crate::place_names::ENGLISH) => crate::place_names::ENGLISH,
+        Some(crate::place_names::LOCAL) => crate::place_names::LOCAL,
+        Some(other) => {
+            return Err(format!(
+                "{}: [ui]: place_names = {other:?} is not accepted: use english or local",
+                path.display()
+            ));
+        }
+    };
     let window_width = checked_dimension(path, "width", file.window.0.width.unwrap_or(1280), 1280)?;
     let window_height =
         checked_dimension(path, "height", file.window.0.height.unwrap_or(800), 800)?;
@@ -1765,6 +1781,7 @@ fn parse(path: &Path, text: &str) -> Result<Config, String> {
     let graphics = GraphicsSettings {
         scale_limit_k: ui_scale_limit_k,
         list_look,
+        place_names,
         width: window_width,
         height: window_height,
         mode: window_mode,
@@ -2306,6 +2323,23 @@ fn load_ui_settings(path: &Path, value: &toml::Value, config: &mut Config) {
             }
             continue;
         }
+        if key == "place_names" {
+            match value.as_str() {
+                Some(crate::place_names::ENGLISH) => {
+                    config.graphics.place_names = crate::place_names::ENGLISH;
+                    config.settings_overrides.ui_place_names = Some(crate::place_names::ENGLISH);
+                }
+                Some(crate::place_names::LOCAL) => {
+                    config.graphics.place_names = crate::place_names::LOCAL;
+                    config.settings_overrides.ui_place_names = Some(crate::place_names::LOCAL);
+                }
+                _ => config.settings_warnings.push(format!(
+                    "{}: [ui] place_names = {value} is not accepted: use english or local",
+                    path.display()
+                )),
+            }
+            continue;
+        }
         if key != "tooltips" {
             config.settings_warnings.push(format!(
                 "{}: unknown settings table [ui.{key}]; ignoring it",
@@ -2642,9 +2676,49 @@ mod tests {
             "[window]\nwidth = 1279\n",
             "[window]\nheight = 16385\n",
             "[ui]\nlist_look = 'columns'\n",
+            "[ui]\nplace_names = 'french'\n",
         ] {
             assert!(parse_config(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn the_place_name_choice_defaults_to_english_and_the_settings_file_keeps_a_valid_one() {
+        assert_eq!(
+            parse_config("").expect("empty config").graphics.place_names,
+            "english"
+        );
+        assert_eq!(
+            parse_config("[ui]\nplace_names = 'local'\n")
+                .expect("local accepted")
+                .graphics
+                .place_names,
+            "local"
+        );
+        let dir = crate::testing::Dir::new();
+        let config_path = dir.0.join("config.toml");
+        fs::write(&config_path, "[game]\nscenario = 'scenario'\n").expect("write config");
+        let settings = load(&config_path)
+            .expect("load")
+            .settings_file
+            .expect("settings path");
+        fs::write(&settings, "[ui]\nplace_names = 'local'\n").expect("write settings");
+        let config = load(&config_path).expect("load with settings");
+        assert_eq!(config.graphics.place_names, "local");
+        assert_eq!(config.settings_overrides.ui_place_names, Some("local"));
+        assert_eq!(config.settings_base_graphics.place_names, "english");
+        fs::write(&settings, "[ui]\nplace_names = 'klingon'\n").expect("write bad settings");
+        let config = load(&config_path).expect("a bad kept value is a warning");
+        assert_eq!(config.graphics.place_names, "english");
+        assert!(
+            config
+                .settings_warnings
+                .iter()
+                .any(|warning| warning.contains("place_names")
+                    && warning.contains("english or local")),
+            "{:?}",
+            config.settings_warnings
+        );
     }
 
     #[test]

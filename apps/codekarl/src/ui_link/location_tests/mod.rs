@@ -250,7 +250,7 @@ tooltip.attach = function(key, source)
   if type(source) == "function" then
     local original = source
     source = function(...)
-      local content, part = original(...)
+      local content, part, pinned, subject = original(...)
       if capture_tooltip_sources then
         local lines = {}
         for _, line in ipairs(content or {}) do
@@ -264,7 +264,7 @@ tooltip.attach = function(key, source)
         end
         note("source " .. key .. " " .. table.concat(lines, "|") .. " part=" .. tostring(part or "-"))
       end
-      return content, part
+      return content, part, pinned, subject
     end
   end
   tooltip_sources[key] = source
@@ -1168,6 +1168,7 @@ mod ledger;
 mod market_table;
 mod mode_bar;
 mod panel_layout_refresh;
+mod place_names;
 mod rows;
 mod scale_limits;
 mod selectors_tabs;

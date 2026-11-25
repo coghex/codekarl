@@ -97,6 +97,8 @@ local function checked_items(who, items)
       checked.stripe = item.stripe
       -- What the row stood for when it was drawn (see the header): kept as given, never read here.
       checked.tag = item.tag
+      -- The identity (a string) of what a tooltip opened over the row is about, which stays with it when the list is rebuilt or sorted again.
+      checked.pin = type(item.pin) == "string" and item.pin or nil
       if item.tooltip ~= nil then
         local source = item.tooltip
         if type(source) == "function" then
@@ -522,7 +524,11 @@ local function add_row(self, index)
               if lx >= left and lx < left + item.bar.width * P then cell_index = "bar" end
             end
           end
-          return source(lx, ly, cell_index)
+          local content, part = source(lx, ly, cell_index)
+          if item.pin == nil then return content, part end
+          -- The third value gives this row's tooltip again wherever the list has put the row later, the fourth is its subject
+          -- (`tooltip.refresh`).
+          return content, part, function() return (source(lx, ly, cell_index)) end, item.pin
         end
         if type(source) == "table" then return tooltip.content(source.class, source.args) end
         return nil

@@ -392,6 +392,21 @@ fn location_refusals_name_the_file_and_entry() {
     let cases = [
         ("id = \"town_a\"", "id = \"Bad-ID\"", "id must match"),
         ("name = \"Test Place\"", "name = \" \"", "name"),
+        (
+            "name = \"Test Place\"",
+            "name = \"Test Place\"\nname_en = \"\"",
+            "name_en",
+        ),
+        (
+            "name = \"Test Place\"",
+            "name = \"Test Place\"\nname_en = \" Test Place\"",
+            "name_en",
+        ),
+        (
+            "name = \"Test Place\"",
+            "name = \"Test Place\"\nname_en = \"Test Place \"",
+            "name_en",
+        ),
         ("kind = \"town\"", "kind = \"unknown\"", "unknown kind"),
         (
             "buildings = [\"church\"]",
@@ -423,6 +438,57 @@ fn location_refusals_name_the_file_and_entry() {
         assert!(error.contains("locations.toml location["), "{error}");
         assert!(error.contains(message), "{error}");
     }
+}
+
+#[test]
+fn an_empty_or_untrimmed_english_name_is_refused_naming_its_location() {
+    for bad in ["", "   ", " Test Place", "Test Place "] {
+        let fixture = Fixture::new();
+        fixture.write(
+            "locations.toml",
+            &fixture.text("locations.toml").replacen(
+                "name = \"Test Place\"",
+                &format!("name = \"Test Place\"\nname_en = {bad:?}"),
+                1,
+            ),
+        );
+        let error = load_scenario(fixture.path())
+            .expect_err("bad english name refused")
+            .to_string();
+        assert!(
+            error.contains("locations.toml location[town_a].name_en"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn the_english_name_is_optional_and_loaded_beside_the_local_name() {
+    let fixture = Fixture::new();
+    let plain = load_scenario(fixture.path()).expect("a scenario with no english name loads");
+    assert!(
+        plain
+            .locations
+            .iter()
+            .all(|location| location.name_en.is_none())
+    );
+    fixture.write(
+        "locations.toml",
+        &fixture.text("locations.toml").replacen(
+            "name = \"Test Place\"",
+            "name = \"Test Place\"\nname_en = \"English Place\"",
+            1,
+        ),
+    );
+    let loaded = load_scenario(fixture.path()).expect("an english name loads");
+    let first = &loaded.locations[0];
+    assert_eq!(first.name, "Test Place");
+    assert_eq!(first.name_en.as_deref(), Some("English Place"));
+    assert!(
+        loaded.locations[1..]
+            .iter()
+            .all(|location| location.name_en.is_none())
+    );
 }
 
 #[test]
@@ -768,6 +834,7 @@ fn location(id: &str, cell: Cell, radius: Option<u32>) -> Location {
     Location {
         id: id.to_owned(),
         name: id.to_owned(),
+        name_en: None,
         cell,
         latitude_e4: 530_000,
         longitude_e4: -80_000,

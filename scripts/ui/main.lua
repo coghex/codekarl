@@ -30,6 +30,7 @@ local cards = require("lib.cards")
 local character_cards = require("lib.character_cards")
 local character_screen = require("lib.character_screen")
 local go_to = require("lib.go_to")
+local place_names = require("lib.place_names")
 
 local P = ui.P
 local MARGIN = 8 -- UI units from the window's edges
@@ -422,6 +423,8 @@ if game ~= nil then
     layers.rivers, layers.roads = not not time.rivers, not not time.roads
     if layers_picker ~= nil then layers_picker:refresh() end
     require("lib.save_screen").set_time(time)
+    -- A load replaces the world (and with it every character and what a tooltip over one says): no tooltip outlives it.
+    if (time.world or 0) ~= current_world then tooltip.close_all() end
     current_world = time.world or 0
     find_popup.set_revision(time.economy_revision, current_world)
     location_panel:set_revision(time.economy_revision, time.weather, time.year, time.month, time.day, time.hour, current_world)
@@ -614,7 +617,7 @@ if game ~= nil then
       end
       for _, place in ipairs(places) do
         local place_view = revision ~= nil and game.place(place.id, revision) or nil
-        local row = {place = place, sort = {name = place.name}, filter = {kind = place.kind},
+        local row = {place = place, sort = {name = place.name}, filter = {kind = place.kind}, pin = place.id,
           tag = go_to.tag("location", place.id, revision, current_world)}
         row.lay = function(width)
           local label = place.name
@@ -651,6 +654,7 @@ if game ~= nil then
             local kind_culture = pop.kind .. " " .. pop.culture
             local row = {
               place = place,
+              pin = place.id .. "#" .. (pop_index - 1),
               sort = {type = pop.kind, culture = pop.culture, people = pop.workers + pop.dependents, place = place.name},
               filter = {type = pop.kind, religion = pop.religion, culture = pop.culture},
               stripe = pop_colour(pop.kind),
@@ -699,6 +703,19 @@ if game ~= nil then
   -- Shows the ledger's rows through its list bar. A change of the bar's choices starts the list from its first row (`reset_scroll`); a
   -- refresh for a new revision keeps the scroll.
   -- The Characters tab: the cards of `game.characters(revision)` in the card stack, through the same list bar.
+  -- The newest card of a character for a tooltip that outlives the Characters tab (CK-423).
+  character_cards.set_provider(function(id, world)
+    if world ~= current_world then return false end
+    local revision = location_panel:current_revision()
+    if revision == nil or revision == 0 then return nil end
+    local ok, list = pcall(game.characters, revision)
+    if not ok then return nil end
+    for _, card in ipairs(list) do
+      if card.id == id then return card end
+    end
+    return nil
+  end)
+
   local function fill_characters(reset_scroll)
     ensure_ledger_bar()
     local revision = location_panel:current_revision()
@@ -852,6 +869,20 @@ if game ~= nil then
   -- The map's place name uses the shared delayed tooltip system. T6 supplies richer location content.
   game.on_hover(function(hover)
     tooltip.map_hover(hover, hover and {class = "location", args = {place = hover.id}} or nil)
+  end)
+
+  -- A change of the place-name choice (CK-423) relabels what is open, by place id and at the revision each view holds: tooltips (the map's
+  -- hover tooltip among them, after the rest), the location panel, the character screen, the event log, the find popup and the places ledger. It needs no
+  -- restart, no new revision and no tick, so it works with the game paused.
+  place_names.on_change(function()
+    location_panel:relabel()
+    character_panel:relabel()
+    event_log:relabel()
+    find_popup.relabel()
+    if fill_ledger ~= nil then fill_ledger() end
+    -- The tooltips last, once every list they were opened over is rebuilt: a tooltip opened over a place's row or a character's card is read
+    -- again for that subject (see `tooltip.refresh`), so a locked one shows the new name and never another place's.
+    tooltip.refresh()
   end)
 end
 
