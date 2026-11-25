@@ -17,6 +17,7 @@ local frame = require("lib.frame")
 local text = require("lib.text")
 local theme = require("lib.theme")
 local list_look = require("lib.list_look")
+local place_names = require("lib.place_names")
 local tooltip = require("lib.tooltip")
 
 local P = ui.P
@@ -1565,6 +1566,14 @@ function location:show(selection, tab, revision)
     self.tabs:select(tab)
   end
   render(self, false)
+end
+
+-- The place names show differently now (CK-423): the open panel takes the name the choice shows from the place's id, for its first tab (the
+-- window's title) and for every list of the tab showing, keeping its scroll. No new revision and no tick is needed.
+function location:relabel()
+  if not open(self) or self.id == nil then return end
+  update_location_tab(self, {id = self.id, name = place_names.name_of(self.id)})
+  render(self, true)
 end
 
 -- The economy revision and hourly weather belong to the same time snapshot.

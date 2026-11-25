@@ -12,6 +12,15 @@ local draw = require("lib.draw")
 local P = ui.P
 
 local character_cards = {}
+-- The newest card read for each character id, which a tooltip opened for an earlier card of the character reads (see `items`).
+local latest = {}
+-- `provider(id, world)`: the newest card of a character of that world, wherever it is read from (the ledger's tab need not be showing); nil
+-- when there is none, and false when the world is no longer the game's.
+local provider
+
+function character_cards.set_provider(fn)
+  provider = fn
+end
 
 -- The size of a card and of its portrait cell, and the gap between cards, in UI pixels.
 character_cards.HEIGHT = 40
@@ -94,13 +103,25 @@ function character_cards.items(rows, on_open, world, tag_of)
   local items = {}
   for _, row in ipairs(rows) do
     local character = row.character
+    latest[character.id] = character
     items[#items + 1] = {
       height = character_cards.HEIGHT,
       on_click = function() on_open(character.id, world) end,
       -- What a right-click on the card means (CK-381): `tag_of(id)` is hung on the card's hit region (`render.set_hit_tag`).
       tag = tag_of ~= nil and tag_of(character.id) or nil,
       tooltip = function()
-        return {title = title_of(character), character.house ~= "" and character.house or "no house", character.role}
+        local newest = latest[character.id] or character
+        return {title = title_of(newest), newest.house ~= "" and newest.house or "no house", newest.role}
+      end,
+      -- What a tooltip opened over this card shows again on every refresh (CK-423): the character's own newest card, read afresh, so a locked
+      -- tooltip names the place as the player's choice now shows it even when the card list is rebuilt in another order or is gone.
+      subject = tostring(world) .. ":" .. tostring(character.id),
+      tooltip_pinned = function()
+        local found = provider ~= nil and provider(character.id, world)
+        -- A world that a load has replaced has other characters under these numbers: the tooltip has nothing to say.
+        if found == false then return nil end
+        local newest = found or latest[character.id] or character
+        return {title = title_of(newest), newest.house ~= "" and newest.house or "no house", newest.role}
       end,
       draw = function(group, x, y, width) return draw_card(character, group, x, y, width) end,
     }

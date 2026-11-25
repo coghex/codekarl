@@ -11,6 +11,7 @@ local scrollbar = require("lib.scrollbar")
 local typing = require("lib.typing")
 local numberfield = require("lib.numberfield")
 local list_look = require("lib.list_look")
+local place_names = require("lib.place_names")
 
 local P = ui.P
 local WHITE = "ui/theme/white.png"
@@ -191,6 +192,11 @@ local function add_defaults(state, page, tab, y)
       local setting = tab == "general" and "tooltips" or tab == "bindings" and "bindings"
         or tab == "graphics" and "graphics" or tab == "development" and "debug" or "map"
       settings.reset(setting)
+      -- The place-name choice is on the general tab too (CK-423): its defaults put it back, and the open views relabel.
+      if tab == "general" then
+        settings.reset("places")
+        place_names.refresh()
+      end
       if tab == "graphics" then
         if list_look.refresh() and game ~= nil and game.mark_unsaved ~= nil then
           game.mark_unsaved()
@@ -441,6 +447,26 @@ local function show_general(state, page)
   label_at(page.group, 0, y + 2 * P, "lock timer", active and enabled_colour or dim_colour, LABEL_WIDTH)
   slider(state, page, "lock timer", "ui.tooltips.lock_timer", y, 0.3, 3, 0.1,
     values.lock_timer, string.format("%.1f s", values.lock_timer), active, active and enabled_colour or dim_colour)
+
+  -- Which name of a place shows (CK-423): the English one (the default; a place with none shows its local name) or the local one. A
+  -- choice is saved with the settings and takes effect at once in every open view.
+  local names_y = y + 24 * P
+  label_at(page.group, 0, names_y, "place names", dim_colour, page.room)
+  label_at(page.group, 0, names_y + 16 * P, "show", enabled_colour, LABEL_WIDTH)
+  local labels = {"English", "local"}
+  local function label_of(choice) return choice == "local" and "local" or "English" end
+  local names = button.flow{
+    x = LABEL_WIDTH, y = names_y + 14 * P, room = page.room - LABEL_WIDTH,
+    items = labels, selected = label_of(place_names.get()),
+    group = page.group, owner = page.owner, kind = "window",
+    on_choose = function(label_text) place_names.set(label_text == "local" and "local" or "english") end,
+  }
+  state.controls.place_names = names
+  page.subscriptions[#page.subscriptions + 1] = place_names.on_change(function(value)
+    if current == state and state.selected == "general" then
+      for index, control in ipairs(names) do control:set_selected(labels[index] == label_of(value)) end
+    end
+  end)
   add_defaults(state, page, "general", state.content_height - 18 * P)
 end
 

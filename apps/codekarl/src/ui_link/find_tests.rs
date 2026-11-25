@@ -32,6 +32,94 @@ assert(#rows == 200 and more == 5 and rows[1].id == 1 and rows[200].id == 200)
 }
 
 #[test]
+fn search_matches_both_names_whichever_is_shown_and_labels_only_an_other_name_match() {
+    let mut rig = rig(
+        "",
+        &[r#"
+local find = require("lib.find_model")
+-- English shown: the entry's `name` is the English name and `other` the local one.
+local english = {
+  {kind="location", id="armagh", name="Armagh", other="Ard Mhacha"},
+  {kind="location", id="birr", name="Birr", other="Biorra"},
+  {kind="location", id="emain_macha", name="Emain Macha"},
+  {kind="character", id=7, name="Máel", place="Birr"},
+}
+local rows = find.search(english, "armagh")
+assert(#rows == 1 and rows[1].id == "armagh" and rows[1].label == nil)
+rows = find.search(english, "ard mhacha")
+assert(#rows == 1 and rows[1].id == "armagh" and rows[1].name == "Armagh" and rows[1].label == "Armagh (Ard Mhacha)")
+rows = find.search(english, "ARD MHACHA")
+assert(#rows == 1 and rows[1].label == "Armagh (Ard Mhacha)")
+rows = find.search(english, "biorra")
+assert(#rows == 1 and rows[1].label == "Birr (Biorra)")
+rows = find.search(english, "birr")
+assert(#rows == 1 and rows[1].id == "birr" and rows[1].label == nil)
+-- A character is found by its own name only, and carries the shown name of its place.
+rows = find.search(english, "mael")
+assert(#rows == 1 and rows[1].kind == "character" and rows[1].label == nil and rows[1].place == "Birr")
+-- Local shown, the same places: Biorra shows, and the English name is added only when the query matched it alone.
+local localised = {
+  {kind="location", id="armagh", name="Ard Mhacha", other="Armagh"},
+  {kind="location", id="birr", name="Biorra", other="Birr"},
+  {kind="location", id="emain_macha", name="Emain Macha"},
+}
+rows = find.search(localised, "armagh")
+assert(#rows == 1 and rows[1].id == "armagh" and rows[1].name == "Ard Mhacha" and rows[1].label == "Ard Mhacha (Armagh)")
+rows = find.search(localised, "ard mhacha")
+assert(#rows == 1 and rows[1].label == nil)
+rows = find.search(localised, "birr")
+assert(#rows == 1 and rows[1].id == "birr" and rows[1].label == "Biorra (Birr)")
+rows = find.search(localised, "ach")
+assert(#rows == 2 and rows[1].id == "armagh" and rows[2].id == "emain_macha")
+assert(rows[1].label == nil and rows[2].label == nil, "a match on the shown name adds nothing")
+-- Ordering is by the shown name, and a row's identity and sort key do not depend on its label.
+rows = find.search(localised, "r")
+assert(rows[1].id == "armagh" and rows[2].id == "birr")
+local by_other = find.search(localised, "armagh")
+local by_name = find.search(localised, "ard mh")
+assert(by_other[1].label ~= nil and by_name[1].label == nil)
+assert(find.index_of(by_name, by_other[1]) == 1 and find.index_of(by_other, by_name[1]) == 1)
+-- The entries themselves are not changed by a search.
+assert(localised[1].label == nil)
+"#],
+    );
+    rig.opened();
+}
+
+#[test]
+fn the_open_popup_shows_the_label_and_relabels_for_a_changed_choice() {
+    let mut rig = rig(
+        "",
+        &[r#"
+local find = require("lib.find_popup")
+local shown = "english"
+local function entries()
+  if shown == "english" then
+    return {{kind="location", id="birr", name="Birr", other="Biorra"}}
+  end
+  return {{kind="location", id="birr", name="Biorra", other="Birr"}}
+end
+game = {set_find_keyboard_block=function() end, find_entries=function(_) return entries() end, go_to=function() end}
+find.open({width=800, height=600}, 1, 0)
+local popup = find.current()
+for _, ch in ipairs({"b", "i", "o", "r"}) do popup.field:on_typed({kind="char", text=ch}) end
+assert(#popup.rows == 1, "one row " .. #popup.rows)
+assert(popup.rows[1].label == "Birr (Biorra)", tostring(popup.rows[1].label))
+assert(popup.highlight.id == "birr")
+shown = "local"
+find.relabel()
+assert(#popup.rows == 1 and popup.rows[1].label == nil and popup.rows[1].name == "Biorra", "relabelled row")
+assert(popup.highlight ~= nil and popup.highlight.id == "birr" and popup.field:editing(), "the highlight and the query stay")
+for _ = 1, 4 do popup.field:on_typed({kind="backspace"}) end
+for _, ch in ipairs({"b", "i", "r", "r"}) do popup.field:on_typed({kind="char", text=ch}) end
+assert(#popup.rows == 1 and popup.rows[1].label == "Biorra (Birr)")
+find.close()
+"#],
+    );
+    rig.opened();
+}
+
+#[test]
 fn popup_keeps_the_query_and_reconciles_the_highlight_by_identity() {
     let mut rig = rig(
         "",

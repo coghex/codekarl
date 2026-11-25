@@ -2558,6 +2558,7 @@ fn a_locations_centre_is_the_middle_of_its_cell_as_a_fixed_point() {
     let location = Location {
         id: "x".to_owned(),
         name: "X".to_owned(),
+        name_en: None,
         cell: Cell { x: -3, y: 7 },
         latitude_e4: 530_000,
         longitude_e4: -80_000,

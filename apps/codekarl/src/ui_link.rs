@@ -4560,11 +4560,19 @@ mod tests {
             )
             .function(
                 "place",
-                game_api::place_function(Arc::clone(&views), vec![]),
+                game_api::place_function(
+                    Arc::clone(&views),
+                    vec![],
+                    crate::place_names::PlaceNameSetting::default(),
+                ),
             )
             .function(
                 "events",
-                game_api::events_function(Arc::clone(&views), vec![]),
+                game_api::events_function(
+                    Arc::clone(&views),
+                    vec![],
+                    crate::place_names::PlaceNameSetting::default(),
+                ),
             ),
         );
         let harness = Harness::new(script, extras);

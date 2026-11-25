@@ -5,6 +5,7 @@
 [[location]]
 id = "armagh"
 name = "Ard Mhacha"
+name_en = "Armagh"
 lat = 54.3489
 lon = -6.6545
 kind = "monastery"
@@ -16,6 +17,7 @@ confidence = "high"
 [[location]]
 id = "clonmacnoise"
 name = "Cluain Mhic Nóis"
+name_en = "Clonmacnoise"
 lat = 53.3266
 lon = -7.9871
 kind = "monastery"
@@ -27,6 +29,7 @@ confidence = "high"
 [[location]]
 id = "kildare"
 name = "Cill Dara"
+name_en = "Kildare"
 lat = 53.1584
 lon = -6.912
 kind = "monastery"
@@ -38,6 +41,7 @@ confidence = "high"
 [[location]]
 id = "glendalough"
 name = "Gleann Dá Loch"
+name_en = "Glendalough"
 lat = 53.0106
 lon = -6.3275
 kind = "monastery"
@@ -49,6 +53,7 @@ confidence = "high"
 [[location]]
 id = "bangor"
 name = "Beannchar"
+name_en = "Bangor"
 lat = 54.6575
 lon = -5.674
 kind = "monastery"
@@ -60,6 +65,7 @@ confidence = "high"
 [[location]]
 id = "durrow"
 name = "Darú"
+name_en = "Durrow"
 lat = 53.3257
 lon = -7.5196
 kind = "monastery"
@@ -71,6 +77,7 @@ confidence = "high"
 [[location]]
 id = "clonard"
 name = "Cluain Ioraird"
+name_en = "Clonard"
 lat = 53.4525
 lon = -6.9683
 kind = "monastery"
@@ -82,6 +89,7 @@ confidence = "medium"
 [[location]]
 id = "lismore"
 name = "Lios Mór"
+name_en = "Lismore"
 lat = 52.1366
 lon = -7.932
 kind = "monastery"
@@ -93,6 +101,7 @@ confidence = "high"
 [[location]]
 id = "clonfert"
 name = "Cluain Fearta"
+name_en = "Clonfert"
 lat = 53.2394
 lon = -8.059
 kind = "monastery"
@@ -104,6 +113,7 @@ confidence = "high"
 [[location]]
 id = "iniscealtra"
 name = "Inis Cealtra"
+name_en = "Inishcaltra"
 lat = 52.915
 lon = -8.449
 kind = "monastery"
@@ -115,6 +125,7 @@ confidence = "high"
 [[location]]
 id = "emly"
 name = "Imleach Iúir"
+name_en = "Emly"
 lat = 52.4637
 lon = -8.3504
 kind = "monastery"
@@ -126,6 +137,7 @@ confidence = "high"
 [[location]]
 id = "cork"
 name = "Corcaigh"
+name_en = "Cork"
 lat = 51.8946
 lon = -8.4803
 kind = "monastery"
@@ -137,6 +149,7 @@ confidence = "high"
 [[location]]
 id = "movilla"
 name = "Maigh Bhile"
+name_en = "Movilla"
 lat = 54.6017
 lon = -5.666
 kind = "monastery"
@@ -148,6 +161,7 @@ confidence = "medium"
 [[location]]
 id = "derry"
 name = "Doire"
+name_en = "Derry"
 lat = 54.9958
 lon = -7.322
 kind = "monastery"
@@ -159,6 +173,7 @@ confidence = "medium"
 [[location]]
 id = "inishmurray"
 name = "Inis Muirígh"
+name_en = "Inishmurray"
 lat = 54.4318
 lon = -8.661
 kind = "monastery"
@@ -170,6 +185,7 @@ confidence = "high"
 [[location]]
 id = "skellig_michael"
 name = "Sceilg Mhichíl"
+name_en = "Skellig Michael"
 lat = 51.772
 lon = -10.5394
 kind = "monastery"
@@ -181,6 +197,7 @@ confidence = "high"
 [[location]]
 id = "monasterboice"
 name = "Mainistir Bhuithe"
+name_en = "Monasterboice"
 lat = 53.7774
 lon = -6.4176
 kind = "monastery"
@@ -192,6 +209,7 @@ confidence = "high"
 [[location]]
 id = "finglas"
 name = "Fionnghlas"
+name_en = "Finglas"
 lat = 53.3905
 lon = -6.2985
 kind = "monastery"
@@ -203,6 +221,7 @@ confidence = "medium"
 [[location]]
 id = "lusk"
 name = "Lusca"
+name_en = "Lusk"
 lat = 53.5266
 lon = -6.166
 kind = "monastery"
@@ -214,6 +233,7 @@ confidence = "medium"
 [[location]]
 id = "swords"
 name = "Sord"
+name_en = "Swords"
 lat = 53.4597
 lon = -6.218
 kind = "monastery"
@@ -225,6 +245,7 @@ confidence = "medium"
 [[location]]
 id = "terryglass"
 name = "Tír Dhá Ghlas"
+name_en = "Terryglass"
 lat = 53.0517
 lon = -8.2
 kind = "monastery"
@@ -236,6 +257,7 @@ confidence = "high"
 [[location]]
 id = "birr"
 name = "Biorra"
+name_en = "Birr"
 lat = 53.0956
 lon = -7.9101
 kind = "monastery"
@@ -247,6 +269,7 @@ confidence = "medium"
 [[location]]
 id = "seirkieran"
 name = "Saighir Chiaráin"
+name_en = "Seirkieran"
 lat = 53.048
 lon = -7.805
 kind = "monastery"
@@ -258,6 +281,7 @@ confidence = "medium"
 [[location]]
 id = "roscrea"
 name = "Ros Cré"
+name_en = "Roscrea"
 lat = 52.9529
 lon = -7.7985
 kind = "monastery"
@@ -269,6 +293,7 @@ confidence = "high"
 [[location]]
 id = "lorrha"
 name = "Lothra"
+name_en = "Lorrha"
 lat = 53.0925
 lon = -8.1218
 kind = "monastery"
@@ -280,6 +305,7 @@ confidence = "high"
 [[location]]
 id = "mungret"
 name = "Mungairit"
+name_en = "Mungret"
 lat = 52.6325
 lon = -8.695
 kind = "monastery"
@@ -291,6 +317,7 @@ confidence = "medium"
 [[location]]
 id = "ardfert"
 name = "Ard Fhearta"
+name_en = "Ardfert"
 lat = 52.3295
 lon = -9.7831
 kind = "monastery"
@@ -302,6 +329,7 @@ confidence = "high"
 [[location]]
 id = "inisfallen"
 name = "Inis Faithlinn"
+name_en = "Innisfallen Island"
 lat = 52.047
 lon = -9.537
 kind = "monastery"
@@ -313,6 +341,7 @@ confidence = "high"
 [[location]]
 id = "cloyne"
 name = "Cluain"
+name_en = "Cloyne"
 lat = 51.8625
 lon = -8.1222
 kind = "monastery"
@@ -324,6 +353,7 @@ confidence = "high"
 [[location]]
 id = "ardmore"
 name = "Aird Mhór"
+name_en = "Ardmore"
 lat = 51.9483
 lon = -7.7262
 kind = "monastery"
@@ -335,6 +365,7 @@ confidence = "high"
 [[location]]
 id = "ferns"
 name = "Fearna"
+name_en = "Ferns"
 lat = 52.59
 lon = -6.498
 kind = "monastery"
@@ -346,6 +377,7 @@ confidence = "high"
 [[location]]
 id = "taghmon"
 name = "Teach Munna"
+name_en = "Taghmon"
 lat = 52.3203
 lon = -6.6488
 kind = "monastery"
@@ -357,6 +389,7 @@ confidence = "high"
 [[location]]
 id = "aghaboe"
 name = "Achadh Bhó"
+name_en = "Aghaboe"
 lat = 52.92
 lon = -7.5105
 kind = "monastery"
@@ -368,6 +401,7 @@ confidence = "high"
 [[location]]
 id = "old_leighlin"
 name = "Seanleithghlinn"
+name_en = "Old Leighlin"
 lat = 52.7365
 lon = -7.0253
 kind = "monastery"
@@ -379,6 +413,7 @@ confidence = "high"
 [[location]]
 id = "clonenagh"
 name = "Cluain Eidhneach"
+name_en = "Clonenagh"
 lat = 53.011
 lon = -7.421
 kind = "monastery"
@@ -390,6 +425,7 @@ confidence = "medium"
 [[location]]
 id = "slane"
 name = "Baile Shláine"
+name_en = "Slane"
 lat = 53.709
 lon = -6.544
 kind = "monastery"
@@ -401,6 +437,7 @@ confidence = "medium"
 [[location]]
 id = "duleek"
 name = "Damhliag"
+name_en = "Duleek"
 lat = 53.6554
 lon = -6.4203
 kind = "monastery"
@@ -412,6 +449,7 @@ confidence = "high"
 [[location]]
 id = "trim"
 name = "Baile Átha Troim"
+name_en = "Trim"
 lat = 53.5548
 lon = -6.792
 kind = "monastery"
@@ -423,6 +461,7 @@ confidence = "medium"
 [[location]]
 id = "louth"
 name = "Lú"
+name_en = "Louth"
 lat = 53.954
 lon = -6.54
 kind = "monastery"
@@ -434,6 +473,7 @@ confidence = "high"
 [[location]]
 id = "dromiskin"
 name = "Droim Ineasclainn"
+name_en = "Dromiskin"
 lat = 53.9216
 lon = -6.3986
 kind = "monastery"
@@ -445,6 +485,7 @@ confidence = "medium"
 [[location]]
 id = "dunleer"
 name = "Lann Léire"
+name_en = "Dunleer"
 lat = 53.83
 lon = -6.395
 kind = "monastery"
@@ -456,6 +497,7 @@ confidence = "medium"
 [[location]]
 id = "fore"
 name = "Baile Fhobhair"
+name_en = "Fore"
 lat = 53.6822
 lon = -7.2265
 kind = "monastery"
@@ -467,6 +509,7 @@ confidence = "high"
 [[location]]
 id = "clones"
 name = "Cluain Eois"
+name_en = "Clones"
 lat = 54.179
 lon = -7.233
 kind = "monastery"
@@ -478,6 +521,7 @@ confidence = "high"
 [[location]]
 id = "devenish"
 name = "Daimhinis"
+name_en = "Devenish Island"
 lat = 54.37
 lon = -7.665
 kind = "monastery"
@@ -489,6 +533,7 @@ confidence = "high"
 [[location]]
 id = "ardstraw"
 name = "Ard Sratha"
+name_en = "Ardstraw"
 lat = 54.736
 lon = -7.414
 kind = "monastery"
@@ -500,6 +545,7 @@ confidence = "medium"
 [[location]]
 id = "raphoe"
 name = "Ráth Bhoth"
+name_en = "Raphoe"
 lat = 54.874
 lon = -7.599
 kind = "monastery"
@@ -511,6 +557,7 @@ confidence = "medium"
 [[location]]
 id = "fahan"
 name = "Fathain"
+name_en = "Fahan"
 lat = 55.0831
 lon = -7.4608
 kind = "monastery"
@@ -522,6 +569,7 @@ confidence = "low"
 [[location]]
 id = "carndonagh"
 name = "Carn Domhnach"
+name_en = "Carndonagh"
 lat = 55.2499
 lon = -7.272
 kind = "monastery"
@@ -533,6 +581,7 @@ confidence = "low"
 [[location]]
 id = "drumcliff"
 name = "Droim Chliabh"
+name_en = "Drumcliff"
 lat = 54.3263
 lon = -8.4955
 kind = "monastery"
@@ -544,6 +593,7 @@ confidence = "medium"
 [[location]]
 id = "cong"
 name = "Conga"
+name_en = "Cong"
 lat = 53.5405
 lon = -9.2853
 kind = "monastery"
@@ -555,6 +605,7 @@ confidence = "medium"
 [[location]]
 id = "mayo"
 name = "Maigh Eo"
+name_en = "Mayo"
 lat = 53.7738
 lon = -9.102
 kind = "monastery"
@@ -566,6 +617,7 @@ confidence = "high"
 [[location]]
 id = "tuam"
 name = "Tuaim"
+name_en = "Tuam"
 lat = 53.515
 lon = -8.854
 kind = "monastery"
@@ -577,6 +629,7 @@ confidence = "medium"
 [[location]]
 id = "annaghdown"
 name = "Eanach Dhúin"
+name_en = "Annaghdown"
 lat = 53.3875
 lon = -9.073
 kind = "monastery"
@@ -588,6 +641,7 @@ confidence = "medium"
 [[location]]
 id = "kilmacduagh"
 name = "Cill Mhic Duach"
+name_en = "Kilmacduagh"
 lat = 53.0505
 lon = -8.8879
 kind = "monastery"
@@ -599,6 +653,7 @@ confidence = "high"
 [[location]]
 id = "killeany"
 name = "Cill Éinne"
+name_en = "Killeany"
 lat = 53.1066
 lon = -9.6633
 kind = "monastery"
@@ -610,6 +665,7 @@ confidence = "medium"
 [[location]]
 id = "inishbofin"
 name = "Inis Bó Finne"
+name_en = "Inishbofin"
 lat = 53.6153
 lon = -10.1912
 kind = "monastery"
@@ -621,6 +677,7 @@ confidence = "medium"
 [[location]]
 id = "tory"
 name = "Toraigh"
+name_en = "Tory Island"
 lat = 55.265
 lon = -8.233
 kind = "monastery"
@@ -632,6 +689,7 @@ confidence = "low"
 [[location]]
 id = "roscommon"
 name = "Ros Comáin"
+name_en = "Roscommon"
 lat = 53.6315
 lon = -8.189
 kind = "monastery"
@@ -643,6 +701,7 @@ confidence = "medium"
 [[location]]
 id = "elphin"
 name = "Ail Finn"
+name_en = "Elphin"
 lat = 53.8502
 lon = -8.1978
 kind = "monastery"
@@ -654,6 +713,7 @@ confidence = "medium"
 [[location]]
 id = "ardagh"
 name = "Ardach"
+name_en = "Ardagh"
 lat = 53.668
 lon = -7.694
 kind = "monastery"
@@ -665,6 +725,7 @@ confidence = "medium"
 [[location]]
 id = "scattery"
 name = "Inis Cathaigh"
+name_en = "Scattery Island"
 lat = 52.613
 lon = -9.518
 kind = "monastery"
@@ -676,6 +737,7 @@ confidence = "high"
 [[location]]
 id = "nendrum"
 name = "Naondroim"
+name_en = "Nendrum Monastery"
 lat = 54.5025
 lon = -5.656
 kind = "monastery"
@@ -687,6 +749,7 @@ confidence = "high"
 [[location]]
 id = "connor"
 name = "Coinnire"
+name_en = "Connor"
 lat = 54.8
 lon = -6.295
 kind = "monastery"
@@ -698,6 +761,7 @@ confidence = "low"
 [[location]]
 id = "antrim"
 name = "Aontroim"
+name_en = "Antrim"
 lat = 54.7246
 lon = -6.2108
 kind = "monastery"
@@ -709,6 +773,7 @@ confidence = "medium"
 [[location]]
 id = "saul"
 name = "Sabhall"
+name_en = "Saul"
 lat = 54.343
 lon = -5.675
 kind = "monastery"
@@ -720,6 +785,7 @@ confidence = "medium"
 [[location]]
 id = "dromore"
 name = "Droim Mór"
+name_en = "Dromore"
 lat = 54.4148
 lon = -6.15
 kind = "monastery"
@@ -731,6 +797,7 @@ confidence = "medium"
 [[location]]
 id = "clondalkin"
 name = "Cluain Dolcáin"
+name_en = "Clondalkin"
 lat = 53.3213
 lon = -6.3955
 kind = "monastery"
@@ -742,6 +809,7 @@ confidence = "medium"
 [[location]]
 id = "rahan"
 name = "Raithean"
+name_en = "Rahan"
 lat = 53.2793
 lon = -7.6115
 kind = "monastery"
@@ -753,6 +821,7 @@ confidence = "medium"
 [[location]]
 id = "killeigh"
 name = "Cill Aichidh"
+name_en = "Killeigh"
 lat = 53.219
 lon = -7.444
 kind = "monastery"
@@ -764,6 +833,7 @@ confidence = "medium"
 [[location]]
 id = "lemanaghan"
 name = "Liath Mancháin"
+name_en = "Lemanaghan"
 lat = 53.293
 lon = -7.765
 kind = "monastery"
@@ -775,6 +845,7 @@ confidence = "medium"
 [[location]]
 id = "killala"
 name = "Cill Ala"
+name_en = "Killala"
 lat = 54.213
 lon = -9.22
 kind = "monastery"
@@ -786,6 +857,7 @@ confidence = "medium"
 [[location]]
 id = "ross_carbery"
 name = "Ros Ó gCairbre"
+name_en = "Rosscarbery"
 lat = 51.577
 lon = -9.034
 kind = "monastery"
@@ -797,6 +869,7 @@ confidence = "medium"
 [[location]]
 id = "ahenny"
 name = "Áth Eine"
+name_en = "Ahenny"
 lat = 52.4125
 lon = -7.3933
 kind = "monastery"
@@ -808,6 +881,7 @@ confidence = "low"
 [[location]]
 id = "st_mullins"
 name = "Tigh Moling"
+name_en = "St Mullin's"
 lat = 52.4856
 lon = -6.9259
 kind = "monastery"
@@ -819,6 +893,7 @@ confidence = "medium"
 [[location]]
 id = "tara"
 name = "Teamhair"
+name_en = "Tara"
 lat = 53.5797
 lon = -6.6118
 kind = "ceremonial_ground"
@@ -830,6 +905,7 @@ confidence = "high"
 [[location]]
 id = "cashel"
 name = "Caiseal"
+name_en = "Cashel"
 lat = 52.52
 lon = -7.8906
 kind = "cashel"
@@ -841,6 +917,7 @@ confidence = "high"
 [[location]]
 id = "rathcroghan"
 name = "Ráth Cruachan"
+name_en = "Rathcroghan"
 lat = 53.802
 lon = -8.304
 kind = "ceremonial_ground"
@@ -852,6 +929,7 @@ confidence = "medium"
 [[location]]
 id = "ailech"
 name = "Grianán Ailigh"
+name_en = "Grianan of Aileach"
 lat = 55.0243
 lon = -7.4277
 kind = "cashel"
@@ -863,6 +941,7 @@ confidence = "medium"
 [[location]]
 id = "naas"
 name = "An Nás"
+name_en = "Naas"
 lat = 53.2203
 lon = -6.663
 kind = "ringfort"
@@ -874,6 +953,7 @@ confidence = "medium"
 [[location]]
 id = "downpatrick"
 name = "Dún Pádraig"
+name_en = "Downpatrick"
 lat = 54.33
 lon = -5.7135
 kind = "monastery"
@@ -885,6 +965,7 @@ confidence = "medium"
 [[location]]
 id = "clogher"
 name = "Clochar"
+name_en = "Clogher"
 lat = 54.4112
 lon = -7.1714
 kind = "hillfort"
@@ -896,6 +977,7 @@ confidence = "medium"
 [[location]]
 id = "uisneach"
 name = "Uisneach"
+name_en = "Hill of Uisneach"
 lat = 53.488
 lon = -7.558
 kind = "ceremonial_ground"
@@ -907,6 +989,7 @@ confidence = "medium"
 [[location]]
 id = "knowth"
 name = "Cnóbha"
+name_en = "Knowth"
 lat = 53.7016
 lon = -6.4911
 kind = "ringfort"
@@ -918,6 +1001,7 @@ confidence = "high"
 [[location]]
 id = "lyons_hill"
 name = "Liamhain"
+name_en = "Lyons Hill"
 lat = 53.3
 lon = -6.537
 kind = "ceremonial_ground"
@@ -929,6 +1013,7 @@ confidence = "medium"
 [[location]]
 id = "rathangan"
 name = "Ráth Iomgháin"
+name_en = "Rathangan"
 lat = 53.2175
 lon = -6.9975
 kind = "ringfort"
@@ -940,6 +1025,7 @@ confidence = "medium"
 [[location]]
 id = "knockainey"
 name = "Cnoc Áine"
+name_en = "Knockainy"
 lat = 52.4803
 lon = -8.4787
 kind = "ceremonial_ground"
@@ -951,6 +1037,7 @@ confidence = "medium"
 [[location]]
 id = "bruree"
 name = "Brú Rí"
+name_en = "Bruree"
 lat = 52.425
 lon = -8.66
 kind = "ringfort"
@@ -962,6 +1049,7 @@ confidence = "medium"
 [[location]]
 id = "rathmore"
 name = "An Ráth Mhór"
+name_en = "Rathmore"
 lat = 54.709
 lon = -6.17
 kind = "ringfort"
@@ -973,6 +1061,7 @@ confidence = "low"
 [[location]]
 id = "dunseverick"
 name = "Dún Sobhairce"
+name_en = "Dunseverick"
 lat = 55.2371
 lon = -6.4398
 kind = "promontory_fort"
@@ -995,6 +1084,7 @@ confidence = "low"
 [[location]]
 id = "lagore"
 name = "Loch Gabhair"
+name_en = "Lagore"
 lat = 53.518
 lon = -6.52
 kind = "crannog"
@@ -1006,6 +1096,7 @@ confidence = "low"
 [[location]]
 id = "moynagh"
 name = "Maigh nEach"
+name_en = "Moynagh"
 lat = 53.8172
 lon = -6.7588
 kind = "crannog"
@@ -1019,6 +1110,7 @@ confidence = "medium"
 [[location]]
 id = "croaghan_hill"
 name = "Cruachán Maige Ítha"
+name_en = "Croaghan Hill"
 lat = 54.824
 lon = -7.535
 kind = "hillfort"
@@ -1030,6 +1122,7 @@ confidence = "low"
 [[location]]
 id = "gowran"
 name = "Belach Gabráin"
+name_en = "Gowran"
 lat = 52.628
 lon = -7.067
 kind = "ringfort"
@@ -1041,6 +1134,7 @@ confidence = "low"
 [[location]]
 id = "mullaghmast"
 name = "Maistiu"
+name_en = "Mullamast"
 lat = 53.010
 lon = -6.852
 kind = "ringfort"
@@ -1052,6 +1146,7 @@ confidence = "medium"
 [[location]]
 id = "locha_lein"
 name = "Loch Léin"
+name_en = "Lough Leane"
 lat = 52.040
 lon = -9.530
 kind = "ringfort"
@@ -1063,6 +1158,7 @@ confidence = "low"
 [[location]]
 id = "ui_maine_seat"
 name = "Dún Imghain"
+name_en = "Dunamon"
 lat = 53.632
 lon = -8.319
 kind = "ringfort"
@@ -1074,6 +1170,7 @@ confidence = "low"
 [[location]]
 id = "tailtiu"
 name = "Tailtiu"
+name_en = "Teltown"
 lat = 53.698
 lon = -6.760
 kind = "ceremonial_ground"
@@ -1107,6 +1204,7 @@ confidence = "low"
 [[location]]
 id = "ui_echach_seat"
 name = "Cnoc Uí Echach"
+name_en = "Knock Iveagh"
 lat = 54.270
 lon = -6.190
 kind = "ringfort"
@@ -1118,6 +1216,7 @@ confidence = "low"
 [[location]]
 id = "aidne_seat"
 name = "Dúrlas Guaire"
+name_en = "Rath Durlais"
 lat = 53.1435
 lon = -8.9247
 kind = "ringfort"
@@ -1129,6 +1228,7 @@ confidence = "low"
 [[location]]
 id = "inchbofin"
 name = "Inis Bó Finne (Loch Rí)"
+name_en = "Inchbofin"
 lat = 53.54
 lon = -7.917
 kind = "monastery"
@@ -1140,6 +1240,7 @@ confidence = "medium"
 [[location]]
 id = "inchcleraun"
 name = "Inis Clothrann"
+name_en = "Inchcleraun"
 lat = 53.582
 lon = -8.007
 kind = "monastery"
@@ -1151,6 +1252,7 @@ confidence = "medium"
 [[location]]
 id = "rechru"
 name = "Reachrainn"
+name_en = "Lambay Island"
 lat = 53.4906
 lon = -6.0145
 kind = "monastery"
@@ -1162,6 +1264,7 @@ confidence = "low"
 [[location]]
 id = "inis_patraic"
 name = "Inis Pádraig"
+name_en = "St Patrick's Island"
 lat = 53.5844
 lon = -6.0761
 kind = "monastery"
@@ -1173,6 +1276,7 @@ confidence = "medium"
 [[location]]
 id = "inishmacsaint"
 name = "Inis Mac Saint"
+name_en = "Innishmacsaint"
 lat = 54.4355
 lon = -7.7455
 kind = "monastery"
@@ -1184,6 +1288,7 @@ confidence = "low"
 [[location]]
 id = "inishkeel"
 name = "Inis Caoil"
+name_en = "Inishkeel"
 lat = 54.8475
 lon = -8.4512
 kind = "monastery"
@@ -1195,6 +1300,7 @@ confidence = "medium"
 [[location]]
 id = "white_island"
 name = "An tOileán Bán"
+name_en = "White Island"
 lat = 54.4888
 lon = -7.7362
 kind = "monastery"
@@ -1206,6 +1312,7 @@ confidence = "low"
 [[location]]
 id = "hare_island"
 name = "Inis Ainghin"
+name_en = "Hareisland"
 lat = 53.471
 lon = -7.93
 kind = "monastery"
@@ -1228,6 +1335,7 @@ confidence = "low"
 [[location]]
 id = "church_island_valentia"
 name = "Oileán an Teampaill (Dairbhre)"
+name_en = "Church Island - Valentia Harbour"
 lat = 51.9376
 lon = -10.2833
 kind = "monastery"
@@ -1239,6 +1347,7 @@ confidence = "medium"
 [[location]]
 id = "illaunloughan"
 name = "Oileán Leacháin"
+name_en = "Illaunloughan"
 lat = 51.8866
 lon = -10.3734
 kind = "monastery"
@@ -1250,6 +1359,7 @@ confidence = "medium"
 [[location]]
 id = "inishkea_north"
 name = "Inis Gé Thuaidh"
+name_en = "Inishkea North"
 lat = 54.134
 lon = -10.197
 kind = "monastery"
@@ -1261,6 +1371,7 @@ confidence = "low"
 [[location]]
 id = "inishglora"
 name = "Inis Gluaire"
+name_en = "Inishglora"
 lat = 54.21
 lon = -10.128
 kind = "monastery"
@@ -1272,6 +1383,7 @@ confidence = "low"
 [[location]]
 id = "church_island_currane"
 name = "Oileán an Teampaill (Loch Luíoch)"
+name_en = "Church Island - Lough Currane"
 lat = 51.8349
 lon = -10.1293
 kind = "monastery"
@@ -1283,6 +1395,7 @@ confidence = "low"
 [[location]]
 id = "spike_island"
 name = "Inis Píc"
+name_en = "Spike Island"
 lat = 51.835
 lon = -8.285
 kind = "monastery"
@@ -1305,6 +1418,7 @@ confidence = "low"
 [[location]]
 id = "granard"
 name = "Gránard"
+name_en = "Granard"
 lat = 53.7751
 lon = -7.5006
 kind = "ringfort"
@@ -1350,6 +1464,7 @@ confidence = "low"
 [[location]]
 id = "monaincha"
 name = "Loch Cré"
+name_en = "Monaincha"
 lat = 52.9463
 lon = -7.7482
 kind = "monastery"
@@ -1387,6 +1502,7 @@ confidence = "medium"
 [[location]]
 id = "emain_macha"
 name = "Emain Macha"
+name_en = "Navan Fort"
 lat = 54.348
 lon = -6.697
 kind = "ceremonial_ground"
@@ -1398,6 +1514,7 @@ confidence = "high"
 [[location]]
 id = "dun_ailinne"
 name = "Dún Ailinne"
+name_en = "Dun Aillinne"
 lat = 53.115
 lon = -6.776
 kind = "ceremonial_ground"

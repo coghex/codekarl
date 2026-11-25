@@ -58,11 +58,12 @@ local function refresh(state, changed)
   local items = {}
   local row_width = list.row_width(WIDTH, ROWS, #rows) // P
   for i, row in ipairs(rows) do
-    local name = draw.clip(row.name, row_width - 20)
+    local shown = row.label or row.name
+    local name = draw.clip(shown, row_width - 20)
     local cells = {{x=16, align="left", text=name}}
     if row.place ~= nil then
-      local full = draw.clip(row.name .. " · " .. row.place, row_width - 20)
-      local prefix = draw.clip(row.name, row_width - 20)
+      local full = draw.clip(shown .. " · " .. row.place, row_width - 20)
+      local prefix = draw.clip(shown, row_width - 20)
       if full:sub(1, #prefix) == prefix then
         cells[2] = {x=16 + font.layout(prefix).width, align="left", text=full:sub(#prefix + 1), colour=theme.colour("dim")}
       end
@@ -92,6 +93,16 @@ function popup.set_revision(next_revision, next_world)
   local ok, entries = pcall(game.find_entries, next_revision)
   if not ok then popup.close(); return end
   state.entries, state.revision = entries, next_revision
+  refresh(state, false)
+end
+
+-- The place names show differently now (CK-423): the open popup reads its entries again, at the revision it holds, and searches again.
+function popup.relabel()
+  local state = current
+  if state == nil then return end
+  local ok, entries = pcall(game.find_entries, state.revision)
+  if not ok then popup.close(); return end
+  state.entries = entries
   refresh(state, false)
 end
 

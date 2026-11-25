@@ -384,6 +384,102 @@ fn a_real_load_keeps_the_old_worlds_log_readable_while_pinned_then_releases_it_a
     drop((function, cache));
 }
 
+/// CK-423: a life-log entry is saved prose, written with the local place name when the event happened, and the place-name choice never
+/// changes it. A real stored line that names a place with an English name is read under each choice and is the same text, with the local
+/// name, while the same character's role line follows the choice.
+#[test]
+fn a_stored_life_log_line_naming_a_place_keeps_its_text_when_the_place_name_choice_changes() {
+    use crate::{
+        game::{setup::view_builder, view::EconomyView},
+        game_api::{ViewCache, character_log_function, characters_function},
+        place_names::{ENGLISH, LOCAL, PlaceNameSetting},
+    };
+
+    let (_dir, prepared, _) = super::start_768::shipped(7);
+    let state = prepared.simulation.state();
+    let date = prepared.simulation.date().expect("a date");
+    let view: EconomyView = view_builder(prepared.view_wiring())(state, date);
+    // The places whose English name differs from the local one, by local name.
+    let renamed: Vec<(&str, &str)> = prepared
+        .scenario
+        .locations
+        .iter()
+        .filter_map(|location| {
+            let english = location.name_en.as_deref()?;
+            (english != location.name).then_some((location.name.as_str(), english))
+        })
+        .collect();
+    // A stored line of a live character that names one of them.
+    let (id, line, local_name) = state
+        .characters
+        .iter()
+        .find_map(|character| {
+            let lines = view.characters.log_of(character.id).ok()?;
+            lines.iter().find_map(|(_, text)| {
+                renamed
+                    .iter()
+                    .find(|(local, _)| text.contains(local))
+                    .map(|(local, _)| (character.id, text.clone(), (*local).to_owned()))
+            })
+        })
+        .expect("a stored life-log line names a place that has an English name");
+    let cache = Arc::new(ViewCache::default());
+    cache.post(1, Arc::new(view));
+    let names = PlaceNameSetting::default();
+    let log = character_log_function(Arc::clone(&cache));
+    let arguments = [
+        Some(ConfigValue::Integer(i64::try_from(id).expect("a small id"))),
+        Some(ConfigValue::Integer(1)),
+    ];
+    let texts = |function: &ck_lua::HostFunction| -> Vec<String> {
+        let ConfigValue::Array(rows) = &function(&arguments).expect("the log")[0] else {
+            panic!("the log is an array of lines")
+        };
+        rows.iter()
+            .filter_map(|row| match row {
+                ConfigValue::Table(row) => match row.get("text") {
+                    Some(ConfigValue::String(text)) => Some(text.clone()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(names.choice(), ENGLISH);
+    let under_english = texts(&log);
+    names.set(LOCAL);
+    let under_local = texts(&log);
+    assert_eq!(under_english, under_local, "the saved prose is the same");
+    assert!(
+        under_english.contains(&line) && line.contains(&local_name),
+        "the line still names the place by its local name: {line}"
+    );
+    // The role line of the same character does follow the choice.
+    let cards = characters_function(Arc::clone(&cache), names.clone());
+    let role_of = || {
+        let ConfigValue::Array(rows) = &cards(&[Some(ConfigValue::Integer(1))]).expect("cards")[0]
+        else {
+            panic!("an array")
+        };
+        rows.iter()
+            .filter_map(|row| match row {
+                ConfigValue::Table(row) => match row.get("role") {
+                    Some(ConfigValue::String(role)) => Some(role.clone()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let local_roles = role_of();
+    names.set(ENGLISH);
+    let english_roles = role_of();
+    assert_ne!(
+        local_roles, english_roles,
+        "the role lines name places and follow the choice"
+    );
+}
+
 #[test]
 #[expect(
     clippy::too_many_lines,
@@ -463,11 +559,26 @@ fn the_shipped_start_shows_niall_frossachs_noble_pop_at_ailech_and_his_stored_li
         Some(ConfigValue::Integer(id)),
         Some(ConfigValue::Integer(1)),
     ];
-    let cards =
-        characters_function(Arc::clone(&cache))(&[Some(ConfigValue::Integer(1))]).expect("cards");
-    let record = character_function(Arc::clone(&cache))(&arguments).expect("his record");
-    let pop_answer = character_pop_function(Arc::clone(&cache))(&arguments).expect("his pop");
-    let place = place_function(Arc::clone(&cache), places)(&[
+    let cards = characters_function(
+        Arc::clone(&cache),
+        crate::place_names::PlaceNameSetting::default(),
+    )(&[Some(ConfigValue::Integer(1))])
+    .expect("cards");
+    let record = character_function(
+        Arc::clone(&cache),
+        crate::place_names::PlaceNameSetting::default(),
+    )(&arguments)
+    .expect("his record");
+    let pop_answer = character_pop_function(
+        Arc::clone(&cache),
+        crate::place_names::PlaceNameSetting::default(),
+    )(&arguments)
+    .expect("his pop");
+    let place = place_function(
+        Arc::clone(&cache),
+        places,
+        crate::place_names::PlaceNameSetting::default(),
+    )(&[
         Some(ConfigValue::String("ailech".to_owned())),
         Some(ConfigValue::Integer(1)),
     ])

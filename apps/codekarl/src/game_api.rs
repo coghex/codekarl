@@ -38,6 +38,7 @@ use crate::game::core::{SaveCall, SaveReply};
 use crate::game::saves::Entry;
 use crate::game::slot::{PauseReason, SimSnapshot};
 use crate::game::view::{BuildingView, EconomyView, PlaceView, PopView};
+use crate::place_names::PlaceNameSetting;
 use crate::vm::UI_CALL_LIMIT;
 use ck_economy::genetics::{ATTRIBUTES, HUMOURS};
 use ck_economy::personality::{MANNER_PAIRS, VICE_PAIRS};
@@ -426,10 +427,20 @@ pub(crate) fn select_arguments(selection: &crate::map_app::Selection) -> Vec<Con
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Place {
     pub(crate) id: String,
+    /// The local (native) name.
     pub(crate) name: String,
+    /// The English name, when the place has an established one (CK-423).
+    pub(crate) name_en: Option<String>,
     pub(crate) kind: String,
     pub(crate) size: u8,
     pub(crate) abandoned: bool,
+}
+
+impl Place {
+    /// The name the player's choice shows for this place.
+    fn shown<'a>(&'a self, names: &PlaceNameSetting) -> &'a str {
+        names.shown(&self.name, self.name_en.as_deref())
+    }
 }
 
 /// The scenario's locations in file order, with the kind's id and the authored size, exactly as the map reports them to
@@ -441,6 +452,7 @@ pub(crate) fn places_of(scenario: &ck_map::Scenario) -> Vec<Place> {
         .map(|location| Place {
             id: location.id.clone(),
             name: location.name.clone(),
+            name_en: location.name_en.clone(),
             kind: scenario.location_kinds.kinds[location.kind_index]
                 .id
                 .clone(),
@@ -450,22 +462,40 @@ pub(crate) fn places_of(scenario: &ck_map::Scenario) -> Vec<Place> {
         .collect()
 }
 
-/// `game.places()`: the scenario's locations in file order, as an array of `{id, name, kind, size}`. It is read-only scenario
-/// data (no simulation state, no new delivery); it takes no arguments.
-pub(crate) fn places_function(places: Vec<Place>) -> HostFunction {
-    let table = ConfigValue::Array(
-        places
-            .into_iter()
+/// `game.places()`: the scenario's locations in file order, as an array of `{id, name, local_name, english_name, kind, size}`. `name`
+/// is the name the player's choice shows (CK-423): under English the place's English name, or its local one when it has none, and
+/// under local its local name; `local_name` is always the local name and `english_name` is present only when the place has one. It is read-only scenario
+/// data (no simulation state, no new delivery); it takes no arguments and reads the choice at each call.
+pub(crate) fn places_function(places: Vec<Place>, names: PlaceNameSetting) -> HostFunction {
+    Arc::new(move |arguments| {
+        if !arguments.is_empty() {
+            return Err("game.places: takes no arguments".to_owned());
+        }
+        let rows = places
+            .iter()
             .map(|place| {
                 let mut fields = BTreeMap::from([
-                    ("id".to_owned(), ConfigValue::String(place.id)),
-                    ("name".to_owned(), ConfigValue::String(place.name)),
-                    ("kind".to_owned(), ConfigValue::String(place.kind)),
+                    ("id".to_owned(), ConfigValue::String(place.id.clone())),
+                    (
+                        "name".to_owned(),
+                        ConfigValue::String(place.shown(&names).to_owned()),
+                    ),
+                    (
+                        "local_name".to_owned(),
+                        ConfigValue::String(place.name.clone()),
+                    ),
+                    ("kind".to_owned(), ConfigValue::String(place.kind.clone())),
                     (
                         "size".to_owned(),
                         ConfigValue::Integer(i64::from(place.size)),
                     ),
                 ]);
+                if let Some(english) = &place.name_en {
+                    fields.insert(
+                        "english_name".to_owned(),
+                        ConfigValue::String(english.clone()),
+                    );
+                }
                 if place.abandoned {
                     fields.insert(
                         "state".to_owned(),
@@ -474,13 +504,8 @@ pub(crate) fn places_function(places: Vec<Place>) -> HostFunction {
                 }
                 ConfigValue::Table(fields)
             })
-            .collect(),
-    );
-    Arc::new(move |arguments| {
-        if !arguments.is_empty() {
-            return Err("game.places: takes no arguments".to_owned());
-        }
-        Ok(vec![table.clone()])
+            .collect();
+        Ok(vec![ConfigValue::Array(rows)])
     })
 }
 
@@ -489,6 +514,7 @@ pub(crate) fn find_entries_function(
     cache: Arc<ViewCache>,
     places: Vec<Place>,
     rivers: Vec<(String, String)>,
+    names: PlaceNameSetting,
 ) -> HostFunction {
     Arc::new(move |arguments| {
         let [Some(ConfigValue::Integer(revision))] = arguments else {
@@ -499,11 +525,18 @@ pub(crate) fn find_entries_function(
         let view = cache.get_in_world("game.find_entries", revision)?;
         let mut rows = Vec::new();
         for place in &places {
-            rows.push(table([
+            let mut row = table([
                 ("kind", text("location")),
                 ("id", text(&place.id)),
-                ("name", text(&place.name)),
-            ]));
+                ("name", text(place.shown(&names))),
+            ]);
+            // The name the choice does not show, so a search matches both whichever is shown (CK-423).
+            if let (ConfigValue::Table(fields), Some(other)) =
+                (&mut row, names.other(&place.name, place.name_en.as_deref()))
+            {
+                fields.insert("other".to_owned(), text(other));
+            }
+            rows.push(row);
         }
         for card in &view.characters.cards {
             let name = if card.epithet.is_empty() {
@@ -514,7 +547,7 @@ pub(crate) fn find_entries_function(
             let place = places
                 .iter()
                 .find(|p| p.id == card.place)
-                .map_or("", |p| p.name.as_str());
+                .map_or("", |p| p.shown(&names));
             rows.push(table([
                 ("kind", text("character")),
                 ("id", integer(card.id)),
@@ -564,7 +597,11 @@ pub(crate) fn set_map_mode_function(modes: Arc<crate::map_modes::MapModes>) -> H
 }
 
 /// The immutable event rows belonging to a delivered revision.
-pub(crate) fn events_function(cache: Arc<ViewCache>, places: Vec<Place>) -> HostFunction {
+pub(crate) fn events_function(
+    cache: Arc<ViewCache>,
+    places: Vec<Place>,
+    names: PlaceNameSetting,
+) -> HostFunction {
     Arc::new(move |arguments| {
         let [Some(ConfigValue::Integer(revision))] = arguments else {
             return Err("game.events: expected a revision".to_owned());
@@ -619,8 +656,9 @@ pub(crate) fn events_function(cache: Arc<ViewCache>, places: Vec<Place>) -> Host
                             let name = places
                                 .iter()
                                 .find(|p| p.id == *place)
-                                .map_or(place, |p| &p.name);
-                            fields.insert("place".into(), ConfigValue::String(name.clone()));
+                                .map_or(place.as_str(), |p| p.shown(&names));
+                            fields.insert("place".into(), ConfigValue::String(name.to_owned()));
+                            fields.insert("place_id".into(), ConfigValue::String(place.clone()));
                         }
                     }
                     ConfigValue::Table(fields)
@@ -1152,7 +1190,11 @@ fn add_temperature(result: &mut ConfigValue, temperature: Option<(i64, u8, i64)>
 
 /// `game.place(id, revision)`: the economy view of the place `id` at `revision`, from the cache and never from live state. It
 /// refuses, by name, a revision that is missing or retired, a place the view does not hold and arguments of the wrong kind.
-pub(crate) fn place_function(cache: Arc<ViewCache>, places: Vec<Place>) -> HostFunction {
+pub(crate) fn place_function(
+    cache: Arc<ViewCache>,
+    places: Vec<Place>,
+    names: PlaceNameSetting,
+) -> HostFunction {
     Arc::new(move |arguments| {
         let [
             Some(ConfigValue::String(id)),
@@ -1173,7 +1215,10 @@ pub(crate) fn place_function(cache: Arc<ViewCache>, places: Vec<Place>) -> HostF
             .find(|candidate| candidate.id == *id && candidate.abandoned)
             && let ConfigValue::Table(fields) = &mut result
         {
-            fields.insert("name".to_owned(), ConfigValue::String(meta.name.clone()));
+            fields.insert(
+                "name".to_owned(),
+                ConfigValue::String(meta.shown(&names).to_owned()),
+            );
             fields.insert("kind".to_owned(), ConfigValue::String(meta.kind.clone()));
             fields.insert(
                 "size".to_owned(),
@@ -1189,7 +1234,14 @@ pub(crate) fn place_function(cache: Arc<ViewCache>, places: Vec<Place>) -> HostF
 }
 
 /// The card table of the ledger's Characters tab (CK-375).
-fn card_table(card: &CharacterCard) -> ConfigValue {
+///
+/// The role line names its places as the player's choice shows them (CK-423): both forms are in the view, and the choice is read here.
+fn card_table(card: &CharacterCard, names: &PlaceNameSetting) -> ConfigValue {
+    let role = if names.choice() == crate::place_names::LOCAL {
+        &card.role
+    } else {
+        &card.role_english
+    };
     table([
         ("id", integer(card.id)),
         ("name", text(&card.name)),
@@ -1197,7 +1249,7 @@ fn card_table(card: &CharacterCard) -> ConfigValue {
         ("sex", text(if card.female { "f" } else { "m" })),
         ("age", integer(u64::from(card.age))),
         ("house", text(&card.house)),
-        ("role", text(&card.role)),
+        ("role", text(role)),
         ("place", text(&card.place)),
         ("slot", integer(u64::from(card.slot))),
         ("kind", text(&card.kind)),
@@ -1222,8 +1274,8 @@ fn keyed<'a>(keys: impl Iterator<Item = &'a str>, values: &[i64]) -> ConfigValue
 }
 
 /// The first tab's table of a character (CK-375 §6): its header (as its card) and the values of each section.
-fn character_table(card: &CharacterCard, tab: &FirstTab) -> ConfigValue {
-    let ConfigValue::Table(mut fields) = card_table(card) else {
+fn character_table(card: &CharacterCard, tab: &FirstTab, names: &PlaceNameSetting) -> ConfigValue {
+    let ConfigValue::Table(mut fields) = card_table(card, names) else {
         unreachable!("a card is a table")
     };
     let skills: Vec<i64> = tab.skills.iter().map(|(_, value)| *value).collect();
@@ -1266,7 +1318,7 @@ fn character_table(card: &CharacterCard, tab: &FirstTab) -> ConfigValue {
 }
 
 /// `game.characters(revision)`: the cards of the live characters at `revision`, in id order, from the cache and never from live state.
-pub(crate) fn characters_function(cache: Arc<ViewCache>) -> HostFunction {
+pub(crate) fn characters_function(cache: Arc<ViewCache>, names: PlaceNameSetting) -> HostFunction {
     Arc::new(move |arguments| {
         let [Some(ConfigValue::Integer(revision))] = arguments else {
             return Err("game.characters: expected a revision".to_owned());
@@ -1275,14 +1327,18 @@ pub(crate) fn characters_function(cache: Arc<ViewCache>) -> HostFunction {
             .map_err(|_| format!("game.characters: revision {revision} is missing"))?;
         let view = cache.get_for("game.characters", revision)?;
         Ok(vec![ConfigValue::Array(
-            view.characters.cards.iter().map(card_table).collect(),
+            view.characters
+                .cards
+                .iter()
+                .map(|card| card_table(card, &names))
+                .collect(),
         )])
     })
 }
 
 /// `game.character(id, revision)`: the first-tab record of the character `id` at `revision`. An unknown id (not live at that revision) and a
 /// revision that is missing or retired are refusals the UI shows nowhere.
-pub(crate) fn character_function(cache: Arc<ViewCache>) -> HostFunction {
+pub(crate) fn character_function(cache: Arc<ViewCache>, names: PlaceNameSetting) -> HostFunction {
     Arc::new(move |arguments| {
         let [
             Some(ConfigValue::Integer(id)),
@@ -1300,7 +1356,7 @@ pub(crate) fn character_function(cache: Arc<ViewCache>) -> HostFunction {
         });
         let (card, tab) = found
             .ok_or_else(|| format!("game.character: no character {id} at revision {revision}"))?;
-        Ok(vec![character_table(card, tab)])
+        Ok(vec![character_table(card, tab, &names)])
     })
 }
 
@@ -1356,18 +1412,23 @@ fn person_table(person: &Person) -> ConfigValue {
     ConfigValue::Table(fields)
 }
 
-fn passion_table(passion: &PassionLine) -> ConfigValue {
+fn passion_table(passion: &PassionLine, names: &PlaceNameSetting) -> ConfigValue {
+    let name = if names.choice() == crate::place_names::LOCAL {
+        &passion.name
+    } else {
+        &passion.name_english
+    };
     table([
         ("kind", text(passion.kind)),
         ("strength", integer(u64::from(passion.strength))),
         ("target_kind", text(passion.target_kind)),
         ("key", text(&passion.key)),
-        ("name", text(&passion.name)),
+        ("name", text(name)),
     ])
 }
 
 /// The relations record of a character as the table `game.character_relations` returns.
-fn relations_table(id: u64, record: &Relations) -> ConfigValue {
+fn relations_table(id: u64, record: &Relations, names: &PlaceNameSetting) -> ConfigValue {
     let people = |people: &[Person]| ConfigValue::Array(people.iter().map(person_table).collect());
     let ConfigValue::Table(mut fields) = table([
         ("id", integer(id)),
@@ -1384,7 +1445,13 @@ fn relations_table(id: u64, record: &Relations) -> ConfigValue {
         ("others", people(&record.others)),
         (
             "passions",
-            ConfigValue::Array(record.passions.iter().map(passion_table).collect()),
+            ConfigValue::Array(
+                record
+                    .passions
+                    .iter()
+                    .map(|passion| passion_table(passion, names))
+                    .collect(),
+            ),
         ),
     ]) else {
         unreachable!("a table is a table")
@@ -1400,7 +1467,10 @@ fn relations_table(id: u64, record: &Relations) -> ConfigValue {
 
 /// `game.character_relations(id, revision)`: the relations record of the live character `id` at `revision`, built on request from what that
 /// revision's view carries. An id not live at that revision, and a revision that is missing or retired, are refusals.
-pub(crate) fn character_relations_function(cache: Arc<ViewCache>) -> HostFunction {
+pub(crate) fn character_relations_function(
+    cache: Arc<ViewCache>,
+    names: PlaceNameSetting,
+) -> HostFunction {
     Arc::new(move |arguments| {
         let [
             Some(ConfigValue::Integer(id)),
@@ -1420,14 +1490,17 @@ pub(crate) fn character_relations_function(cache: Arc<ViewCache>) -> HostFunctio
         let record = view.characters.relations_of(id).map_err(|_| {
             format!("game.character_relations: no character {id} at revision {revision}")
         })?;
-        Ok(vec![relations_table(id, &record)])
+        Ok(vec![relations_table(id, &record, &names)])
     })
 }
 
 /// `game.character_pop(id, revision)`: the pop the live character `id` belongs to at `revision` (its exact place and slot) and the live characters
 /// of that pop at that revision, most important first, each as its card (CK-378 §1). An id not live at that revision, and a revision that is
 /// missing or retired, are refusals.
-pub(crate) fn character_pop_function(cache: Arc<ViewCache>) -> HostFunction {
+pub(crate) fn character_pop_function(
+    cache: Arc<ViewCache>,
+    names: PlaceNameSetting,
+) -> HostFunction {
     Arc::new(move |arguments| {
         let [
             Some(ConfigValue::Integer(id)),
@@ -1450,7 +1523,7 @@ pub(crate) fn character_pop_function(cache: Arc<ViewCache>) -> HostFunction {
             .pop_members(&card.place, card.slot)
             .iter()
             .filter_map(|member| view.characters.card(*member))
-            .map(card_table)
+            .map(|member| card_table(member, &names))
             .collect();
         Ok(vec![table([
             ("place", text(&card.place)),
@@ -1889,6 +1962,7 @@ mod tests {
         let places = vec![Place {
             id: "ailech".into(),
             name: "Grianán Ailigh".into(),
+            name_en: None,
             kind: "town".into(),
             size: 1,
             abandoned: false,
@@ -1897,6 +1971,7 @@ mod tests {
             Arc::clone(&cache),
             places,
             vec![("erne".into(), "Erne".into())],
+            PlaceNameSetting::default(),
         );
         let entries = find(&[Some(ConfigValue::Integer(1))]).unwrap();
         let ConfigValue::Array(rows) = &entries[0] else {
@@ -1917,6 +1992,198 @@ mod tests {
         cache.post(2, view_with(1));
         cache.note_world(2, 1);
         assert!(find(&[Some(ConfigValue::Integer(1))]).is_err());
+    }
+
+    /// A place with its local name and, perhaps, an English one.
+    fn named_place(id: &str, local: &str, english: Option<&str>) -> Place {
+        Place {
+            id: id.into(),
+            name: local.into(),
+            name_en: english.map(Into::into),
+            kind: "monastery".into(),
+            size: 1,
+            abandoned: false,
+        }
+    }
+
+    fn field<'a>(row: &'a ConfigValue, key: &str) -> Option<&'a str> {
+        let ConfigValue::Table(fields) = row else {
+            panic!("a table")
+        };
+        match fields.get(key) {
+            Some(ConfigValue::String(value)) => Some(value),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn game_places_gives_the_shown_name_by_the_choice_each_time_it_is_called() {
+        let places = vec![
+            named_place("birr", "Biorra", Some("Birr")),
+            named_place("emain_macha", "Emain Macha", None),
+        ];
+        let names = PlaceNameSetting::default();
+        let function = places_function(places, names.clone());
+        let rows = |function: &HostFunction| {
+            let ConfigValue::Array(rows) = function(&[]).unwrap().remove(0) else {
+                panic!("an array")
+            };
+            rows
+        };
+        // English, the default: the English name, and the local one where there is none.
+        let english = rows(&function);
+        assert_eq!(field(&english[0], "name"), Some("Birr"));
+        assert_eq!(field(&english[0], "local_name"), Some("Biorra"));
+        assert_eq!(field(&english[0], "english_name"), Some("Birr"));
+        assert_eq!(field(&english[1], "name"), Some("Emain Macha"));
+        assert_eq!(field(&english[1], "english_name"), None);
+        // The same function, called again after the choice changed: no restart, no rebuilt function.
+        names.set(crate::place_names::LOCAL);
+        let local = rows(&function);
+        assert_eq!(field(&local[0], "name"), Some("Biorra"));
+        assert_eq!(field(&local[1], "name"), Some("Emain Macha"));
+        assert_eq!(field(&local[0], "id"), Some("birr"));
+    }
+
+    #[test]
+    fn find_entries_carry_the_shown_name_and_the_other_one_under_either_choice() {
+        let cache = Arc::new(ViewCache::default());
+        let mut view = EconomyView::default();
+        view.characters.cards.push(CharacterCard {
+            id: 7,
+            name: "Máel".to_owned(),
+            place: "birr".to_owned(),
+            ..CharacterCard::default()
+        });
+        cache.post(1, Arc::new(view));
+        cache.note_world(1, 0);
+        let names = PlaceNameSetting::default();
+        let find = find_entries_function(
+            Arc::clone(&cache),
+            vec![
+                named_place("birr", "Biorra", Some("Birr")),
+                named_place("emain_macha", "Emain Macha", None),
+            ],
+            Vec::new(),
+            names.clone(),
+        );
+        let entries = |find: &HostFunction| {
+            let ConfigValue::Array(rows) =
+                find(&[Some(ConfigValue::Integer(1))]).unwrap().remove(0)
+            else {
+                panic!("an array")
+            };
+            rows
+        };
+        let english = entries(&find);
+        assert_eq!(field(&english[0], "name"), Some("Birr"));
+        assert_eq!(field(&english[0], "other"), Some("Biorra"));
+        assert_eq!(field(&english[1], "name"), Some("Emain Macha"));
+        assert_eq!(field(&english[1], "other"), None, "one name has no other");
+        assert_eq!(
+            field(&english[2], "place"),
+            Some("Birr"),
+            "a character's place is the shown name"
+        );
+        names.set(crate::place_names::LOCAL);
+        let local = entries(&find);
+        assert_eq!(field(&local[0], "name"), Some("Biorra"));
+        assert_eq!(field(&local[0], "other"), Some("Birr"));
+        assert_eq!(field(&local[2], "place"), Some("Biorra"));
+    }
+
+    #[test]
+    fn the_event_log_names_a_blight_place_by_the_choice_and_keeps_its_id() {
+        use crate::game::events::{Action, Event, EventKind};
+        let cache = Arc::new(ViewCache::default());
+        cache.post_events(
+            1,
+            Arc::new(vec![Event {
+                at: ck_sim::GameTime::from_date(ck_sim::Date {
+                    year: 768,
+                    month: 5,
+                    day: 2,
+                    hour: 6,
+                })
+                .expect("a date"),
+                action: Action::Begins,
+                kind: EventKind::Blight {
+                    good: "oats".into(),
+                    place: "birr".into(),
+                    place_order: 0,
+                },
+            }]),
+        );
+        let names = PlaceNameSetting::default();
+        let events = events_function(
+            Arc::clone(&cache),
+            vec![named_place("birr", "Biorra", Some("Birr"))],
+            names.clone(),
+        );
+        let row = |events: &HostFunction| {
+            let ConfigValue::Array(mut rows) =
+                events(&[Some(ConfigValue::Integer(1))]).unwrap().remove(0)
+            else {
+                panic!("an array")
+            };
+            rows.remove(0)
+        };
+        let english = row(&events);
+        assert_eq!(field(&english, "place"), Some("Birr"));
+        assert_eq!(field(&english, "place_id"), Some("birr"));
+        names.set(crate::place_names::LOCAL);
+        let local = row(&events);
+        assert_eq!(field(&local, "place"), Some("Biorra"));
+        assert_eq!(field(&local, "place_id"), Some("birr"));
+    }
+
+    #[test]
+    fn an_abandoned_places_view_name_and_the_character_tables_follow_the_choice() {
+        let cache = Arc::new(ViewCache::default());
+        let mut view = EconomyView::default();
+        view.places.push(PlaceView {
+            id: "birr".to_owned(),
+            ..PlaceView::default()
+        });
+        view.characters.cards.push(CharacterCard {
+            id: 7,
+            name: "Máel".to_owned(),
+            role: "ruler of Biorra".to_owned(),
+            role_english: "ruler of Birr".to_owned(),
+            place: "birr".to_owned(),
+            ..CharacterCard::default()
+        });
+        cache.post(1, Arc::new(view));
+        cache.note_world(1, 0);
+        let names = PlaceNameSetting::default();
+        let mut abandoned = named_place("birr", "Biorra", Some("Birr"));
+        abandoned.abandoned = true;
+        let place = place_function(Arc::clone(&cache), vec![abandoned], names.clone());
+        let cards = characters_function(Arc::clone(&cache), names.clone());
+        let place_name = |place: &HostFunction| {
+            field(
+                &place(&[
+                    Some(ConfigValue::String("birr".to_owned())),
+                    Some(ConfigValue::Integer(1)),
+                ])
+                .unwrap()[0],
+                "name",
+            )
+            .map(str::to_owned)
+        };
+        let role = |cards: &HostFunction| {
+            let ConfigValue::Array(rows) =
+                cards(&[Some(ConfigValue::Integer(1))]).unwrap().remove(0)
+            else {
+                panic!("an array")
+            };
+            field(&rows[0], "role").map(str::to_owned)
+        };
+        assert_eq!(place_name(&place).as_deref(), Some("Birr"));
+        assert_eq!(role(&cards).as_deref(), Some("ruler of Birr"));
+        names.set(crate::place_names::LOCAL);
+        assert_eq!(place_name(&place).as_deref(), Some("Biorra"));
+        assert_eq!(role(&cards).as_deref(), Some("ruler of Biorra"));
     }
 
     fn view_with(workers: u64) -> Arc<EconomyView> {
@@ -2036,7 +2303,7 @@ mod tests {
     fn game_place_returns_the_revisions_view_and_refuses_what_it_cannot_serve() {
         let cache = Arc::new(ViewCache::default());
         cache.post(7, view_with(120));
-        let function = place_function(Arc::clone(&cache), vec![]);
+        let function = place_function(Arc::clone(&cache), vec![], PlaceNameSetting::default());
         let Ok(returned) = call_place(&function, "fixture", 7) else {
             panic!("a held revision of a known place is served");
         };
@@ -2129,7 +2396,12 @@ mod tests {
                 ..EconomyView::default()
             }),
         );
-        let returned = call_place(&place_function(cache, vec![]), "fixture", 1).unwrap();
+        let returned = call_place(
+            &place_function(cache, vec![], PlaceNameSetting::default()),
+            "fixture",
+            1,
+        )
+        .unwrap();
         let [ConfigValue::Table(place)] = returned.as_slice() else {
             panic!("one place table");
         };
@@ -2407,6 +2679,7 @@ mod tests {
             Place {
                 id: "armagh".to_owned(),
                 name: "Ard Mhacha".to_owned(),
+                name_en: Some("Armagh".to_owned()),
                 kind: "monastery".to_owned(),
                 size: 4,
                 abandoned: false,
@@ -2417,6 +2690,7 @@ mod tests {
             Place {
                 id: "monaincha".to_owned(),
                 name: "Loch Cré".to_owned(),
+                name_en: Some("Monaincha".to_owned()),
                 kind: "monastery".to_owned(),
                 size: 1,
                 abandoned: false,
@@ -2451,8 +2725,8 @@ mod tests {
                 Some(&ConfigValue::Integer(i64::from(place.size)))
             );
         }
-        // The host function returns them as one array of `{id, name, kind, size}` and takes no argument.
-        let function = places_function(places.clone());
+        // The host function returns them as one array of `{id, name, local_name, english_name, kind, size}` and takes no argument.
+        let function = places_function(places.clone(), PlaceNameSetting::default());
         let Ok(returned) = function(&[]) else {
             panic!("game.places() with no arguments succeeds");
         };
@@ -2465,9 +2739,18 @@ mod tests {
         };
         assert_eq!(
             first.keys().map(String::as_str).collect::<Vec<_>>(),
-            ["id", "kind", "name", "size"]
+            ["english_name", "id", "kind", "local_name", "name", "size"]
         );
-        assert_eq!(first["name"], ConfigValue::String("Ard Mhacha".to_owned()));
+        // The default choice shows the English name; the local one is always there too.
+        assert_eq!(first["name"], ConfigValue::String("Armagh".to_owned()));
+        assert_eq!(
+            first["english_name"],
+            ConfigValue::String("Armagh".to_owned())
+        );
+        assert_eq!(
+            first["local_name"],
+            ConfigValue::String("Ard Mhacha".to_owned())
+        );
         let refused = function(&[Some(ConfigValue::Integer(1))]).unwrap_err();
         assert_eq!(refused, "game.places: takes no arguments");
     }

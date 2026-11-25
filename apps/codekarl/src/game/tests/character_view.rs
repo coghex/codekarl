@@ -159,6 +159,7 @@ pub(super) fn viewed(store: &CharacterStore) -> CharacterView {
         &Inputs {
             rules: rules(),
             places: &world().1,
+            english: &world().1,
             houses: houses(),
             slots: slots(),
         },
@@ -712,8 +713,12 @@ fn assert_shipped_find_entries(scenario: &ck_map::Scenario, view: &CharacterView
         .iter()
         .map(|river| (river.id.clone(), river.name.clone()))
         .collect();
-    let find =
-        crate::game_api::find_entries_function(cache, crate::game_api::places_of(scenario), rivers);
+    let find = crate::game_api::find_entries_function(
+        cache,
+        crate::game_api::places_of(scenario),
+        rivers,
+        crate::place_names::PlaceNameSetting::default(),
+    );
     let result = find(&[Some(ck_lua::ConfigValue::Integer(1))]).unwrap();
     let ck_lua::ConfigValue::Array(rows) = &result[0] else {
         panic!("find rows")
@@ -730,12 +735,14 @@ fn assert_shipped_find_entries(scenario: &ck_map::Scenario, view: &CharacterView
                 })
         })
     };
-    assert!(has("location", "Grianán Ailigh", None));
+    // The default choice shows English names (CK-423): Grianán Ailigh is Grianan of Aileach.
+    assert!(has("location", "Grianan of Aileach", None));
+    assert!(!has("location", "Grianán Ailigh", None));
     assert!(has("river", "Erne", None));
     assert!(has(
         "character",
         "Niall mac Fergaile Frossach",
-        Some("Grianán Ailigh")
+        Some("Grianan of Aileach")
     ));
 }
 
@@ -750,6 +757,7 @@ fn the_shipped_start_lists_its_live_characters_and_opens_niall_frossach() {
         &Inputs {
             rules: rules(),
             places: &crate::game::setup::place_names(&prepared.scenario),
+            english: &crate::game::setup::english_place_names(&prepared.scenario),
             houses: houses(),
             slots: slots(),
         },
@@ -801,6 +809,7 @@ fn the_shipped_start_lists_its_live_characters_and_opens_niall_frossach() {
         &Inputs {
             rules: rules(),
             places: &crate::game::setup::place_names(&prepared.scenario),
+            english: &crate::game::setup::english_place_names(&prepared.scenario),
             houses: houses(),
             slots: slots(),
         },
@@ -865,8 +874,14 @@ fn game_characters_and_game_character_serve_the_cached_view_and_refuse_by_name()
     };
     let cache = Arc::new(ViewCache::default());
     cache.post(7, Arc::new(view.clone()));
-    let characters = characters_function(Arc::clone(&cache));
-    let character = character_function(Arc::clone(&cache));
+    let characters = characters_function(
+        Arc::clone(&cache),
+        crate::place_names::PlaceNameSetting::default(),
+    );
+    let character = character_function(
+        Arc::clone(&cache),
+        crate::place_names::PlaceNameSetting::default(),
+    );
     let integer = |value: i64| Some(ConfigValue::Integer(value));
     let table = |value: &ConfigValue| match value {
         ConfigValue::Table(fields) => fields.clone(),
@@ -1014,6 +1029,7 @@ fn the_real_shipped_start_reaches_the_shipped_ui_through_the_real_functions_and_
         &Inputs {
             rules: rules(),
             places: &crate::game::setup::place_names(&prepared.scenario),
+            english: &crate::game::setup::english_place_names(&prepared.scenario),
             houses: houses(),
             slots: slots(),
         },
@@ -1034,9 +1050,12 @@ fn the_real_shipped_start_reaches_the_shipped_ui_through_the_real_functions_and_
         }),
     );
     let id = i64::try_from(niall.id).expect("a small id");
-    let cards = characters_function(Arc::clone(&cache))(&[Some(ConfigValue::Integer(1))])
-        .expect("the real cards");
-    let record = character_function(cache)(&[
+    let cards = characters_function(
+        Arc::clone(&cache),
+        crate::place_names::PlaceNameSetting::default(),
+    )(&[Some(ConfigValue::Integer(1))])
+    .expect("the real cards");
+    let record = character_function(cache, crate::place_names::PlaceNameSetting::default())(&[
         Some(ConfigValue::Integer(id)),
         Some(ConfigValue::Integer(1)),
     ])

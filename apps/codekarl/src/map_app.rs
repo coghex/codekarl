@@ -110,7 +110,7 @@ pub(crate) struct MapController<R: RiverViewSelector = PreparedRivers> {
     layers: ck_sim::MapLayers,
     locations: PreparedLocations,
     markers: PreparedMarkers,
-    location_names: Vec<(String, String)>,
+    location_names: LocationNames,
     location_details: Vec<(String, u8, bool)>,
     selection: Option<Selection>,
     pointer_position: Option<PointerPosition>,
@@ -204,6 +204,11 @@ impl<R: RiverViewSelector> MapController<R> {
         Ok(())
     }
 
+    /// Gives the controller the shared choice of place names: a hover or a selection afterwards carries the name that choice shows.
+    pub(crate) fn set_place_names(&mut self, names: crate::place_names::PlaceNameSetting) {
+        self.location_names.setting = names;
+    }
+
     /// Changes all three input rates together; the next tick observes the new values.
     pub(crate) fn set_controls(
         &mut self,
@@ -261,10 +266,18 @@ impl<R: RiverViewSelector> MapController<R> {
             overlay_palette.extend(loaded.data.terrains.iter().map(|terrain| terrain.solid));
         }
         let markers = PreparedMarkers::new(locations.clone(), kinds.clone());
-        let location_names = locations
-            .iter()
-            .map(|location| (location.id.clone(), location.name.clone()))
-            .collect();
+        let location_names = LocationNames::new(
+            locations
+                .iter()
+                .map(|location| {
+                    (
+                        location.id.clone(),
+                        location.name.clone(),
+                        location.name_en.clone(),
+                    )
+                })
+                .collect(),
+        );
         let location_details = locations
             .iter()
             .map(|location| {
@@ -781,9 +794,31 @@ fn pointer_in_view(position: PointerPosition, points: (u32, u32)) -> bool {
         && i64::from(position.y) < i64::from(points.1) * 256
 }
 
+/// The names of the scenario's locations in marker order, and the choice of which one a hover or a selection carries (CK-423).
+struct LocationNames {
+    /// Each location's id, local name and English name, if it has one.
+    rows: Vec<(String, String, Option<String>)>,
+    setting: crate::place_names::PlaceNameSetting,
+}
+
+impl LocationNames {
+    fn new(rows: Vec<(String, String, Option<String>)>) -> Self {
+        Self {
+            rows,
+            setting: crate::place_names::PlaceNameSetting::default(),
+        }
+    }
+
+    /// The id and the name shown for the location at `index`.
+    fn get(&self, index: usize) -> Option<(&str, &str)> {
+        let (id, local, english) = self.rows.get(index)?;
+        Some((id, self.setting.shown(local, english.as_deref())))
+    }
+}
+
 fn hover_at(
     markers: &mut PreparedMarkers,
-    names: &[(String, String)],
+    names: &LocationNames,
     camera: Camera,
     position: PointerPosition,
 ) -> Option<Hover> {
@@ -804,8 +839,8 @@ fn hover_at(
         * 2;
     Some(Hover {
         location_index: index,
-        id: id.clone(),
-        name: name.clone(),
+        id: id.to_owned(),
+        name: name.to_owned(),
         left,
         right,
         y,
@@ -1186,6 +1221,7 @@ pub(crate) mod tests {
         let location = Location {
             id: "fixture-town".to_owned(),
             name: "Fixture Town".to_owned(),
+            name_en: None,
             cell,
             latitude_e4: 530_000,
             longitude_e4: -80_000,
@@ -1260,6 +1296,7 @@ pub(crate) mod tests {
         let location = Location {
             id: "fixture_town".to_owned(),
             name: "Fixture Town".to_owned(),
+            name_en: None,
             cell: ck_map::Cell {
                 x: crop.origin.x + 1,
                 y: crop.origin.y + 1,
@@ -2582,6 +2619,40 @@ assert(scroll_reset == 1, "reset scroll used " .. tostring(scroll_reset))
                 "the in-rectangle hover reaches the map at {pixels_per_point}x"
             );
         }
+    }
+
+    #[test]
+    fn a_marker_hover_carries_the_name_the_place_name_choice_shows() {
+        let mut controller = window_case_hover_controller();
+        controller
+            .camera
+            .as_mut()
+            .expect("windowed camera is open")
+            .set_step(15);
+        let names = crate::place_names::PlaceNameSetting::default();
+        controller.set_place_names(names.clone());
+        controller.location_names.rows[0].2 = Some("English Town".to_owned());
+        let marker = PointerPosition {
+            x: 200 * 256,
+            y: 120 * 256,
+        };
+        let hovered = |controller: &mut MapController| {
+            hover_at(
+                &mut controller.markers,
+                &controller.location_names,
+                controller.camera.expect("windowed camera is open"),
+                marker,
+            )
+            .expect("the marker is hovered")
+        };
+        let english = hovered(&mut controller);
+        assert_eq!(english.name, "English Town");
+        assert_eq!(english.id, "fixture_town", "the id never changes");
+        // The same controller, after the choice changed: no restart and no update of the map.
+        names.set(crate::place_names::LOCAL);
+        let local = hovered(&mut controller);
+        assert_eq!(local.name, "Fixture Town");
+        assert_eq!(local.id, "fixture_town");
     }
 
     #[test]

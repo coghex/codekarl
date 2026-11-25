@@ -227,8 +227,11 @@ pub(super) fn shipped_place_fixture() -> (HostFunction, String) {
     let cache = Arc::new(crate::game_api::ViewCache::default());
     cache.post(1, Arc::clone(&view));
     cache.post(2, view);
-    let actual_place =
-        crate::game_api::place_function(cache, crate::game_api::places_of(&scenario));
+    let actual_place = crate::game_api::place_function(
+        cache,
+        crate::game_api::places_of(&scenario),
+        crate::place_names::PlaceNameSetting::default(),
+    );
     let escape_lua = |value: &str| value.replace('\\', "\\\\").replace('\'', "\\'");
     let place_rows = scenario
         .locations
@@ -1454,7 +1457,7 @@ fn shipped_abandoned_sites_survive_ledger_tooltip_and_panel_paths() {
         local emain
         for _, row in ipairs(last_given) do if row.place.id == 'emain_macha' then emain = row end end
         local tip = emain.tooltip(0, 0, 1)
-        eq_that(tip.title, 'Emain Macha', 'tooltip title')
+        eq_that(tip.title, 'Navan Fort', 'tooltip title (the English name, the default choice)')
         eq_that(tip[1][1], 'ceremonial ground', 'tooltip kind')
         eq_that(tip[2][1].term, 'abandoned', 'tooltip term')
         callbacks.select({id='emain_macha', name='Emain Macha', kind='ceremonial_ground', size=1, state='abandoned'})

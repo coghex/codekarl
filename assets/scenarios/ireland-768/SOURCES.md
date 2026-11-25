@@ -52,6 +52,33 @@ Emain Macha and Dún Ailinne are abandoned: they have no people, working buildin
   guesswork log.
 - No OpenStreetMap geometry is used, for licence reasons (as CK-181).
 
+## English names (CK-423)
+
+Each location has `name`, its local (modern Irish) name, and may have `name_en`, its English name; the player's setting "place names"
+chooses which one shows (default English; a place with no `name_en` shows `name`). Only English is supported.
+
+- **117 of the 125 places have a `name_en`; 8 have none.** A name is given only where a published source shows an established English
+  place name for that place. None is invented or translated by the authors. Six are a people's seat or territory with no English name
+  of its own (`tir_amalgaid`, `corco_modruad`, `loegaire_seat`, `uliathain_seat`, `ciarraige_seat`, `cairpre_seat`): the English names
+  that exist belong to the territories (Tirawley, Corcomroe, Carbury and so on), not to the seat, so they are not used. `tethbae_seat`
+  (Ráth Ardachaidh) lies beside Ardagh, which is a place of its own here. `carraig_aille` has none because its established name is its
+  Irish one.
+- **Source of each name:** the English label of the place's item in Wikidata (CC0), matched to the authored place by its Irish name and
+  position (the nearest such item, all within 6 km, and a hand check of each; the farthest, Connor, is the only item with its name), with the item's Placenames Database of Ireland (logainm.ie) place number
+  (Wikidata property P5097) and its English Wikipedia article where it has them. The submission evidence for CK-423 lists all 125
+  places with the item, the logainm.ie number and the article that each name rests on.
+- **Four names rest on other sources, from the CK-423 review and its recheck:** `rathmore` (Rathmore: the Dál nAraidi site of the 682 battle, whose
+  surviving rath is Rathmore Trench; Early Medieval Antrim, Rathmore section, p. 32, Queen's University Belfast, 2022), `aidne_seat`
+  (Rath Durlais, the fort beside Dunguaire Castle, not the castle of about 1520; Galway County Council, Kinvara Local Area Plan 2005 to
+  2011, p. 11), `ui_maine_seat` (Dunamon: logainm.ie/en/2068, Dún Iomáin/Dunamon, the annals' Dún Iomghain, Annals of the Four Masters 1154) and `dun_ailinne` (Dun Aillinne, the spelling the Placenames Database records for the enclosure, logainm.ie/en/111137).
+- **Where two places share a name,** each is cited by its own item and position (Bangor here is Bangor, County Down).
+- **What was not checked:** logainm.ie itself could not be read by program (it serves a bot check), so the numbers come through Wikidata
+  and were not opened on logainm.ie. Look a number up at `https://www.logainm.ie/en/<number>`. The wording of a name is Wikidata's
+  English label, which for a townland is the Placenames Database's official form (for example `Mullamast`, `Hareisland`,
+  `Innishmacsaint`).
+- **The scenario hash** covers the whole locations file, so adding `name_en` changed it: an Ireland save made before CK-423 is refused
+  by the standing identity check.
+
 ## The places in the earlier 94-place draft
 
 The `name` is modern Irish; the English form is given here.

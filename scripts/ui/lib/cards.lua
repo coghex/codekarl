@@ -161,7 +161,12 @@ local function item_widget(self, index, key)
     if item == nil or type(item.tooltip) ~= "function" then return nil end
     local at_x, at_y = item_point(self, index, x, y)
     if at_x == nil then return nil end
-    return item.tooltip(at_x, at_y)
+    -- An item may give `tooltip_pinned`: its tooltip as it is wherever the stack has put the item later, or whether the stack is still there
+    -- (`tooltip.refresh` reads it for a tooltip opened over the item).
+    local content, part = item.tooltip(at_x, at_y)
+    local pinned = item.tooltip_pinned
+    if pinned == nil then return content, part end
+    return content, part, function() return pinned(at_x, at_y) end, item.subject
   end)
   widget.cards = self
   return widget

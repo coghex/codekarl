@@ -1145,8 +1145,11 @@ mark_settings()
 "#,
         r#"
 expect(#fixture.calls >= 3)
+-- The general tab's defaults reset the tooltips and, with them, the place names (CK-423).
 eq(fixture.calls[#fixture.calls][1], "reset")
-eq(fixture.calls[#fixture.calls][2], "tooltips")
+eq(fixture.calls[#fixture.calls][2], "places")
+eq(fixture.calls[#fixture.calls - 1][1], "reset")
+eq(fixture.calls[#fixture.calls - 1][2], "tooltips")
 eq(fixture.tooltips.delay, 0.3) eq(fixture.tooltips.lock, "middle_mouse") eq(fixture.tooltips.lock_timer, 1.5)
 eq(fixture.map.pan_pixels_per_frame, 4, "reset affects only the current tab")
 eq(require("lib.settings_window").current().selected, "general", "defaults keeps its tab selected")
