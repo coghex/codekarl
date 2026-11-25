@@ -1795,7 +1795,15 @@ local stamps={'10 Oct 768 · 06:00','11 Oct 768 · 00:00','12 Oct 768 · 00:00',
 for _, stamp in ipairs(stamps) do eq(find(stamp).test_runs[1].colour,theme.colour('dim'),stamp) end
 for _, sentence in ipairs({'storm begins, 52°N 19°W, 44 kn','storm begins, 53°N 27°W, 50 kn',
   'storm begins, 51°N 22°W, 34 kn','storm ends, 62°N 3°E, 44 kn'}) do
-  eq(find(sentence).test_runs[1].colour,theme.colour('event_storm'),sentence)
+  local line = find(sentence)
+  eq(line.test_runs[1].colour,theme.colour('event_storm'),sentence)
+  local degrees = 0
+  for _, glyph in ipairs(line.glyphs) do
+    local texture = scene.quads[glyph.quad].texture
+    expect(not texture:find('replacement', 1, true), sentence)
+    if texture:find('U+00B0', 1, true) then degrees = degrees + 1 end
+  end
+  eq(degrees, 2, sentence)
 end
 eq(find('storm merged, 53°N 13°W, 50 kn').test_runs[1].colour,theme.colour('event_merge'))
 bar:toggle_event('storms')
