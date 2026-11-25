@@ -347,6 +347,7 @@ pub(crate) fn prepare(
 
 struct WeatherData {
     backdrop: Option<ck_map::Backdrop>,
+    steering_cache: Arc<std::sync::OnceLock<Vec<i64>>>,
     rules: ck_sim::weather::WeatherRules,
     places: Vec<(String, ck_sim::weather::WeatherPlace, [i64; 12])>,
     winds: Vec<Option<[(i64, i64, i64); 12]>>,
@@ -398,8 +399,13 @@ impl WeatherData {
             winds.push(monthly);
             places.push((location.id.clone(), place, expected));
         }
+        let steering_cache = field
+            .as_ref()
+            .map(|f| f.steering_cache.clone())
+            .unwrap_or_default();
         Ok(Self {
             backdrop,
+            steering_cache,
             rules,
             places,
             winds,
@@ -427,8 +433,9 @@ impl WeatherData {
                 i64::from(date.day),
             ) - ck_sim::weather::julian_day(1, 1, 1);
             let (year, month, day) = ck_sim::weather::gregorian(offset).expect("validated date");
-            let field =
+            let mut field =
                 super::wind::WindField::new(backdrop, &self.rules).expect("validated backdrop");
+            field.steering_cache = self.steering_cache.clone();
             field.step(
                 lows,
                 year,
@@ -2498,6 +2505,7 @@ mod stretch_save_tests {
                 .map(|location| (location.id.clone(), place, expected_year))
                 .collect();
             prepared.weather = Some(Arc::new(WeatherData {
+                steering_cache: Arc::default(),
                 backdrop: None,
                 rules,
                 places,
@@ -2554,6 +2562,7 @@ mod stretch_save_tests {
         };
         let expected = coast.expected_year(&rules, 768).unwrap();
         let weather = WeatherData {
+            steering_cache: Arc::default(),
             backdrop: None,
             rules,
             places: vec![("coast".to_owned(), coast, expected)],
@@ -2610,6 +2619,7 @@ mod stretch_save_tests {
                 .map(|location| (location.id.clone(), place, year))
                 .collect();
             prepared.weather = Some(Arc::new(WeatherData {
+                steering_cache: Arc::default(),
                 backdrop: None,
                 rules,
                 places,
@@ -2697,6 +2707,7 @@ mod stretch_save_tests {
         };
         let expected = north.expected_year(&rules, 1).unwrap();
         let weather = WeatherData {
+            steering_cache: Arc::default(),
             backdrop: None,
             rules,
             places: vec![("north".into(), north, expected)],
@@ -2739,6 +2750,7 @@ mod stretch_save_tests {
             .map(|location| (location.id.clone(), coast, expected))
             .collect();
         prepared.weather = Some(Arc::new(WeatherData {
+            steering_cache: Arc::default(),
             backdrop: None,
             rules,
             places,
@@ -2816,6 +2828,7 @@ mod stretch_save_tests {
         };
         let expected = place.expected_year(&weather_rules, 768).unwrap();
         let weather = Arc::new(WeatherData {
+            steering_cache: Arc::default(),
             backdrop: None,
             rules: weather_rules,
             places: vec![("fixture".into(), place, expected)],
@@ -3127,13 +3140,49 @@ mod stretch_save_tests {
     }
 
     #[test]
+    fn trial_a_six_hour_save_resumes_the_same_low() {
+        let dir = crate::testing::Dir::new();
+        let source = shipped_start(&dir.0, None);
+        let weather = source.weather.as_ref().unwrap();
+        let field =
+            super::super::wind::WindField::new(weather.backdrop.as_ref().unwrap(), &weather.rules)
+                .unwrap();
+        let mut save = source.simulation.save(source.identity.meta(42));
+        field
+            .place(&mut save.state.lows, 21361, 15777, 500_000, 3000)
+            .unwrap();
+        for _ in 0..6 {
+            field.step(&mut save.state.lows, 769, 1, 7);
+        }
+        assert_eq!(
+            (save.state.lows.entries[0].x, save.state.lows.entries[0].y),
+            (21_769_841, 15_530_381)
+        );
+        save.time = GameTime::from_date(Date {
+            year: 769,
+            month: 1,
+            day: 3,
+            hour: 6,
+        })
+        .unwrap();
+        let mut expected = save.state.lows.clone();
+        let path = super::super::saves::quicksave_path(&dir.0.join("saves"));
+        write_save(&source, &save, &path);
+        let mut loaded = shipped_start(&dir.0, Some(&path));
+        assert_eq!(loaded.simulation.state().lows, expected);
+        field.step(&mut expected, 769, 1, 7);
+        loaded.simulation.step().unwrap();
+        assert_eq!(loaded.simulation.state().lows, expected);
+    }
+
+    #[test]
     fn placed_low_follows_clock_and_both_load_paths() {
         let dir = crate::testing::Dir::new();
         let source = shipped_start(&dir.0, None);
         assert_eq!(
             hashes::rules_hash(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets"))
                 .unwrap(),
-            "46dd34bf1a07a69f"
+            "3b6a0b152c432ea8"
         );
         let mut save = source.simulation.save(source.identity.meta(42));
         let weather = source.weather.as_ref().unwrap();
@@ -3158,9 +3207,9 @@ mod stretch_save_tests {
         };
         let mut loaded = None;
         for (hour, expected) in [
-            (7, (21_612_229, 15_743_230)),
-            (12, (21_795_366, 15_742_041)),
-            (13, (21_831_601, 15_741_411)),
+            (7, (21_731_229, 15_643_875)),
+            (12, (21_997_712, 15_588_624)),
+            (13, (22_052_089, 15_578_602)),
         ] {
             while game.simulation.date().unwrap().hour != hour {
                 game.simulation.step().unwrap();
@@ -3202,7 +3251,7 @@ mod stretch_save_tests {
         }
         follow_to(loaded.as_mut().unwrap(), &game, end);
         let low = &game.simulation.state().lows.entries[0];
-        assert_eq!((low.x, low.y), (22_243_142, 15_693_313));
+        assert_eq!((low.x, low.y), (22_589_673, 15_510_428));
         let view = view_builder(game.view_wiring())(game.simulation.state(), end);
         assert_eq!(
             view.places

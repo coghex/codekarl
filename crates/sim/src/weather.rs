@@ -28,6 +28,16 @@ pub struct WeatherRules {
     pub steer_friction: i64,
     /// Speed factor used to steer lows.
     pub steer_factor: i64,
+    /// Temperature contrast in pascals per ten degrees.
+    pub steer_contrast: i64,
+    /// Smoothing radius in blocks.
+    pub steer_smooth_blocks: i64,
+    /// Number of smoothing passes.
+    pub steer_smooth_passes: i64,
+    /// Westward drift in centimetres per second.
+    pub steer_drift_west: i64,
+    /// Poleward drift in centimetres per second.
+    pub steer_drift_pole: i64,
     /// Meeting distance as thousandths of the larger radius.
     pub meet_share: i64,
     /// Cosines in millionths at tenth-degree steps.
@@ -85,6 +95,11 @@ impl WeatherRules {
             ("wind_belt_latitude", rules.wind_belt_latitude, 0, 300_000),
             ("steer_friction", rules.steer_friction, 1, 1_000_000),
             ("steer_factor", rules.steer_factor, 0, 10_000),
+            ("steer_contrast", rules.steer_contrast, 0, 20_000),
+            ("steer_smooth_blocks", rules.steer_smooth_blocks, 0, 32),
+            ("steer_smooth_passes", rules.steer_smooth_passes, 0, 8),
+            ("steer_drift_west", rules.steer_drift_west, 0, 1_000),
+            ("steer_drift_pole", rules.steer_drift_pole, 0, 1_000),
             ("meet_share", rules.meet_share, 1, 2_000),
         ] {
             if !(lower..=upper).contains(&value) {
@@ -618,6 +633,11 @@ mod tests {
             ("wind_belt_latitude", 60000, 0, 300_000),
             ("steer_friction", 1000, 1, 1_000_000),
             ("steer_factor", 1000, 0, 10_000),
+            ("steer_contrast", 1225, 0, 20_000),
+            ("steer_smooth_blocks", 5, 0, 32),
+            ("steer_smooth_passes", 3, 0, 8),
+            ("steer_drift_west", 100, 0, 1_000),
+            ("steer_drift_pole", 200, 0, 1_000),
             ("meet_share", 500, 1, 2_000),
         ] {
             let line = format!("{name} = {value}\n");
