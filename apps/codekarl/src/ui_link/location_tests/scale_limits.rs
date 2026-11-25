@@ -277,7 +277,15 @@ VIEWS[2].rowan.temperature = {mean=-1, month=10, expected=117}
 local location = require('lib.location')
 for _, revision in ipairs({1, 2}) do
   for _, line in ipairs(location.lines('location', game.place('rowan', revision), 800)) do
-    if type(line) == 'string' and line:find('temperature', 1, true) then note(line) end
+    if type(line) == 'string' and line:find('temperature', 1, true) then
+      note(line)
+      local degree = 0
+      for _, glyph in ipairs(font.layout(line, 'small').glyphs) do
+        assert(not glyph.texture:find('replacement', 1, true))
+        if glyph.texture:find('U+00B0', 1, true) then degree = degree + 1 end
+      end
+      assert(degree == 2)
+    end
   end
 end
 local abandoned = {id='empty', state='abandoned', kind='fort', temperature={mean=127, month=10, expected=117}}

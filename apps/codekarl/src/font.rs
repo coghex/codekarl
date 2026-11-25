@@ -17,13 +17,13 @@ pub(crate) const GLYPH_HEIGHT: usize = 11;
 /// The widest a glyph may be, in font pixels.
 pub(crate) const GLYPH_WIDTH_MAX: usize = 5;
 
-/// The characters beyond printable ASCII the font draws: fada vowels, the middle dot, and small superscript and subscript digits and signs.
-const EXTRA: [char; 33] = [
-    'á', 'é', 'í', 'ó', 'ú', 'Á', 'É', 'Í', 'Ó', 'Ú', '·', '⁰', '¹', '²', '³', '⁴', '⁵', '⁶', '⁷',
-    '⁸', '⁹', '⁺', '⁻', '₀', '₁', '₂', '₃', '₄', '₅', '₆', '₇', '₈', '₉',
+/// The characters beyond printable ASCII the font draws: fada vowels, the middle dot, degree sign, and small superscript and subscript digits and signs.
+const EXTRA: [char; 34] = [
+    'á', 'é', 'í', 'ó', 'ú', 'Á', 'É', 'Í', 'Ó', 'Ú', '·', '°', '⁰', '¹', '²', '³', '⁴', '⁵', '⁶',
+    '⁷', '⁸', '⁹', '⁺', '⁻', '₀', '₁', '₂', '₃', '₄', '₅', '₆', '₇', '₈', '₉',
 ];
 
-/// Every character the font draws a glyph for: printable ASCII (U+0020 to U+007E), fada vowels, the middle dot, and small superscript and subscript digits and signs.
+/// Every character the font draws a glyph for: printable ASCII (U+0020 to U+007E), fada vowels, the middle dot, degree sign, and small superscript and subscript digits and signs.
 pub(crate) fn font_set() -> Vec<char> {
     (0x20_u8..=0x7E).map(char::from).chain(EXTRA).collect()
 }
@@ -366,7 +366,7 @@ mod tests {
     fn every_character_of_the_set_has_a_glyph_of_the_right_shape_and_nothing_else_has() {
         let font = shipped();
         let set = font_set();
-        assert_eq!(set.len(), 95 + 10 + 1 + 22);
+        assert_eq!(set.len(), 95 + 10 + 2 + 22);
         assert_eq!(
             font.characters().collect::<BTreeSet<_>>(),
             set.iter().copied().collect()
@@ -599,6 +599,21 @@ mod tests {
         let tiny = parse_named(&tiny_text, "tiny.toml", 8, "tiny").unwrap();
         assert_eq!(tiny.glyph('e').advance, 4);
         assert_eq!(&tiny.glyph('e').rows[3..6], [".##", "###", "##."]);
+    }
+
+    #[test]
+    fn degree_sign_uses_its_own_texture_in_each_font() {
+        let fonts = shipped_set();
+        for (name, folder) in [("standard", "glyphs"), ("small", "small"), ("tiny", "tiny")] {
+            let font = fonts.get(name).unwrap();
+            let ConfigValue::Table(result) = layout(font, "°") else {
+                panic!("layout table")
+            };
+            assert_eq!(
+                result["glyphs"],
+                ConfigValue::Array(vec![entry(&format!("ui/font/{folder}/U+00B0.png"), 0, 3)])
+            );
+        }
     }
 
     #[test]
