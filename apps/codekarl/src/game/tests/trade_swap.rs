@@ -33,6 +33,7 @@ fn at(day: u8, hour: u8) -> GameTime {
 /// The fort at the start of 768-01-02, with the nobles holding oats and the peasants fish, each wanting the other's.
 fn fort(rules: &Rules) -> EconomyState {
     let data = ScenarioEconomy {
+        horses_always: Vec::new(),
         defaults: BTreeMap::from([(
             "ringfort".to_owned(),
             BTreeMap::from([(

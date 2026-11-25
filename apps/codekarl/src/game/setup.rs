@@ -280,7 +280,7 @@ pub(crate) fn prepare(
         };
         log(Level::Info, format!("new game, seed {seed:016x}"));
         let (economy_state, load_report) =
-            economy::starting_economy(asset_root, directory, &scenario)?;
+            economy::starting_economy_seeded(asset_root, directory, &scenario, seed)?;
         for line in load_report {
             log(Level::Info, format!("economy start: {line}"));
         }
@@ -3431,7 +3431,7 @@ mod stretch_save_tests {
         assert_eq!(
             hashes::rules_hash(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets"))
                 .unwrap(),
-            "3b6a0b152c432ea8"
+            "96be60e18b4eb3a4"
         );
         let mut save = source.simulation.save(source.identity.meta(42));
         let weather = source.weather.as_ref().unwrap();
@@ -4180,6 +4180,7 @@ mod switch_replay_tests {
     /// the place wants oats, so levels of both buildings move to farming from the first look, and founders arrive.
     fn fort(rules: &Rules) -> ck_economy::EconomyState {
         let data = ScenarioEconomy {
+            horses_always: Vec::new(),
             defaults: BTreeMap::from([(
                 "ringfort".to_owned(),
                 BTreeMap::from([(

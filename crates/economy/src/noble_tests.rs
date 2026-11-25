@@ -204,6 +204,7 @@ fn start_data(
     farm_levels: u32,
 ) -> ScenarioEconomy {
     ScenarioEconomy {
+        horses_always: Vec::new(),
         defaults: BTreeMap::from([(
             "ringfort".to_owned(),
             BTreeMap::from([(
@@ -407,6 +408,27 @@ fn a_demesne_cut_to_the_land_adds_fewer_labourers_and_reports_the_cut() {
             .pops
             .iter()
             .all(|pop| pop.kind != "labourer")
+    );
+}
+
+#[test]
+fn guaranteed_seat_requires_a_noble_and_room_for_horses() {
+    let rules = rules();
+    let mut no_noble = start_data(None, 0, 0, 0);
+    no_noble.horses_always.push("fort".into());
+    assert!(
+        start(&rules, &no_noble, pasture(40, 600))
+            .unwrap_err()
+            .entry
+            .contains("fort")
+    );
+    let mut cut = start_data(Some(house("ulaid", 60, 3)), 0, 0, 0);
+    cut.horses_always.push("fort".into());
+    assert!(
+        start(&rules, &cut, pasture(1, 500))
+            .unwrap_err()
+            .entry
+            .contains("fort")
     );
 }
 

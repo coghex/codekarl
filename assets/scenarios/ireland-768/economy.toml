@@ -1,3 +1,5 @@
+horses_always = ["ailech", "uisneach", "cashel", "rathcroghan", "lyons_hill", "downpatrick"]
+
 # Deterministic opening estimate. Counts are people; level guesses are authored
 # independently of population and are cut to each location's derived resources.
 

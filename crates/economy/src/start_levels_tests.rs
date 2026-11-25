@@ -280,6 +280,7 @@ impl Place {
 
     fn data(&self) -> ScenarioEconomy {
         ScenarioEconomy {
+            horses_always: Vec::new(),
             defaults: BTreeMap::from([(
                 "ringfort".to_owned(),
                 BTreeMap::from([(

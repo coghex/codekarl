@@ -591,7 +591,7 @@ fn year_digest(economy: &EconomyState) -> u64 {
 }
 
 #[test]
-fn the_shipped_scenario_runs_a_year_day_for_day_as_the_build_before_levels_were_records() {
+fn the_shipped_scenario_runs_a_year_from_its_seeded_opening() {
     use std::fmt::Write as _;
 
     let (rules, economy) = start();

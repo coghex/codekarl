@@ -1753,6 +1753,7 @@ fn pasture(cells: u32) -> LandCounts {
 /// One ringfort `fort` of 100 peasants and a noble house of 40 on a demesne of two levels, with its 20 labourers.
 fn fort(rules: &Rules) -> EconomyState {
     let data = ScenarioEconomy {
+        horses_always: Vec::new(),
         defaults: BTreeMap::from([(
             "ringfort".to_owned(),
             BTreeMap::from([(
