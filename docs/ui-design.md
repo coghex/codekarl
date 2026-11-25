@@ -983,6 +983,19 @@ The main thread must decide **synchronously** who gets each pointer event. It ca
 
 ### 3.7 The look in the map's style (Proposal; the look itself pending the owner's description)
 
+**Window colours by kind (CK-427).** `[kind_colours]` in `assets/ui/theme.toml` holds the opaque `#rrggbb` bases
+`general` (`#6e130f`), `location` (`#4fb3c8`), `social` (`#6e130f`) and `expedition` (`#c9932e`). General covers ordinary
+windows, the ledger, the time and places bars, and tooltip frames; location covers place windows; social covers the character
+screen and its life log. Expedition is reserved for its future panel. A player's settings override these bases. A window's
+outline is its base; its hot colour keeps hue and saturation and uses lightness `min(0.92, 1.4 × L + 0.03)` in HSL. Title
+and pressed text choose the better contrast of palette text and body against the base and hot respectively. Highlighted numbers
+use the opposite hue of the palette number colour at the better of lightness 0.75 and 0.30 across both fills; over-limit numbers
+choose the better worst contrast of `over_limit` and `over_limit_dark`. Contrast is WCAG 2 on rounded colours. A highlighted
+row uses the appropriate title or pressed ink for ordinary text; opaque identity colours stay only at 3:1 contrast. The tooltip's
+gold title, time bar speed box and the location and expedition dividers remain data. Managed kinds refuse derived keys in the
+file; custom kinds still provide their own outline and hot. Run `tools/colour-sheet OUTPUT.png REPORT.txt` for the owner to
+inspect the derived colours and all state/ink/fill combinations under 3:1.
+
 - **Owner Q1:** "I'll describe it". The owner describes the look, a mock-up page follows that description, and the owner approves it
   before slice 7. The bullets below are only the mechanism (nine-slice, palette and theme data), which holds whatever the look is.
 
@@ -2223,6 +2236,11 @@ Lengths below are in UI pixels.
 
 ### 3.17 The settings file (accepted, CK-298)
 
+CK-427 adds `[ui.colours]` overrides `general`, `location`, `social` and `expedition`. Each is an opaque `#rrggbb` string;
+malformed entries are named and ignored independently. The values override the theme's base colours (§3.7). The UI sets them
+with `settings.set("ui.colours.general", "#rrggbb")` (and the corresponding other keys), writes them at once, and removes all
+four overrides with `settings.reset("colours")` without resetting other settings.
+
 The player's settings are kept in `settings.toml`, a file apart from the configuration file. The owner chose "Own settings
 file" and "At once" (`owner-direction-settings-designer-r1.md` in `.pipeline/coordination/ui-polish-design/`): a change acts
 straight away and is kept. This is the first slice of the settings window (UI polish item 3). The window itself came with
@@ -2635,6 +2653,11 @@ the setting in the same settings file" (`owner-direction-designer-r2.md` in
 - **Tests:** in §3.24.
 
 ### 3.18 The settings window (accepted, CK-301, CK-310 and CK-308)
+
+CK-427 adds the colours tab after graphics. Each of its general, locations, social and expeditions rows shows the active colour,
+a palette picker and a hex field. Choosing an opaque palette entry applies it on release; the field accepts `#rrggbb`, applies
+on Enter, Tab or an outside press and cancels on Escape. A press on a palette opener or inside its picker cancels a typed draft
+before the picker receives the press. Defaults clears the four overrides, returning to the theme file's colours.
 
 The pause menu's "settings" button opens the **settings window**: a tabbed window above the menu, where a change acts at once
 and is written to the settings file (§3.17). It is the second slice of the settings (UI polish item 3). The owner: "i think i
