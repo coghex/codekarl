@@ -1204,8 +1204,9 @@ herd stays. These are counts, not individual animals, so livestock stays abstrac
     between samples is found); at pace 1000 they take exactly CK-402's hours (a test). A clip keeps what lies on the kept journey: a
     water leg's work step by step at each step's own speed, a landing's delay at the shore. The one approximation is a land stretch's
     wades, fords and tide wait, whose positions the data does not give: they are kept in proportion to the length of the stretch
-    kept. A delay-only transfer (as at a strait) needs no carriers of its own and takes the mode of the leg before it (the one after it when it is first). Each leg freezes the points of its path, so a
-    saved expedition is placed the same after a reload whatever the network becomes.
+    kept. A delay-only transfer (as at a strait) needs no carriers of its own and takes the mode of the leg before it (the one after it when it is first). Each leg freezes the points of its path, every bend of the network among them with its distance along the leg (and a point every
+    100 m where no bend says otherwise), so a saved expedition is placed on the network's own line, not across its corners, and the same after a
+    reload whatever the network becomes.
   - **What moves, and the pace.** On land the vehicles with a pace move and a boat rides whole in one of them; on water the boats move and
     the land vehicles and live animals ride; on foot each person's pack is a carrier. Items go first-fit by decreasing space, then weight,
     then kind and number, into carriers in kind order. People are assigned the fewest crew of each moving vehicle, then the drovers
@@ -1230,7 +1231,9 @@ herd stays. These are counts, not individual animals, so livestock stays abstrac
   - **Away.** The people of an expedition are held (they cannot be hired, recruited or moved), neither breed nor die at the monthly
     step (births, deaths and recruitment count the workers at home), eat from its supplies at noon (a person-day each, whole goods
     opened as a pop's eating does) and not from their pop's ration, and count a day away at each noon for the building each is taken
-    from. A vehicle uses up one unit of its wear from the supplies for each 720 hours it moves.
+    from. A vehicle uses up one unit of its wear from the supplies for each 720 hours it moves: the hours each moves in a tick are those spent on
+    legs of a mode it moves in, so the tick that crosses a transfer wears the cart and the boat each for its own part of the hour, and the
+    part of a unit not yet worn is kept exactly, through saves.
   - **Wages.** A hired hand is paid for the days of the whole trip, worked from the ticks the simulation will run: the expedition first
     moves at the tick it starts in (a job started in the noon's daily step) or the next (one started in the hour's step), arrives at the
     tick its outbound travel ends, trades at the first noon whose 11:00 cutoff it met, and is home at the tick its return ends; the
