@@ -2570,6 +2570,12 @@ GUARDS: tuple[Guard, ...] = (
         "rust.app",
         ("assets/game/travel.toml", "assets/scenarios/ireland-768/", "crates/map/tests/network/"),
     ),
+    # CK-432: the expedition route's tests time its legs against the shipped network's own itineraries.
+    Guard(
+        "apps/codekarl/src/game/expedition_route.rs",
+        "rust.app",
+        ("assets/game/travel.toml", "assets/scenarios/ireland-768/"),
+    ),
     Guard(
         "apps/codekarl/tests/travel_scale.rs",
         "travel.scale",

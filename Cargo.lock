@@ -79,6 +79,8 @@ name = "ck-economy"
 version = "0.1.0"
 dependencies = [
  "ck-sim",
+ "num-bigint",
+ "num-rational",
  "serde",
  "toml",
 ]
