@@ -1,6 +1,10 @@
 fuel_deaths_pm_year=100
 herd_start_share = [2, 3]
 herd_standard_pm = 700
+# Trade, part B (CK-431): a job not started this many hours after it was made is given up (30 days, a proposal), and an animal of
+# a given-up job that nobody took is slaughtered this many hours after (30 days, a proposal).
+job_giveup_hours = 720
+held_animal_hours = 720
 # Shared M9 economy rules. Quantities are integer native units;
 # hunger/tier values are integer hundredths of a person-day.
 # are hundredths of a person-day, storage limits are thousandths of a unit/person.
@@ -730,3 +734,80 @@ horses=300
 cattle=200
 sheep=500
 pigs=100
+
+# Vehicles (CK-431, trade spec section 3.1; every number is a placeholder the owner approved, r160). Weights are grams and spaces
+# millilitres; `carries_*` is what the vehicle holds and `carried_*` what it takes up when another vehicle carries it, its animal
+# included (r139). `land_pace_pm` is the share of walking pace on land, and a vehicle with none cannot move on land by itself.
+# `water` names the travel profile that moves it on water, and one with none is carried over water. A vehicle with no `carried_*`
+# cannot be carried. An input names a `category` (any good that supplies it, the cheapest at the place) or one `good`. `wear` is what
+# one 30-day stretch of travel uses up.
+[[vehicles]]
+id = "hand_cart"
+build_hours = 4
+hands = 1
+inputs = [{ category = "wood", amount = 2 }]
+carries_g = 150000
+carries_ml = 500000
+carried_g = 50000
+carried_ml = 600000
+crew_full = 1
+crew_fewest = 1
+land_pace_pm = 1000
+wear = { good = "hardwood", units = 1 }
+
+[[vehicles]]
+id = "ox_cart"
+build_hours = 8
+hands = 2
+inputs = [{ category = "wood", amount = 4 }]
+animals = [{ species = "cattle", count = 1 }]
+carries_g = 500000
+carries_ml = 1500000
+carried_g = 400000
+carried_ml = 3000000
+crew_full = 2
+crew_fewest = 1
+land_pace_pm = 800
+wear = { good = "hardwood", units = 1 }
+
+[[vehicles]]
+id = "covered_wagon"
+build_hours = 8
+hands = 2
+inputs = [{ category = "wood", amount = 6 }, { category = "fabric", amount = 8 }]
+animals = [{ species = "horses", count = 1 }]
+carries_g = 700000
+carries_ml = 2500000
+carried_g = 700000
+carried_ml = 5000000
+crew_full = 2
+crew_fewest = 1
+land_pace_pm = 1300
+wear = { good = "hardwood", units = 1 }
+
+[[vehicles]]
+id = "simple_barge"
+build_hours = 12
+hands = 3
+inputs = [{ category = "wood", amount = 8 }, { category = "fabric", amount = 8 }]
+carries_g = 2000000
+carries_ml = 6000000
+crew_full = 3
+crew_fewest = 2
+water = "barge"
+wear = { good = "hardwood", units = 1 }
+
+[[vehicles]]
+id = "currach"
+build_hours = 48
+hands = 3
+cultures = ["ulaid", "cruthin", "northern_ui_neill", "airgialla", "mide_brega", "laigin", "mumu", "connachta"]
+inputs = [{ category = "wood", amount = 4 }, { good = "hides", amount = 4 }]
+carries_g = 800000
+carries_ml = 3000000
+carried_g = 150000
+carried_ml = 2000000
+crew_full = 4
+crew_fewest = 2
+water = "currach"
+wear = { good = "hides", units = 1 }

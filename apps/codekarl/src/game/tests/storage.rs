@@ -542,7 +542,9 @@ fn same_build_saves_and_digests_ignore_derived_daily_market_orders() {
                 sell_units: vec![1410],
             }),
             counters: ck_economy::CounterBuckets::default(),
+            trade: ck_economy::PlaceTrade::default(),
         }],
+        trade: ck_economy::TradeCounters::default(),
     };
     let mut cleared = economy.clone();
     cleared.places[0].last_market_orders = None;
@@ -581,6 +583,39 @@ fn same_build_saves_and_digests_ignore_derived_daily_market_orders() {
         bytes,
         "loading and saving again keeps the same-build bytes"
     );
+}
+
+/// CK-431 (trade spec 11c.8): a save from before the slice that added the vehicles and jobs the economy saves is refused by its build
+/// id, which carries the simulation source hash, before any state of it is read: the loader checks the header, and the economy's
+/// sources are among the hash's inputs.
+#[test]
+fn a_save_from_before_the_vehicles_and_jobs_slice_is_refused_by_its_build_id_before_its_state_is_read()
+ {
+    let scenario_hash = "ab".repeat(32);
+    let simulation = Simulation::<crate::game::GameState, crate::game::GameCommand>::new(
+        start(),
+        42,
+        crate::game::GameState {
+            economy: ck_economy::EconomyState::default(),
+            characters: ck_characters::CharacterStore::default(),
+            stretches: std::collections::BTreeMap::new(),
+            lows: crate::game::lows::Lows::default(),
+        },
+        Scheduler::new(),
+        crate::game::apply,
+    );
+    let mut older = identity(&scenario_hash);
+    older.build = format!("{}+0000000000000000", env!("CARGO_PKG_VERSION"));
+    assert_ne!(older.build, identity(&scenario_hash).build);
+    let bytes = simulation.save(older.meta(42)).to_bytes().unwrap();
+    let refused = ck_sim::Save::<crate::game::GameState>::from_bytes(
+        &bytes,
+        &identity(&scenario_hash).expected(),
+    );
+    assert!(matches!(
+        refused,
+        Err(ck_sim::SaveError::BuildMismatch { .. })
+    ));
 }
 
 #[test]
@@ -1177,6 +1212,7 @@ fn character_archive_logs_and_live_state_survive_streamed_save() {
         price_drift_carries: Vec::new(),
         last_market_orders: None,
         counters: ck_economy::CounterBuckets::default(),
+        trade: ck_economy::PlaceTrade::default(),
     });
     let pop = PopLocator {
         place: "p".into(),

@@ -2948,6 +2948,13 @@ GUARDS: tuple[Guard, ...] = (
         "economy.core",
         ("assets/game/economy.toml",),
     ),
+    # CK-431: the vehicle and job tests load the shipped rules, whose vehicle rows and job times they read, and the payday test runs the
+    # shipped production fixture over them.
+    Guard(
+        "crates/economy/src/trade_tests.rs",
+        "economy.core",
+        ("assets/game/economy.toml",),
+    ),
     # CK-391: the game-boundary witness of the swap loads the same shipped rules and runs the game's own noon step.
     Guard(
         "apps/codekarl/src/game/tests/trade_swap.rs",

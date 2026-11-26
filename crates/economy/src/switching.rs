@@ -948,6 +948,9 @@ fn make_move(
         def,
         building_index,
         &output,
+        // A switch's pay-out is of work already accrued: no day of it is counted away.
+        &[],
+        1,
     )?;
     for (source, good_index, contributions) in pending {
         settle_overflow(

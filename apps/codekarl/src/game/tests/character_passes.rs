@@ -4,7 +4,7 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use ck_characters::{Character, CharacterStore, GeneticRecord, PersonalityRecord, PopLocator, Sex};
-use ck_economy::{CounterBuckets, EconomyState, PlaceState, Rules};
+use ck_economy::{CounterBuckets, EconomyState, PlaceState, PlaceTrade, Rules, TradeCounters};
 use ck_sim::{Canonical, Date, GameTime, Scheduler, Simulation};
 
 use super::date;
@@ -80,10 +80,12 @@ fn economy(broken: bool) -> EconomyState {
                 price_drift_carries: Vec::new(),
                 last_market_orders: None,
                 counters: CounterBuckets::default(),
+                trade: PlaceTrade::default(),
             }]
         } else {
             Vec::new()
         },
+        trade: TradeCounters::default(),
     }
 }
 

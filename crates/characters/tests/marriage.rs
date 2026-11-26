@@ -12,7 +12,7 @@ use ck_characters::{
 };
 use ck_economy::{
     CounterBuckets, EconomyState, EventRules, LifeCycle, MoveUndo, NearbyPlace, PlaceState,
-    PopConsumption, PopGenetics, PopState, Rules, events::Registry,
+    PlaceTrade, PopConsumption, PopGenetics, PopState, Rules, TradeCounters, events::Registry,
 };
 use ck_sim::{Canonical, Date, GameTime};
 use std::{
@@ -1457,11 +1457,13 @@ fn place(id: &str, pop: PopState) -> PlaceState {
         price_drift_carries: Vec::new(),
         last_market_orders: None,
         counters: CounterBuckets::default(),
+        trade: PlaceTrade::default(),
     }
 }
 fn economy(source: PopState, destination: PopState) -> EconomyState {
     EconomyState {
         places: vec![place("a", destination), place("b", source)],
+        trade: TradeCounters::default(),
     }
 }
 fn heads_in(state: &EconomyState, index: usize) -> (u64, u64) {

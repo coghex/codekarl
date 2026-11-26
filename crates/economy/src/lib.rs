@@ -23,11 +23,16 @@ mod start_levels;
 mod swap;
 /// Read-only comparisons of production methods.
 pub mod switching;
+mod trade;
 pub use events::{Epithet, EpithetScope, EpithetTrigger, EventRules};
 pub use genetics::{Genetics, PopGenetics};
 pub use lifecycle::LifeCycle;
 pub use peoples::Peoples;
 pub use personality::Personality;
+pub use trade::{
+    Hands, Job, JobKind, PlaceTrade, TradeCounters, Vehicle, VehicleAnimal, VehicleInput,
+    VehicleKind, VehicleWear, run_trade_hour, validate_trade_state,
+};
 
 const WAGE_HISTORY_MONTHS: usize = 12;
 
@@ -392,6 +397,23 @@ pub struct Rules {
     /// The most a swap's starter may lose to rounding, as a share of what it gives, in per-mille (CK-391).
     #[serde(default = "default_swap_loss_limit_pm")]
     pub swap_loss_limit_pm: u16,
+    /// Hours after it was made that a job not started is given up (CK-431, r5 3.4: 30 days, a proposal).
+    #[serde(default = "default_job_giveup_hours")]
+    pub job_giveup_hours: u64,
+    /// Hours after a job is given up that an animal nobody took is slaughtered (r5 3.2: 30 days, a proposal).
+    #[serde(default = "default_held_animal_hours")]
+    pub held_animal_hours: u64,
+    /// The kinds of vehicle, in canonical order (CK-431).
+    #[serde(default)]
+    pub vehicles: Vec<VehicleKind>,
+}
+
+const fn default_job_giveup_hours() -> u64 {
+    720
+}
+
+const fn default_held_animal_hours() -> u64 {
+    720
 }
 
 fn default_method_switch_margin_pm() -> u16 {
@@ -456,6 +478,19 @@ impl Rules {
                     file: path.with_file_name("peoples.toml").display().to_string(),
                     entry: format!("religions.{religion}"),
                     problem: "missing religion".to_owned(),
+                });
+            }
+        }
+        for vehicle in &rules.vehicles {
+            if let Some(culture) = vehicle
+                .cultures
+                .iter()
+                .find(|culture| rules.peoples.culture(culture).is_none())
+            {
+                return Err(DataError {
+                    file: file.clone(),
+                    entry: format!("vehicles.{}.cultures", vehicle.id),
+                    problem: format!("unknown culture `{culture}`"),
                 });
             }
         }
@@ -1222,6 +1257,20 @@ impl Rules {
                     ));
                 }
             }
+        }
+        unique_ids(
+            file,
+            "vehicles",
+            self.vehicles.iter().map(|item| item.id.as_str()),
+        )?;
+        for vehicle in &self.vehicles {
+            vehicle.validate(self, file)?;
+        }
+        if self.job_giveup_hours == 0 || self.held_animal_hours == 0 {
+            return Err(refuse(
+                "job_giveup_hours".to_owned(),
+                "the give-up and slaughter times must be positive".to_owned(),
+            ));
         }
         Ok(())
     }
@@ -2241,6 +2290,7 @@ fn starting_state_with_payday(
             price_drift_carries: vec![0; rules.goods.len()],
             last_market_orders: None,
             counters: CounterBuckets::for_place(rules.goods.len()),
+            trade: PlaceTrade::default(),
         });
     }
     Ok((state, report))
@@ -3825,6 +3875,24 @@ fn daily_market_orders(rules: &Rules, place: &PlaceState) -> Result<DailyMarketO
             }
         }
     }
+    // What a job still lacks is its trader's buy order (r5 3.4); an animal a given-up job holds is on offer (11b.1).
+    let (job_goods, job_animals) = trade::lacks(rules, place);
+    for pop in 0..place.pops.len() {
+        for (good, lack) in job_goods[pop].iter().enumerate() {
+            orders.buy_units[good] = orders.buy_units[good]
+                .checked_add(u128::from(*lack))
+                .ok_or_else(|| missing_data("market.buy".to_owned(), "buy order overflow"))?;
+        }
+        for (good, species) in live.iter().enumerate() {
+            let Some(species) = *species else { continue };
+            orders.buy_units[good] = orders.buy_units[good]
+                .checked_add(u128::from(job_animals[pop][species]))
+                .ok_or_else(|| missing_data("market.buy".to_owned(), "buy order overflow"))?;
+            orders.sell_units[good] = orders.sell_units[good]
+                .checked_add(u128::from(place.trade.offered(pop, species)))
+                .ok_or_else(|| missing_data("market.sell".to_owned(), "sell order overflow"))?;
+        }
+    }
     for building in building_market_sells(rules, place, &place.prices_milli)? {
         for (good, sell) in building.into_iter().enumerate() {
             orders.sell_units[good] = orders.sell_units[good]
@@ -3855,12 +3923,11 @@ pub(crate) fn herd_standard_level(rules: &Rules, maximum: u64) -> u64 {
         .expect("a share of a u64 fits a u64")
 }
 
-/// The animals a building's herds offer above their standard levels and want below them, by species: `(offer, want)`, both zero where
-/// the building keeps no such herd. This is the one place that reads the standard level.
-pub(crate) fn herd_levels(
+/// The most head each of a building's herds can hold, by species: none where the building keeps no such herd.
+pub(crate) fn herd_maximums(
     rules: &Rules,
     building: &BuildingState,
-) -> Result<Vec<(u64, u64)>, DataError> {
+) -> Result<Vec<Option<u64>>, DataError> {
     let definition = rules
         .buildings
         .iter()
@@ -3883,14 +3950,31 @@ pub(crate) fn herd_levels(
     rules
         .herd_species
         .iter()
-        .enumerate()
-        .map(|(species, species_rules)| {
+        .map(|species_rules| {
             let Some(capacity) = definition.herds.get(&species_rules.animal) else {
+                return Ok(None);
+            };
+            farming_levels
+                .checked_mul(capacity.maximum)
+                .map(Some)
+                .ok_or_else(|| missing_data("herds".to_owned(), "herd maximum overflow"))
+        })
+        .collect()
+}
+
+/// The animals a building's herds offer above their standard levels and want below them, by species: `(offer, want)`, both zero where
+/// the building keeps no such herd. This is the one place that reads the standard level.
+pub(crate) fn herd_levels(
+    rules: &Rules,
+    building: &BuildingState,
+) -> Result<Vec<(u64, u64)>, DataError> {
+    herd_maximums(rules, building)?
+        .into_iter()
+        .enumerate()
+        .map(|(species, maximum)| {
+            let Some(maximum) = maximum else {
                 return Ok((0, 0));
             };
-            let maximum = farming_levels
-                .checked_mul(capacity.maximum)
-                .ok_or_else(|| missing_data("herds".to_owned(), "herd maximum overflow"))?;
             let standard = herd_standard_level(rules, maximum);
             let count = building.herds.get(species).copied().unwrap_or(0);
             Ok((
@@ -5573,6 +5657,8 @@ pub struct PlaceState {
     pub last_market_orders: Option<DailyMarketOrders>,
     /// Display-only monthly event counters.
     pub counters: CounterBuckets,
+    /// The place's vehicles and jobs, and the days its buildings' workers were away on them (CK-431). Saved.
+    pub trade: PlaceTrade,
 }
 
 /// One pop's derived allocation across the place's housing classes.
@@ -6047,6 +6133,8 @@ fn give(capacity: u64, demands: &[u64]) -> Result<Vec<u64>, DataError> {
 pub struct EconomyState {
     /// Places in scenario-file order.
     pub places: Vec<PlaceState>,
+    /// How many vehicles and jobs have been numbered (CK-431). Saved.
+    pub trade: TradeCounters,
 }
 
 /// Per-system conservation results. These values are returned to the caller and are not saved.
@@ -7396,13 +7484,23 @@ fn split_and_pay(
     definition: &BuildingType,
     building_index: usize,
     output: &[u64],
+    away: &[u64],
+    day_scale: u64,
 ) -> Result<(u128, PendingOverflow), DataError> {
     let mut overflow = PendingOverflow::new();
     let wage_share_pm = u64::from(1000_u16.saturating_sub(definition.overhead_pm)) * 1000;
+    // Each pop's share of the wage is its workers, each less the days they were away out of the month's days (r5 3.6). With no days
+    // away the weights are the worker counts themselves.
     let worker_weights = building
         .employment
         .iter()
-        .map(|employment| employment.workers)
+        .enumerate()
+        .map(|(pop, employment)| {
+            employment
+                .workers
+                .saturating_mul(day_scale)
+                .saturating_sub(away.get(pop).copied().unwrap_or(0))
+        })
         .collect::<Vec<_>>();
     let mut wage_value = 0_u128;
     for (good_index, output_units) in output.iter().copied().enumerate() {
@@ -7575,6 +7673,17 @@ fn monthly_production(
         place_ledger.stock_before = total_stored_goods(rules, place)?;
         place_ledger.herds_before = total_herds(place, rules.herd_species.len())?;
         let mut pending_overflow = Vec::<(usize, usize, Vec<(Option<usize>, u64)>)>::new();
+        // The days each building's workers were away on jobs since its last payday, which this payday counts and clears (r5 3.6), and
+        // the days of the month just ended, which a day away is a share of.
+        let mut away_by_building: Vec<Vec<u64>> = (0..place.buildings.len())
+            .map(|building| trade::take_days_away(place, building))
+            .collect();
+        let (previous_year, previous_month) = if date.month == 1 {
+            (date.year.saturating_sub(1), 12)
+        } else {
+            (date.year, date.month - 1)
+        };
+        let month_days = u64::from(days_in_month(previous_year, previous_month).unwrap_or(31));
         for (building_index, building) in place.buildings.iter_mut().enumerate() {
             let Some(definition) = rules.buildings.iter().find(|item| item.id == building.kind)
             else {
@@ -7623,6 +7732,29 @@ fn monthly_production(
                     missing_data("employment.workers".to_owned(), "worker count overflow")
                 })?;
             let staffed = workers.min(positions);
+            // A worker away for some days counts as that much less of a worker (r5 3.6): with days away the building's staffing is
+            // worked in days of the month, every worker counting a full month less what each pop's hands were away. With none the
+            // arithmetic below is the whole-worker arithmetic, unchanged.
+            let away = std::mem::take(&mut away_by_building[building_index]);
+            let away_total = away
+                .iter()
+                .fold(0_u64, |sum, days| sum.saturating_add(*days));
+            let day_scale = if away_total == 0 { 1 } else { month_days };
+            let staffed_days = if away_total == 0 {
+                staffed
+            } else {
+                let counted = building
+                    .employment
+                    .iter()
+                    .zip(&away)
+                    .try_fold(0_u64, |sum, (job, away)| {
+                        sum.checked_add(job.workers.saturating_mul(day_scale).saturating_sub(*away))
+                    })
+                    .ok_or_else(|| {
+                        missing_data("employment.workers".to_owned(), "worker count overflow")
+                    })?;
+                counted.min(positions * day_scale)
+            };
             let coverage = building_coverage_pm(definition, &place.pops, building)?;
             let coverage_efficiency = 1000_u64
                 .checked_sub(
@@ -7734,8 +7866,8 @@ fn monthly_production(
                             level_suitability,
                             record.paydays,
                             month_share,
-                            staffed,
-                            positions,
+                            staffed_days,
+                            positions * day_scale,
                             coverage_efficiency,
                             quality,
                             reference,
@@ -7775,7 +7907,7 @@ fn monthly_production(
                         (1, 1)
                     };
                     // Twelve times the old denominator: the level counts are in twelfths.
-                    let denominator = u128::from(positions)
+                    let denominator = u128::from(positions * day_scale)
                         .checked_mul(12_000_000_000)
                         .and_then(|value| value.checked_mul(u128::from(reference_factor)))
                         .ok_or_else(|| {
@@ -7789,11 +7921,15 @@ fn monthly_production(
                             u128::from(*annual),
                             suitability,
                             month_share,
-                            u128::from(staffed),
+                            u128::from(staffed_days),
                             u128::from(coverage_efficiency),
                             u128::from(quality_factor),
                         ],
-                        building.production_carries[method_index][good_index],
+                        // The carry is in units of one over the denominator: a payday worked in days of the month takes it in days,
+                        // and what it leaves is floored back to the carry's own unit (the part below it, under one over the
+                        // denominator of a good's unit, is the one thing a day-counted payday rounds away).
+                        building.production_carries[method_index][good_index]
+                            * u128::from(day_scale),
                         denominator,
                     )
                     .ok_or_else(|| {
@@ -7814,7 +7950,8 @@ fn monthly_production(
                             "monthly output exceeds u64",
                         )
                     })?;
-                    building.production_carries[method_index][good_index] = remainder;
+                    building.production_carries[method_index][good_index] =
+                        remainder / u128::from(day_scale);
                     monthly_output[good_index] = monthly_output[good_index]
                         .checked_add(output)
                         .ok_or_else(|| {
@@ -8053,6 +8190,8 @@ fn monthly_production(
                 definition,
                 building_index,
                 &monthly_output,
+                &away,
+                day_scale,
             )?;
             pending_overflow.extend(overflow);
             if workers > 0 {
@@ -8339,8 +8478,26 @@ pub fn run_daily_economy_with_trade_neighbours(
         quality_by_place,
         Some((land_by_place, &day_prices)),
     )?;
+    // Each waiting job takes again what its trader has come to hold of what it lacks, before the exchange (11c.1, r5 3.4).
+    let now = ck_sim::GameTime::from_date(date)
+        .map_err(|_| {
+            missing_data(
+                "calendar.date".to_owned(),
+                "the date is outside the calendar",
+            )
+        })?
+        .hours();
+    for (place, prices) in next.places.iter_mut().zip(&day_prices) {
+        trade::take_waiting(rules, place, prices)?;
+    }
     // The exchange uses moved prices; fuel uses the price as the day began.
     swap::run_neighbour_swaps_at_prices(rules, &mut next, &day_prices, trade_by_place)?;
+    // Jobs start after the exchange and before the day's eating, in the order of their numbers; the noon just spent counts as a day
+    // away for the hands of every build under way (11c.1 rule 1, r5 3.6).
+    for place in &mut next.places {
+        trade::start_ready(rules, place, now)?;
+        trade::count_days_away(place);
+    }
     let (intake_pm, daily_consumption) =
         run_daily_consumption_at_prices(rules, &mut next, date, &day_prices)?;
     ledger.intake_pm = intake_pm;
@@ -10700,8 +10857,9 @@ impl Canonical for EconomyState {
             place.development_pm.encode(out)?;
             place.price_drift_carries.encode(out)?;
             encode_place_counters(&place.counters, out)?;
+            place.trade.encode(out)?;
         }
-        Ok(())
+        self.trade.encode(out)
     }
     fn decode(input: &mut Reader<'_>) -> Result<Self, CanonicalError> {
         let place_count = input.length()?;
@@ -10772,9 +10930,13 @@ impl Canonical for EconomyState {
                 price_drift_carries: Vec::<i64>::decode(input)?,
                 last_market_orders: None,
                 counters: decode_place_counters(input)?,
+                trade: PlaceTrade::decode(input)?,
             });
         }
-        Ok(Self { places })
+        Ok(Self {
+            places,
+            trade: TradeCounters::decode(input)?,
+        })
     }
 }
 
@@ -10916,6 +11078,8 @@ mod start_levels_tests;
 mod swap_oracle_tests;
 #[cfg(test)]
 mod swap_tests;
+#[cfg(test)]
+mod trade_tests;
 
 #[cfg(test)]
 pub(crate) mod tests {
@@ -11201,6 +11365,9 @@ pub(crate) mod tests {
             method_switch_margin_pm: 200,
             price_k_pm: 500,
             swap_loss_limit_pm: 100,
+            job_giveup_hours: 720,
+            held_animal_hours: 720,
+            vehicles: Vec::new(),
         }
     }
 
@@ -11403,7 +11570,9 @@ pub(crate) mod tests {
                 price_drift_carries: vec![0; goods],
                 last_market_orders: None,
                 counters: CounterBuckets::for_place(rules.goods.len()),
+                trade: PlaceTrade::default(),
             }],
+            trade: TradeCounters::default(),
         };
         (rules, state)
     }
@@ -11413,7 +11582,7 @@ pub(crate) mod tests {
     /// sums of 1000 did.
     const FLAT: &str = "pasture";
 
-    fn flatten_pasture(rules: &mut Rules) {
+    pub(super) fn flatten_pasture(rules: &mut Rules) {
         let mut table = BTreeMap::new();
         for good in &rules.goods {
             table.insert(good.id.clone(), 1000_u16);
@@ -11677,7 +11846,9 @@ pub(crate) mod tests {
                 price_drift_carries: Vec::new(),
                 last_market_orders: None,
                 counters: CounterBuckets::default(),
+                trade: PlaceTrade::default(),
             }],
+            trade: TradeCounters::default(),
         }
     }
 
@@ -11952,6 +12123,7 @@ pub(crate) mod tests {
         building.pay_carries[later] = 2;
         let mut monthly = EconomyState {
             places: vec![place.clone()],
+            trade: TradeCounters::default(),
         };
         let mut monthly_ledger = ProductionLedger::new(rules.goods.len(), rules.herd_species.len());
         monthly_ledger.places.push(PlaceProductionLedger::new(
@@ -12521,6 +12693,7 @@ pub(crate) mod tests {
             price_drift_carries: vec![0; rules.goods.len()],
             last_market_orders: None,
             counters: CounterBuckets::default(),
+            trade: PlaceTrade::default(),
         };
         assert_eq!(tier_target_units(&rules, "monk", 10, mead, 1), Ok(22));
         assert_eq!(tier_target_units(&rules, "monk", 10, mead, 2), Ok(86));
@@ -12586,6 +12759,7 @@ pub(crate) mod tests {
                 price_drift_carries: vec![0; rules.goods.len()],
                 last_market_orders: None,
                 counters: CounterBuckets::default(),
+                trade: PlaceTrade::default(),
             }
         };
 
@@ -12658,6 +12832,7 @@ pub(crate) mod tests {
             price_drift_carries: vec![0],
             last_market_orders: None,
             counters: CounterBuckets::default(),
+            trade: PlaceTrade::default(),
         }
     }
 
@@ -12854,6 +13029,7 @@ pub(crate) mod tests {
             price_drift_carries: vec![0; rules.goods.len()],
             last_market_orders: None,
             counters: CounterBuckets::default(),
+            trade: PlaceTrade::default(),
         };
         assert_account_order_targets(&rules, &place);
     }
@@ -12893,9 +13069,11 @@ pub(crate) mod tests {
             price_drift_carries: vec![0],
             last_market_orders: None,
             counters: CounterBuckets::default(),
+            trade: PlaceTrade::default(),
         };
         let mut state = EconomyState {
             places: vec![place],
+            trade: TradeCounters::default(),
         };
         assert_eq!(
             daily_market_orders(&rules, &state.places[0]).unwrap(),
@@ -13469,6 +13647,8 @@ pub(crate) mod tests {
         let mut rules = Rules::load(path).unwrap();
         flatten_pasture(&mut rules);
         let mut unlabelled = rules.clone();
+        // Vehicles are built from the fabric category.
+        unlabelled.vehicles.clear();
         for good in &mut unlabelled.goods {
             good.tags.retain(|tag| tag != "fabric");
             good.supplies.remove("fabric");
@@ -14510,6 +14690,7 @@ pub(crate) mod tests {
                 prices_milli: vec![100_000],
                 prepared_m2: 22_200,
                 development_pm: 1000,
+                trade: PlaceTrade::default(),
             }]
         );
     }
@@ -15839,10 +16020,12 @@ pub(crate) mod tests {
             price_drift_carries: vec![0],
             last_market_orders: None,
             counters: CounterBuckets::for_place(1),
+            trade: PlaceTrade::default(),
         };
         place.counters.current.produced[0] = 12;
         let mut state = EconomyState {
             places: vec![place],
+            trade: TradeCounters::default(),
         };
 
         run_daily_economy(
@@ -17286,6 +17469,13 @@ pub(crate) mod tests {
 
     fn without_horses(mut rules: Rules) -> Rules {
         rules.herd_species.retain(|s| s.animal != "horses");
+        // The covered wagon is built with a horse.
+        rules.vehicles.retain(|vehicle| {
+            vehicle
+                .animals
+                .iter()
+                .all(|animal| animal.species != "horses")
+        });
         for building in &mut rules.buildings {
             building.herds.remove("horses");
         }
@@ -18376,6 +18566,7 @@ pub(crate) mod tests {
             price_drift_carries: vec![0; goods],
             last_market_orders: None,
             counters: CounterBuckets::default(),
+            trade: PlaceTrade::default(),
         }
     }
 
@@ -18537,6 +18728,7 @@ pub(crate) mod tests {
                 vec![inland_pop(&rules, "peasant", 100, &[])],
                 Vec::new(),
             )],
+            trade: TradeCounters::default(),
         };
         assert_eq!(state.places[0].prices_milli[fish], 30_000);
         update_daily_prices(&rules, &mut state).unwrap();
@@ -18566,6 +18758,7 @@ pub(crate) mod tests {
                 vec![inland_pop(&rules, "peasant", 100, &[("oats", 1000)])],
                 Vec::new(),
             )],
+            trade: TradeCounters::default(),
         };
         let intake = run_daily_consumption(
             &rules,
@@ -18973,7 +19166,9 @@ pub(crate) mod tests {
                 prices_milli: vec![120_000],
                 prepared_m2: 23_456,
                 development_pm: 875,
+                trade: PlaceTrade::default(),
             }],
+            trade: TradeCounters::default(),
         };
         let bytes = state.to_bytes().unwrap();
         let mut with_cached_orders = state.clone();
@@ -19398,7 +19593,9 @@ pub(crate) mod tests {
                 price_drift_carries: Vec::new(),
                 last_market_orders: None,
                 counters: CounterBuckets::default(),
+                trade: PlaceTrade::default(),
             }],
+            trade: TradeCounters::default(),
         };
         let ledger = run_monthly_production(
             &rules,
@@ -19506,7 +19703,9 @@ pub(crate) mod tests {
                 price_drift_carries: Vec::new(),
                 last_market_orders: None,
                 counters: CounterBuckets::default(),
+                trade: PlaceTrade::default(),
             }],
+            trade: TradeCounters::default(),
         };
         let mut no_workers = no_workers;
         let ledger = run_monthly_production(
@@ -20190,7 +20389,9 @@ pub(crate) mod tests {
                 price_drift_carries: vec![0],
                 last_market_orders: None,
                 counters: CounterBuckets::default(),
+                trade: PlaceTrade::default(),
             }],
+            trade: TradeCounters::default(),
         };
         run_daily_economy(
             &rules,
@@ -20253,7 +20454,9 @@ pub(crate) mod tests {
                 price_drift_carries: Vec::new(),
                 last_market_orders: None,
                 counters: CounterBuckets::default(),
+                trade: PlaceTrade::default(),
             }],
+            trade: TradeCounters::default(),
         };
         let intake = run_daily_consumption(
             &rules,
@@ -20326,7 +20529,9 @@ pub(crate) mod tests {
                 price_drift_carries: Vec::new(),
                 last_market_orders: None,
                 counters: CounterBuckets::default(),
+                trade: PlaceTrade::default(),
             }],
+            trade: TradeCounters::default(),
         };
         run_daily_consumption(
             &rules,
@@ -20396,7 +20601,9 @@ pub(crate) mod tests {
                 price_drift_carries: vec![0; goods],
                 last_market_orders: None,
                 counters: CounterBuckets::default(),
+                trade: PlaceTrade::default(),
             }],
+            trade: TradeCounters::default(),
         };
         run_daily_consumption(
             &rules,
@@ -20464,7 +20671,9 @@ pub(crate) mod tests {
                 price_drift_carries: Vec::new(),
                 last_market_orders: None,
                 counters: CounterBuckets::default(),
+                trade: PlaceTrade::default(),
             }],
+            trade: TradeCounters::default(),
         };
         let error = run_daily_consumption(
             &rules,
@@ -20581,6 +20790,7 @@ pub(crate) mod tests {
             price_drift_carries: Vec::new(),
             last_market_orders: None,
             counters: CounterBuckets::default(),
+            trade: PlaceTrade::default(),
         };
         draw_pop(&rules, &mut place, 0).unwrap();
         assert_eq!(place.pops[0].stock, [60]);
@@ -20682,7 +20892,9 @@ pub(crate) mod tests {
                 price_drift_carries: Vec::new(),
                 last_market_orders: None,
                 counters: CounterBuckets::default(),
+                trade: PlaceTrade::default(),
             }],
+            trade: TradeCounters::default(),
         };
         run_daily_consumption(
             &rules,
@@ -20768,7 +20980,9 @@ pub(crate) mod tests {
                 price_drift_carries: Vec::new(),
                 last_market_orders: None,
                 counters: CounterBuckets::default(),
+                trade: PlaceTrade::default(),
             }],
+            trade: TradeCounters::default(),
         };
         run_daily_consumption(
             &rules,
@@ -20880,11 +21094,13 @@ pub(crate) mod tests {
                 price_drift_carries: vec![0; goods],
                 last_market_orders: None,
                 counters: CounterBuckets::default(),
+                trade: PlaceTrade::default(),
             }
         };
         let protected = make(400);
         let mut protected_state = EconomyState {
             places: vec![protected],
+            trade: TradeCounters::default(),
         };
         run_daily_consumption(
             &rules,
@@ -20906,6 +21122,7 @@ pub(crate) mod tests {
         let mut starving = make(200);
         let mut state = EconomyState {
             places: vec![starving.clone()],
+            trade: TradeCounters::default(),
         };
         run_daily_consumption(
             &rules,
@@ -21131,6 +21348,7 @@ pub(crate) mod tests {
             price_drift_carries: Vec::new(),
             last_market_orders: None,
             counters: CounterBuckets::default(),
+            trade: PlaceTrade::default(),
         };
         let mut ledger = DailyConsumptionLedger {
             butchered: vec![0],
@@ -21204,6 +21422,7 @@ pub(crate) mod tests {
             price_drift_carries: Vec::new(),
             last_market_orders: None,
             counters: CounterBuckets::default(),
+            trade: PlaceTrade::default(),
         };
         let fill = housing_fill(&rules, &place, 3).unwrap();
         assert_eq!(fill.basic_capacity, 17);
@@ -21285,6 +21504,7 @@ pub(crate) mod tests {
             price_drift_carries: Vec::new(),
             last_market_orders: None,
             counters: CounterBuckets::default(),
+            trade: PlaceTrade::default(),
         }
     }
 
@@ -21680,7 +21900,9 @@ pub(crate) mod tests {
                 price_drift_carries: Vec::new(),
                 last_market_orders: None,
                 counters: CounterBuckets::default(),
+                trade: PlaceTrade::default(),
             }],
+            trade: TradeCounters::default(),
         };
         run_monthly_demography(&rules, &mut state, &BTreeMap::new(), &BTreeMap::new(), None)
             .unwrap();
@@ -21726,9 +21948,11 @@ pub(crate) mod tests {
             price_drift_carries: Vec::new(),
             last_market_orders: None,
             counters: CounterBuckets::default(),
+            trade: PlaceTrade::default(),
         };
         let mut state = EconomyState {
             places: vec![place],
+            trade: TradeCounters::default(),
         };
         let floors = BTreeMap::from([(("floor".to_owned(), 0), 3)]);
         run_monthly_demography_with_floors(
@@ -21780,7 +22004,9 @@ pub(crate) mod tests {
                 price_drift_carries: Vec::new(),
                 last_market_orders: None,
                 counters: CounterBuckets::default(),
+                trade: PlaceTrade::default(),
             }],
+            trade: TradeCounters::default(),
         };
 
         run_monthly_demography(&rules, &mut state, &BTreeMap::new(), &BTreeMap::new(), None)
@@ -21799,6 +22025,7 @@ pub(crate) mod tests {
     fn accounting_state(workers: u64, dependents: u64) -> EconomyState {
         let mut state = EconomyState {
             places: vec![reserve_test_place(reserve_test_pop(workers), Vec::new())],
+            trade: TradeCounters::default(),
         };
         state.places[0].pops[0].dependents = dependents;
         state.places[0].prices_milli = vec![1000];
@@ -21951,6 +22178,7 @@ pub(crate) mod tests {
         pop.employment = buildings.iter().map(|b| b.employment[0].clone()).collect();
         EconomyState {
             places: vec![reserve_test_place(pop, buildings)],
+            trade: TradeCounters::default(),
         }
     }
 
@@ -22356,7 +22584,9 @@ pub(crate) mod tests {
                 price_drift_carries: Vec::new(),
                 last_market_orders: None,
                 counters: CounterBuckets::default(),
+                trade: PlaceTrade::default(),
             }],
+            trade: TradeCounters::default(),
         };
         assert_eq!(
             housing_fill(&rules, &state.places[0], 0)
@@ -22517,7 +22747,12 @@ pub(crate) mod tests {
         );
 
         // The state is saved with the pop.
-        let saved = EconomyState { places }.to_bytes().unwrap();
+        let saved = EconomyState {
+            places,
+            trade: TradeCounters::default(),
+        }
+        .to_bytes()
+        .unwrap();
         let loaded = EconomyState::from_bytes(&saved).unwrap();
         assert_eq!(loaded.places[1].pops[index].genetics, blended);
     }
@@ -22576,6 +22811,10 @@ pub(crate) mod tests {
         assert_eq!(dependents, 3, "the reversed 0.8 gap accumulates to one");
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "The fixture is one literal place with every dimension of the saved state visible."
+    )]
     fn holdings_movement_fixture() -> (Rules, PlaceState) {
         let mut rules = tiny_rules();
         rules.leave_pm = 1000;
@@ -22675,6 +22914,7 @@ pub(crate) mod tests {
             price_drift_carries: Vec::new(),
             last_market_orders: None,
             counters: CounterBuckets::default(),
+            trade: PlaceTrade::default(),
         };
         (rules, place)
     }
@@ -22876,6 +23116,7 @@ pub(crate) mod tests {
             price_drift_carries: Vec::new(),
             last_market_orders: None,
             counters: CounterBuckets::default(),
+            trade: PlaceTrade::default(),
         };
         let mut places = vec![
             empty_destination("first"),
@@ -23066,6 +23307,7 @@ pub(crate) mod tests {
             price_drift_carries: Vec::new(),
             last_market_orders: None,
             counters: CounterBuckets::default(),
+            trade: PlaceTrade::default(),
         };
         assert_eq!(pop_wage_per_head(&place, 0).unwrap(), 100);
         assert_eq!(pop_wage_per_head(&place, 1).unwrap(), 90);
