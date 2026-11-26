@@ -139,15 +139,24 @@ local function row_widget(picker, key, index, activate)
     elseif kind == "down" then
       if not self.pressed then
         self.pressed = true
+        picker.pressed_row = index
+        picker.shown_hover = nil
+        picker:show_hover()
         pointer.pressed(key, true)
       end
     elseif kind == "up" then
       if self.pressed then
         release(self, key)
+        picker.pressed_row = nil
+        picker.shown_hover = nil
+        picker:show_hover()
         if eligible ~= false and event.inside == true then activate() end
       end
     elseif kind == "cancel" then
       release(self, key)
+      picker.pressed_row = nil
+      picker.shown_hover = nil
+      picker:show_hover()
     end
   end
   function widget:on_hover(hovered)
@@ -160,7 +169,12 @@ local function row_widget(picker, key, index, activate)
     picker:show_hover()
   end
   function widget:functional() return true end
-  function widget:on_overflow() release(self, key) end
+  function widget:on_overflow()
+    release(self, key)
+    picker.pressed_row = nil
+    picker.shown_hover = nil
+    picker:show_hover()
+  end
   return widget
 end
 
@@ -168,7 +182,12 @@ end
 -- that would look the same.
 local function describe(bar, kind)
   local entries, widest, rows_top, content_width = {}, 0, 0, 0
-  if kind == "filter" and bar.event_choices then
+  if kind == "palette" then
+    for name, value in pairs(theme.palette()) do entries[#entries + 1] = {kind = "palette", label = name, value = value} end
+    table.sort(entries, function(a, b) return a.label < b.label end)
+    for _, entry in ipairs(entries) do widest = math.max(widest, width_of(entry.label) + 14) end
+    content_width = (widest + 4) * P
+  elseif kind == "filter" and bar.event_choices then
     entries = {{kind = "event_box", label = "storms from", value = "storms"}, {kind = "event_box", label = "blights", value = "blights"}}
     content_width = 205 * P
   elseif kind == "filter" then
@@ -281,6 +300,11 @@ local function new_picker(bar, kind)
         row.box = checkbox(self.rows_group, top, self.colours.text)
         activate = function() bar:toggle(entry.group, entry.value) end
         row.line = text.line(12 * P, top + P, self.rows_group, self.colours.text)
+      elseif entry.kind == "palette" then
+        activate = function() bar:choose(entry.value) end
+        row.swatch = render.create_quad{texture = ui.texture(WHITE), x = P, y = top + 2 * P, width = 9 * P, height = 9 * P,
+          group = self.rows_group, tint = entry.value}
+        row.line = text.line(13 * P, top + P, self.rows_group, self.colours.text)
       else
         activate = function() bar:choose(entry.sort) end
         row.line = text.line(P, top + P, self.rows_group, self.colours.text)
@@ -297,6 +321,13 @@ local function new_picker(bar, kind)
         on_change = function(n) bar.event_choices.threshold = n; if bar.on_change then bar.on_change() end end})
     self.owned[self.slider.key] = true
   end
+  theme.watch(self, function(picker)
+    render.set_tint(picker.hover_quad, picker.colours.row_hover)
+    if picker.chosen_quad ~= nil then render.set_tint(picker.chosen_quad, picker.colours.hot) end
+    picker.shown_hover = nil
+    picker:refresh()
+    picker:show_hover()
+  end)
   self:refresh()
   return self
 end
@@ -376,17 +407,27 @@ function Picker:show_hover()
   local row = self.hover
   if row ~= nil and self.chosen_row == row then row = nil end
   if row == self.shown_hover then return end
+  render.set_tint(self.hover_quad, self.pressed_row and self.colours.hot or self.colours.row_hover)
   if row == nil then
     render.set_position(self.hover_quad, ui.HIDDEN, ui.HIDDEN)
   else
     render.set_position(self.hover_quad, -3 * P, (row - 1) * ROW)
   end
   self.shown_hover = row
+  for index, item in ipairs(self.rows) do
+    if item.line ~= nil then
+      local ink = index == self.chosen_row and self.colours.pressed_text
+        or index == row and (self.pressed_row and self.colours.pressed_text or self.colours.title_text)
+        or item.entry.kind == "heading" and theme.colour("dim") or self.colours.text
+      text.set_colour(item.line, ink)
+    end
+  end
 end
 
 -- Shows the bar's present choices: the boxes ticked, the "all" button's look, the chosen sort row, its direction mark.
 function Picker:refresh()
   local bar = self.bar
+  if self.kind == "palette" then self:show_hover(); return end
   if self.kind == "filter" then
     if self.all then self.all:set_selected(bar.ticks == 0) end
     for _, row in ipairs(self.rows) do
@@ -420,6 +461,7 @@ function Picker:refresh()
         y = row.y + 4 * P, width = 5 * P, height = 5 * P, group = self.rows_group, tint = ink}
     end
   end
+  self.shown_hover = nil
   self:show_hover()
 end
 
@@ -430,6 +472,7 @@ end
 function Picker:destroy()
   if self.closed then return end
   self.closed = true
+  theme.unwatch(self)
   for key in pairs(self.owned) do retired[key] = true end
   if self.scroll_bar.track_key ~= nil then
     retired[self.scroll_bar.track_key], retired[self.scroll_bar.thumb_key] = true, true
@@ -741,6 +784,15 @@ function Bar:destroy()
   if not self.window.closed then self.window:detach(self) end
 end
 
+function listbar.palette(spec)
+  local bar = {window = spec.window, opener = spec.opener, on_close = spec.on_close}
+  function bar:toggle() toggle_picker(self, "palette") end
+  function bar:choose(value) spec.change(value); close_picker(self) end
+  function bar:owns(key) return key == self.opener or (self.picker ~= nil and self.picker:owns(key)) end
+  function bar:destroy() close_picker(self); self.closed = true end
+  return bar
+end
+
 -- A two-row checkbox picker for the map bar. It shares the picker slot and
 -- the same row, checkbox, hover and pointer behaviour as the list filter.
 function listbar.layers(spec)
@@ -766,8 +818,13 @@ function listbar.layers(spec)
       height = ROW, group = picker.rows_group, tint = colours.row_hover}
     function picker:scroll() end
     function picker:show_hover()
-      if self.hover == nil then render.set_position(self.hover_quad, ui.HIDDEN, ui.HIDDEN)
-      else render.set_position(self.hover_quad, -3 * P, (self.hover - 1) * ROW) end
+      local row = self.pressed_row or self.hover
+      render.set_tint(self.hover_quad, self.pressed_row and colours.hot or colours.row_hover)
+      if row == nil then render.set_position(self.hover_quad, ui.HIDDEN, ui.HIDDEN)
+      else render.set_position(self.hover_quad, -3 * P, (row - 1) * ROW) end
+      for index, item in ipairs(self.rows) do
+        text.set_colour(item.line, index == row and (self.pressed_row and colours.pressed_text or colours.title_text) or colours.text)
+      end
     end
     function picker:owns(key) return self.owned[key] == true end
     function picker:refresh()
@@ -780,6 +837,7 @@ function listbar.layers(spec)
     function picker:destroy()
       if self.closed then return end
       self.closed = true
+      theme.unwatch(self)
       for key in pairs(self.owned) do retired[key] = true; pointer.unregister(key) end
       render.set_hit(self.panel_key, nil, self.group)
       for _, row in ipairs(self.rows) do render.set_hit(row.key, nil, self.rows_group) end
@@ -799,6 +857,10 @@ function listbar.layers(spec)
       render.set_hit(key, {{x = -3 * P, y = top, width = width - 2 * P, height = ROW}}, picker.rows_group)
       pointer.register(key, row_widget(picker, key, index, function() spec.change(name, not spec.value(name)); picker:refresh() end))
     end
+    theme.watch(picker, function(item)
+      item:show_hover()
+      item:refresh()
+    end)
     picker:refresh()
     if spec.on_open ~= nil then spec.on_open() end
   end
@@ -825,7 +887,8 @@ function listbar.update(update)
   local bar = active
   if bar ~= nil then
     local picker = bar.picker
-    local opener = picker.kind == "layers" and bar.opener or (picker.kind == "filter" and bar.filter_button or bar.sort_button).key
+    local opener = (picker.kind == "layers" or picker.kind == "palette") and bar.opener
+      or (picker.kind == "filter" and bar.filter_button or bar.sort_button).key
     local resized = (picker.view_width ~= nil and width ~= nil and width ~= picker.view_width)
       or (picker.view_height ~= nil and height ~= nil and height ~= picker.view_height)
     local pointer_state = update.pointer

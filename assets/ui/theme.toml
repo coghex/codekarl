@@ -1,7 +1,6 @@
-# The look (milestone 8, slice 7b; docs/ui-design.md §3.7). Colours are `#rrggbb` or `#rrggbbaa`.
-# `outline` and `hot` are required in every kind; `fill` (the body) defaults to `colour.body`, `text` to `colour.text`,
-# `title_text` and `pressed_text` to `colour.text`, `row_hover` and `row_pressed` to `outline` and `hot`;
-# `divider` is optional: a window of that kind has a dividing line under its title.
+# The palette and base colours of UI kinds (docs/ui-design.md §3.7).
+# Palette colours may include alpha; the five colours used for derivation must be opaque.
+# Managed kinds keep only non-derived data; custom kinds provide their own outline and hot.
 
 [colour]
 body = "#15110a"   # every panel and window body: the map's near-black
@@ -11,6 +10,7 @@ term = "#92ddea"
 number = "#5fb35a"
 saved = "#5fb35a"
 over_limit = "#f66155"
+over_limit_dark = "#4b0b06"
 dim = "#9a927e"    # subdued ledger column headings
 track = "#3a3326"
 event_storm = "#6f9fe8"
@@ -35,33 +35,20 @@ tile = "#221e1a"
 chip_light = "#d8dce0"        # the light chips of the attributes, and the dark ink on them
 chip_light_text = "#2a221a"
 
-[kind.window]      # a window with no kind of its own (Help, Places)
-outline = "#6e130f"
-hot = "#a8261c"    # hover outline, and the pressed fill
-highlight_number = "#d4a8d7"
+[kind_colours]
+general = "#6e130f"
+location = "#4fb3c8"
+social = "#6e130f"
+expedition = "#c9932e"
 
+[kind.window]
 [kind.time_bar]
-outline = "#6e130f"
-hot = "#a8261c"
-highlight_number = "#d4a8d7"
 speed_box = "#ece3cb"
-speed_fill = "#a8261c"
-
 [kind.places_bar]
-outline = "#6e130f"
-hot = "#a8261c"
-highlight_number = "#d4a8d7"
-
-[kind.place]       # the location popup (the place window)
-outline = "#4fb3c8"
-hot = "#92ddea"
-title_text = "#15110a"
-pressed_text = "#15110a"
+[kind.place]
 divider = "#c9932e"
-highlight_number = "#663069"
-highlight_over_limit = "#4b0b06"
-
-[kind.tooltip]     # the hover tooltip: all white on black
-outline = "#ece3cb"
-hot = "#ece3cb"    # required by the rule; a tooltip has no states
+[kind.social]
+[kind.expedition]
+divider = "#c9932e"
+[kind.tooltip]
 title_text = "#c9932e"

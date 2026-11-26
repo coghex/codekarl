@@ -1396,6 +1396,7 @@ pub(crate) struct SettingsOverrides {
     pub(crate) map_scroll_points_per_step: Option<u32>,
     pub(crate) ui_scale_limit_k: Option<u32>,
     pub(crate) ui_list_look: Option<&'static str>,
+    pub(crate) ui_colours: BTreeMap<String, String>,
     /// The kept `[ui] place_names`: which name of a place the player sees (CK-423).
     pub(crate) ui_place_names: Option<&'static str>,
     pub(crate) window_width: Option<u32>,
@@ -2286,6 +2287,10 @@ fn load_input_settings(path: &Path, value: &toml::Value, config: &mut Config) {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the UI settings table validates each independent entry in one pass"
+)]
 fn load_ui_settings(path: &Path, value: &toml::Value, config: &mut Config) {
     let Some(ui) = value.as_table() else {
         config.settings_warnings.push(format!(
@@ -2295,6 +2300,31 @@ fn load_ui_settings(path: &Path, value: &toml::Value, config: &mut Config) {
         return;
     };
     for (key, value) in ui {
+        if key == "colours" {
+            if let Some(entries) = value.as_table() {
+                for (name, value) in entries {
+                    if ["general", "location", "social", "expedition"].contains(&name.as_str())
+                        && let Some(colour) = value.as_str().filter(|v| crate::theme::valid_base(v))
+                    {
+                        config
+                            .settings_overrides
+                            .ui_colours
+                            .insert(name.clone(), colour.to_ascii_lowercase());
+                        continue;
+                    }
+                    config.settings_warnings.push(format!(
+                        "{}: [ui.colours] {name} = {value} is not accepted; ignoring it",
+                        path.display()
+                    ));
+                }
+            } else {
+                config.settings_warnings.push(format!(
+                    "{}: [ui.colours] must be a table; ignoring it",
+                    path.display()
+                ));
+            }
+            continue;
+        }
         if key == "scale" {
             match ui_scale_k(path, value) {
                 Ok(k) => {

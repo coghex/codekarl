@@ -135,7 +135,7 @@ function character_log:open(id, name, revision, world)
   local x, y, width, height = frame_of(self)
   local created
   created = windows.new{
-    title = "life of " .. name, kind = "window", outer_width = width, outer_height = height, x = x, y = y, draggable = false,
+    title = "life of " .. name, kind = "social", outer_width = width, outer_height = height, x = x, y = y, draggable = false,
     clip_title = true,
     on_close = function()
       if self.window == created then

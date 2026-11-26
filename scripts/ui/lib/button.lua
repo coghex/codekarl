@@ -221,6 +221,7 @@ function button.new(spec)
   self.owner = spec.owner
   self.style = spec.style or "panel"
   self.colours = theme.kind(spec.kind or "window")
+  theme.watch(self, function(item) if item.frame ~= nil then show(item) end end)
   self.key = ui.key("button")
   self.x = ui.snap(spec.x)
   self.y = ui.snap(spec.y)
@@ -421,6 +422,7 @@ function button:destroy()
   if self.frame == nil then
     return
   end
+  theme.unwatch(self)
   pointer.unregister(self.key)
   if self.tooltip_attached then require("lib.tooltip").detach(self.key) end
   render.set_hit(self.key, nil, self.group)

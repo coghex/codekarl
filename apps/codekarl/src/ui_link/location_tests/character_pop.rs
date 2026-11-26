@@ -107,7 +107,7 @@ function announce_current_frames()
   local theme_library = require("lib.theme")
   local count = 0
   for _, frame in ipairs(drawn_frames) do
-    if frame.line == theme_library.kind("window").hot and frame.width == 26 then count = count + 1 end
+    if frame.line == theme_library.kind("social").hot and frame.width == 26 then count = count + 1 end
   end
   note("pop_frames " .. count)
 end

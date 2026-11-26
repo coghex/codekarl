@@ -401,3 +401,35 @@ fn hourly_weather_refreshes_an_open_panel_without_a_new_economy_revision() {
     );
     assert!(loaded.last().unwrap().contains("wind calm"), "{loaded:?}");
 }
+
+#[test]
+fn location_section_rules_repaint_after_a_colour_change() {
+    let mut rig = rig(&[
+        r"tracked = {}
+local create, tint, destroy = render.create_quad, render.set_tint, render.destroy_quad
+render.create_quad = function(spec) local id = create(spec); tracked[id] = spec.tint; return id end
+render.set_tint = function(id, value) tracked[id] = value; tint(id, value) end
+render.destroy_quad = function(id) tracked[id] = nil; destroy(id) end
+local overrides = {}
+settings.colours = function() return overrides end
+settings.set = function(name, value) overrides[assert(name:match('ui%.colours%.(.+)'))] = value end
+time(1, 1) select_place('rowan', 'Rowan')",
+        r"function check_rules(expected)
+  local count = 0
+  for _, view in pairs(list_object.lines) do
+    if view.bar ~= nil and view.bar.mode == 'rule' then
+      assert(tracked[view.bar.track] == expected, 'rule tint: ' .. tostring(tracked[view.bar.track]))
+      count = count + 1
+    end
+  end
+  assert(count == 5, 'expected five visible section rules, got ' .. count)
+end
+check_rules('#4fb3c8')
+settings.set('ui.colours.location', '#004488')",
+        "check_rules('#004488')",
+    ]);
+    rig.opened();
+    rig.opened();
+    rig.deliver_fixture_frame_at(1800, 900, 2);
+    rig.opened();
+}

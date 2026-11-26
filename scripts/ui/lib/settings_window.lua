@@ -12,11 +12,14 @@ local typing = require("lib.typing")
 local numberfield = require("lib.numberfield")
 local list_look = require("lib.list_look")
 local place_names = require("lib.place_names")
+local textfield = require("lib.textfield")
+local fieldedit = require("lib.fieldedit")
+local listbar = require("lib.listbar")
 
 local P = ui.P
 local WHITE = "ui/theme/white.png"
-local SIDE_TABS = {"general", "graphics", "map", "input", "development"}
-local WIDTH_TABS = {"general", "graphics", "map", "input", "development"}
+local SIDE_TABS = {"general", "graphics", "colours", "map", "input", "development"}
+local WIDTH_TABS = {"general", "graphics", "colours", "map", "input", "development"}
 local LABEL_WIDTH = 84 * P
 local KEY_WIDTH = (font.layout("press a key").width + 8) * P
 local KEY_HEIGHT = 13 * P
@@ -190,7 +193,7 @@ local function add_defaults(state, page, tab, y)
     x = 0, y = y, text = "defaults", kind = "window", group = page.group, owner = page.owner,
     on_click = function()
       local setting = tab == "general" and "tooltips" or tab == "bindings" and "bindings"
-        or tab == "graphics" and "graphics" or tab == "development" and "debug" or "map"
+        or tab == "graphics" and "graphics" or tab == "colours" and "colours" or tab == "development" and "debug" or "map"
       settings.reset(setting)
       -- The place-name choice is on the general tab too (CK-423): its defaults put it back, and the open views relabel.
       if tab == "general" then
@@ -891,6 +894,45 @@ local function show_input(state, page)
   state.page = page
 end
 
+local function show_colours(state, page)
+  state.controls.colours = {}
+  local pickers = {}
+  fieldedit.cancel_area(page, function(key)
+    for _, picker in ipairs(pickers) do if picker:owns(key) then return true end end
+    return false
+  end)
+  page.subscriptions[#page.subscriptions + 1] = function()
+    fieldedit.remove_cancel_area(page)
+    for _, picker in ipairs(pickers) do picker:destroy() end
+  end
+  for index, entry in ipairs({{"general", "general"}, {"locations", "location"}, {"social", "social"}, {"expeditions", "expedition"}}) do
+    local y = (index - 1) * 24 * P
+    label_at(page.group, 0, y + 2 * P, entry[1], theme.colour("text"), 68 * P)
+    local swatch = render.create_quad{texture = ui.texture(WHITE), x = 70 * P, y = y + 2 * P,
+      width = 11 * P, height = 11 * P, group = page.group, tint = theme.bases()[entry[2]]}
+    local field, picker
+    local function apply(value)
+      if value:match("^#[%x][%x][%x][%x][%x][%x]$") then
+        settings.set("ui.colours." .. entry[2], value:lower())
+        theme.refresh()
+      end
+      local kept = theme.bases()[entry[2]]
+      field:set(kept)
+      render.set_tint(swatch, kept)
+    end
+    local opener = button.new{x = 84 * P, y = y, text = "v", kind = "window", group = page.group, owner = page.owner,
+      on_click = function() picker:toggle() end}
+    picker = listbar.palette{window = state.window, opener = opener.key, change = apply}
+    pickers[#pickers + 1] = picker
+    field = textfield.new{x = 104 * P, y = y, width = 68 * P, greatest = 7, value = theme.bases()[entry[2]],
+      group = page.group, owner = state.window, on_apply = apply}
+    page.fields[#page.fields + 1] = field
+    state.controls.colours[entry[2]] = {field = field, opener = opener, picker = picker, swatch = swatch,
+      swatch_value = theme.bases()[entry[2]]}
+  end
+  add_defaults(state, page, "colours", 112 * P)
+end
+
 local function make_tabs(state)
   local colours = theme.kind("window")
   state.tabs = {}
@@ -936,6 +978,7 @@ function settings_window.open(view)
     content_width = state.content_width, content_height = state.content_height,
     modal = true,
     on_close = function()
+      theme.unwatch(state)
       if state.prompt ~= nil then state.prompt.window:close() end
       if state.waiting ~= nil then
         pcall(typing.cancel_capture, settings.cancel_capture)
@@ -955,6 +998,7 @@ function settings_window.open(view)
     local page = make_page(self)
     if name == "general" then show_general(self, page)
     elseif name == "graphics" then show_graphics(self, page)
+    elseif name == "colours" then show_colours(self, page)
     elseif name == "map" then show_map(self, page)
     elseif name == "development" then show_development(self, page)
     else show_input(self, page) end
@@ -977,6 +1021,17 @@ function settings_window.open(view)
     end
   end
   make_tabs(state)
+  state.theme_outline = theme.kind("window").outline
+  theme.watch(state, function(item)
+    local outline = theme.kind("window").outline
+    if item.theme_outline ~= outline then
+      item.theme_outline = outline
+      render.set_tint(item.divider, outline)
+      for _, slots in pairs(item.controls.key_slots or {}) do
+        for _, slot in ipairs(slots) do slot:refresh() end
+      end
+    end
+  end)
   local x, y = ui.anchor("centre", select(1, state.window:size()), select(2, state.window:size()),
     0, 0, view.width, view.height)
   state.window:move_to(x, y)
@@ -999,6 +1054,16 @@ function settings_window.update(update)
   if state.selected == "graphics" and update ~= nil and type(update.pixel_width) == "number"
     and type(update.pixel_height) == "number" then
     update_graphics_controls(state, update.pixel_width, update.pixel_height)
+  end
+  if state.selected == "colours" then
+    local bases = theme.bases()
+    for name, row in pairs(state.controls.colours) do
+      if not row.field:editing() and row.field:get() ~= bases[name] then row.field:set(bases[name]) end
+      if row.swatch_value ~= bases[name] then
+        render.set_tint(row.swatch, bases[name])
+        row.swatch_value = bases[name]
+      end
+    end
   end
   -- The debug key steps the level outside this window: the page follows it by the next update.
   if state.selected == "development" then show_debug_values(state) end

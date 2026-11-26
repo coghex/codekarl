@@ -42,7 +42,7 @@ window.record(theme.kind('places_bar').highlight_number)
             "5200,9000",
             "3",
             "1,200",
-            "#5fb35a",
+            "#d4a8d7",
             "#663069",
             "#d4a8d7",
             "#d4a8d7",
@@ -460,10 +460,10 @@ look('b pressed')
     );
     let after: Vec<&str> = tints[24..].iter().map(String::as_str).collect();
     // hover (panel): the line goes hot; pressed: the fill goes hot and the text takes `pressed_text`; cancel: back to normal.
-    assert_eq!(after[0], "set_tint q6 #92ddea");
+    assert_eq!(after[0], "set_tint q6 #b0dde6");
     assert!(after.contains(&"record a hover"));
     let at = |marker: &str| after.iter().position(|line| *line == marker).expect(marker);
-    assert_eq!(after[at("record a hover") + 1], "set_tint q1 #92ddea");
+    assert_eq!(after[at("record a hover") + 1], "set_tint q1 #b0dde6");
     assert!(
         after[at("record a hover") + 1..at("record a pressed")].contains(&"set_tint q12 #15110a"),
         "{after:?}"
@@ -475,10 +475,10 @@ look('b pressed')
     // The title button on hover takes the body fill and the hot line and the body-light text; pressed: hot fill and line, dark text.
     let hover = &after[at("record a normal") + 1..at("record b hover")];
     assert!(hover.contains(&"set_tint q13 #15110a"), "{hover:?}");
-    assert!(hover.contains(&"set_tint q18 #92ddea"), "{hover:?}");
+    assert!(hover.contains(&"set_tint q18 #b0dde6"), "{hover:?}");
     assert!(hover.contains(&"set_tint q24 #ece3cb"), "{hover:?}");
     let pressed = &after[at("record b hover") + 1..at("record b pressed")];
-    assert!(pressed.contains(&"set_tint q13 #92ddea"), "{pressed:?}");
+    assert!(pressed.contains(&"set_tint q13 #b0dde6"), "{pressed:?}");
     assert!(pressed.contains(&"set_tint q24 #15110a"), "{pressed:?}");
 }
 
@@ -508,4 +508,125 @@ fn nothing_loads_the_old_button_art_and_the_time_bar_and_tooltip_load_the_themes
         loads.contains(&"load ui/theme/cut3_tl_fill.png".to_owned()),
         "{loads:?}"
     );
+}
+
+#[test]
+fn highlighted_identity_ink_requires_opacity_and_contrast() {
+    let readout = Readout::script(
+        r"
+local theme = require('lib.theme')
+window.record(theme.row_ink('#00000080', '#ece3cb', '#15110a'))
+window.record(theme.row_ink('#000000', '#ece3cb', '#15110a'))
+window.record(theme.row_ink('#ece3cb', '#ece3cb', '#15110a'))
+",
+    );
+    assert_eq!(records(&readout), ["#15110a", "#000000", "#15110a"]);
+}
+
+#[test]
+fn changing_a_general_colour_repaints_an_open_hovered_row_and_tooltip_frame() {
+    use super::listbar_tests::rig;
+    let mut rig = rig(
+        r"
+local colours = {}
+settings.colours = function() return colours end
+new_window(220, 150, 'window')
+local tooltip_panel = require('lib.panel').new{x=0,y=0,width=30,height=30,kind='tooltip'}
+local field = require('lib.numberfield').new{x=0,y=60,value=1,least=0,greatest=10,group=W.content,owner=W}
+local lst = lists.new{window=W, x=0, y=0, width=160, rows=1, numbers=true,
+  items={{cells={{text='label 123', x=1, align='left'}}}}, on_select=function() end}
+function repaint_test()
+  pointer_lib.dispatch({over=lst.row_keys[1], overflow=false, held=false, events={}})
+  colours.general = '#ece3cb'
+  theme_lib.refresh()
+  eq(W.frame.line, '#ece3cb', 'window frame')
+  eq(W.title_line.line.test_runs[1].colour, '#15110a', 'title ink')
+  eq(tooltip_panel.frame.line, '#ece3cb', 'tooltip frame')
+  eq(field.frame.line, '#ece3cb', 'number field outline')
+  eq(theme_lib.kind('tooltip').title_text, '#c9932e', 'tooltip title stays gold')
+  eq(scene.quads[lst.hover_quad].tint, '#ece3cb', 'hover fill')
+  local runs = lst.lines[1].lines[1].test_runs
+  eq(runs[1].colour, '#15110a', 'hover label ink')
+  eq(runs[2].colour, theme_lib.kind('window').highlight_number, 'hover number ink')
+end
+",
+        &["repaint_test()"],
+    );
+    rig.opened();
+}
+
+#[test]
+fn highlighted_rows_keep_only_opaque_contrasting_identity_colours() {
+    use super::listbar_tests::rig;
+    let mut rig = rig(
+        r"
+new_window(220, 150, 'window')
+local lst = lists.new{window=W, x=0, y=0, width=160, rows=1, on_select=function() end,
+  items={{icon={name='pops',colour='#92ddea80',identity=true}, cells={
+    {text='term', x=1, align='left', colour='#92ddea', identity=true},
+    {text='translucent', x=35, align='left', colour='#92ddea80', identity=true},
+    {text='ordinary', x=90, align='left', colour='#9a927e'}
+  }}}}
+function check_identity()
+  pointer_lib.dispatch({over=lst.row_keys[1], overflow=false, held=false, events={}})
+  local lines = lst.lines[1].lines
+  eq(lines[1].test_runs[1].colour, '#92ddea', 'contrasting identity stays')
+  eq(lines[2].test_runs[1].colour, '#ece3cb', 'translucent identity uses row ink')
+  eq(lines[3].test_runs[1].colour, '#ece3cb', 'ordinary dim text uses row ink')
+  eq(scene.quads[lst.lines[1].icon].tint, '#ece3cb', 'translucent identity icon uses row ink')
+end
+",
+        &["check_identity()"],
+    );
+    rig.opened();
+}
+
+#[test]
+fn refresh_visits_a_stable_snapshot_when_watchers_rebuild_widgets() {
+    use super::listbar_tests::rig;
+    let mut rig = rig(
+        r"
+local colours = {}
+settings.colours = function() return colours end
+function traversal_test()
+  theme_lib.kind('window')
+  for n = 5, 200 do
+    local originals, widgets, added, calls = {}, {}, {}, {}
+    local removed = false
+    for i = 1, n do
+      local owner = {}
+      originals[i] = owner
+      theme_lib.watch(owner, function(o) calls[o] = (calls[o] or 0) + 1 end)
+    end
+    for i = 1, 4 do
+      local owner = {}
+      widgets[i] = owner
+      theme_lib.watch(owner, function()
+        if removed then error('unwatched widget called') end
+      end)
+    end
+    local screen = {}
+    theme_lib.watch(screen, function()
+      removed = true
+      for _, owner in ipairs(widgets) do theme_lib.unwatch(owner) end
+      for i = 1, 4 do
+        local owner = {}
+        added[i] = owner
+        theme_lib.watch(owner, function() error('new watcher called in same pass') end)
+      end
+    end)
+    colours.general = n % 2 == 0 and '#123456' or '#654321'
+    theme_lib.refresh()
+    for i, owner in ipairs(originals) do
+      if calls[owner] ~= 1 then error('size ' .. n .. ' listener ' .. i .. ' ran ' .. tostring(calls[owner])) end
+      theme_lib.unwatch(owner)
+    end
+    theme_lib.unwatch(screen)
+    for _, owner in ipairs(added) do theme_lib.unwatch(owner) end
+  end
+end
+",
+        &["traversal_test()"],
+    );
+    rig.opened();
 }

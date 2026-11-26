@@ -1930,3 +1930,36 @@ local slider=bar.picker.slider; eq(slider.value,40); expect(not slider.enabled);
     click(&mut rig, "filter");
     rig.opened();
 }
+
+#[test]
+fn light_general_fill_gives_sort_layers_and_palette_picker_rows_dark_ink() {
+    let mut rig = rig(
+        r"
+settings.colours = function() return {general = '#ece3cb'} end
+theme_lib.refresh()
+new_window(160, 150, 'window') new_bar()
+",
+        &[r"
+bar:view({row('a', 'x', 1)})
+bar.sort_button.on_click()
+local picker = bar.picker
+pointer_lib.dispatch({over=picker.rows[2].key, overflow=false, held=false, events={}})
+eq(picker.rows[2].line.test_runs[1].colour, '#15110a', 'sort hovered ink')
+eq(picker.rows[1].line.test_runs[1].colour, picker.colours.pressed_text, 'selected sort ink')
+lb.close_open()
+local layers = lb.layers{opener='layers', position=function() return 0,0 end,
+  value=function() return false end, change=function() end}
+layers:toggle()
+picker = layers.picker
+pointer_lib.dispatch({over=picker.rows[1].key, overflow=false, held=false, events={}})
+eq(picker.rows[1].line.test_runs[1].colour, '#15110a', 'layers hovered ink')
+lb.close_open()
+local palette = lb.palette{window=W, opener='palette', change=function() end}
+palette:toggle()
+picker = palette.picker
+pointer_lib.dispatch({over=picker.rows[1].key, overflow=false, held=false, events={}})
+eq(picker.rows[1].line.test_runs[1].colour, '#15110a', 'palette hovered ink')
+"],
+    );
+    rig.opened();
+}

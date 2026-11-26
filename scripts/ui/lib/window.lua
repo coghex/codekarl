@@ -314,6 +314,12 @@ function window.new(spec)
       on_click = function() self:close() end,
     }
   end
+  theme.watch(self, function(window)
+    local c = window.colours
+    window.frame:set_colours(c.fill, c.outline)
+    window.title_bar:set_colours(c.outline, c.outline)
+    window.title_line:set_colour(c.title_text)
+  end)
   publish_chrome(self)
   render.set_group_offset(self.chrome, self.x, self.y)
   render.set_group_offset(self.content, self.x + PAD, self.y + self.title_height + PAD)
@@ -502,6 +508,7 @@ end
 function Window:close()
   if self.closed then return end
   self.closed = true
+  theme.unwatch(self)
   self.drag = nil
   self.title_pressed = false
   pointer.unregister(self.frame_key)

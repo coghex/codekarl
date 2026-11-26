@@ -607,10 +607,12 @@ local function pop_row(pop, open, place_id, pop_index)
       local ink = open and theme.kind("place").title_text or theme.colour("text")
       put_quad(result, group, dx, dy, width // P, 13, open and theme.kind("place").outline or theme.colour("band"))
       put_quad(result, group, dx, dy, 2, 13, type_colour(pop.kind))
-      draw_icon(result, group, "pops", dx + 4, dy + 1, open and ink or type_colour(pop.kind))
+      local type_ink = open and theme.row_ink(type_colour(pop.kind), theme.kind("place").outline, ink) or type_colour(pop.kind)
+      draw_icon(result, group, "pops", dx + 4, dy + 1, type_ink)
       local number_colour = open and theme.kind("place").highlight_number or theme.colour("number")
       if open then
-        put_text(result, group, dx + 16, dy + 1, pop.kind .. " " .. pop.culture, ink, nil, number_colour)
+        local term_ink = theme.row_ink(theme.colour("term"), theme.kind("place").outline, ink)
+        put_text(result, group, dx + 16, dy + 1, pop.kind .. " " .. pop.culture, term_ink, nil, number_colour)
       else
         put_term_text(result, group, dx + 16, dy + 1, {term(pop.kind .. " " .. pop.culture)})
       end
@@ -728,7 +730,8 @@ local function building_row(building, open, place_id, building_index)
       if icon ~= nil then draw_icon(result, group, icon, dx + 3, dy + 1, ink) end
       local number_colour = open and theme.kind("place").highlight_number or theme.colour("number")
       if open then
-        put_text(result, group, dx + 16, dy + 1, building.kind, ink, nil, number_colour)
+        local term_ink = theme.row_ink(theme.colour("term"), theme.kind("place").outline, ink)
+        put_text(result, group, dx + 16, dy + 1, building.kind, term_ink, nil, number_colour)
       else
         put_term_text(result, group, dx + 16, dy + 1, {term(building.kind)})
       end
@@ -942,9 +945,9 @@ local function location_lines(place, width)
   end
   local name_width = math.max(0, price_right - widest_price - 4 - 16)
   local header = {cells = {
-    {text = "good", x = 16, align = "left", colour = theme.colour("term")},
-    {text = "price", x = price_right, align = "right", colour = theme.colour("term")},
-    {text = "base", x = base_right, align = "right", colour = theme.colour("term")},
+    {text = "good", x = 16, align = "left", colour = theme.colour("term"), identity = true},
+    {text = "price", x = price_right, align = "right", colour = theme.colour("term"), identity = true},
+    {text = "base", x = base_right, align = "right", colour = theme.colour("term"), identity = true},
     {text = "buy/sell", x = bar_x, align = "left", colour = theme.colour("dim")},
   }}
   header.tooltip = function(_, _, cell)
@@ -967,7 +970,7 @@ local function location_lines(place, width)
       sort = {name = name, price = price.price_milli, base_price = price.base, buy_sell = value},
       filter = {tag = price.tags},
       cells = {
-        {text = clip_column(name, name_width), x = 16, align = "left", colour = name_colour},
+        {text = clip_column(name, name_width), x = 16, align = "left", colour = name_colour, identity = entry ~= nil},
         {text = milli(price.price_milli), x = price_right, align = "right"},
         {text = tostring(price.base), x = base_right, align = "right"},
       },
@@ -1276,6 +1279,16 @@ function location.new(spec)
   self.open_buildings = nil
   self.key = TABS[1].key
   self.list_look = list_look.get()
+  self.theme_outline = theme.kind("place").outline
+  theme.watch(self, function(panel)
+    local outline = theme.kind("place").outline
+    if panel.theme_outline ~= outline then
+      panel.theme_outline = outline
+      if panel.window ~= nil and not panel.window.closed and panel.key == "location" then
+        render(panel, true)
+      end
+    end
+  end)
   list_look.subscribe(function(value)
     self.list_look = value
     if self.selector ~= nil then

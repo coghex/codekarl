@@ -20,6 +20,10 @@ local pointer = require("lib.pointer")
 local fieldedit = {}
 
 local editing = nil -- the field editing now
+local cancel_areas = setmetatable({}, {__mode = "k"})
+function fieldedit.cancel_area(owner, predicate) cancel_areas[owner] = predicate end
+function fieldedit.remove_cancel_area(owner) cancel_areas[owner] = nil end
+
 local fields = {} -- live number and text fields, ordered by creation for stable geometric ties
 
 function fieldedit.register(self)
@@ -164,6 +168,9 @@ end
 pointer.observe_press(function(event)
   if editing == nil or editing.keep_editing then
     return
+  end
+  for _, predicate in pairs(cancel_areas) do
+    if predicate(event.key) then cancel(editing); return end
   end
   local widget = event.key and pointer.widget(event.key) or nil
   if widget ~= nil and widget.field_edit then

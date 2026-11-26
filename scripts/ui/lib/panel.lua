@@ -23,6 +23,7 @@ function panel.new(spec)
     line = colours.outline,
     group = spec.group,
   }
+  theme.watch(self, function(item) if item.frame ~= nil then item.frame:set_colours(colours.fill, colours.outline) end end)
   self.x, self.y, self.width, self.height = self.frame.x, self.frame.y, self.frame.width, self.frame.height
   return self
 end
@@ -33,6 +34,7 @@ function panel:set_rect(x, y, width, height)
 end
 
 function panel:destroy()
+  theme.unwatch(self)
   if self.frame ~= nil then
     self.frame:destroy()
     self.frame = nil

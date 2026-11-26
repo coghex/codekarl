@@ -19,14 +19,65 @@ function theme.colour(name)
 end
 
 local kinds = {}
+local kind_bases = {window = "general", time_bar = "general", places_bar = "general", tooltip = "general",
+  place = "location", social = "social", expedition = "expedition"}
+local listeners = setmetatable({}, {__mode = "k"})
+local current = nil
 
--- A kind's colours with the defaults applied. The result is kept (the theme does not change during a run) and must not be edited.
+function theme.palette() return loaded().palette() end
+function theme.row_ink(ink, fill, fallback)
+  if host.row_ink == nil then return fallback end
+  return host.row_ink(ink, fill, fallback)
+end
+function theme.bases()
+  local result = loaded().bases()
+  if settings ~= nil and settings.colours ~= nil then
+    for key, value in pairs(settings.colours()) do result[key] = value end
+  end
+  return result
+end
+
+function theme.watch(owner, callback) listeners[owner] = callback end
+function theme.unwatch(owner) listeners[owner] = nil end
+
+function theme.refresh()
+  if host.bases == nil then return end
+  local bases = theme.bases()
+  local changed = current == nil
+  if current ~= nil then
+    for key, value in pairs(bases) do if current[key] ~= value then changed = true end end
+  end
+  if not changed then return end
+  current = bases
+  for name, kept in pairs(kinds) do
+    local base = kind_bases[name]
+    if base ~= nil then
+      local raw = loaded().kind(name, bases[base])
+      for key, value in pairs(raw) do kept[key] = value end
+      kept.row_hover, kept.row_pressed = kept.outline, kept.hot
+    end
+  end
+  -- A callback may rebuild widgets, removing and adding watchers. Iterate a
+  -- stable pass and leave new widgets (already built with these colours) alone.
+  local snapshot = {}
+  for owner, callback in pairs(listeners) do
+    snapshot[#snapshot + 1] = {owner, callback}
+  end
+  for _, entry in ipairs(snapshot) do
+    local owner, callback = entry[1], entry[2]
+    if listeners[owner] == callback then callback(owner) end
+  end
+end
+
+-- A kind's colours with the defaults applied. The kept table is updated in place when a base changes.
 function theme.kind(name)
   local kept = kinds[name]
   if kept ~= nil then
     return kept
   end
-  local raw = loaded().kind(name)
+  if current == nil and host.bases ~= nil then current = theme.bases() end
+  local base = kind_bases[name]
+  local raw = base ~= nil and current ~= nil and loaded().kind(name, current[base]) or loaded().kind(name)
   local text = loaded().colour("text")
   if name == "time_bar" then
     for _, key in ipairs({"speed_box", "speed_fill"}) do

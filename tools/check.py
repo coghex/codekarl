@@ -1028,6 +1028,7 @@ APP_SOURCE_FILES = (
 APP_NATIVE_WINDOW_FILES = (
     *APP_SOURCE_FILES,
     "apps/codekarl/tests/windowed.rs",
+    "apps/codekarl/tests/support/colour_settings.lua",
     "apps/codekarl/tests/native/",
     # CK-231's window witness, compiled into `windowed.rs` (and `vulkan_app.rs`) as a support module.
     "apps/codekarl/tests/support/map_modes.rs",
@@ -1213,6 +1214,8 @@ STEPS = [
                     "travel-times",
                     "--bin",
                     "weather-trial",
+                    "--bin",
+                    "colour-sheet-data",
                     "--test",
                     "cli_spec_unit",
                     "--test",

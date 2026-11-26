@@ -1011,12 +1011,121 @@ for _, item in ipairs(drawn_texts) do if item.text == 'body' then word = item; b
 assert(word ~= nil and word.colour == require('lib.theme').kind('place').divider, 'heading is gold')
 local found = false
 for _, rect in ipairs(drawn_rects) do
-  if rect.y == word.y + 4 and rect.colour == require('lib.theme').kind('window').outline then found = true end
+  if rect.y == word.y + 4 and rect.colour == require('lib.theme').kind('social').outline then found = true end
 end
 assert(found, 'character heading rule uses its own outline')",
     ]);
     open_characters(&mut rig);
     let (x, y) = card_point(&rig, 1);
     click(&mut rig, x, y);
+    rig.opened();
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the open surfaces and both colour changes form one witness"
+)]
+fn changing_general_and_social_repaints_open_windows_and_preserves_the_boundary() {
+    let watch = r"
+local tracked = {}
+local create, tint, destroy = render.create_quad, render.set_tint, render.destroy_quad
+render.create_quad = function(spec)
+  local id = create(spec); tracked[id] = {group=spec.group, tint=spec.tint}; return id
+end
+render.set_tint = function(id, value) if tracked[id] then tracked[id].tint = value end; tint(id, value) end
+render.destroy_quad = function(id) tracked[id] = nil; destroy(id) end
+function tracked_colour(id) return tracked[id] and tracked[id].tint end
+function colours_of(window, stack)
+  local groups = {[window.chrome]=true, [window.content]=true, [stack.group or stack.rows_group]=true, [stack.bar.group]=true}
+  local values = {}
+  for id, quad in pairs(tracked) do
+    if groups[quad.group] then values[#values+1] = tostring(id) .. '=' .. tostring(quad.tint) end
+  end
+  table.sort(values); return table.concat(values, '|')
+end
+";
+    let prelude = format!("{CHARACTERS}\n{watch}");
+    let mut rig = rig_with_prelude_at(
+        &prelude,
+        &[
+            r"colours_override = {} settings.colours = function() return colours_override end
+local previous_set = settings.set
+settings.set = function(name, value)
+  local key = name:match('ui%.colours%.(.+)')
+  if key then colours_override[key] = value elseif previous_set then previous_set(name, value) end
+end
+ctime(1, 1, 0) announce_bars()",
+            "announce_cards() announce_ledger_origin()",
+            "tabs_by_title.ledger:select('locations', true); announce_ledger()",
+            r"
+local tooltip = require('lib.tooltip')
+local panel = require('lib.panel')
+local original = panel.new
+panel.new = function(spec) local created = original(spec); if spec.kind == 'tooltip' then locked_panel = created end; return created end
+settings.tooltips = function() return {delay=0,lock='middle_mouse',lock_timer=1} end
+tooltip.attach('colour_probe', function() return {title='gold', 'a locked tooltip'} end)
+local hovered = {width=900,height=450,dt=1,pointer={over='colour_probe',x=10,y=10,events={}}}
+tooltip.update(hovered); tooltip.update(hovered)
+tooltip.update({width=900,height=450,dt=0,pointer={over='colour_probe',x=10,y=10,
+  events={{kind='button_down',button='middle'}}}})
+assert(locked_panel ~= nil)
+panel.new = original
+local ledger, screen = window_objects.ledger, screen_object.window
+assert(screen.kind == 'social' and ledger.kind == 'places_bar')
+social_before, general_before = screen.frame.line, ledger.frame.line
+social_snapshot = colours_of(screen, screen_stack)
+settings.set('ui.colours.general', '#ece3cb')
+",
+            r"
+local theme = require('lib.theme')
+local ledger, screen = window_objects.ledger, screen_object.window
+assert(ledger.frame.line == '#ece3cb', 'ledger frame repaints')
+assert(list_object.hover_row == 2, 'ledger row remains hovered')
+assert(tracked_colour(list_object.hover_quad) == '#ece3cb', 'hovered ledger fill repaints')
+assert(list_object.lines[2].lines[1].ck_test_runs[1].colour == '#15110a', 'hovered ledger text repaints')
+assert(ledger.title_line.line.colour == '#15110a', 'ledger title ink repaints')
+assert(locked_panel.frame.line == '#ece3cb', 'locked tooltip frame repaints')
+assert(theme.kind('tooltip').title_text == '#c9932e', 'tooltip title stays gold')
+local speed = require('lib.pointer').widget('speed_1')
+assert(speed.inner_tint == theme.kind('time_bar').hot, 'speed fill repaints')
+assert(screen.frame.line == social_before, 'general leaves social unchanged')
+assert(colours_of(screen, screen_stack) == social_snapshot, 'every recorded social colour stays unchanged')
+general_snapshot = colours_of(ledger, list_object)
+forget_drawn()
+settings.set('ui.colours.social', '#004488')
+",
+            r"
+local theme = require('lib.theme')
+local ledger, screen = window_objects.ledger, screen_object.window
+assert(screen.frame.line == '#004488', 'social frame repaints')
+assert(ledger.frame.line == '#ece3cb', 'social leaves general unchanged')
+assert(colours_of(ledger, list_object) == general_snapshot, 'every recorded ledger colour stays unchanged')
+assert(screen_object.log_button.frame.line == '#004488', 'social control follows')
+local found = false
+for _, rectangle in ipairs(drawn_rects) do
+  if rectangle.height == 1 and rectangle.colour == theme.kind('social').hot then found = true end
+end
+assert(found, 'a section rule repaints')
+assert(general_before ~= ledger.frame.line)
+",
+        ],
+        1800,
+        900,
+        2,
+    );
+    rig.opened();
+    press_bar(&mut rig, "characters");
+    rig.opened();
+    let (x, y) = card_point(&rig, 1);
+    click(&mut rig, x, y);
+    rig.opened();
+    let (ledger_x, ledger_y) = ledger_origin(&rig);
+    rig.feed(&[PointerEvent::Move(points(ledger_x + 20.0, ledger_y + 39.0))]);
+    rig.deliver_fixture_frame_at(1800, 900, 2);
+    rig.opened();
+    rig.deliver_fixture_frame_at(1800, 900, 2);
+    rig.opened();
+    rig.deliver_fixture_frame_at(1800, 900, 2);
     rig.opened();
 }

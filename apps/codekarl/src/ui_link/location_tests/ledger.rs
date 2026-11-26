@@ -1497,3 +1497,42 @@ fn shipped_abandoned_sites_survive_ledger_tooltip_and_panel_paths() {
     pops.opened();
     assert!(notes(&pops).iter().any(|line| line == "pops checked"));
 }
+
+#[test]
+fn a_hovered_ledger_row_repaints_its_fill_and_text_after_a_colour_setting() {
+    let prelude = r"
+local set_tint = render.set_tint
+recorded_tints = {}
+render.set_tint = function(quad, tint) recorded_tints[quad] = tint; set_tint(quad, tint) end
+colours_override = {}
+settings.colours = function() return colours_override end
+settings.set = function(name, value) colours_override[name:match('ui%.colours%.(.+)')] = value end
+";
+    let mut rig = rig_with_prelude_at(
+        prelude,
+        &[
+            "time(1, 1) announce_bars()",
+            "announce_ledger()",
+            r"
+assert(list_object.hover_row == 2)
+settings.set('ui.colours.general', '#ece3cb')
+",
+            r"
+assert(recorded_tints[list_object.hover_quad] == '#ece3cb', 'hover fill')
+assert(list_object.lines[2].lines[1].ck_test_runs[1].colour == '#15110a', 'hover text')
+",
+        ],
+        1800,
+        900,
+        2,
+    );
+    rig.opened();
+    press_bar(&mut rig, "location");
+    rig.opened();
+    let (x, y) = ledger_origin(&rig);
+    rig.feed(&[PointerEvent::Move(points(x + 20.0, y + 39.0))]);
+    rig.deliver_fixture_frame_at(1800, 900, 2);
+    rig.opened();
+    rig.deliver_fixture_frame_at(1800, 900, 2);
+    rig.opened();
+}

@@ -3254,6 +3254,11 @@ GUARDS: tuple[Guard, ...] = (
             "apps/codekarl/Cargo.toml",
         ),
     ),
+    Guard(
+        "apps/codekarl/src/settings.rs",
+        "rust.app",
+        ("assets/ui/theme.toml", "scripts/ui/"),
+    ),
     Guard("apps/codekarl/tests/cli_spec/support.rs", "rust.app", ("specs/bootstrap.json",)),
     # CK-93: the render API's headless tests run the shipped demonstration configuration and decode its image;
     # `rust.app` claims `config/`, `scripts/` and `assets/`.

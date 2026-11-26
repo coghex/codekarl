@@ -451,6 +451,8 @@ class Levels(CheckFixture):
                     "travel-times",
                     "--bin",
                     "weather-trial",
+                    "--bin",
+                    "colour-sheet-data",
                     "--test",
                     "cli_spec_unit",
                     "--test",

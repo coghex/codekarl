@@ -2479,8 +2479,8 @@ fn at_a_normal_position_the_whole_frame_shows_in_each_state_with_the_look_of_the
         |red: u8, green: u8, blue: u8| ck_render_2d::Tint::from_straight(red, green, blue, 255);
     for (state, fill, line) in [
         ("normal", tint(0x15, 0x11, 0x0a), tint(0x6e, 0x13, 0x0f)),
-        ("hover", tint(0x15, 0x11, 0x0a), tint(0xa8, 0x26, 0x1c)),
-        ("pressed", tint(0xa8, 0x26, 0x1c), tint(0xa8, 0x26, 0x1c)),
+        ("hover", tint(0x15, 0x11, 0x0a), tint(0xa7, 0x1d, 0x17)),
+        ("pressed", tint(0xa7, 0x1d, 0x17), tint(0xa7, 0x1d, 0x17)),
     ] {
         let quads = frame_quads((100.0, 50.0), (20.0, 10.0), state);
         assert!(
