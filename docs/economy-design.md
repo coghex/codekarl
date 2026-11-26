@@ -1231,7 +1231,7 @@ herd stays. These are counts, not individual animals, so livestock stays abstrac
   - **Away.** The people of an expedition are held (they cannot be hired, recruited or moved), neither breed nor die at the monthly
     step (births, deaths and recruitment count the workers at home), eat from its supplies at noon (a person-day each, whole goods
     opened as a pop's eating does) and not from their pop's ration, and count a day away at each noon for the building each is taken
-    from. A vehicle uses up one unit of its wear from the supplies for each 720 hours it moves: the hours each moves in a tick are those spent on
+    from. A vehicle uses up the units of wear its kind's rules give (one for the shipped kinds) from the supplies, as far as there are any, for each 720 hours it moves: the hours each moves in a tick are those spent on
     legs of a mode it moves in, so the tick that crosses a transfer wears the cart and the boat each for its own part of the hour, and the
     part of a unit not yet worn is kept exactly, through saves.
   - **Wages.** A hired hand is paid for the days of the whole trip, worked from the ticks the simulation will run: the expedition first
