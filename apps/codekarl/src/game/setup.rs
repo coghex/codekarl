@@ -188,6 +188,7 @@ pub(crate) fn prepare(
         &scenario,
         economy_rules.as_deref().map_or(0, max_recruit_range_m),
     );
+    let trade_by_place = trade_neighbours(&scenario);
     let reach_by_place = marriage_reach(
         &scenario,
         economy_rules
@@ -226,6 +227,7 @@ pub(crate) fn prepare(
             shelter_by_place.clone(),
             nearby_by_place.clone(),
             reach_by_place.clone(),
+            trade_by_place.clone(),
             place_names.clone(),
             weather.clone(),
             Some(Arc::clone(&characters_io)),
@@ -797,6 +799,7 @@ struct SchedulerInputs {
     shelter_by_place: BTreeMap<String, u64>,
     nearby_by_place: BTreeMap<String, Vec<ck_economy::NearbyPlace>>,
     reach_by_place: BTreeMap<String, Vec<ck_economy::NearbyPlace>>,
+    trade_by_place: BTreeMap<String, Vec<ck_economy::NearbyPlace>>,
     place_names: BTreeMap<String, String>,
     weather: Option<Arc<WeatherData>>,
     characters_io: super::character_storage::Handle,
@@ -825,6 +828,7 @@ impl SchedulerInputs {
                 &prepared.scenario,
                 rules.as_deref().map_or(0, max_recruit_range_m),
             ),
+            trade_by_place: trade_neighbours(&prepared.scenario),
             reach_by_place: marriage_reach(
                 &prepared.scenario,
                 rules
@@ -850,6 +854,7 @@ impl SchedulerInputs {
             self.shelter_by_place.clone(),
             self.nearby_by_place.clone(),
             self.reach_by_place.clone(),
+            self.trade_by_place.clone(),
             self.place_names.clone(),
             self.weather.clone(),
             Some(Arc::clone(&self.characters_io)),
@@ -961,6 +966,7 @@ fn gameplay_scheduler_with_rules(
     shelter_by_place: BTreeMap<String, u64>,
     nearby_by_place: BTreeMap<String, Vec<ck_economy::NearbyPlace>>,
     reach_by_place: BTreeMap<String, Vec<ck_economy::NearbyPlace>>,
+    trade_by_place: BTreeMap<String, Vec<ck_economy::NearbyPlace>>,
     place_names: BTreeMap<String, String>,
     weather: Option<Arc<WeatherData>>,
     characters_io: Option<super::character_storage::Handle>,
@@ -983,6 +989,7 @@ fn gameplay_scheduler_with_rules(
             shelter_by_place,
             nearby_by_place,
             reach_by_place,
+            trade_by_place,
             place_names,
             weather,
             characters_io,
@@ -1018,6 +1025,7 @@ pub(crate) fn register_economy_callback_with_storage(
         BTreeMap::new(),
         BTreeMap::new(),
         BTreeMap::new(),
+        BTreeMap::new(),
         None,
         Some(handle),
     );
@@ -1028,6 +1036,7 @@ pub(crate) fn register_economy_callback(scheduler: &mut Scheduler<GameState>, ru
     register_economy_callback_with_context(
         scheduler,
         rules,
+        BTreeMap::new(),
         BTreeMap::new(),
         BTreeMap::new(),
         BTreeMap::new(),
@@ -1051,6 +1060,7 @@ fn register_economy_callback_with_context(
     shelter_by_place: BTreeMap<String, u64>,
     nearby_by_place: BTreeMap<String, Vec<ck_economy::NearbyPlace>>,
     reach_by_place: BTreeMap<String, Vec<ck_economy::NearbyPlace>>,
+    trade_by_place: BTreeMap<String, Vec<ck_economy::NearbyPlace>>,
     place_names: BTreeMap<String, String>,
     weather: Option<Arc<WeatherData>>,
     characters_io: Option<super::character_storage::Handle>,
@@ -1087,7 +1097,7 @@ fn register_economy_callback_with_context(
                         .entry((character.pop.place.clone(), character.pop.slot as usize))
                         .or_insert(0_u64) += 1;
                 }
-                ck_economy::run_daily_economy_with_land(
+                ck_economy::run_daily_economy_with_trade_neighbours(
                     &rules,
                     &mut state.economy,
                     tick.date(),
@@ -1096,6 +1106,7 @@ fn register_economy_callback_with_context(
                     &nearby_by_place,
                     &floors,
                     &land_by_place,
+                    &trade_by_place,
                 )
                 .map_err(io::Error::other)
                 .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>)?;
@@ -1549,6 +1560,13 @@ pub(crate) fn marriage_reach(
     result
 }
 
+/// Neighbours trade directly when their rounded ground distance is under 4 km.
+pub(crate) fn trade_neighbours(
+    scenario: &ck_map::Scenario,
+) -> BTreeMap<String, Vec<ck_economy::NearbyPlace>> {
+    marriage_reach(scenario, 3_999)
+}
+
 fn nearby_places_for_locations(
     locations: &[(String, ck_map::Cell)],
     max_range_m: u32,
@@ -1718,6 +1736,26 @@ mod nearby_place_tests {
                 first[&location.id],
                 location.name_en.as_ref().unwrap_or(&location.name).as_str()
             );
+        }
+    }
+
+    #[test]
+    fn trade_neighbours_are_symmetric_pairs_strictly_inside_four_kilometres() {
+        let directory =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/scenarios/ireland-768");
+        let scenario = ck_map::load_scenario(&directory).expect("Ireland scenario loads");
+        let neighbours = super::trade_neighbours(&scenario);
+        let count: usize = neighbours.values().map(Vec::len).sum();
+        assert_eq!(count, 22, "eleven pairs");
+        for (id, adjacent) in &neighbours {
+            for other in adjacent {
+                assert!(other.distance_m < 4_000);
+                assert!(
+                    neighbours[&other.id]
+                        .iter()
+                        .any(|back| back.id == *id && back.distance_m == other.distance_m)
+                );
+            }
         }
     }
 
@@ -3031,6 +3069,7 @@ mod stretch_save_tests {
                 BTreeMap::new(),
                 BTreeMap::new(),
                 BTreeMap::new(),
+                BTreeMap::new(),
                 data,
                 None,
             )
@@ -3071,6 +3110,7 @@ mod stretch_save_tests {
         let scheduler = gameplay_scheduler_with_rules(
             None,
             Some(Arc::new(rules)),
+            BTreeMap::new(),
             BTreeMap::new(),
             BTreeMap::new(),
             BTreeMap::new(),
@@ -4271,6 +4311,7 @@ mod switch_replay_tests {
                 quality.clone(),
                 land.clone(),
                 shelter.clone(),
+                BTreeMap::new(),
                 BTreeMap::new(),
                 BTreeMap::new(),
                 names.clone(),

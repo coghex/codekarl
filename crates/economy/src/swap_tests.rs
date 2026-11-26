@@ -3377,3 +3377,414 @@ fn a_larger_fuel_shortfall_is_spent_by_heat_across_both_fuels_and_no_further() {
     );
     assert_eq!(heat_paid(&rules, &place, third), 0);
 }
+
+#[test]
+fn neighbour_exchange_uses_each_sellers_price_and_does_not_cross_a_chain() {
+    let mut rules = rules();
+    let mut a = place(&rules, 1);
+    let mut b = place(&rules, 1);
+    let mut c = place(&rules, 1);
+    a.id = "a".into();
+    b.id = "b".into();
+    c.id = "c".into();
+    for p in [&mut a, &mut b, &mut c] {
+        settle_the_rest(&rules, p, &["oats", "barley"]);
+    }
+    set_price(&rules, &mut a, "oats", 100);
+    set_price(&rules, &mut b, "barley", 50);
+    spare(&rules, &mut a, 0, "oats", 10);
+    want(&rules, &mut a, 0, "barley", 20);
+    spare(&rules, &mut b, 0, "barley", 20);
+    want(&rules, &mut b, 0, "oats", 10);
+    capacity(&mut rules, &mut a, 0, 10_000_000);
+    let c_before = c.clone();
+    let mut state = EconomyState {
+        places: vec![a, b, c],
+    };
+    let opening: Vec<_> = state
+        .places
+        .iter()
+        .map(|p| p.prices_milli.clone())
+        .collect();
+    let adjacent = BTreeMap::from([
+        (
+            "a".to_owned(),
+            vec![NearbyPlace {
+                id: "b".into(),
+                distance_m: 3999,
+            }],
+        ),
+        (
+            "b".to_owned(),
+            vec![NearbyPlace {
+                id: "c".into(),
+                distance_m: 4000,
+            }],
+        ),
+    ]);
+    swap::run_neighbour_swaps_at_prices(&rules, &mut state, &opening, &adjacent).unwrap();
+    assert_eq!(position(&rules, &state.places[0], 0, "oats"), (0, 0));
+    assert_eq!(position(&rules, &state.places[0], 0, "barley"), (0, 0));
+    assert_eq!(state.places[2], c_before);
+}
+
+#[test]
+fn neighbour_herd_sale_pays_its_building_and_delivers_the_head() {
+    let mut rules = herd_rules();
+    let mut seller = place(&rules, 1);
+    seller.id = "a".into();
+    let mut buyer = place(&rules, 1);
+    buyer.id = "b".into();
+    set_price(&rules, &mut seller, "cattle", 24);
+    set_price(&rules, &mut buyer, "oats", 1);
+    settle_the_rest(&rules, &mut seller, &["oats"]);
+    settle_the_rest(&rules, &mut buyer, &["oats"]);
+    want(&rules, &mut seller, 0, "oats", 100);
+    spare(&rules, &mut buyer, 0, "oats", 1000);
+    let source = cattle_farm(&rules, &mut seller, 8, &[(0, 1)]);
+    let destination = cattle_farm(&rules, &mut buyer, 6, &[(0, 1)]);
+    capacity(&mut rules, &mut buyer, 0, 100_000_000);
+    let before = stock(&rules, &buyer, 0, "oats");
+    let mut state = EconomyState {
+        places: vec![seller, buyer],
+    };
+    let opening: Vec<_> = state
+        .places
+        .iter()
+        .map(|p| p.prices_milli.clone())
+        .collect();
+    let adjacent = BTreeMap::from([(
+        "a".to_owned(),
+        vec![NearbyPlace {
+            id: "b".into(),
+            distance_m: 3999,
+        }],
+    )]);
+    swap::run_neighbour_swaps_at_prices(&rules, &mut state, &opening, &adjacent).unwrap();
+    assert_eq!(head(&state.places[0], source), 7);
+    assert_eq!(head(&state.places[1], destination), 7);
+    assert_eq!(stock(&rules, &state.places[1], 0, "oats"), before - 24);
+    assert_eq!(
+        state.places[0].buildings[source].stock[good(&rules, "oats")],
+        24
+    );
+}
+
+#[test]
+fn neighbour_scarcity_remainder_goes_to_the_wealthier_claimant_across_pairs() {
+    let mut rules = herd_rules();
+    let mut a = place(&rules, 1);
+    a.id = "a".into();
+    let mut b = place(&rules, 1);
+    b.id = "b".into();
+    let mut c = place(&rules, 1);
+    c.id = "c".into();
+    for p in [&mut a, &mut b, &mut c] {
+        set_price(&rules, p, "cattle", 24);
+        set_price(&rules, p, "oats", 1);
+        settle_the_rest(&rules, p, &["oats"]);
+    }
+    spare(&rules, &mut a, 0, "oats", 100);
+    spare(&rules, &mut c, 0, "oats", 1000);
+    want(&rules, &mut b, 0, "oats", 100);
+    let ah = cattle_farm(&rules, &mut a, 6, &[(0, 1)]);
+    let bh = cattle_farm(&rules, &mut b, 8, &[(0, 1)]);
+    let ch = cattle_farm(&rules, &mut c, 6, &[(0, 1)]);
+    capacity(&mut rules, &mut b, 0, 100_000_000);
+    let mut state = EconomyState {
+        places: vec![a, b, c],
+    };
+    let opening: Vec<_> = state
+        .places
+        .iter()
+        .map(|p| p.prices_milli.clone())
+        .collect();
+    let adjacent = BTreeMap::from([
+        (
+            "a".to_owned(),
+            vec![NearbyPlace {
+                id: "b".into(),
+                distance_m: 1,
+            }],
+        ),
+        (
+            "b".to_owned(),
+            vec![NearbyPlace {
+                id: "c".into(),
+                distance_m: 1,
+            }],
+        ),
+    ]);
+    swap::run_neighbour_swaps_at_prices(&rules, &mut state, &opening, &adjacent).unwrap();
+    assert_eq!(head(&state.places[0], ah), 6);
+    assert_eq!(head(&state.places[1], bh), 7);
+    assert_eq!(head(&state.places[2], ch), 7);
+    assert_eq!(
+        state.places[1].buildings[bh].stock[good(&rules, "oats")],
+        24
+    );
+}
+
+#[test]
+fn neighbour_relation_is_strict_and_not_transitive() {
+    for (via_b, metres, trades) in [(false, 3999, true), (false, 4000, false), (true, 1, false)] {
+        let mut rules = rules();
+        let mut a = place(&rules, 1);
+        a.id = "a".into();
+        let mut b = place(&rules, 1);
+        b.id = "b".into();
+        let mut c = place(&rules, 1);
+        c.id = "c".into();
+        for p in [&mut a, &mut b, &mut c] {
+            set_price(&rules, p, "oats", 1);
+            set_price(&rules, p, "barley", 1);
+            settle_the_rest(&rules, p, &["oats", "barley"]);
+        }
+        spare(&rules, &mut a, 0, "oats", 10);
+        want(&rules, &mut a, 0, "barley", 10);
+        spare(&rules, &mut c, 0, "barley", 10);
+        want(&rules, &mut c, 0, "oats", 10);
+        settle_the_rest(&rules, &mut b, &[]);
+        capacity(&mut rules, &mut a, 0, 10_000_000);
+        let adjacent = if via_b {
+            BTreeMap::from([
+                (
+                    "a".to_owned(),
+                    vec![NearbyPlace {
+                        id: "b".into(),
+                        distance_m: 1,
+                    }],
+                ),
+                (
+                    "b".to_owned(),
+                    vec![NearbyPlace {
+                        id: "c".into(),
+                        distance_m: 1,
+                    }],
+                ),
+            ])
+        } else {
+            BTreeMap::from([(
+                "a".to_owned(),
+                vec![NearbyPlace {
+                    id: "c".into(),
+                    distance_m: metres,
+                }],
+            )])
+        };
+        let mut state = EconomyState {
+            places: vec![a, b, c],
+        };
+        let opening: Vec<_> = state
+            .places
+            .iter()
+            .map(|p| p.prices_milli.clone())
+            .collect();
+        swap::run_neighbour_swaps_at_prices(&rules, &mut state, &opening, &adjacent).unwrap();
+        assert_eq!(
+            position(&rules, &state.places[0], 0, "barley").1,
+            if trades { 0 } else { 10 }
+        );
+    }
+}
+
+#[test]
+fn neighbour_worked_sheep_example_uses_one_share_and_the_starters_capacity() {
+    let mut rules = herd_rules();
+    let farm = rules.buildings.iter_mut().find(|b| b.id == "farm").unwrap();
+    farm.herds.clear();
+    farm.herds
+        .insert("sheep".into(), HerdCapacity { maximum: 10 });
+    farm.market_capacity_ml_per_level = 2_000_000;
+    let sheep = rules
+        .herd_species
+        .iter()
+        .position(|s| s.animal == "sheep")
+        .unwrap();
+    let mut a = place(&rules, 1);
+    a.id = "a".into();
+    let mut b = place(&rules, 1);
+    b.id = "b".into();
+    let mut c = place(&rules, 1);
+    c.id = "c".into();
+    for p in [&mut a, &mut b, &mut c] {
+        settle_the_rest(&rules, p, &[]);
+    }
+    set_price(&rules, &mut a, "oats", 100);
+    set_price(&rules, &mut b, "sheep", 300);
+    set_price(&rules, &mut c, "barley", 28);
+    spare(&rules, &mut a, 0, "oats", 100);
+    spare(&rules, &mut c, 0, "barley", 100_000);
+    want(&rules, &mut b, 0, "barley", 10);
+    want(&rules, &mut b, 0, "oats", 10);
+    let mut farms = Vec::new();
+    for (p, count) in [(&mut a, 6), (&mut b, 8), (&mut c, 6)] {
+        let building = add_building(&rules, p, "farm", 1);
+        let method = rules
+            .buildings
+            .iter()
+            .find(|b| b.id == "farm")
+            .unwrap()
+            .methods
+            .iter()
+            .position(|m| m.resource != "sea")
+            .unwrap();
+        p.buildings[building].method_levels[method] = 1;
+        p.buildings[building].herds = vec![0; rules.herd_species.len()];
+        p.buildings[building].herds[sheep] = count;
+        own(p, building, 0, 1);
+        p.buildings[building].employment[0].workers = 100;
+        p.pops[0].employment[building].workers = 100;
+        farms.push(building);
+    }
+    let before_a = a.pops[0].stock.clone();
+    let before_c = c.pops[0].stock[good(&rules, "barley")];
+    let mut state = EconomyState {
+        places: vec![a, b, c],
+    };
+    let opening: Vec<_> = state
+        .places
+        .iter()
+        .map(|p| p.prices_milli.clone())
+        .collect();
+    let adjacent = BTreeMap::from([
+        (
+            "a".to_owned(),
+            vec![NearbyPlace {
+                id: "b".into(),
+                distance_m: 1,
+            }],
+        ),
+        (
+            "b".to_owned(),
+            vec![NearbyPlace {
+                id: "c".into(),
+                distance_m: 1,
+            }],
+        ),
+    ]);
+    swap::run_neighbour_swaps_at_prices(&rules, &mut state, &opening, &adjacent).unwrap();
+    assert_eq!(state.places[0].pops[0].stock, before_a);
+    assert_eq!(state.places[0].buildings[farms[0]].herds[sheep], 6);
+    assert_eq!(state.places[1].buildings[farms[1]].herds[sheep], 7);
+    assert_eq!(state.places[2].buildings[farms[2]].herds[sheep], 7);
+    assert_eq!(
+        state.places[2].pops[0].stock[good(&rules, "barley")],
+        before_c - 10
+    );
+    assert_eq!(
+        state.places[1].buildings[farms[1]].stock[good(&rules, "barley")],
+        10
+    );
+}
+
+#[test]
+fn local_then_neighbour_pairs_spend_one_shared_capacity() {
+    let mut rules = rules();
+    let mut a = place(&rules, 1);
+    a.id = "a".into();
+    let mut b = place(&rules, 2);
+    b.id = "b".into();
+    let mut c = place(&rules, 1);
+    c.id = "c".into();
+    for p in [&mut a, &mut b, &mut c] {
+        set_price(&rules, p, "oats", 1);
+        set_price(&rules, p, "fish", 1);
+        settle_the_rest(&rules, p, &[]);
+    }
+    spare(&rules, &mut b, 0, "fish", 3);
+    want(&rules, &mut b, 0, "oats", 3);
+    for (p, pop) in [(&mut a, 0), (&mut b, 1), (&mut c, 0)] {
+        spare(&rules, p, pop, "oats", 1);
+        want(&rules, p, pop, "fish", 1);
+    }
+    let load =
+        rules.goods[good(&rules, "oats")].volume_ml + rules.goods[good(&rules, "fish")].volume_ml;
+    capacity(&mut rules, &mut b, 0, 2 * load);
+    let mut state = EconomyState {
+        places: vec![a, b, c],
+    };
+    let opening: Vec<_> = state
+        .places
+        .iter()
+        .map(|p| p.prices_milli.clone())
+        .collect();
+    let adjacent = BTreeMap::from([
+        (
+            "a".to_owned(),
+            vec![NearbyPlace {
+                id: "b".into(),
+                distance_m: 1,
+            }],
+        ),
+        (
+            "b".to_owned(),
+            vec![NearbyPlace {
+                id: "c".into(),
+                distance_m: 1,
+            }],
+        ),
+    ]);
+    swap::run_neighbour_swaps_at_prices(&rules, &mut state, &opening, &adjacent).unwrap();
+    assert_eq!(
+        position(&rules, &state.places[1], 1, "fish").1,
+        0,
+        "local first"
+    );
+    assert_eq!(
+        position(&rules, &state.places[0], 0, "fish").1,
+        0,
+        "first pair next"
+    );
+    assert_eq!(
+        position(&rules, &state.places[2], 0, "fish").1,
+        1,
+        "capacity spent before second pair"
+    );
+}
+
+#[test]
+fn second_pass_reallocates_an_unspent_local_share_to_a_neighbour() {
+    let mut rules = rules();
+    let mut a = place(&rules, 1);
+    a.id = "a".into();
+    let mut b = place(&rules, 2);
+    b.id = "b".into();
+    for p in [&mut a, &mut b] {
+        set_price(&rules, p, "oats", 1);
+        set_price(&rules, p, "fish", 1);
+        settle_the_rest(&rules, p, &[]);
+    }
+    spare(&rules, &mut b, 0, "fish", 2);
+    want(&rules, &mut b, 0, "oats", 2);
+    spare(&rules, &mut b, 1, "oats", 100_000_000);
+    want(&rules, &mut b, 1, "fish", 1);
+    spare(&rules, &mut a, 0, "oats", 2);
+    want(&rules, &mut a, 0, "fish", 2);
+    capacity(&mut rules, &mut b, 0, 1_000_000);
+    let mut state = EconomyState { places: vec![a, b] };
+    let opening: Vec<_> = state
+        .places
+        .iter()
+        .map(|p| p.prices_milli.clone())
+        .collect();
+    let adjacent = BTreeMap::from([(
+        "a".to_owned(),
+        vec![NearbyPlace {
+            id: "b".into(),
+            distance_m: 1,
+        }],
+    )]);
+    swap::run_neighbour_swaps_at_prices(&rules, &mut state, &opening, &adjacent).unwrap();
+    assert_eq!(
+        position(&rules, &state.places[0], 0, "fish").1,
+        0,
+        "neighbour receives both shares across the passes"
+    );
+    assert_eq!(
+        position(&rules, &state.places[1], 1, "fish").1,
+        1,
+        "the full local store cannot receive its share"
+    );
+    assert_eq!(position(&rules, &state.places[1], 0, "fish").0, 0);
+}
