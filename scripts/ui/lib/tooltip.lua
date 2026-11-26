@@ -109,6 +109,8 @@ local function normalize_line(line, title)
   for _, value in ipairs(line) do
     if type(value) == "string" then
       spans[#spans + 1] = plain_span(value)
+    elseif type(value) == "table" and type(value.icon) == "string" then
+      spans[#spans + 1] = {icon = value.icon, width = 9, height = 11}
     elseif type(value) == "table" and type(value.text) == "string" then
       local font_name = value.font or "small"
       if font_name ~= "small" and font_name ~= "tiny" then fail("span font must be small or tiny", 3) end
@@ -148,13 +150,18 @@ end
 local function line_measure(line)
   local width, height = 0, 0
   for _, span in ipairs(line.spans) do
-    local laid = font.layout(span.text, span.font)
-    span.layout = laid
-    if line.title then span.colour = theme.kind("tooltip").title_text
-    elseif span.term ~= nil then span.colour = theme.colour("term")
-    else span.runs = text.number_runs(span.text) end
-    width = width + laid.width
-    height = math.max(height, laid.height)
+    if span.icon ~= nil then
+      width = width + span.width
+      height = math.max(height, span.height)
+    else
+      local laid = font.layout(span.text, span.font)
+      span.layout = laid
+      if line.title then span.colour = theme.kind("tooltip").title_text
+      elseif span.term ~= nil then span.colour = theme.colour("term")
+      else span.runs = text.number_runs(span.text) end
+      width = width + laid.width
+      height = math.max(height, laid.height)
+    end
   end
   line.width = width
   line.height = height
@@ -182,6 +189,8 @@ local function measurable_content(content)
 end
 
 local function destroy_visual(record)
+  for _, quad_id in ipairs(record.icon_quads or {}) do render.destroy_quad(quad_id) end
+  record.icon_quads = {}
   for _, line in ipairs(record.rendered or {}) do
     text.destroy(line)
   end
@@ -337,6 +346,11 @@ local function span_source(span)
 end
 
 local function draw_span(record, span, x, y, title)
+  if span.icon ~= nil then
+    record.icon_quads[#record.icon_quads + 1] = render.create_quad{texture = ui.texture(span.icon), x = x, y = y,
+      width = span.width * P, height = span.height * P, group = overlay}
+    return span.width
+  end
   local color = title and theme.kind("tooltip").title_text or span.colour
   -- A label, a title and a term are drawn whole, in one colour: only a lockable tooltip marks numbers.
   local whole = title or span.term ~= nil or record.kind == "label"
@@ -496,8 +510,10 @@ render_record = function(record, keep_panel)
   if record.closed then return end
   local width, natural_height = measure(record.lines)
   record.long = #record.lines > 12
+  local row_height = 9
+  if record.long then for _, line in ipairs(record.lines) do row_height = math.max(row_height, line.height) end end
   local width_px = math.max(9, width + (record.long and 10 or 6))
-  local height_px = record.long and 112 or natural_height + 4
+  local height_px = record.long and (row_height * 12 + 4) or natural_height + 4
   record.width_px, record.height_px = width_px, height_px
   if record.panel == nil then
     record.panel = panel.new{x = record.x, y = record.y, width = width_px * P, height = height_px * P,
@@ -506,6 +522,8 @@ render_record = function(record, keep_panel)
     record.panel:set_rect(record.x, record.y, width_px * P, height_px * P)
   end
   record.x, record.y = record.panel.x, record.panel.y
+  for _, quad_id in ipairs(record.icon_quads or {}) do render.destroy_quad(quad_id) end
+  record.icon_quads = {}
   record.render_cursor = 0
   record.spans = {}
   local last = record.long and math.min(#record.lines, record.first + 11) or #record.lines
@@ -513,14 +531,14 @@ render_record = function(record, keep_panel)
   for index = record.first, last do
     local line = record.lines[index]
     draw_line(record, line, index, y, line.title)
-    y = y + (record.long and 9 or line.height) * P
+    y = y + (record.long and row_height or line.height) * P
   end
   for index = record.render_cursor + 1, #record.rendered do
     text.destroy(record.rendered[index])
     record.rendered[index] = nil
   end
   if record.long then
-    local track_top, track = 3, 105
+    local track_top, track = 3, height_px - 7
     local thumb = math.max(3, math.floor(track * 12 / #record.lines + 0.5))
     local top = track_top + math.floor((track - thumb) * (record.first - 1) / (#record.lines - 12) + 0.5)
     quad(record, "track_quad", theme.colour("dim"), record.x + (width_px - 4) * P, record.y + track_top * P, P, track * P)
@@ -590,7 +608,9 @@ local function open_tooltip(candidate, content)
   local width, height = measure(record.lines)
   record.long = #record.lines > 12
   record.width_px = math.max(9, width + (record.long and 10 or 6))
-  record.height_px = record.long and 112 or height + 4
+  local row_height = 9
+  if record.long then for _, line in ipairs(record.lines) do row_height = math.max(row_height, line.height) end end
+  record.height_px = record.long and (row_height * 12 + 4) or height + 4
   record.panel = panel.new{x = record.x, y = record.y, width = record.width_px * P,
     height = record.height_px * P, kind = "tooltip", cut = 3, group = overlay}
   place(record, candidate)

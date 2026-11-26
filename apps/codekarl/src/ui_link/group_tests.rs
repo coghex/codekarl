@@ -801,6 +801,15 @@ fn run_map_selection_fixture_vm(markers: &std::path::Path) {
     let mut control = Rig::new_fixture_body(map_selection_fixture::body());
     open_map_selection_fixture(&mut control, markers);
     select_fixture_place(&mut control, markers);
+    // The wider minimum panel covers the marker; close it before the second map click.
+    control
+        .link
+        .post(UiEvent::CloseRequested {
+            source: CloseSource::Key,
+        })
+        .unwrap();
+    assert!(matches!(answer(&mut control.link).answer, Answer::Decline));
+    control.deliver_fixture_frame();
     std::fs::write(markers.join("map-marker-drag-injected"), "x").unwrap();
     let x = f64::from(control.map_pointer.x) / 256.0;
     let y = f64::from(control.map_pointer.y) / 256.0;

@@ -78,11 +78,11 @@ cards_place.buildings = {
       {month = 9, year = 768, wage_milli = 2900, paid = 10}, {month = 8, year = 768, wage_milli = 2900, paid = 10},
       {month = 7, year = 768, wage_milli = 2900, paid = 10}, {month = 6, year = 768, wage_milli = 2900, paid = 10}},
     housing_occupants = 3},
-  {kind = "holdings", levels = 1, methods = {{id = "strip_farming", levels = 1}}, filled = 0, open = 0,
+  {kind = "holdings", levels = 1, methods = {{id = "monastic_farming", levels = 1}}, filled = 0, open = 0,
     herds = {}, store_used_l = 0, store_capacity_l = 0, wage = 92, housing_occupants = 0},
   {kind = "storehouse", levels = 1, methods = {}, filled = 0, open = 0,
     herds = {}, store_used_l = 0, store_capacity_l = 0, wage = 0, housing_occupants = 0},
-  {kind = "holdings", levels = 1, methods = {{id = "strip_farming", levels = 1}}, filled = 8, open = 0,
+  {kind = "holdings", levels = 1, methods = {{id = "monastic_farming", levels = 1}}, filled = 8, open = 0,
     herds = {}, store_used_l = 9000, store_capacity_l = 8000, wage = 92, housing_occupants = 0},
   {kind = "granary", levels = 1, methods = {}, filled = 0, open = 0,
     herds = {}, store_used_l = 0, store_capacity_l = 8000, wage = 0, housing_occupants = 0},
@@ -445,7 +445,7 @@ local function row_text(item)
   local first = item.cells[1] ~= nil and item.cells[1].text or ""
   local location_line = first:match("^people:") or first:match("^  workers:") or first:match("^  dependents:")
     or first:match("^housing:") or first:match("^crowding:") or first:match("^food:") or first:match("^building land:")
-    or first:match("^storage:") or first:match("^lost to overflow last month:")
+    or first:match("^storage:") or first:match("^lost to overflow last month:") or first == "temperature" or first == "wind"
   if item.tooltip ~= nil and item.cells[1] ~= nil and item.cells[1].x == 1 and location_line then
     local joined = {}
     for _, cell in ipairs(item.cells) do joined[#joined + 1] = cell.text end
@@ -592,12 +592,11 @@ function announce_location_tooltips()
     note_tooltip_kind(name, line.row_keys[row])
   end
   local ui_pixel = require("lib.ui").P
-  local people_cells = line.items[1].cells
-  tip(1, people_cells[1].x * ui_pixel + font.layout(people_cells[1].text).width * ui_pixel / 2, "people_word")
-  tip(1, people_cells[2].x * ui_pixel + 1, "people_number")
-  local food_row = line.items[6]
-  note("food_row_type " .. tostring(type(food_row)))
-  tip(6, food_row.cells[2].x * ui_pixel + 1, "food_number")
+  local people_heading = line.items[1].cells[1]
+  tip(1, people_heading.x * ui_pixel + 1, "people_word")
+  local people_cells = line.items[2].cells
+  tip(2, people_cells[1].x * ui_pixel + 1, "people_number")
+  tip(2, people_cells[3].x * ui_pixel + 1, "food_number")
   note_tooltip("title", window_objects.Rowan.title_key)
   note_tooltip_kind("title", window_objects.Rowan.title_key)
   note_tooltip("location_tab", tabs_by_title.Rowan.buttons[1].key)
@@ -606,7 +605,8 @@ function announce_location_tooltips()
     if type(row) == "table" and row.tooltip ~= nil then
       local y = line.origin_y + line.y - line.s + (row_index - 0.5) * 26
       for cell_index, cell in ipairs(row.cells) do
-        local x = line.origin_x + line.x + cell.x * ui_pixel + font.layout(cell.text).width * ui_pixel / 2
+        local width = font.layout(cell.text, cell.font or "standard").width * ui_pixel
+        local x = line.origin_x + line.x + cell.x * ui_pixel + (cell.align == "right" and -width / 2 or width / 2)
         note_tooltip("tab_" .. row_index .. "_" .. cell_index, line.row_keys[row_index], x, y)
         note_tooltip_kind("tab_" .. row_index .. "_" .. cell_index, line.row_keys[row_index])
       end
@@ -1055,7 +1055,8 @@ fn click_tab_at(rig: &mut Rig, key: &str, (width, height): (u32, u32)) {
     rig.deliver_fixture_frame_at(width, height, 2);
 }
 
-const LOCATION_ROWS: &str = "people: 120|  workers: 80|  dependents: 40|housing: basic 80/100, makeshift 10/20|crowding: 50%|food: 215 days|building land: 4200 / 24200 m²|storage: 5400 / 86400 L|lost to overflow last month: 0|good@16:left:#92ddea,price@212:right:#92ddea,base@238:right:#92ddea,buy/sell@246:left:#9a927e;stripe=-;icon=-|oats@16:left:#92ddea,100@212:right:-,100@238:right:-;stripe=-;icon=goods/oats;bar=246,46,nil|ale@16:left:#92ddea,2.5@212:right:-,2@238:right:-;stripe=-;icon=goods/ale;bar=246,46,nil";
+const LOCATION_ROWS: &str = "people@1:left:#c9932e;stripe=-;icon=-;bar=38,255,nil|120 @1:left:-,people@23:left:#92ddea,215 @220:left:-,food days@242:left:#92ddea;stripe=-;icon=-|80 @1:left:-,workers@17:left:#92ddea,40 @218:left:-,dependents@234:left:#92ddea;stripe=-;icon=-|housing@1:left:#c9932e;stripe=-;icon=-;bar=44,249,nil|basic@1:left:#92ddea,80@269:right:-,/100@293:right:-;stripe=-;icon=-;bar=72,40,0.8|makeshift@1:left:#92ddea,10@275:right:-,/20@293:right:-;stripe=-;icon=-;bar=72,40,0.5|crowding@1:left:#92ddea,50%@293:right:-;stripe=-;icon=-|land and storage@1:left:#c9932e;stripe=-;icon=-;bar=93,200,nil|building land@1:left:#92ddea,4200@243:right:-,/24200 m²@293:right:-;stripe=-;icon=-;bar=73,40,0.17355371900826|storage@1:left:#92ddea,5400@247:right:-,/86400 L@293:right:-;stripe=-;icon=-;bar=72,40,0.0625|lost to overflow@1:left:#92ddea,0@293:right:-;stripe=-;icon=-|weather@1:left:#c9932e;stripe=-;icon=-;bar=45,248,nil|market@1:left:#c9932e;stripe=-;icon=-;bar=39,254,nil|good@16:left:#92ddea,price@212:right:#92ddea,base@238:right:#92ddea,buy/sell@246:left:#9a927e;stripe=-;icon=-|oats@16:left:#92ddea,100@212:right:-,100@238:right:-;stripe=-;icon=goods/oats;bar=246,46,nil|ale@16:left:#92ddea,2.5@212:right:-,2@238:right:-;stripe=-;icon=goods/ale;bar=246,46,nil";
+const NOBODY_ROWS: &str = "people@1:left:#c9932e;stripe=-;icon=-;bar=38,255,nil|0 @1:left:-,people@11:left:#92ddea,0 @232:left:-,food days@242:left:#92ddea;stripe=-;icon=-|0 @1:left:-,workers@11:left:#92ddea,0 @224:left:-,dependents@234:left:#92ddea;stripe=-;icon=-|housing@1:left:#c9932e;stripe=-;icon=-;bar=44,249,nil|basic@1:left:#92ddea,0@281:right:-,/0@293:right:-;stripe=-;icon=-;bar=72,40,0|makeshift@1:left:#92ddea,0@281:right:-,/0@293:right:-;stripe=-;icon=-;bar=72,40,0|crowding@1:left:#92ddea,0%@293:right:-;stripe=-;icon=-|land and storage@1:left:#c9932e;stripe=-;icon=-;bar=93,200,nil|building land@1:left:#92ddea,0@267:right:-,/0 m²@293:right:-;stripe=-;icon=-;bar=73,40,0|storage@1:left:#92ddea,0@271:right:-,/0 L@293:right:-;stripe=-;icon=-;bar=72,40,0|lost to overflow@1:left:#92ddea,0@293:right:-;stripe=-;icon=-|weather@1:left:#c9932e;stripe=-;icon=-;bar=45,248,nil|market@1:left:#c9932e;stripe=-;icon=-;bar=39,254,nil|good@16:left:#92ddea,price@212:right:#92ddea,base@238:right:#92ddea,buy/sell@246:left:#9a927e;stripe=-;icon=-";
 
 fn card_run(recorded: &[String], colour: &str, value: &str) -> bool {
     let wanted = format!("{colour}={value}");
@@ -1173,3 +1174,95 @@ mod rows;
 mod scale_limits;
 mod selectors_tabs;
 mod tooltips;
+
+#[test]
+fn location_sections_reflow_capacity_figures_and_people() {
+    let mut rig = rig(&[r#"
+local loc = require('lib.location')
+local ui = require('lib.ui')
+local place = VIEWS[1].cards
+place.workers, place.dependents, place.food_days = 247, 165, 74
+place.footprint_m2, place.prepared_m2, place.max_buildable_m2 = 41200000, 96000000, 96000000
+place.storage_used_l, place.storage_capacity_l = 1644000000, 3840000000
+local rows = loc.rows(loc.lines('location', place, 133 * ui.P), 133 * ui.P)
+local found = {}
+for _, row in ipairs(rows) do
+  if type(row) == 'table' then
+    local joined = ""
+    for _, cell in ipairs(row.cells) do found[cell.text] = true; joined = joined .. cell.text end
+    found[joined] = true
+  end
+end
+for _, expected in ipairs({'people', 'housing', 'land and storage', 'weather', 'market',
+  '41200000/96000000 m²', '1644000000/', '3840000000 L'}) do
+  assert(found[expected], 'missing row ' .. expected)
+end
+local function check_rows(items, width)
+  for _, row in ipairs(items) do
+    if type(row) == 'table' then
+      for _, cell in ipairs(row.cells) do
+        local w = font.layout(cell.text, cell.font or "standard").width
+        local left = cell.align == 'right' and cell.x - w or cell.x
+        assert(left >= 0 and left + w <= width, 'cell outside row: ' .. cell.text)
+      end
+    end
+  end
+end
+check_rows(rows, 133)
+local function joined(row)
+  local parts = {}
+  for _, cell in ipairs(row.cells) do parts[#parts + 1] = cell.text end
+  return table.concat(parts)
+end
+local function row_of(items, label)
+  for index, row in ipairs(items) do
+    if type(row) == 'table' and row.cells[1] and row.cells[1].text == label then return index end
+  end
+  error('missing row ' .. label)
+end
+for index, expected in ipairs({'412 people', '74 food days', '247 workers', '165 dependents'}) do
+  assert(joined(rows[index + 1]) == expected and #rows[index + 1].cells == 2, 'people row order ' .. expected)
+end
+assert(joined(rows[6]) == 'housing', 'housing follows four people rows')
+local land = row_of(rows, 'building land')
+assert(#rows[land].cells == 1 and rows[land].bar == nil, 'land label is alone')
+assert(joined(rows[land + 1]) == '41200000/96000000 m²' and rows[land + 1].bar == nil, 'land figure is alone')
+assert(#rows[land + 2].cells == 0 and rows[land + 2].bar.mode == 'capacity', 'land bar is third')
+local storage = row_of(rows, 'storage')
+assert(storage == land + 3, 'storage follows the land figure')
+assert(joined(rows[storage + 1]) == '1644000000/' and joined(rows[storage + 2]) == '3840000000 L', 'storage splits after slash')
+assert(#rows[storage + 3].cells == 0 and rows[storage + 3].bar.mode == 'capacity', 'storage bar follows both parts')
+assert(row_of(rows, 'market') > storage + 3, 'market follows the complete figure')
+local function ordinary_land(value)
+  place.footprint_m2 = value
+  return loc.rows(loc.lines('location', place, 202 * ui.P), 202 * ui.P)
+end
+place.prepared_m2, place.max_buildable_m2 = 96000, 96000
+local ordinary = ordinary_land(41200)
+assert(joined(ordinary[2]) == '412 people74 food days' and #ordinary[2].cells == 4, 'first people pair has two columns')
+assert(joined(ordinary[3]) == '247 workers165 dependents' and #ordinary[3].cells == 4, 'second people pair has two columns')
+local ordinary_index = row_of(ordinary, 'building land')
+assert(joined(ordinary[ordinary_index]) == 'building land41200/96000 m²' and ordinary[ordinary_index].bar ~= nil,
+  'ordinary land figure fits in one row')
+place.prepared_m2, place.max_buildable_m2 = 96000000, 96000000
+local large = ordinary_land(41200000)
+local large_index = row_of(large, 'building land')
+assert(joined(large[large_index]) == 'building land41200000/96000000 m²' and large[large_index].bar == nil,
+  'large ordinary figure shares the label row')
+assert(#large[large_index + 1].cells == 0 and large[large_index + 1].bar.mode == 'capacity', 'large ordinary figure bar is second row')
+assert(row_of(large, 'storage') == large_index + 2, 'storage follows the two-row figure')
+place.basic_housing_occupants, place.basic_housing_capacity = 0, 0
+place.makeshift_housing_occupants, place.makeshift_housing_capacity = 1, 0
+local wider = loc.rows(loc.lines('location', place, 202 * ui.P), 202 * ui.P)
+local empty, full = false, false
+for _, row in ipairs(wider) do
+  if type(row) == 'table' and row.bar and row.bar.mode == 'capacity' then
+    empty = empty or row.bar.value == 0
+    full = full or row.bar.value == 1
+  end
+end
+assert(empty and full, 'zero capacity bars')
+check_rows(wider, 202)
+"#]);
+    rig.opened();
+}

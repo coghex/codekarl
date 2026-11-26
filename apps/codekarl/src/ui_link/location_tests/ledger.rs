@@ -185,7 +185,9 @@ fn selecting_a_ledger_place_renders_its_location_tab_from_the_game_place_view() 
     rig.opened();
     let visible_rows = rows(&rig);
     assert!(
-        visible_rows.iter().any(|line| line.starts_with("people:")),
+        visible_rows
+            .iter()
+            .any(|line| line.starts_with("people@1:")),
         "the selected game's place view rendered its location tab: {visible_rows:?}"
     );
 }
@@ -308,13 +310,15 @@ end
         notes(&rig)
     );
     assert!(
-        visible_rows.iter().any(|line| line.starts_with("people:")),
+        visible_rows
+            .iter()
+            .any(|line| line.starts_with("people@1:")),
         "a scrolled ledger row opens its shipped game.place view: {visible_rows:?}"
     );
     assert!(
         notes(&rig)
             .iter()
-            .any(|line| line.starts_with("location tab people:")),
+            .any(|line| line.starts_with("location tab people")),
         "the window witness can log the first typed location row: {:?}",
         notes(&rig)
     );
@@ -1479,7 +1483,7 @@ fn shipped_abandoned_sites_survive_ledger_tooltip_and_panel_paths() {
     rig.opened();
     assert!(notes(&rig).iter().any(|line| line == "active panel opened"));
     assert!(
-        rows(&rig).iter().any(|line| line.starts_with("people:")),
+        rows(&rig).iter().any(|line| line.starts_with("people@1:")),
         "{:?}",
         rows(&rig)
     );

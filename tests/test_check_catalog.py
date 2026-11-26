@@ -2615,6 +2615,9 @@ GUARDS: tuple[Guard, ...] = (
     ),
     # CK-277: tooltip widget tests read the shipped glossary for the date explanation contract.
     Guard("apps/codekarl/src/widget_tests.rs", "rust.app", ("assets/ui/glossary.toml",)),
+    Guard(
+        "apps/codekarl/src/ui_link/location_tests/cards.rs", "rust.app", ("assets/ui/location/",)
+    ),
     # The shipped UI witness reads the shipped script, so the narrow app.ui-witness group owns that dependency.
     Guard(
         "apps/codekarl/tests/support/map_modes.rs",

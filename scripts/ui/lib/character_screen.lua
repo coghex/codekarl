@@ -117,7 +117,7 @@ local function tip_of(hotspots, x, y)
 end
 
 local function heading(result, group, x, y, width, word)
-  local used = draw.text(result, group, x, y, word, theme.colour("term"), "small")
+  local used = draw.text(result, group, x, y, word, theme.kind("place").divider, "small")
   draw.rect(result, group, x + used + 3, y + 4, math.max(1, width - used - 3), 1, theme.kind("window").outline)
 end
 

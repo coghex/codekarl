@@ -137,7 +137,7 @@ end
 
 local function draw_icon(result, group, name, x, y, colour)
   local quad = render.create_quad{
-    texture = ui.texture("ui/theme/icon_" .. name .. ".png"), x = x * P, y = y * P,
+    texture = ui.texture((name == "demesne" and "ui/location/icon_" or "ui/theme/icon_") .. name .. ".png"), x = x * P, y = y * P,
     width = 9 * P, height = 11 * P, group = group, tint = colour,
   }
   result:add({destroy = function() render.destroy_quad(quad) end})
@@ -218,8 +218,49 @@ local function methods_text(building)
 end
 
 local function building_icon(kind)
-  if kind == "farm" or kind == "holdings" or kind == "storehouse" then return kind end
+  if kind == "farm" or kind == "holdings" or kind == "storehouse" or kind == "demesne" then return kind end
   return nil
+end
+
+local function method_texture(id)
+  return "ui/location/icon_method_" .. id .. ".png"
+end
+
+local function card_layout(building, width)
+  local housing = "housing " .. (building.housing_occupants or 0)
+  local housing_left = width - 5 - font.layout(housing).width
+  local wage_left = width - 5 - font.layout("wage " .. milli(building.wage)).width
+  local kind = building.kind
+  while font.layout(kind).width > wage_left - 17 - 4 and utf8.len(kind) > 1 do
+    kind = kind:sub(1, utf8.offset(kind, -1) - 1)
+  end
+  local mx = 17 + font.layout(kind).width + 4
+  local method = #building.methods > 0 and {x = mx, y = 3} or nil
+  if method ~= nil and mx + 9 + 8 > wage_left then method = {x = 5, y = 14} end
+  local start = method ~= nil and method.y == 14 and 18 or 5
+  local strip_width = 0
+  for index, herd in ipairs(building.herds) do
+    if index > 1 then strip_width = strip_width + 10 end
+    strip_width = strip_width + 11 + font.layout(herd.head .. "/" .. herd.maximum).width
+  end
+  local bottom = #building.herds > 0 and start + strip_width + 8 > housing_left
+  local herds, hx, hy = {}, bottom and 5 or start, bottom and 37 or 14
+  for _, herd in ipairs(building.herds) do
+    local w = 11 + font.layout(herd.head .. "/" .. herd.maximum).width
+    if bottom and hx > 5 and hx + w > width - 5 then hx, hy = 5, hy + 11 end
+    herds[#herds + 1] = {x = hx, y = hy, herd = herd}
+    hx = hx + w + 10
+  end
+  return {method = method, herds = herds, kind = kind, housing_left = housing_left, height = bottom and (50 + hy - 37) or 39}
+end
+
+local function card_method_tip(building)
+  local lines = {title = "methods"}
+  for _, method in ipairs(building.methods) do
+    lines[#lines + 1] = {{icon = method_texture(method.id)}, " ",
+      {text = method.id:gsub("_", " "), term = method.id}, " level " .. method.levels}
+  end
+  return lines, "methods"
 end
 
 -- Keep the card's third-line drawing and tooltip hit areas on one width-aware layout.
@@ -376,10 +417,12 @@ local function building_card(building, place_id, building_index)
   local icon = building_icon(building.kind)
   local card_width
   return {
-    height = #building.herds > 0 and 50 or 39,
+    height = 39,
+    measure = function(width) return card_layout(building, width // P).height end,
     tooltip = function(x, y)
       if card_width == nil then return nil end
-      if within(x, y, 5, 3, 14, 14) or within(x, y, 17, 3, 17 + font.layout(building.kind).width, 3 + font.layout(building.kind).height) then
+      local layout = card_layout(building, card_width)
+      if within(x, y, 5, 3, 14, 14) or within(x, y, 17, 3, 17 + font.layout(layout.kind).width, 3 + font.layout(layout.kind).height) then
         return explanation_tip(building.kind, "kind")
       end
       local wage_text = "wage " .. milli(building.wage)
@@ -390,8 +433,10 @@ local function building_card(building, place_id, building_index)
       if within(x, y, wage_left + font.layout("wage ").width, 3, card_width - 5, 3 + font.layout(wage_text).height) then
         return class_tip("wage", place_id, "building", building_index, "wage")
       end
-      local method_content, method_part = method_tip(building, x, y)
-      if method_content ~= nil then return method_content, method_part end
+      local method = layout.method
+      if method ~= nil and within(x, y, method.x, method.y, method.x + 9, method.y + 11) then
+        return card_method_tip(building)
+      end
       local housing_text = "housing " .. (building.housing_occupants or 0)
       local housing_left = card_width - 5 - font.layout(housing_text).width
       if within(x, y, housing_left, 14, card_width - 5, 14 + font.layout(housing_text).height) then
@@ -420,17 +465,15 @@ local function building_card(building, place_id, building_index)
           line.storage_bar.x + line.storage_bar.width, 33) then
         return class_tip("store", place_id, "building", building_index, "store_bar")
       end
-      local hx = 5
-      for _, herd in ipairs(building.herds) do
+      for _, entry in ipairs(layout.herds) do
+        local herd, hx, hy = entry.herd, entry.x, entry.y
         local count = herd.head .. "/" .. herd.maximum
-        if x >= hx and x < hx + 9 and y >= 38 and y < 47 then
+        if within(x, y, hx, hy + 1, hx + 9, hy + 10) then
           return explanation_tip(herd.species, herd.species)
         end
-        local count_left = hx + 11
-        if within(x, y, count_left, 37, count_left + font.layout(count).width, 37 + font.layout(count).height) then
+        if within(x, y, hx + 11, hy, hx + 11 + font.layout(count).width, hy + font.layout(count).height) then
           return class_tip("herd", place_id, "building", building_index, herd.species, herd.species)
         end
-        hx = hx + 11 + font.layout(count).width + 10
       end
       return nil
     end,
@@ -440,22 +483,20 @@ local function building_card(building, place_id, building_index)
       local dx, dy = x // P, y // P
       local colours = theme.kind("place")
       local w = width // P
-      local height = (#building.herds > 0 and 50 or 39)
+      local layout = card_layout(building, w)
+      local height = layout.height
       result:add(frame.new{x = x, y = y, width = width, height = height * P, cut = 3, corners = "tl_br", fill = colours.fill, line = colours.outline, group = group})
       if icon ~= nil then draw_icon(result, group, icon, dx + 5, dy + 3, theme.colour("text")) end
-      put_term_text(result, group, dx + 17, dy + 3, {term(building.kind)})
+      put_term_text(result, group, dx + 17, dy + 3, {term(layout.kind)})
       put_term_text(result, group, dx + w - 5, dy + 3,
         {term("wage "), {text = milli(building.wage), colour = theme.colour("dim")}}, "right")
-      local method_segments = {}
-      for index, method in ipairs(building.methods) do
-        if index > 1 then method_segments[#method_segments + 1] = {text = ", ", colour = theme.colour("dim")} end
-        method_segments[#method_segments + 1] = term(method.id)
-        method_segments[#method_segments + 1] = {text = " " .. method.levels, colour = theme.colour("dim")}
+      if layout.method ~= nil then
+        local method_id = #building.methods > 1 and "split" or building.methods[1].id
+        local quad = render.create_quad{texture = ui.texture(method_texture(method_id)),
+          x = (dx + layout.method.x) * P, y = (dy + layout.method.y) * P,
+          width = 9 * P, height = 11 * P, group = group}
+        result:add({destroy = function() render.destroy_quad(quad) end})
       end
-      if #method_segments == 0 then
-        method_segments[1] = {text = "storage", colour = theme.colour("dim")}
-      end
-      put_term_text(result, group, dx + 17, dy + 14, method_segments)
       put_term_text(result, group, dx + w - 5, dy + 14,
         {term("housing "), {text = tostring(building.housing_occupants or 0), colour = theme.colour("dim")}}, "right")
       local line = building_line_layout(building, w)
@@ -476,12 +517,11 @@ local function building_card(building, place_id, building_index)
         draw_bar(result, group, dx + line.storage_bar.x, dy + 30, line.storage_bar.width,
           building.store_used_l, building.store_capacity_l)
       end
-      local hx = dx + 5
-      for _, herd in ipairs(building.herds) do
+      for _, entry in ipairs(layout.herds) do
+        local herd, hx, hy = entry.herd, dx + entry.x, dy + entry.y
         local count = herd.head .. "/" .. herd.maximum
-        draw_goods_icon(result, group, herd.species, hx, dy + 38)
-        put_text(result, group, hx + 11, dy + 37, count, herd.head < herd.maximum and theme.colour("dim") or theme.colour("text"))
-        hx = hx + 11 + font.layout(count).width + 10
+        draw_goods_icon(result, group, herd.species, hx, hy + 1)
+        put_text(result, group, hx + 11, hy, count, herd.head < herd.maximum and theme.colour("dim") or theme.colour("text"))
       end
       return result
     end,
@@ -776,57 +816,123 @@ end
 local function location_lines(place, width)
   if place.state == "abandoned" then
     local lines = {(tostring(place.kind):gsub("_", " ")), {tooltip_parts = {{text = "abandoned", term = "abandoned"}}, place = place.id}}
-    if place.temperature ~= nil then lines[#lines + 1] = temperature_line(place) end
-    if place.wind ~= nil then lines[#lines + 1] = wind_line(place) end
+    if place.temperature ~= nil then
+      lines[#lines + 1] = {tooltip_parts = {{text = "temperature", term = "temperature"}, {text = temperature_line(place):sub(12)}}, place = place.id}
+    end
+    if place.wind ~= nil then
+      lines[#lines + 1] = {tooltip_parts = {{text = "wind", term = "wind"}, {text = wind_line(place):sub(5)}}, place = place.id}
+    end
     return lines
   end
   local content_width = math.max(1, (width or 412) // P)
-  local lines = {
-    {tooltip_parts = {
-      {text = "people: ", term = "population"}, {text = tostring(place.workers + place.dependents), class = "population"},
-    }, place = place.id},
-    {tooltip_parts = {
-      {text = "  workers: ", term = "worker"}, {text = tostring(place.workers), class = "population"},
-    }, place = place.id},
-    {tooltip_parts = {
-      {text = "  dependents: ", term = "dependent"}, {text = tostring(place.dependents), class = "population"},
-    }, place = place.id},
-    {tooltip_parts = {
-      {text = "housing: ", term = "housing"}, {text = "basic", term = "basic_housing"},
-      {text = " ", term = "basic_housing"}, {text = tostring(place.basic_housing_occupants or 0), class = "housing",
-        over_limit = (place.basic_housing_occupants or 0) > (place.basic_housing_capacity or 0)},
-      {text = "/", class = "housing"}, {text = tostring(place.basic_housing_capacity or 0), class = "housing"},
-      {text = ", "}, {text = "makeshift", term = "makeshift_housing"},
-      {text = " ", term = "makeshift_housing"}, {text = tostring(place.makeshift_housing_occupants or 0), class = "housing",
-        over_limit = (place.makeshift_housing_occupants or 0) > (place.makeshift_housing_capacity or 0)},
-      {text = "/", class = "housing"}, {text = tostring(place.makeshift_housing_capacity or 0), class = "housing"},
-    }, place = place.id},
-    {tooltip_parts = {
-      {text = "crowding: ", term = "crowding"},
-      {text = percent(place.crowding_pm or 0), class = "crowding", over_limit = (place.crowding_pm or 0) > 1000},
-    }, place = place.id},
-    {tooltip_parts = {
-      {text = "food: ", term = "food_days"}, {text = place.food_days .. " days", class = "place_food"},
-    }, place = place.id},
-    {tooltip_parts = {
-      {text = "building land: ", term = "building_land"},
-      {text = tostring(place.footprint_m2), class = "building_land",
-        over_limit = place.footprint_m2 > math.min(place.prepared_m2, place.max_buildable_m2)},
-      {text = " / ", class = "building_land"}, {text = tostring(math.min(place.prepared_m2, place.max_buildable_m2)), class = "building_land"},
-      {text = " m²", class = "building_land"},
-    }, place = place.id},
-    {tooltip_parts = {
-      {text = "storage: ", term = "storage"},
-      {text = tostring(place.storage_used_l), class = "storage", over_limit = place.storage_used_l > place.storage_capacity_l},
-      {text = " / ", class = "storage"}, {text = tostring(place.storage_capacity_l), class = "storage"}, {text = " L", class = "storage"},
-    }, place = place.id},
-    {tooltip_parts = {
-      {text = "lost to overflow last month: ", term = "overflow"},
-      {text = tostring(place.overflow_lost), class = "overflow", over_limit = place.overflow_lost > 0},
-    }, place = place.id},
-  }
-  if place.temperature ~= nil then lines[#lines + 1] = temperature_line(place) end
-  if place.wind ~= nil then lines[#lines + 1] = wind_line(place) end
+  local lines = {}
+  local right = content_width - 1
+  local function source(term_key, class_key)
+    return function(_, _, cell)
+      local target = cell == 1 and term_key or class_key
+      if target == nil then return nil end
+      if cell == 1 then return tooltip.explanation(target), tostring(cell) end
+      return tooltip.content(target, {place = place.id}), tostring(cell)
+    end
+  end
+  local function heading(word, key)
+    local x = 1 + font.layout(word).width + 3
+    lines[#lines + 1] = {cells = {{text = word, x = 1, align = "left", colour = theme.kind("place").divider}},
+      bar = {x = x, width = math.max(3, right - x), mode = "rule", colour = theme.kind("place").outline},
+      tooltip = key and source(key, nil) or nil}
+  end
+  local function single(label, key, value, class, over)
+    lines[#lines + 1] = {cells = {{text = label, x = 1, align = "left", colour = theme.colour("term")},
+      {text = value, x = right, align = "right", over_limit = over}}, tooltip = source(key, class)}
+  end
+  local function figure(label, key, value, capacity, unit, class)
+    local label_width = font.layout(label).width
+    local ratio = tostring(value) .. "/" .. tostring(capacity) .. (unit and " " .. unit or "")
+    local ratio_width = font.layout(ratio).width
+    local start = math.max(72, 1 + label_width + 4)
+    local bar_width = math.min(40, right - ratio_width - 4 - start)
+    local over = value > capacity
+    local fill = capacity == 0 and (value > 0 and 1 or 0) or math.min(1, value / capacity)
+    local function bar(x, width)
+      return {x = x, width = math.max(3, width), mode = "capacity", value = fill}
+    end
+    local function label_cell() return {text = label, x = 1, align = "left", colour = theme.colour("term")} end
+    local function number_cell(value_text, font_name, is_value)
+      return {text = value_text, x = right, align = "right", font = font_name, over_limit = is_value and over or false}
+    end
+    local function pair_cells()
+      local suffix = "/" .. tostring(capacity) .. (unit and " " .. unit or "")
+      return {text = tostring(value), x = right - font.layout(suffix).width, align = "right", over_limit = over},
+        number_cell(suffix, nil, false)
+    end
+    if bar_width >= 12 then
+      local value_cell, suffix_cell = pair_cells()
+      lines[#lines + 1] = {cells = {label_cell(), value_cell, suffix_cell}, bar = bar(start, bar_width), tooltip = source(key, class)}
+    elseif 1 + label_width + 4 + ratio_width <= right then
+      local value_cell, suffix_cell = pair_cells()
+      lines[#lines + 1] = {cells = {label_cell(), value_cell, suffix_cell}, tooltip = source(key, class)}
+      lines[#lines + 1] = {cells = {}, bar = bar(1, right - 1), tooltip = source(nil, class)}
+    else
+      lines[#lines + 1] = {cells = {label_cell()}, tooltip = source(key, nil)}
+      local parts = {ratio}
+      if ratio_width > right - 1 then parts = {tostring(value) .. "/", tostring(capacity) .. (unit and " " .. unit or "")} end
+      for index, part in ipairs(parts) do
+        local font_name = font.layout(part).width > right - 1 and "small" or nil
+        if font.layout(part, font_name or "standard").width > right - 1 then
+          local count = utf8.len(part)
+          while count > 0 and font.layout(part:sub(1, (utf8.offset(part, count + 1) or (#part + 1)) - 1) .. "…", font_name).width > right - 1 do
+            count = count - 1
+          end
+          part = (count > 0 and part:sub(1, (utf8.offset(part, count + 1) or (#part + 1)) - 1) or "") .. "…"
+        end
+        local cells
+        if #parts == 1 then cells = {pair_cells()} else cells = {number_cell(part, font_name, index == 1)} end
+        lines[#lines + 1] = {cells = cells, tooltip = function() return tooltip.content(class, {place = place.id}), "figure" end}
+      end
+      lines[#lines + 1] = {cells = {}, bar = bar(1, right - 1), tooltip = source(nil, class)}
+    end
+  end
+  heading("people", "population")
+  local people = {{place.workers + place.dependents, "people", "population", "population"},
+    {place.food_days, "food days", "food_days", "place_food"}, {place.workers, "workers", "worker", "population"},
+    {place.dependents, "dependents", "dependent", "population"}}
+  local function people_width(entry) return font.layout(tostring(entry[1]) .. " " .. entry[2]).width end
+  local columns = math.max(people_width(people[1]) + people_width(people[2]), people_width(people[3]) + people_width(people[4])) + 8 <= right - 1
+  local function people_row(first, second)
+    local cells, targets = {}, {}
+    local function add(entry, x)
+      local number = tostring(entry[1]) .. " "
+      cells[#cells + 1] = {text = number, x = x, align = "left"}; targets[#targets + 1] = {class = entry[4]}
+      cells[#cells + 1] = {text = entry[2], x = x + font.layout(number).width, align = "left", colour = theme.colour("term")}
+      targets[#targets + 1] = {term = entry[3]}
+    end
+    add(first, 1)
+    if second ~= nil then add(second, right - people_width(second)) end
+    lines[#lines + 1] = {cells = cells, tooltip = function(_, _, cell)
+      local target = targets[cell]
+      if target == nil then return nil end
+      if target.term then return tooltip.explanation(target.term), tostring(cell) end
+      return tooltip.content(target.class, {place = place.id}), tostring(cell)
+    end}
+  end
+  if columns then people_row(people[1], people[2]); people_row(people[3], people[4])
+  else for _, entry in ipairs(people) do people_row(entry) end end
+  heading("housing", "housing")
+  figure("basic", "basic_housing", place.basic_housing_occupants or 0, place.basic_housing_capacity or 0, nil, "housing")
+  figure("makeshift", "makeshift_housing", place.makeshift_housing_occupants or 0, place.makeshift_housing_capacity or 0, nil, "housing")
+  single("crowding", "crowding", percent(place.crowding_pm or 0), "crowding", (place.crowding_pm or 0) > 1000)
+  heading("land and storage")
+  figure("building land", "building_land", place.footprint_m2, math.min(place.prepared_m2, place.max_buildable_m2), "m²", "building_land")
+  figure("storage", "storage", place.storage_used_l, place.storage_capacity_l, "L", "storage")
+  single("lost to overflow", "overflow", tostring(place.overflow_lost), "overflow", place.overflow_lost > 0)
+  heading("weather")
+  if place.temperature ~= nil then
+    lines[#lines + 1] = {tooltip_parts = {{text = "temperature", term = "temperature"}, {text = temperature_line(place):sub(12)}}, place = place.id}
+  end
+  if place.wind ~= nil then
+    lines[#lines + 1] = {tooltip_parts = {{text = "wind", term = "wind"}, {text = wind_line(place):sub(5)}}, place = place.id}
+  end
+  heading("market")
   local price_right = content_width - 82
   local base_right = content_width - 56
   local bar_x = content_width - 48
@@ -1185,11 +1291,15 @@ local function open(self)
 end
 
 -- The narrowest the panel gets, in points: what holds its three tabs (with their tiny labels), the close button and the frame.
-function location.min_width()
+function location.ledger_min_width()
   -- Also what holds the market's columns beside the scroll bar of its list: they end 48 pixels from the row's right edge (the balance
   -- bar is 46 wide from there), and the bar takes 5 pixels of the content's width (CK-299).
   local columns = (48 + scrollbar.RESERVE // P) * P + 6 * P
   return math.max(windows.min_outer_width(tabs.reserved(TABS), false, windows.title_button_room(GO_TO_ICON)), columns)
+end
+
+function location.min_width()
+  return math.max(144 * P, location.ledger_min_width())
 end
 
 -- The outer size of the panel and where it sits: the left third of the screen, from `top` to the bottom edge. Where the third is

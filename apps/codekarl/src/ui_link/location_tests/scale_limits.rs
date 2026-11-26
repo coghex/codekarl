@@ -277,6 +277,7 @@ VIEWS[2].rowan.temperature = {mean=-1, month=10, expected=117}
 local location = require('lib.location')
 for _, revision in ipairs({1, 2}) do
   for _, line in ipairs(location.lines('location', game.place('rowan', revision), 800)) do
+    if type(line) == 'table' and line.tooltip_parts then local parts = {}; for _, part in ipairs(line.tooltip_parts) do parts[#parts + 1] = part.text end; line = table.concat(parts) end
     if type(line) == 'string' and line:find('temperature', 1, true) then
       note(line)
       local degree = 0
@@ -290,7 +291,8 @@ for _, revision in ipairs({1, 2}) do
 end
 local abandoned = {id='empty', state='abandoned', kind='fort', temperature={mean=127, month=10, expected=117}}
 for _, line in ipairs(location.lines('location', abandoned, 800)) do
-  if type(line) == 'string' and line:find('temperature', 1, true) then note(line) end
+  if type(line) == 'table' and line.tooltip_parts then local parts = {}; for _, part in ipairs(line.tooltip_parts) do parts[#parts + 1] = part.text end; line = table.concat(parts) end
+    if type(line) == 'string' and line:find('temperature', 1, true) then note(line) end
 end
 "]);
     rig.opened();
@@ -325,11 +327,13 @@ local location = require('lib.location')
 for _, revision in ipairs({1, 2}) do
   local lines = location.lines('location', game.place('rowan', revision), 800)
   for _, line in ipairs(lines) do
+    if type(line) == 'table' and line.tooltip_parts then local parts = {}; for _, part in ipairs(line.tooltip_parts) do parts[#parts + 1] = part.text end; line = table.concat(parts) end
     if type(line) == 'string' and (line:find('wind', 1, true) or line:find('temperature', 1, true)) then note(line) end
   end
 end
 local abandoned = {id='empty', state='abandoned', kind='fort', wind={knots=2, direction='SW'}}
 for _, line in ipairs(location.lines('location', abandoned, 800)) do
+  if type(line) == 'table' and line.tooltip_parts then local parts = {}; for _, part in ipairs(line.tooltip_parts) do parts[#parts + 1] = part.text end; line = table.concat(parts) end
   if type(line) == 'string' and line:find('wind', 1, true) then note(line) end
 end
 "]);

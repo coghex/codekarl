@@ -471,3 +471,11 @@ text = "The old {religion} of the Anglo-Saxons."
 [term.horses]
 title = "horses"
 text = "Live horses, bred at the nobles' demesne."
+
+[term.temperature]
+title = "temperature"
+text = "The current air temperature and the expected temperature for this month."
+
+[term.wind]
+title = "wind"
+text = "The current wind speed and direction."

@@ -314,12 +314,7 @@ fn the_location_tab_stays_text_while_pops_and_buildings_start_as_cards_and_share
         "location tab destroys selector buttons: {:?}",
         notes(&rig)
     );
-    assert_eq!(
-        rows(&rig).last().map(String::as_str),
-        Some(
-            "people: 0|  workers: 0|  dependents: 0|housing: basic 0/0, makeshift 0/0|crowding: 0%|food: 0 days|building land: 0 / 0 m²|storage: 0 / 0 L|lost to overflow last month: 0|good@16:left:#92ddea,price@212:right:#92ddea,base@238:right:#92ddea,buy/sell@246:left:#9a927e;stripe=-;icon=-"
-        )
-    );
+    assert_eq!(rows(&rig).last().map(String::as_str), Some(NOBODY_ROWS));
 }
 
 #[test]

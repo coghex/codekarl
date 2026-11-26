@@ -89,7 +89,8 @@ local function checked_items(who, items)
           or (bar.value ~= nil and (not finite(bar.value) or bar.value < -1 or bar.value > 1)) then
           error(who .. ": item " .. index .. " bar needs whole x >= 0, whole width >= 3 and a value from -1 to 1 or nil", 3)
         end
-        checked.bar = {x = bar.x, width = bar.width, value = bar.value}
+        if bar.mode ~= nil and bar.mode ~= "capacity" and bar.mode ~= "rule" then error(who .. ": invalid bar mode", 3) end
+        checked.bar = {x = bar.x, width = bar.width, value = bar.value, mode = bar.mode, colour = bar.colour}
       end
       if item.stripe ~= nil and type(item.stripe) ~= "string" then
         error(who .. ": item " .. index .. " stripe must be a colour string", 3)
@@ -137,7 +138,7 @@ local function checked_items(who, items)
           error(who .. ": item " .. index .. " cell " .. cell_index .. " needs text, finite x, left/right align, and optional colour", 3)
         end
         checked.cells[cell_index] = {text = cell.text, x = cell.x, align = cell.align,
-          colour = cell.colour, over_limit = cell.over_limit}
+          colour = cell.colour, over_limit = cell.over_limit, font = cell.font}
       end
       copy[index] = checked
     else
@@ -298,7 +299,7 @@ local function destroy_bar(row_view)
   local bar = row_view.bar
   if bar == nil then return end
   render.destroy_quad(bar.track)
-  render.destroy_quad(bar.tick)
+  if bar.tick ~= nil then render.destroy_quad(bar.tick) end
   if bar.fill ~= nil then render.destroy_quad(bar.fill) end
   row_view.bar = nil
 end
@@ -312,29 +313,34 @@ local function set_bar(self, row_view, row_index, spec)
   local top = row_top(row_index)
   local center = left + math.floor(spec.width / 2) * P
   local bar = row_view.bar
+  if bar ~= nil and bar.mode ~= spec.mode then destroy_bar(row_view); bar = nil end
   if bar == nil then
-    bar = {}
+    bar = {mode = spec.mode}
     bar.track = render.create_quad{texture = ui.texture("ui/theme/white.png"), x = left, y = top + 5 * P,
-      width = spec.width * P, height = 3 * P, group = self.rows_group, tint = theme.colour("track")}
-    bar.tick = render.create_quad{texture = ui.texture("ui/theme/white.png"), x = center, y = top + 4 * P,
-      width = P, height = 5 * P, group = self.rows_group, tint = theme.colour("dim")}
+      width = spec.width * P, height = (spec.mode == "rule" and 1 or 3) * P, group = self.rows_group,
+      tint = spec.mode == "rule" and spec.colour or theme.colour("track")}
+    if spec.mode == nil then
+      bar.tick = render.create_quad{texture = ui.texture("ui/theme/white.png"), x = center, y = top + 4 * P,
+        width = P, height = 5 * P, group = self.rows_group, tint = theme.colour("dim")}
+    end
     row_view.bar = bar
   end
 
-  render.set_rect(bar.track, left, top + 5 * P, spec.width * P, 3 * P)
-  render.set_rect(bar.tick, center, top + 4 * P, P, 5 * P)
+  render.set_rect(bar.track, left, top + 5 * P, spec.width * P, (spec.mode == "rule" and 1 or 3) * P)
+  if spec.mode == "rule" then render.set_tint(bar.track, spec.colour); return end
+  if bar.tick ~= nil then render.set_rect(bar.tick, center, top + 4 * P, P, 5 * P) end
 
   local n = 0
   if spec.value ~= nil and spec.value ~= 0 then
-    local half = math.floor(spec.width / 2)
-    n = math.min(half - 1, math.floor(math.abs(spec.value) * half + 0.5))
+    local half = spec.mode == "capacity" and spec.width or math.floor(spec.width / 2)
+    n = math.min(spec.mode == "capacity" and half or half - 1, math.floor(math.abs(spec.value) * half + 0.5))
   end
   if n == 0 then
     if bar.fill ~= nil then render.destroy_quad(bar.fill); bar.fill = nil end
     return
   end
-  local x = spec.value < 0 and center - n * P or center + P
-  local colour = theme.colour(spec.value < 0 and "deficit" or "surplus")
+  local x = spec.mode == "capacity" and left or (spec.value < 0 and center - n * P or center + P)
+  local colour = theme.colour(spec.mode == "capacity" and "text" or (spec.value < 0 and "deficit" or "surplus"))
   if bar.fill == nil then
     bar.fill = render.create_quad{texture = ui.texture("ui/theme/white.png"), x = x, y = top + 5 * P,
       width = n * P, height = 3 * P, group = self.rows_group, tint = colour}
@@ -387,8 +393,9 @@ end
 
 local function set_cell(self, row_view, row_index, index, cell)
   local line = row_view.lines[index]
+  if line ~= nil and line.font_name ~= (cell.font or "standard") then text.destroy(line); line = nil end
   if line == nil then
-    line = text.line(0, 0, row_view.group, cell.colour)
+    line = text.line(0, 0, row_view.group, cell.colour, cell.font)
     row_view.lines[index] = line
   end
   local colour = cell.colour or self.colours.text

@@ -99,15 +99,17 @@ local last_s = 0
 local real_list_new = lists_library.new
 lists_library.new = function(spec)
   if spec.window.title ~= 'ledger' then
-    -- The location panel's list (it only scrolls): not the ledger list this witness watches. Its first row is the Location tab's
-    -- people line, for the place the click opened.
-    local first = spec.items[1]
-    if type(first) == 'table' then
-      local cells = {}
-      for _, cell in ipairs(first.cells) do cells[#cells + 1] = cell.text end
-      first = table.concat(cells)
+    -- The heading and first figure are separate rows in the Location tab.
+    local heading, figure = spec.items[1], spec.items[2]
+    if type(heading) == 'table' then
+      assert(heading.cells[1].text == 'people', 'the location tab starts with its people heading')
+      local count = figure.cells[1].text:match('^%s*(%d+)%s*$')
+      assert(count ~= nil, 'the first people figure has a count')
+      log.info('location tab people: ' .. count)
+    else
+      -- The windowless pointer fixture intentionally has no game.place view.
+      log.info('location tab ' .. heading)
     end
-    log.info('location tab ' .. first)
     return real_list_new(spec)
   end
   local real_on_select = spec.on_select

@@ -7,12 +7,7 @@ fn a_place_of_nobody_has_zeroes_and_empty_pops_and_buildings() {
         "announce_tabs()",
     ]);
     rig.opened();
-    assert_eq!(
-        rows(&rig),
-        [
-            "people: 0|  workers: 0|  dependents: 0|housing: basic 0/0, makeshift 0/0|crowding: 0%|food: 0 days|building land: 0 / 0 m²|storage: 0 / 0 L|lost to overflow last month: 0|good@16:left:#92ddea,price@212:right:#92ddea,base@238:right:#92ddea,buy/sell@246:left:#9a927e;stripe=-;icon=-"
-        ]
-    );
+    assert_eq!(rows(&rig), [NOBODY_ROWS]);
     rig.opened();
     click_tab(&mut rig, "pops");
     click_tab(&mut rig, "buildings");
@@ -40,7 +35,9 @@ fn the_panel_refreshes_on_a_new_revision_and_not_on_a_date_alone() {
         "a date alone refreshes nothing"
     );
     rig.opened();
-    let refreshed = LOCATION_ROWS.replace("people: 120|  workers: 80", "people: 130|  workers: 90");
+    let refreshed = LOCATION_ROWS
+        .replace("120 @1:left", "130 @1:left")
+        .replace("80 @1:left", "90 @1:left");
     assert_eq!(rows(&rig), [LOCATION_ROWS.to_owned(), refreshed]);
     rig.opened();
     assert_eq!(
@@ -339,17 +336,17 @@ local goods = {}
 for i = 1, 60 do goods[i] = price('good' .. i, 1000 + i * 10, 5, 10, 20) end
 VIEWS[1].rowan.prices = goods
 time(1, 1); select_place('rowan', 'Rowan')
-eq_that(require('lib.location').min_width(), 136, 'the floor is the title bar: three tabs, the go-to button and the close button')
+eq_that(require('lib.location').min_width(), 288, 'the floor holds the narrow figures')
 local window = panel_bar.window
-eq_that(window.outer_width, 136, 'the panel is the floor wide')
-eq_that(window.content_width, 124)
+eq_that(window.outer_width, 288, 'the panel is the floor wide')
+eq_that(window.content_width, 276)
 local px = window.content_width // 2
-eq_that(px, 62, 'the content is 62 pixels: the 48 of the market, the 5 of the bar and 9 to spare')
+eq_that(px, 138, 'the content is 138 pixels before the five-pixel scrollbar reservation')
 local overflowing = #list_object.items * 26 > list_object.view_height
 eq_that(overflowing, true, 'the goods overflow the list')
 for _, item in ipairs(list_object.items) do
-  if item.bar ~= nil then
-    eq_that(item.bar.x, 9, 'the balance bar starts at the row width less 48, which is 9 here')
+  if item.icon ~= nil then
+    eq_that(item.bar.x, 85, 'the balance bar starts at 133 less 48, which is 85 here')
     eq_that(item.bar.width, 46, 'and is whole')
     eq_that(item.bar.x + item.bar.width <= px - 5, true, 'clear of the gap and the track')
   end

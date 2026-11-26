@@ -786,7 +786,7 @@ if game ~= nil then
 
   local function fit_ledger()
     if places_window == nil or places_window.closed then return end
-    local width = math.max(ui.snap_size(view.width // 3), ui.snap_size(location.min_width()))
+    local width = math.max(ui.snap_size(view.width // 3), ui.snap_size(location.ledger_min_width()))
     local height = math.max(ui.snap_size(view.height - MARGIN), ui.snap_size(24 * P))
     places_window:set_outer_size(width, height)
     places_window:move_to(view.width - places_window.outer_width, MARGIN)
@@ -831,7 +831,7 @@ if game ~= nil then
       title = "ledger",
       clip_title = true,
       draggable = false,
-      outer_width = math.max(ui.snap_size(view.width // 3), ui.snap_size(location.min_width())),
+      outer_width = math.max(ui.snap_size(view.width // 3), ui.snap_size(location.ledger_min_width())),
       outer_height = math.max(ui.snap_size(view.height - MARGIN), ui.snap_size(24 * P)),
       kind = "places_bar",
       x = 0,
