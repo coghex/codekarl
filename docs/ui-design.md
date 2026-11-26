@@ -1038,7 +1038,7 @@ inspect the derived colours and all state/ink/fill combinations under 3:1.
     | `place` | `#663069`, dark purple | cyan, with dark text on them |
     | `window`, `time_bar`, `places_bar` | `#d4a8d7`, light purple of the same hue | red, with light text on them |
 
-    `theme.kind(name).highlight_number` gives it, and falls back to `number` for a kind without one (`tooltip`).
+    `theme.kind(name).highlight_number` gives it. Since CK-427 managed kinds, including `tooltip`, derive this colour from their base; custom kinds without one fall back to `number`.
   - **No good or bad colour** (the owner: "i didnt realize there was a good/bad color, make sure that is not a thing"): no value is
     coloured by being high, low, positive or negative. The theme's `good` colour is removed. A pop's mood has its digits in
     `number` and its sign in `text`.
@@ -2707,13 +2707,11 @@ Lengths below are in UI pixels.
   - Its content is 168 tall, and 226 wide plus the tab column's width.
   - It is made with `modal = true` (below), so it is above the menu and the backdrop.
   - It is larger than the menu and both are centred, so it covers the menu's buttons while it is open.
-- **The tab column** is down the left side: five rows since CK-336 (four since CK-308), 13 tall, in the order general,
-  graphics, map, input, development. The window opens on general.
+- **The tab column** is down the left side: six rows since CK-427, 13 tall, in the order general,
+  graphics, map, input, development, colours. The window opens on general.
   - A row is a text button of kind `window`, with its text 3 in and 1 down. Pressing it shows its tab. The chosen row keeps
     the selected look, filled with the kind's `hot`.
-  - The column is as wide as the widest of the labels general, graphics, map and input, plus 12. CK-301 counted "graphics"
-    before it was listed, so the window kept its size when CK-308 added the tab. A row's fill stops 3 short of the column's
-    right edge.
+  - The column is as wide as the widest tab label plus 12. A row's fill stops 3 short of the column's right edge.
   - **Since CK-336 "development" is counted too, and it is the widest:** 63 against the 46 of "graphics". So the
     column and the window are 17 wider than they were. The window still lies wholly inside the smallest view the game
     has, 320 by 200 (a 1280 by 800 window at UI scale 1), and is centred in it.
@@ -2721,7 +2719,7 @@ Lengths below are in UI pixels.
   - A tab's content starts 6 right of the column's right edge and is 220 wide. It is one group attached to the window and
     clipped to the window's content. It is destroyed and made again whenever a tab is shown. Since CK-310 a second group
     and a scroll bar go with it, for the input tab's rows.
-  - There is no gameplay tab. The graphics tab came with CK-308 and the development tab with CK-336 (both below).
+  - There is no gameplay tab. The graphics tab came with CK-308, the development tab with CK-336, and the colours tab with CK-427 (below).
 - **A tab's rows** have their label at the content's left and their control 84 right of it. Every label is cut to its room on
   whole characters, with `..`. The development tab has its own column, so that its labels are whole (below).
 - **The slider** is drawn from the theme's white texture: a track 80 wide and 2 tall in `track`, filled from its left to the
