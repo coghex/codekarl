@@ -2966,3 +2966,414 @@ fn the_real_price_step_can_reverse_the_fuel_ranking() {
     );
     assert_eq!(before_oats - place.pops[PEASANT].stock[oats], peat_payment);
 }
+
+// CK-430 (trade part A): live animals in the swap and the herds' standard level (r163).
+
+/// The case's rules: the farm keeps only cattle, ten head a level, so a one-level herd's maximum is 10 and its standard level 7 (two
+/// thirds would be 6); an animal has no pop store, as shipped (its limit is zero). Oats are a food, herbs a comfort.
+fn herd_rules() -> Rules {
+    let mut rules = rules();
+    for item in &mut rules.goods {
+        if item.tags.iter().any(|tag| tag == "herd") {
+            item.pop_limit_milli = 0;
+        }
+    }
+    for building in &mut rules.buildings {
+        building.herds.clear();
+    }
+    rules
+        .buildings
+        .iter_mut()
+        .find(|building| building.id == "farm")
+        .unwrap()
+        .herds
+        .insert("cattle".to_owned(), HerdCapacity { maximum: 10 });
+    rules.validate("fixture").unwrap();
+    rules
+}
+
+/// A one-level farm of `head` cattle, owned by the `owners` (pop, positions) and worked by 100 hired hands, whose store takes the
+/// payments for an animal sold from it.
+fn cattle_farm(rules: &Rules, place: &mut PlaceState, head: u64, owners: &[(usize, u64)]) -> usize {
+    let building = add_building(rules, place, "farm", 1);
+    let definition = rules.buildings.iter().find(|b| b.id == "farm").unwrap();
+    let farming = definition
+        .methods
+        .iter()
+        .position(|method| method.resource != "sea")
+        .unwrap();
+    let farm = &mut place.buildings[building];
+    farm.method_levels[farming] = 1;
+    farm.herds = vec![0; rules.herd_species.len()];
+    farm.herds[0] = head;
+    for &(pop, positions) in owners {
+        own(place, building, pop, positions);
+    }
+    let hands = 100 / u64::try_from(owners.len()).unwrap();
+    for &(pop, _) in owners {
+        place.buildings[building].employment[pop].workers = hands;
+        place.pops[pop].employment[building].workers = hands;
+    }
+    building
+}
+
+fn head(place: &PlaceState, building: usize) -> u64 {
+    place.buildings[building].herds[0]
+}
+
+/// All the cattle of the place: every herd and every store (an animal is in a herd only).
+fn all_cattle(rules: &Rules, place: &PlaceState) -> u64 {
+    let cattle = good(rules, "cattle");
+    place
+        .buildings
+        .iter()
+        .map(|b| b.herds.first().copied().unwrap_or(0))
+        .sum::<u64>()
+        + place.pops.iter().map(|pop| pop.stock[cattle]).sum::<u64>()
+}
+
+/// One buyer (THIRD, with a day's capacity) of a cow for 24 bushels (cattle 24, oats 1) from the seller herd's owners, who want oats.
+fn cattle_case(seller_head: u64, seller_owners: &[(usize, u64)]) -> (Rules, PlaceState, usize) {
+    let mut rules = herd_rules();
+    let mut place = place(&rules, 3);
+    set_price(&rules, &mut place, "cattle", 24);
+    set_price(&rules, &mut place, "oats", 1);
+    settle_the_rest(&rules, &mut place, &["oats"]);
+    spare(&rules, &mut place, THIRD, "oats", 1000);
+    for &(pop, _) in seller_owners {
+        want(&rules, &mut place, pop, "oats", 100);
+    }
+    capacity(&mut rules, &mut place, THIRD, 100_000_000);
+    let seller = cattle_farm(&rules, &mut place, seller_head, seller_owners);
+    (rules, place, seller)
+}
+
+#[test]
+fn the_standard_level_is_seventy_per_cent_rounded_down_and_the_two_thirds_level_is_read_nowhere() {
+    let rules = herd_rules();
+    assert_eq!(rules.herd_standard_pm, 700);
+    assert_eq!(herd_standard_level(&rules, 10), 7);
+    assert_eq!(herd_standard_level(&rules, 12), 8);
+    assert_eq!(herd_standard_level(&rules, 1), 0);
+    // Ten a level: 7 is the standard; two thirds of 10 would be 6, so 7 would offer one and 6 would want none.
+    for (count, offer, want) in [(10, 3, 0), (8, 1, 0), (7, 0, 0), (6, 0, 1), (0, 0, 7)] {
+        let mut place = place(&rules, 3);
+        let farm = cattle_farm(&rules, &mut place, count, &[(PEASANT, 1)]);
+        let levels = herd_levels(&rules, &place.buildings[farm]).unwrap();
+        assert_eq!(levels[0], (offer, want), "a herd of {count}");
+    }
+}
+
+#[test]
+fn a_herd_above_standard_offers_exactly_the_animals_above_it_and_a_herd_below_wants_the_rest() {
+    let (rules, mut place, seller) = cattle_case(10, &[(PEASANT, 2), (MONK, 1)]);
+    let cattle = good(&rules, "cattle");
+    // A buyer's herd at 4 wants 3, split nowhere else (one owner).
+    let buyer = cattle_farm(&rules, &mut place, 4, &[(THIRD, 1)]);
+    let sells = building_market_sells(&rules, &place, &place.prices_milli).unwrap();
+    assert_eq!(sells[seller][cattle], 3);
+    assert_eq!(sells[buyer][cattle], 0);
+    let orders = daily_market_orders(&rules, &place).unwrap();
+    assert_eq!(
+        (orders.buy_units[cattle], orders.sell_units[cattle]),
+        (3, 3)
+    );
+    // Each owner gives only its part (positions 2:1): only the peasant wants oats, so two head go.
+    place.pops[MONK].stock[good(&rules, "oats")] = target(&rules, &place, MONK, "oats");
+    let before = all_cattle(&rules, &place);
+    exchange(&rules, &mut place);
+    assert_eq!(head(&place, seller), 8, "the peasant's two");
+    assert_eq!(head(&place, buyer), 6);
+    assert_eq!(
+        all_cattle(&rules, &place),
+        before,
+        "no head is lost or made"
+    );
+    assert_eq!(place.pops[THIRD].stock[cattle], 0, "never in the store");
+}
+
+#[test]
+fn both_owners_give_their_parts_when_both_want_the_payment() {
+    let (rules, mut place, seller) = cattle_case(10, &[(PEASANT, 2), (MONK, 1)]);
+    let buyer = cattle_farm(&rules, &mut place, 4, &[(THIRD, 1)]);
+    exchange(&rules, &mut place);
+    assert_eq!(
+        head(&place, seller),
+        7,
+        "the herd is sold down to its standard"
+    );
+    assert_eq!(head(&place, buyer), 7, "and the buyer's herd filled to it");
+}
+
+#[test]
+fn one_head_into_a_pop_with_two_herds_below_standard_goes_to_the_first_and_is_paid_to_the_sellers_building()
+ {
+    let (rules, mut place, seller) = cattle_case(8, &[(MONK, 1)]);
+    // The buyer's herds: shortfalls 3 and 2, the first in building order is the one of 3.
+    let first = cattle_farm(&rules, &mut place, 4, &[(THIRD, 1)]);
+    let second = cattle_farm(&rules, &mut place, 5, &[(THIRD, 1)]);
+    let cattle = good(&rules, "cattle");
+    let oats = good(&rules, "oats");
+    let orders = daily_market_orders(&rules, &place).unwrap();
+    assert_eq!(
+        (orders.buy_units[cattle], orders.sell_units[cattle]),
+        (5, 1)
+    );
+    let paid = stock(&rules, &place, THIRD, "oats");
+    let credited = place.buildings[seller].stock[oats];
+    exchange(&rules, &mut place);
+    assert_eq!(head(&place, seller), 7, "one head left the offer");
+    assert_eq!(
+        head(&place, first),
+        5,
+        "the first herd by building order took it"
+    );
+    assert_eq!(head(&place, second), 5, "the second's want stays");
+    assert_eq!(
+        place.pops[THIRD].stock[cattle], 0,
+        "the head never enters the pop's store"
+    );
+    assert_eq!(
+        stock(&rules, &place, THIRD, "oats"),
+        paid - 24,
+        "the payment left the payer"
+    );
+    assert_eq!(
+        place.buildings[seller].stock[oats],
+        credited + 24,
+        "and went once into the seller's building"
+    );
+    let orders = daily_market_orders(&rules, &place).unwrap();
+    assert_eq!(
+        (orders.buy_units[cattle], orders.sell_units[cattle]),
+        (4, 0),
+        "two wants of two remain in orders and nothing is offered"
+    );
+}
+
+#[test]
+fn a_payment_the_sellers_building_cannot_store_is_no_deal() {
+    let (rules, mut place, seller) = cattle_case(8, &[(MONK, 1)]);
+    let buyer = cattle_farm(&rules, &mut place, 4, &[(THIRD, 1)]);
+    for job in &mut place.buildings[seller].employment {
+        job.workers = 0;
+    }
+    let before = goods_everywhere(&place);
+    exchange(&rules, &mut place);
+    assert_eq!(head(&place, seller), 8);
+    assert_eq!(head(&place, buyer), 4);
+    assert_eq!(goods_everywhere(&place), before);
+}
+
+#[test]
+fn a_herd_at_its_standard_level_with_no_buyer_changes_nothing() {
+    let (rules, mut place, seller) = cattle_case(7, &[(MONK, 1)]);
+    let before = goods_everywhere(&place);
+    exchange(&rules, &mut place);
+    assert_eq!(head(&place, seller), 7);
+    assert_eq!(goods_everywhere(&place), before);
+}
+
+#[test]
+fn the_want_for_an_animal_is_a_buy_order_that_moves_the_places_price() {
+    let rules = herd_rules();
+    let mut place = place(&rules, 3);
+    let cattle = good(&rules, "cattle");
+    cattle_farm(&rules, &mut place, 4, &[(PEASANT, 1)]);
+    let orders = daily_market_orders(&rules, &place).unwrap();
+    assert_eq!(
+        (orders.buy_units[cattle], orders.sell_units[cattle]),
+        (3, 0)
+    );
+    let base = place.prices_milli[cattle];
+    let mut state = EconomyState {
+        places: vec![place],
+    };
+    update_daily_prices(&rules, &mut state).unwrap();
+    assert!(
+        state.places[0].prices_milli[cattle] > base,
+        "a want and no offer raises the price"
+    );
+}
+
+#[test]
+fn a_want_for_an_animal_ranks_after_food_and_before_the_comforts() {
+    let rules = herd_rules();
+    let place = place(&rules, 1);
+    let order = want_order(&rules, &place.prices_milli);
+    let at = |id: &str| order.iter().position(|&g| g == good(&rules, id)).unwrap();
+    assert!(at("oats") < at("cattle"), "food first");
+    assert!(
+        at("cattle") < at("herbs"),
+        "then the animal, before a comfort"
+    );
+}
+
+#[test]
+fn the_shipped_live_animals_have_no_pop_store_and_no_volume_and_the_standard_is_seventy_per_cent() {
+    let rules = shipped();
+    assert_eq!(rules.herd_standard_pm, 700);
+    for species in &rules.herd_species {
+        let animal = &rules.goods[good(&rules, &species.animal)];
+        assert_eq!(
+            animal.pop_limit_milli, 0,
+            "{}: a pop's store takes none",
+            animal.id
+        );
+        assert_eq!(
+            animal.volume_ml, 0,
+            "{}: an animal uses no market capacity",
+            animal.id
+        );
+        assert!(animal.base_price > 0, "{}: priced like a good", animal.id);
+    }
+}
+
+#[test]
+fn a_payment_into_a_building_spends_the_owners_want_once_across_two_farms() {
+    // One owner, two farms of 8 head each (one over the standard of 7): it wants 24 bushels, the price of one head.
+    let (rules, mut place, first) = cattle_case(8, &[(MONK, 1)]);
+    let second = cattle_farm(&rules, &mut place, 8, &[(MONK, 1)]);
+    want(&rules, &mut place, MONK, "oats", 24);
+    // The buyer has two empty places below the standard in one herd (5 of 7).
+    let buyer = cattle_farm(&rules, &mut place, 5, &[(THIRD, 1)]);
+    let oats = good(&rules, "oats");
+    let paid = stock(&rules, &place, THIRD, "oats");
+    exchange(&rules, &mut place);
+    assert_eq!(
+        (
+            head(&place, first),
+            head(&place, second),
+            head(&place, buyer)
+        ),
+        (7, 8, 6),
+        "only the first farm sells: the want is spent by its payment"
+    );
+    assert_eq!(place.buildings[first].stock[oats], 24);
+    assert_eq!(place.buildings[second].stock[oats], 0);
+    assert_eq!(stock(&rules, &place, THIRD, "oats"), paid - 24);
+    assert_eq!(
+        daily_market_orders(&rules, &place).unwrap().buy_units[good(&rules, "cattle")],
+        1,
+        "the buyer still wants one head"
+    );
+}
+
+#[test]
+fn a_fuel_payment_into_a_building_also_spends_the_owners_want_once() {
+    let mut rules = herd_rules();
+    let mut place = place(&rules, 3);
+    set_price(&rules, &mut place, "cattle", 24);
+    set_price(&rules, &mut place, "peat", 1);
+    set_price(&rules, &mut place, "hardwood", 1000);
+    settle_the_rest(&rules, &mut place, &[]);
+    capacity(&mut rules, &mut place, THIRD, 100_000_000);
+    let peat = good(&rules, "peat");
+    let supply = rules.goods[peat].category_supplied("fuel", 1);
+    // The owner's hearth lacks exactly 24 loads of peat; the buyer holds 100 spare ones and a full hearth.
+    let need = |place: &PlaceState, pop: usize| {
+        fuel::fuel_daily_need(&rules, &place.pops[pop]).unwrap() * 240
+    };
+    let owner_need = need(&place, MONK);
+    place.pops[MONK].consumption.hearth_milli = u64::try_from(owner_need - 24 * supply).unwrap();
+    let buyer_need = need(&place, THIRD);
+    place.pops[THIRD].consumption.hearth_milli = u64::try_from(buyer_need).unwrap();
+    place.pops[THIRD].stock[peat] = 100;
+    assert_eq!(position(&rules, &place, MONK, "peat").1, 24);
+    let first = cattle_farm(&rules, &mut place, 8, &[(MONK, 1)]);
+    let second = cattle_farm(&rules, &mut place, 8, &[(MONK, 1)]);
+    let buyer = cattle_farm(&rules, &mut place, 5, &[(THIRD, 1)]);
+    exchange(&rules, &mut place);
+    assert_eq!(
+        (
+            head(&place, first),
+            head(&place, second),
+            head(&place, buyer)
+        ),
+        (7, 8, 6),
+        "only the first farm sells"
+    );
+    assert_eq!(place.buildings[first].stock[peat], 24);
+    assert_eq!(place.buildings[second].stock[peat], 0);
+    assert_eq!(place.pops[THIRD].stock[peat], 76);
+    assert_eq!(
+        place.pops[MONK].stock[peat], 0,
+        "the owner's own store is untouched"
+    );
+}
+
+/// The seller owns two farms of 8 head each and lacks `loads` loads of peat of heat; the buyer holds spare peat and hardwood at prices
+/// that make a head 24 loads of peat or 12 of hardwood.
+fn two_fuels_case(loads: u64) -> (Rules, PlaceState, [usize; 3], u128) {
+    let mut rules = herd_rules();
+    let mut place = place(&rules, 3);
+    set_price(&rules, &mut place, "cattle", 24);
+    set_price(&rules, &mut place, "peat", 1);
+    set_price(&rules, &mut place, "hardwood", 2);
+    settle_the_rest(&rules, &mut place, &[]);
+    capacity(&mut rules, &mut place, THIRD, 100_000_000);
+    let peat = good(&rules, "peat");
+    let supply = rules.goods[peat].category_supplied("fuel", 1);
+    let owner_need = fuel::fuel_daily_need(&rules, &place.pops[MONK]).unwrap() * 240;
+    place.pops[MONK].consumption.hearth_milli =
+        u64::try_from(owner_need - u128::from(loads) * supply).unwrap();
+    let buyer_need = fuel::fuel_daily_need(&rules, &place.pops[THIRD]).unwrap() * 240;
+    place.pops[THIRD].consumption.hearth_milli = u64::try_from(buyer_need).unwrap();
+    place.pops[THIRD].stock[peat] = 100;
+    place.pops[THIRD].stock[good(&rules, "hardwood")] = 100;
+    let first = cattle_farm(&rules, &mut place, 8, &[(MONK, 1)]);
+    let second = cattle_farm(&rules, &mut place, 8, &[(MONK, 1)]);
+    let buyer = cattle_farm(&rules, &mut place, 4, &[(THIRD, 1)]);
+    (rules, place, [first, second, buyer], supply)
+}
+
+/// The heat of the fuel a farm was paid.
+fn heat_paid(rules: &Rules, place: &PlaceState, farm: usize) -> u128 {
+    rules
+        .goods
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            u128::from(place.buildings[farm].stock[index]) * item.category_supplied("fuel", 1)
+        })
+        .sum()
+}
+
+#[test]
+fn a_payment_in_one_fuel_spends_the_owners_want_for_the_other_fuel_too() {
+    let (rules, mut place, [first, second, buyer], supply) = two_fuels_case(24);
+    exchange(&rules, &mut place);
+    assert_eq!(
+        (
+            head(&place, first),
+            head(&place, second),
+            head(&place, buyer)
+        ),
+        (7, 8, 5),
+        "one sale meets the one fuel shortfall; the other farm does not sell for the other fuel"
+    );
+    assert_eq!(heat_paid(&rules, &place, first), 24 * supply);
+    assert_eq!(heat_paid(&rules, &place, second), 0);
+}
+
+#[test]
+fn a_larger_fuel_shortfall_is_spent_by_heat_across_both_fuels_and_no_further() {
+    // Forty-eight loads of peat of heat: two heads' worth, in either fuel, and no third.
+    let (rules, mut place, [first, second, buyer], supply) = two_fuels_case(48);
+    let third = cattle_farm(&rules, &mut place, 8, &[(MONK, 1)]);
+    exchange(&rules, &mut place);
+    assert_eq!(
+        (
+            head(&place, first),
+            head(&place, second),
+            head(&place, third),
+            head(&place, buyer)
+        ),
+        (7, 7, 8, 6)
+    );
+    assert_eq!(
+        heat_paid(&rules, &place, first) + heat_paid(&rules, &place, second),
+        48 * supply
+    );
+    assert_eq!(heat_paid(&rules, &place, third), 0);
+}
