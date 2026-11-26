@@ -974,6 +974,7 @@ fn place_of(
         price_drift_carries: vec![0; goods],
         last_market_orders: None,
         counters: CounterBuckets::for_place(goods),
+        trade: PlaceTrade::default(),
     };
     for (id, price) in prices {
         place.prices_milli[good(rules, id)] = *price;
@@ -1502,6 +1503,7 @@ fn the_rent_counters_roll_with_the_existing_counters_on_the_first_and_are_saved(
     // They are saved with the flag, byte for byte.
     let state = EconomyState {
         places: vec![place.clone()],
+        trade: TradeCounters::default(),
     };
     let loaded = EconomyState::from_bytes(&state.to_bytes().unwrap()).unwrap();
     assert_eq!(loaded, state);
@@ -1659,6 +1661,7 @@ fn the_live_housing_read_keeps_the_months_priority_until_the_next_first_and_surv
     let place = place_of(&rules, &[("demesne", 1)], vec![first, second, worker], &[]);
     let mut state = EconomyState {
         places: vec![place],
+        trade: TradeCounters::default(),
     };
     let shelter = BTreeMap::from([("fixture".to_owned(), 5)]);
     let tick = |state: &mut EconomyState, month: u8| {

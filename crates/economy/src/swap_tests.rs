@@ -8,9 +8,9 @@ use std::{collections::BTreeMap, path::Path};
 use super::swap::{Position, market_capacities, pop_position, want_order};
 use super::*;
 
-const PEASANT: usize = 0;
-const MONK: usize = 1;
-const THIRD: usize = 2;
+pub(crate) const PEASANT: usize = 0;
+pub(crate) const MONK: usize = 1;
+pub(crate) const THIRD: usize = 2;
 
 fn shipped() -> Rules {
     Rules::load(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/game/economy.toml"))
@@ -80,14 +80,14 @@ fn hunger_rules() -> Rules {
 }
 
 /// Every pop of the place has `people` people, all workers.
-fn small(place: &mut PlaceState, people: u64) {
+pub(crate) fn small(place: &mut PlaceState, people: u64) {
     for pop in &mut place.pops {
         pop.workers = people;
         pop.dependents = 0;
     }
 }
 
-fn building_state(rules: &Rules, kind: &str, levels: u32, pops: usize) -> BuildingState {
+pub(crate) fn building_state(rules: &Rules, kind: &str, levels: u32, pops: usize) -> BuildingState {
     let goods = rules.goods.len();
     let methods = rules
         .buildings
@@ -160,10 +160,16 @@ pub(crate) fn place(rules: &Rules, pops: usize) -> PlaceState {
         price_drift_carries: vec![0; goods],
         last_market_orders: None,
         counters: CounterBuckets::for_place(goods),
+        trade: PlaceTrade::default(),
     }
 }
 
-fn add_building(rules: &Rules, place: &mut PlaceState, kind: &str, levels: u32) -> usize {
+pub(crate) fn add_building(
+    rules: &Rules,
+    place: &mut PlaceState,
+    kind: &str,
+    levels: u32,
+) -> usize {
     let mut building = building_state(rules, kind, levels, place.pops.len());
     building.employment = vec![Employment::default(); place.pops.len()];
     place.buildings.push(building);
@@ -174,7 +180,7 @@ fn add_building(rules: &Rules, place: &mut PlaceState, kind: &str, levels: u32) 
 }
 
 /// Gives a pop `owners` owner positions in a building.
-fn own(place: &mut PlaceState, building: usize, pop: usize, owners: u64) {
+pub(crate) fn own(place: &mut PlaceState, building: usize, pop: usize, owners: u64) {
     let job = Employment { owners, workers: 0 };
     place.buildings[building].employment[pop] = job.clone();
     place.pops[pop].employment[building] = job;
@@ -182,7 +188,7 @@ fn own(place: &mut PlaceState, building: usize, pop: usize, owners: u64) {
 
 /// Gives a pop a day's capacity of `ml` through a one-level building of its own kind, `farm` for the first pop, `holdings` for the
 /// second and `demesne` for the third, the building's number set by the case.
-fn capacity(rules: &mut Rules, place: &mut PlaceState, pop: usize, ml: u64) {
+pub(crate) fn capacity(rules: &mut Rules, place: &mut PlaceState, pop: usize, ml: u64) {
     let kind = ["farm", "holdings", "demesne"][pop];
     rules
         .buildings
@@ -194,19 +200,19 @@ fn capacity(rules: &mut Rules, place: &mut PlaceState, pop: usize, ml: u64) {
     own(place, building, pop, 1);
 }
 
-fn target(rules: &Rules, place: &PlaceState, pop: usize, id: &str) -> u64 {
+pub(crate) fn target(rules: &Rules, place: &PlaceState, pop: usize, id: &str) -> u64 {
     let people = place.pops[pop].workers + place.pops[pop].dependents;
     u64::try_from(pop_target_units(rules, &place.pops[pop].kind, people, good(rules, id)).unwrap())
         .unwrap()
 }
 
 /// Sets a pop's store so it holds `spare` above its target of a good.
-fn spare(rules: &Rules, place: &mut PlaceState, pop: usize, id: &str, units: u64) {
+pub(crate) fn spare(rules: &Rules, place: &mut PlaceState, pop: usize, id: &str, units: u64) {
     place.pops[pop].stock[good(rules, id)] = target(rules, place, pop, id) + units;
 }
 
 /// Sets a pop's store so it lacks `units` of its target of a good.
-fn want(rules: &Rules, place: &mut PlaceState, pop: usize, id: &str, units: u64) {
+pub(crate) fn want(rules: &Rules, place: &mut PlaceState, pop: usize, id: &str, units: u64) {
     let goal = target(rules, place, pop, id);
     assert!(
         goal >= units,
@@ -215,11 +221,11 @@ fn want(rules: &Rules, place: &mut PlaceState, pop: usize, id: &str, units: u64)
     place.pops[pop].stock[good(rules, id)] = goal - units;
 }
 
-fn set_price(rules: &Rules, place: &mut PlaceState, id: &str, price: u64) {
+pub(crate) fn set_price(rules: &Rules, place: &mut PlaceState, id: &str, price: u64) {
     place.prices_milli[good(rules, id)] = price * 1000;
 }
 
-fn stock(rules: &Rules, place: &PlaceState, pop: usize, id: &str) -> u64 {
+pub(crate) fn stock(rules: &Rules, place: &PlaceState, pop: usize, id: &str) -> u64 {
     place.pops[pop].stock[good(rules, id)]
 }
 
@@ -228,9 +234,10 @@ fn position(rules: &Rules, place: &PlaceState, pop: usize, id: &str) -> (u128, u
     (found.spare, found.want)
 }
 
-fn exchange(rules: &Rules, place: &mut PlaceState) {
+pub(crate) fn exchange(rules: &Rules, place: &mut PlaceState) {
     let mut state = EconomyState {
         places: vec![place.clone()],
+        trade: TradeCounters::default(),
     };
     swap::run_daily_swaps(rules, &mut state).unwrap();
     *place = state.places.remove(0);
@@ -287,7 +294,7 @@ fn example_a(starter: usize, ml: u64) -> (Rules, PlaceState) {
 }
 
 /// Puts every good a case did not set at each pop's target, so it is neither spare nor wanted.
-fn settle_the_rest(rules: &Rules, place: &mut PlaceState, set: &[&str]) {
+pub(crate) fn settle_the_rest(rules: &Rules, place: &mut PlaceState, set: &[&str]) {
     for pop in 0..place.pops.len() {
         for item in &rules.goods {
             if !set.contains(&item.id.as_str()) {
@@ -1720,6 +1727,7 @@ fn the_price_step_sees_a_pops_spare_wool_as_a_sell_order() {
     place.prices_milli[wool] = 40_000;
     let mut state = EconomyState {
         places: vec![place],
+        trade: TradeCounters::default(),
     };
     update_daily_prices(&rules, &mut state).unwrap();
     assert_eq!(
@@ -1951,6 +1959,7 @@ fn rule_20_the_price_after_the_first_noon_is_the_literal_the_formula_gives_for_t
     set_price(&rules, &mut place, "wool", 40);
     let mut state = EconomyState {
         places: vec![place],
+        trade: TradeCounters::default(),
     };
     let before = state.places[0].pops.clone();
     update_daily_prices(&rules, &mut state).unwrap();
@@ -2112,6 +2121,7 @@ fn nothing_to_swap() -> (Rules, EconomyState) {
         rules,
         EconomyState {
             places: vec![place],
+            trade: TradeCounters::default(),
         },
     )
 }
@@ -2808,6 +2818,7 @@ fn opening_fuel_prices_rank_the_swap_but_moved_prices_value_it() {
     let before = place.pops[PEASANT].stock[oats];
     let mut state = EconomyState {
         places: vec![place],
+        trade: TradeCounters::default(),
     };
     swap::run_daily_swaps_at_prices(&rules, &mut state, &[opening]).unwrap();
     let place = &state.places[0];
@@ -2844,6 +2855,7 @@ fn a_month_without_fuel_offers_preserves_the_nonfuel_day() {
     }
     let mut actual = EconomyState {
         places: vec![place],
+        trade: TradeCounters::default(),
     };
     let mut reference = actual.clone();
     for day in 2..=31 {
@@ -2937,6 +2949,7 @@ fn the_real_price_step_can_reverse_the_fuel_ranking() {
     let opening = place.prices_milli.clone();
     let mut state = EconomyState {
         places: vec![place],
+        trade: TradeCounters::default(),
     };
     update_daily_prices(&rules, &mut state).unwrap();
     let moved = &state.places[0].prices_milli;
@@ -2971,7 +2984,7 @@ fn the_real_price_step_can_reverse_the_fuel_ranking() {
 
 /// The case's rules: the farm keeps only cattle, ten head a level, so a one-level herd's maximum is 10 and its standard level 7 (two
 /// thirds would be 6); an animal has no pop store, as shipped (its limit is zero). Oats are a food, herbs a comfort.
-fn herd_rules() -> Rules {
+pub(crate) fn herd_rules() -> Rules {
     let mut rules = rules();
     for item in &mut rules.goods {
         if item.tags.iter().any(|tag| tag == "herd") {
@@ -2994,7 +3007,12 @@ fn herd_rules() -> Rules {
 
 /// A one-level farm of `head` cattle, owned by the `owners` (pop, positions) and worked by 100 hired hands, whose store takes the
 /// payments for an animal sold from it.
-fn cattle_farm(rules: &Rules, place: &mut PlaceState, head: u64, owners: &[(usize, u64)]) -> usize {
+pub(crate) fn cattle_farm(
+    rules: &Rules,
+    place: &mut PlaceState,
+    head: u64,
+    owners: &[(usize, u64)],
+) -> usize {
     let building = add_building(rules, place, "farm", 1);
     let definition = rules.buildings.iter().find(|b| b.id == "farm").unwrap();
     let farming = definition
@@ -3017,7 +3035,7 @@ fn cattle_farm(rules: &Rules, place: &mut PlaceState, head: u64, owners: &[(usiz
     building
 }
 
-fn head(place: &PlaceState, building: usize) -> u64 {
+pub(crate) fn head(place: &PlaceState, building: usize) -> u64 {
     place.buildings[building].herds[0]
 }
 
@@ -3188,6 +3206,7 @@ fn the_want_for_an_animal_is_a_buy_order_that_moves_the_places_price() {
     let base = place.prices_milli[cattle];
     let mut state = EconomyState {
         places: vec![place],
+        trade: TradeCounters::default(),
     };
     update_daily_prices(&rules, &mut state).unwrap();
     assert!(
@@ -3400,6 +3419,7 @@ fn neighbour_exchange_uses_each_sellers_price_and_does_not_cross_a_chain() {
     let c_before = c.clone();
     let mut state = EconomyState {
         places: vec![a, b, c],
+        trade: TradeCounters::default(),
     };
     let opening: Vec<_> = state
         .places
@@ -3447,6 +3467,7 @@ fn neighbour_herd_sale_pays_its_building_and_delivers_the_head() {
     let before = stock(&rules, &buyer, 0, "oats");
     let mut state = EconomyState {
         places: vec![seller, buyer],
+        trade: TradeCounters::default(),
     };
     let opening: Vec<_> = state
         .places
@@ -3493,6 +3514,7 @@ fn neighbour_scarcity_remainder_goes_to_the_wealthier_claimant_across_pairs() {
     capacity(&mut rules, &mut b, 0, 100_000_000);
     let mut state = EconomyState {
         places: vec![a, b, c],
+        trade: TradeCounters::default(),
     };
     let opening: Vec<_> = state
         .places
@@ -3574,6 +3596,7 @@ fn neighbour_relation_is_strict_and_not_transitive() {
         };
         let mut state = EconomyState {
             places: vec![a, b, c],
+            trade: TradeCounters::default(),
         };
         let opening: Vec<_> = state
             .places
@@ -3641,6 +3664,7 @@ fn neighbour_worked_sheep_example_uses_one_share_and_the_starters_capacity() {
     let before_c = c.pops[0].stock[good(&rules, "barley")];
     let mut state = EconomyState {
         places: vec![a, b, c],
+        trade: TradeCounters::default(),
     };
     let opening: Vec<_> = state
         .places
@@ -3703,6 +3727,7 @@ fn local_then_neighbour_pairs_spend_one_shared_capacity() {
     capacity(&mut rules, &mut b, 0, 2 * load);
     let mut state = EconomyState {
         places: vec![a, b, c],
+        trade: TradeCounters::default(),
     };
     let opening: Vec<_> = state
         .places
@@ -3762,7 +3787,10 @@ fn second_pass_reallocates_an_unspent_local_share_to_a_neighbour() {
     spare(&rules, &mut a, 0, "oats", 2);
     want(&rules, &mut a, 0, "fish", 2);
     capacity(&mut rules, &mut b, 0, 1_000_000);
-    let mut state = EconomyState { places: vec![a, b] };
+    let mut state = EconomyState {
+        places: vec![a, b],
+        trade: TradeCounters::default(),
+    };
     let opening: Vec<_> = state
         .places
         .iter()

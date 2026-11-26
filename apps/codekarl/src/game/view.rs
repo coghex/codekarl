@@ -758,7 +758,8 @@ fn place_view(
 mod tests {
     use super::*;
     use ck_economy::{
-        CounterBuckets, Employment, NearbyPlace, StorehouseAccounts, run_daily_economy_with_context,
+        CounterBuckets, Employment, NearbyPlace, PlaceTrade, StorehouseAccounts, TradeCounters,
+        run_daily_economy_with_context,
     };
     use ck_log::Level;
     use ck_sim::{Canonical, Date, GameTime, Save, Scheduler, Simulation};
@@ -888,6 +889,7 @@ mod tests {
             development_pm: 1000,
             price_drift_carries: vec![0; rules.goods.len()],
             last_market_orders: None,
+            trade: PlaceTrade::default(),
         }
     }
 
@@ -895,6 +897,7 @@ mod tests {
         place.id = "fixture".to_owned();
         let state = EconomyState {
             places: vec![place],
+            trade: TradeCounters::default(),
         };
         let land = BTreeMap::from([(
             "fixture".to_owned(),
@@ -924,6 +927,7 @@ mod tests {
             Some(rules),
             &EconomyState {
                 places: vec![place],
+                trade: TradeCounters::default(),
             },
             &["fixture".to_owned()],
             test_date(),
@@ -979,6 +983,7 @@ mod tests {
         let make = |date| {
             let state = EconomyState {
                 places: vec![place.clone()],
+                trade: TradeCounters::default(),
             };
             build(Some(&rules), &state, &["fixture".to_owned()], date)
                 .place("fixture")
@@ -1144,6 +1149,7 @@ mod tests {
 
         let mut state = EconomyState {
             places: vec![dying, source, destination],
+            trade: TradeCounters::default(),
         };
         let nearby = BTreeMap::from([(
             "destination-place".to_owned(),
@@ -1350,6 +1356,7 @@ mod tests {
             Some(&rules),
             &EconomyState {
                 places: vec![place],
+                trade: TradeCounters::default(),
             },
             &["fixture".to_owned()],
             test_date(),
@@ -1427,6 +1434,7 @@ mod tests {
                 Some(&rules),
                 &EconomyState {
                     places: vec![place.clone()],
+                    trade: TradeCounters::default(),
                 },
                 &["fixture".to_owned()],
                 test_date(),
@@ -1539,6 +1547,7 @@ mod tests {
         let rules = shipped_rules();
         let state = EconomyState {
             places: vec![fixture(&rules)],
+            trade: TradeCounters::default(),
         };
         let land = BTreeMap::from([(
             "fixture".to_owned(),
@@ -1818,6 +1827,7 @@ mod tests {
         empty.buildings.clear();
         let state = EconomyState {
             places: vec![empty],
+            trade: TradeCounters::default(),
         };
         let ids = ["fixture".to_owned(), "absent".to_owned()];
         let view = build(Some(&rules), &state, &ids, test_date());
@@ -1917,6 +1927,7 @@ mod tests {
         change(&mut place.buildings[0]);
         let state = EconomyState {
             places: vec![place],
+            trade: TradeCounters::default(),
         };
         build(Some(rules), &state, &["fixture".to_owned()], test_date()).places[0].projected_yield
     }
@@ -1924,6 +1935,7 @@ mod tests {
     fn yield_with_fertility(rules: &Rules, place: PlaceState, fertility_pm: Option<u16>) -> u64 {
         let state = EconomyState {
             places: vec![place],
+            trade: TradeCounters::default(),
         };
         let land = fertility_pm.map(|fertility_pm| {
             BTreeMap::from([(
@@ -2182,6 +2194,7 @@ mod tests {
             Some(&rules),
             &EconomyState {
                 places: vec![rich, poor],
+                trade: TradeCounters::default(),
             },
             &["rich".to_owned(), "poor".to_owned()],
             &land,

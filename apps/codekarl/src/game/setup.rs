@@ -250,6 +250,8 @@ pub(crate) fn prepare(
         if let Some(rules) = economy_rules.as_deref() {
             ck_economy::validate_fuel_state(rules, &save.state.economy)
                 .map_err(|e| e.to_string())?;
+            ck_economy::validate_trade_state(rules, &save.state.economy)
+                .map_err(|e| e.to_string())?;
         }
         let expected = super::stretch::starting(scenario.network.as_ref())
             .into_keys()
@@ -772,6 +774,7 @@ fn core_over(
         level_validation(state, date)?;
         if let Some(rules) = fuel_rules.as_deref() {
             ck_economy::validate_fuel_state(rules, &state.economy).map_err(|e| e.to_string())?;
+            ck_economy::validate_trade_state(rules, &state.economy).map_err(|e| e.to_string())?;
         }
         Ok(())
     })
@@ -933,6 +936,8 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
                 if let Some(rules) = fuel_rules.as_deref() {
                     ck_economy::validate_fuel_state(rules, &state.economy)
                         .map_err(|e| e.to_string())?;
+                    ck_economy::validate_trade_state(rules, &state.economy)
+                        .map_err(|e| e.to_string())?;
                 }
                 Ok(())
             })
@@ -981,6 +986,7 @@ fn gameplay_scheduler_with_rules(
             .expect("weather system name is unique");
     }
     if let Some(rules) = rules {
+        register_trade_hourly(&mut scheduler, Arc::clone(&rules));
         register_economy_callback_with_context(
             &mut scheduler,
             rules,
@@ -1007,6 +1013,18 @@ fn gameplay_scheduler_with_rules(
         register_gameplay_lua_callbacks(&mut scheduler, gameplay);
     }
     scheduler
+}
+
+/// The trade systems' hour (CK-431, trade spec 11c.1): builds that are done complete, ready jobs start, expired jobs are given up. The
+/// scheduler runs a tick's daily systems before its hourly ones, so at noon this follows the economy's daily step.
+pub(crate) fn register_trade_hourly(scheduler: &mut Scheduler<GameState>, rules: Arc<Rules>) {
+    scheduler
+        .register("economy.trade", Cadence::Hourly, move |state, tick| {
+            ck_economy::run_trade_hour(&rules, &mut state.economy, tick.date())
+                .map_err(io::Error::other)
+                .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>)
+        })
+        .expect("the trade system name is unique");
 }
 
 /// The economy's daily system with the character storage published through `handle`, as the running game has it.
@@ -3241,6 +3259,52 @@ mod stretch_save_tests {
         .unwrap()
     }
 
+    /// CK-431: a same-build save is read by the same code, and trade state that names a vehicle kind the rules do not have is refused when
+    /// the game starts from it, before it is installed.
+    #[test]
+    fn a_same_build_save_with_malformed_trade_state_is_refused_at_start() {
+        let dir = crate::testing::Dir::new();
+        let source = shipped_start(&dir.0, None);
+        let mut save = source.simulation.save(source.identity.meta(42));
+        let goods = save.state.economy.places[0].pops[0].stock.len();
+        save.state.economy.trade.jobs = 1;
+        save.state.economy.places[0]
+            .trade
+            .jobs
+            .push(ck_economy::Job {
+                number: 1,
+                pop: 0,
+                kind: ck_economy::JobKind::Build { vehicle: 99 },
+                made: 0,
+                need_goods: vec![0; goods],
+                need_animals: Vec::new(),
+                stock: vec![0; goods],
+                animals: Vec::new(),
+                hands: None,
+                given_up: None,
+            });
+        let path = super::super::saves::quicksave_path(&dir.0.join("saves"));
+        write_save(&source, &save, &path);
+        let game = GameConfig {
+            scenario: Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../assets/scenarios/ireland-768"),
+            saves: dir.0.join("saves"),
+            events_fixture: None,
+        };
+        let refused = prepare(
+            &Request {
+                game: &game,
+                vms: &[],
+                load: Some(&path),
+                seed: None,
+            },
+            || Ok(42),
+            &mut |_, _| {},
+        );
+        let message = refused.err().expect("the save is refused").clone();
+        assert!(message.contains("trade"), "{message}");
+    }
+
     #[test]
     fn hourly_low_wind_survives_a_real_save_and_load() {
         let dir = crate::testing::Dir::new();
@@ -3471,7 +3535,7 @@ mod stretch_save_tests {
         assert_eq!(
             hashes::rules_hash(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets"))
                 .unwrap(),
-            "c57340e8b2ff60f5"
+            "648577fde0726879"
         );
         let mut save = source.simulation.save(source.identity.meta(42));
         let weather = source.weather.as_ref().unwrap();
@@ -4563,6 +4627,122 @@ mod switch_replay_tests {
         let mut seen = std::collections::BTreeSet::new();
         for (date, building, level, _, _) in &moves {
             assert!(seen.insert((date.year, *building, *level)));
+        }
+    }
+
+    /// CK-431: a simple barge ordered by the peasants at 08:00 on 31 January, built by their own three hands in the twelve hours to 20:00,
+    /// across the day's noon and then the payday of 1 February: saved before the noon, after it and the next morning, and each loaded
+    /// both ways in lockstep with the unbroken game.
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "One replay is saved at three named points, each loaded both ways and compared tick by tick."
+    )]
+    fn a_build_under_way_saved_and_loaded_follows_the_unbroken_game_through_noon_and_payday() {
+        let rules = Arc::new(rules());
+        let make = scheduler_source(&rules);
+        let start = Date {
+            year: 768,
+            month: 1,
+            day: 31,
+            hour: 8,
+        };
+        let start_hour = GameTime::from_date(start).unwrap();
+        let mut economy = fort(&rules);
+        let good = |id: &str| rules.goods.iter().position(|g| g.id == id).unwrap();
+        assert_eq!(economy.places[0].pops[0].kind, "peasant");
+        economy.places[0].pops[0].stock[good("hardwood")] += 8;
+        economy.places[0].pops[0].stock[good("hides")] += 1;
+        economy
+            .order_build(&rules, 0, 0, "simple_barge", start_hour.hours())
+            .unwrap();
+        assert_eq!(economy.places[0].trade.jobs[0].need_goods[good("hides")], 1);
+        let mut unbroken = Simulation::new(
+            start_hour,
+            42,
+            GameState {
+                economy,
+                characters: ck_characters::CharacterStore::default(),
+                stretches: BTreeMap::new(),
+                lows: crate::game::lows::Lows::default(),
+            },
+            make(),
+            apply,
+        );
+        let save = |game: &Simulation<GameState, GameCommand>| {
+            game.save(identity("aa").meta(42)).to_bytes().unwrap()
+        };
+        let end = GameTime::from_date(Date {
+            year: 768,
+            month: 2,
+            day: 2,
+            hour: 0,
+        })
+        .unwrap();
+        let mut branches: Vec<Branch> = Vec::new();
+        let (mut saw_hands, mut saw_away, mut saw_vehicle) = (false, false, false);
+        while unbroken.time() < end {
+            let now = unbroken.date().unwrap();
+            let named = match (now.month, now.day, now.hour) {
+                (1, 31, 11) => Some("11:00, before the noon"),
+                (1, 31, 13) => Some("13:00, after the noon"),
+                (2, 1, 9) => Some("09:00 the next morning, the build done"),
+                _ => None,
+            };
+            if let Some(label) = named {
+                let bytes = save(&unbroken);
+                branches.push(Branch {
+                    label: label.to_owned(),
+                    started: started(&rules, &make, &bytes),
+                    playing: playing(&rules, &make, &bytes),
+                });
+            }
+            let errors = unbroken.step().unwrap();
+            assert!(errors.is_empty(), "{errors:?}");
+            let after = unbroken.date().unwrap();
+            for branch in &mut branches {
+                let errors = branch.started.step().unwrap();
+                assert!(errors.is_empty(), "{errors:?}");
+                branch.playing.step_for_tests();
+                let digest = unbroken.digest().unwrap();
+                assert_eq!(
+                    branch.started.digest().unwrap(),
+                    digest,
+                    "{}: a start from the save, at {after:?}",
+                    branch.label
+                );
+                assert_eq!(
+                    branch.playing.digest(),
+                    digest,
+                    "{}: a load during play, at {after:?}",
+                    branch.label
+                );
+            }
+            let trade = &unbroken.state().economy.places[0].trade;
+            saw_hands |= trade.jobs.iter().any(|job| job.hands.is_some());
+            saw_away |= trade.days_away.values().sum::<u64>() == 3;
+            saw_vehicle |= !trade.vehicles.is_empty();
+        }
+        assert!(saw_hands, "the build started");
+        assert!(
+            saw_away,
+            "the noon counted a day away for each of its three hands"
+        );
+        assert!(saw_vehicle, "and it ended in a vehicle for the peasants");
+        let trade = &unbroken.state().economy.places[0].trade;
+        assert!(
+            trade.days_away.is_empty(),
+            "the payday counted the days and cleared them"
+        );
+        assert_eq!(trade.vehicles.len(), 1);
+        assert_eq!(branches.len(), 3);
+        for branch in &branches {
+            assert_eq!(
+                branch.started.state().economy.places[0].trade,
+                *trade,
+                "{}",
+                branch.label
+            );
         }
     }
 }
