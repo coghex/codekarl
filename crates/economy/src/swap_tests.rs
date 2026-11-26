@@ -113,6 +113,7 @@ pub(crate) fn building_state(rules: &Rules, kind: &str, levels: u32, pops: usize
         herd_grazing_sums: Vec::new(),
         wage_carries: vec![0; goods],
         pay_carries: vec![0; goods],
+        last_made: Vec::new(),
         fee_carries: Vec::new(),
         wage_history: vec![0; 12],
         paid_history: vec![0; WAGE_HISTORY_MONTHS],

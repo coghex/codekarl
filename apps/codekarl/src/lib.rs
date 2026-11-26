@@ -849,6 +849,14 @@ fn supervise_with_owner_factory(
                     ),
                 )
                 .function(
+                    "blights",
+                    game_api::blights_function(Arc::clone(&view_cache)),
+                )
+                .function(
+                    "pop_members",
+                    game_api::pop_members_function(Arc::clone(&view_cache), place_names.clone()),
+                )
+                .function(
                     "find_entries",
                     game_api::find_entries_function(
                         Arc::clone(&view_cache),

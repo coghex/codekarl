@@ -2101,6 +2101,7 @@ fn starting_state_with_payday(
                 ],
                 wage_carries: vec![0; rules.goods.len()],
                 pay_carries: vec![0; rules.goods.len()],
+                last_made: Vec::new(),
                 fee_carries: Vec::new(),
                 wage_history: vec![0; 12],
                 paid_history: vec![0; WAGE_HISTORY_MONTHS],
@@ -2169,6 +2170,7 @@ fn starting_state_with_payday(
                 herd_product_carries: Vec::new(),
                 wage_carries: vec![0; rules.goods.len()],
                 pay_carries: vec![0; rules.goods.len()],
+                last_made: Vec::new(),
                 fee_carries: vec![vec![0; rules.goods.len()]; pops.len() + 1],
                 wage_history: vec![0; 12],
                 paid_history: vec![0; WAGE_HISTORY_MONTHS],
@@ -2835,6 +2837,9 @@ pub fn validate_level_records(
                 continue;
             };
             let name = format!("place {} building {}", place.id, building.kind);
+            if !building.last_made.is_empty() && building.last_made.len() != rules.goods.len() {
+                return Err(format!("{name}: last payday output does not match goods"));
+            }
             if definition.methods.is_empty() {
                 if let Some(record) = building.level_records.first() {
                     return Err(format!(
@@ -4995,6 +5000,8 @@ pub struct BuildingState {
     pub wage_carries: Vec<u64>,
     /// Whole wage units awaiting workers, in good order.
     pub pay_carries: Vec<u64>,
+    /// Gross output at the most recent payday, in goods order.
+    pub last_made: Vec<u64>,
     /// Storehouse account fee carries in pop order, then communal account.
     pub fee_carries: Vec<Vec<u64>>,
     /// Posted wages in thousandths of a value unit per paid head, by calendar month.
@@ -7685,6 +7692,7 @@ fn monthly_production(
         };
         let month_days = u64::from(days_in_month(previous_year, previous_month).unwrap_or(31));
         for (building_index, building) in place.buildings.iter_mut().enumerate() {
+            building.last_made.clear();
             let Some(definition) = rules.buildings.iter().find(|item| item.id == building.kind)
             else {
                 return Err(missing_data(
@@ -8166,6 +8174,9 @@ fn monthly_production(
                             })?;
                     }
                 }
+            }
+            if monthly_output.iter().any(|amount| *amount != 0) {
+                building.last_made.clone_from(&monthly_output);
             }
             for (good_index, output_units) in monthly_output.iter().copied().enumerate() {
                 add_counter_units(
@@ -10847,6 +10858,7 @@ impl Canonical for EconomyState {
                 building.herd_grazing_sums.encode(out)?;
                 building.wage_carries.encode(out)?;
                 building.pay_carries.encode(out)?;
+                building.last_made.encode(out)?;
                 building.fee_carries.encode(out)?;
                 building.wage_history.encode(out)?;
                 building.paid_history.encode(out)?;
@@ -10914,6 +10926,7 @@ impl Canonical for EconomyState {
                     herd_grazing_sums: Vec::<u64>::decode(input)?,
                     wage_carries: Vec::<u64>::decode(input)?,
                     pay_carries: Vec::<u64>::decode(input)?,
+                    last_made: Vec::<u64>::decode(input)?,
                     fee_carries: Vec::<Vec<u64>>::decode(input)?,
                     wage_history: Vec::<u64>::decode(input)?,
                     paid_history: Vec::<u64>::decode(input)?,
@@ -11517,6 +11530,7 @@ pub(crate) mod tests {
             herd_grazing_sums: Vec::new(),
             wage_carries: vec![0; 2],
             pay_carries: vec![0; 2],
+            last_made: Vec::new(),
             fee_carries: vec![vec![0; 2]; 3],
             wage_history: vec![0; 12],
             paid_history: vec![0; WAGE_HISTORY_MONTHS],
@@ -11552,6 +11566,7 @@ pub(crate) mod tests {
             herd_grazing_sums: vec![1000; 3],
             wage_carries: vec![0; 2],
             pay_carries: vec![0; 2],
+            last_made: Vec::new(),
             fee_carries: Vec::new(),
             wage_history: vec![0; 12],
             paid_history: vec![0; WAGE_HISTORY_MONTHS],
@@ -11777,6 +11792,7 @@ pub(crate) mod tests {
                             .collect(),
                         wage_carries: vec![0; goods],
                         pay_carries: vec![0; goods],
+                        last_made: Vec::new(),
                         fee_carries: Vec::new(),
                         wage_history: vec![0; 12],
                         paid_history: vec![0; WAGE_HISTORY_MONTHS],
@@ -11809,6 +11825,7 @@ pub(crate) mod tests {
                         herd_grazing_sums: Vec::new(),
                         wage_carries: vec![0; goods],
                         pay_carries: vec![0; goods],
+                        last_made: Vec::new(),
                         fee_carries: Vec::new(),
                         wage_history: vec![0; 12],
                         paid_history: vec![0; WAGE_HISTORY_MONTHS],
@@ -11834,6 +11851,7 @@ pub(crate) mod tests {
                         herd_grazing_sums: Vec::new(),
                         wage_carries: vec![0; goods],
                         pay_carries: vec![0; goods],
+                        last_made: Vec::new(),
                         fee_carries: vec![vec![0; goods]; 4],
                         wage_history: vec![0; 12],
                         paid_history: vec![0; WAGE_HISTORY_MONTHS],
@@ -12268,6 +12286,7 @@ pub(crate) mod tests {
             herd_grazing_sums: Vec::new(),
             wage_carries: Vec::new(),
             pay_carries: Vec::new(),
+            last_made: Vec::new(),
             fee_carries: Vec::new(),
             wage_history: vec![0; 12],
             paid_history: vec![0; WAGE_HISTORY_MONTHS],
@@ -12300,6 +12319,7 @@ pub(crate) mod tests {
             herd_grazing_sums: Vec::new(),
             wage_carries: vec![0],
             pay_carries: vec![0],
+            last_made: Vec::new(),
             fee_carries: vec![vec![0], vec![0]],
             wage_history: vec![0; 12],
             paid_history: vec![0; WAGE_HISTORY_MONTHS],
@@ -12342,6 +12362,7 @@ pub(crate) mod tests {
             herd_grazing_sums: Vec::new(),
             wage_carries: Vec::new(),
             pay_carries: Vec::new(),
+            last_made: Vec::new(),
             fee_carries: Vec::new(),
             wage_history: vec![0; 12],
             paid_history: vec![0; WAGE_HISTORY_MONTHS],
@@ -12415,6 +12436,7 @@ pub(crate) mod tests {
             herd_grazing_sums: Vec::new(),
             wage_carries: Vec::new(),
             pay_carries: Vec::new(),
+            last_made: Vec::new(),
             fee_carries: Vec::new(),
             wage_history: vec![0; 12],
             paid_history: vec![0; WAGE_HISTORY_MONTHS],
@@ -12440,6 +12462,7 @@ pub(crate) mod tests {
             herd_grazing_sums: Vec::new(),
             wage_carries: vec![0],
             pay_carries: vec![0],
+            last_made: Vec::new(),
             fee_carries: vec![vec![0]; 3],
             wage_history: vec![0; 12],
             paid_history: vec![0; WAGE_HISTORY_MONTHS],
@@ -12814,6 +12837,7 @@ pub(crate) mod tests {
             herd_grazing_sums: Vec::new(),
             wage_carries: Vec::new(),
             pay_carries: Vec::new(),
+            last_made: Vec::new(),
             fee_carries: Vec::new(),
             wage_history: vec![0; 12],
             paid_history: vec![0; WAGE_HISTORY_MONTHS],
@@ -12976,6 +13000,7 @@ pub(crate) mod tests {
             herd_grazing_sums: Vec::new(),
             wage_carries: vec![0; rules.goods.len()],
             pay_carries: vec![0; rules.goods.len()],
+            last_made: Vec::new(),
             fee_carries: Vec::new(),
             wage_history: vec![0; 12],
             paid_history: vec![0; WAGE_HISTORY_MONTHS],
@@ -13010,6 +13035,7 @@ pub(crate) mod tests {
             herd_grazing_sums: Vec::new(),
             wage_carries: vec![0; rules.goods.len()],
             pay_carries: vec![0; rules.goods.len()],
+            last_made: Vec::new(),
             fee_carries: Vec::new(),
             wage_history: vec![0; 12],
             paid_history: vec![0; WAGE_HISTORY_MONTHS],
@@ -14653,6 +14679,7 @@ pub(crate) mod tests {
                         herd_grazing_sums: Vec::new(),
                         wage_carries: vec![0],
                         pay_carries: vec![0],
+                        last_made: Vec::new(),
                         fee_carries: Vec::new(),
                         wage_history: vec![1818; 12],
                         paid_history: vec![0; WAGE_HISTORY_MONTHS],
@@ -14681,6 +14708,7 @@ pub(crate) mod tests {
                         herd_grazing_sums: Vec::new(),
                         wage_carries: vec![0],
                         pay_carries: vec![0],
+                        last_made: Vec::new(),
                         fee_carries: vec![vec![0], vec![0]],
                         wage_history: vec![0; 12],
                         paid_history: vec![0; WAGE_HISTORY_MONTHS],
@@ -15659,6 +15687,13 @@ pub(crate) mod tests {
         };
 
         let ledger = run_monthly_production(&rules, &mut state, date).unwrap();
+        assert_eq!(state.places[0].buildings[1].last_made[oats], 60);
+        assert_eq!(state.places[0].buildings[1].last_made[fish], 60);
+        let saved = EconomyState::from_bytes(&state.to_bytes().unwrap()).unwrap();
+        assert_eq!(
+            saved.places[0].buildings[1].last_made,
+            state.places[0].buildings[1].last_made
+        );
         assert_eq!(
             ledger.produced[oats], 60,
             "old ordered staffing produced 120 oats"
@@ -15676,6 +15711,15 @@ pub(crate) mod tests {
         let ledger = run_monthly_production(&rules, &mut state, Date { month: 2, ..date }).unwrap();
         assert_eq!(ledger.produced[oats], 120);
         assert_eq!(ledger.produced[fish], 0);
+        assert_eq!(state.places[0].buildings[1].last_made[fish], 0);
+        run_monthly_production(&rules, &mut state, Date { month: 5, ..date }).unwrap();
+        assert!(state.places[0].buildings[1].last_made.is_empty());
+        state.places[0].buildings[1].last_made = vec![1; rules.goods.len()];
+        state.places[0].buildings[1].levels = 0;
+        state.places[0].buildings[1].method_levels = vec![0, 0];
+        sync_levels(&rules, &mut state.places[0].buildings[1]);
+        run_monthly_production(&rules, &mut state, Date { month: 6, ..date }).unwrap();
+        assert!(state.places[0].buildings[1].last_made.is_empty());
     }
 
     #[test]
@@ -17486,6 +17530,10 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the fixture keeps its full state and assertions together"
+    )]
     fn fourth_species_runs_its_lifecycle_and_ledger() {
         let mut rules = without_horses(shipped_rules());
         let mut goat = rules
@@ -17556,6 +17604,14 @@ pub(crate) mod tests {
         assert_eq!(ledger.places[0].herd_slaughter[3], 12);
         assert_eq!(ledger.produced[good_at(&rules, "hides")], 24);
         assert_eq!(ledger.produced[good_at(&rules, "dairy")], 3);
+        assert_eq!(
+            state.places[0].buildings[0].last_made[good_at(&rules, "hides")],
+            24
+        );
+        assert_eq!(
+            state.places[0].buildings[0].last_made[good_at(&rules, "dairy")],
+            3
+        );
         let february = run_monthly_production(
             &rules,
             &mut state,
@@ -17862,6 +17918,49 @@ pub(crate) mod tests {
             starting_method_output(&rules, farm, &sea_method, "dairy", 860, None, 550).unwrap(),
             645
         );
+    }
+
+    #[test]
+    fn last_made_is_per_farm_and_before_wages_and_survives_save() {
+        let mut rules = shipped_rules();
+        flatten_pasture(&mut rules);
+        let oats = good_at(&rules, "oats");
+        rules.goods[oats].volume_ml = 1;
+        rules.goods[oats].pop_limit_milli = 1_000_000;
+        rules
+            .buildings
+            .iter_mut()
+            .find(|building| building.id == "farm")
+            .unwrap()
+            .overhead_pm = 0;
+        let mut state = shipped_production_fixture(&rules);
+        let place = &mut state.places[0];
+        place.buildings[1].levels = 0;
+        place.buildings[1].method_levels.fill(0);
+        place.pops[0].workers = 1000;
+        let mut second = place.buildings[0].clone();
+        second.employment[0].workers = 5;
+        place.buildings.push(second);
+        for pop in &mut place.pops {
+            pop.employment.push(Employment::default());
+        }
+        sync_all_levels(&rules, &mut state);
+        let date = Date {
+            year: 768,
+            month: 9,
+            day: 1,
+            hour: 12,
+        };
+        run_monthly_production(&rules, &mut state, date).unwrap();
+        let first = &state.places[0].buildings[0];
+        let second = &state.places[0].buildings[3];
+        assert!(first.last_made[oats] > 0);
+        assert!(second.last_made[oats] > 0);
+        assert_ne!(first.last_made[oats], second.last_made[oats]);
+        assert_eq!(first.stock[oats], 0, "all output went to its workers");
+        let loaded = EconomyState::from_bytes(&state.to_bytes().unwrap()).unwrap();
+        assert_eq!(loaded.places[0].buildings[0].last_made, first.last_made);
+        assert_eq!(loaded.places[0].buildings[3].last_made, second.last_made);
     }
 
     #[test]
@@ -19132,6 +19231,7 @@ pub(crate) mod tests {
                         herd_grazing_sums: vec![1000; 3],
                         wage_carries: vec![999_999],
                         pay_carries: vec![2],
+                        last_made: Vec::new(),
                         fee_carries: Vec::new(),
                         wage_history: (1..=12).collect(),
                         paid_history: (101..=112).collect(),
@@ -19157,6 +19257,7 @@ pub(crate) mod tests {
                         herd_grazing_sums: Vec::new(),
                         wage_carries: vec![0],
                         pay_carries: vec![0],
+                        last_made: Vec::new(),
                         fee_carries: vec![vec![999], vec![998]],
                         wage_history: vec![42; 12],
                         paid_history: vec![7; WAGE_HISTORY_MONTHS],
@@ -19550,6 +19651,7 @@ pub(crate) mod tests {
             herd_grazing_sums: Vec::new(),
             wage_carries: vec![wage_carry],
             pay_carries: vec![0],
+            last_made: Vec::new(),
             fee_carries: Vec::new(),
             wage_history: vec![0; 12],
             paid_history: vec![0; WAGE_HISTORY_MONTHS],
@@ -19692,6 +19794,7 @@ pub(crate) mod tests {
                     herd_grazing_sums: vec![0; 3],
                     wage_carries: vec![0; rules.goods.len()],
                     pay_carries: vec![0; rules.goods.len()],
+                    last_made: Vec::new(),
                     fee_carries: Vec::new(),
                     wage_history: vec![0; 12],
                     paid_history: vec![0; WAGE_HISTORY_MONTHS],
@@ -19859,6 +19962,7 @@ pub(crate) mod tests {
             herd_grazing_sums: Vec::new(),
             wage_carries: Vec::new(),
             pay_carries: Vec::new(),
+            last_made: Vec::new(),
             fee_carries: Vec::new(),
             wage_history: vec![0; 12],
             paid_history: vec![0; WAGE_HISTORY_MONTHS],
@@ -19884,6 +19988,7 @@ pub(crate) mod tests {
             herd_grazing_sums: Vec::new(),
             wage_carries: vec![0],
             pay_carries: vec![0],
+            last_made: Vec::new(),
             fee_carries: vec![vec![0]; 3],
             wage_history: vec![0; 12],
             paid_history: vec![0; WAGE_HISTORY_MONTHS],
@@ -20743,6 +20848,7 @@ pub(crate) mod tests {
             herd_grazing_sums: Vec::new(),
             wage_carries: vec![0],
             pay_carries: vec![0],
+            last_made: Vec::new(),
             fee_carries: vec![vec![0], vec![0]],
             wage_history: vec![0; 12],
             paid_history: vec![0; WAGE_HISTORY_MONTHS],
@@ -20775,6 +20881,7 @@ pub(crate) mod tests {
             herd_grazing_sums: vec![1000; 3],
             wage_carries: vec![0],
             pay_carries: vec![0],
+            last_made: Vec::new(),
             fee_carries: Vec::new(),
             wage_history: vec![0; 12],
             paid_history: vec![0; WAGE_HISTORY_MONTHS],
@@ -21079,6 +21186,7 @@ pub(crate) mod tests {
                 herd_grazing_sums: vec![1000; 3],
                 wage_carries: vec![0; goods],
                 pay_carries: vec![0; goods],
+                last_made: Vec::new(),
                 fee_carries: Vec::new(),
                 wage_history: vec![0; 12],
                 paid_history: vec![0; WAGE_HISTORY_MONTHS],
@@ -21333,6 +21441,7 @@ pub(crate) mod tests {
             herd_grazing_sums: Vec::new(),
             wage_carries: vec![0],
             pay_carries: vec![0],
+            last_made: Vec::new(),
             fee_carries: Vec::new(),
             wage_history: vec![0; 12],
             paid_history: vec![0; WAGE_HISTORY_MONTHS],
@@ -21407,6 +21516,7 @@ pub(crate) mod tests {
             herd_grazing_sums: Vec::new(),
             wage_carries: vec![0],
             pay_carries: vec![0],
+            last_made: Vec::new(),
             fee_carries: Vec::new(),
             wage_history: vec![0; 12],
             paid_history: vec![0; WAGE_HISTORY_MONTHS],
@@ -21467,6 +21577,7 @@ pub(crate) mod tests {
                 herd_grazing_sums: Vec::new(),
                 wage_carries: vec![0],
                 pay_carries: vec![0],
+                last_made: Vec::new(),
                 fee_carries: Vec::new(),
                 wage_history: vec![0; 12],
                 paid_history: vec![0; WAGE_HISTORY_MONTHS],
@@ -21884,6 +21995,7 @@ pub(crate) mod tests {
             herd_grazing_sums: Vec::new(),
             wage_carries: vec![0],
             pay_carries: vec![0],
+            last_made: Vec::new(),
             fee_carries: Vec::new(),
             wage_history: vec![0; 12],
             paid_history: vec![0; WAGE_HISTORY_MONTHS],
@@ -22881,6 +22993,7 @@ pub(crate) mod tests {
             herd_grazing_sums: Vec::new(),
             wage_carries: Vec::new(),
             pay_carries: Vec::new(),
+            last_made: Vec::new(),
             fee_carries: Vec::new(),
             wage_history: vec![100; 12],
             paid_history: vec![0; WAGE_HISTORY_MONTHS],
@@ -23270,6 +23383,7 @@ pub(crate) mod tests {
             herd_grazing_sums: Vec::new(),
             wage_carries: vec![0],
             pay_carries: vec![0],
+            last_made: Vec::new(),
             fee_carries: Vec::new(),
             wage_history: vec![100; 12],
             paid_history: vec![0; WAGE_HISTORY_MONTHS],

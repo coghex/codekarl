@@ -668,6 +668,46 @@ pub(crate) fn events_function(
     })
 }
 
+/// Active blighted goods at a place in a delivered event snapshot.
+pub(crate) fn blights_function(cache: Arc<ViewCache>) -> HostFunction {
+    Arc::new(move |arguments| {
+        let [
+            Some(ConfigValue::String(place)),
+            Some(ConfigValue::Integer(revision)),
+        ] = arguments
+        else {
+            return Err("game.blights: expected a place and revision".to_owned());
+        };
+        let revision =
+            u64::try_from(*revision).map_err(|_| "game.blights: invalid revision".to_owned())?;
+        let rows = cache.get_events(revision)?;
+        let mut active = BTreeMap::<String, usize>::new();
+        for row in rows.iter() {
+            if let crate::game::events::EventKind::Blight {
+                good,
+                place: event_place,
+                ..
+            } = &row.kind
+                && event_place == place
+            {
+                let count = active.entry(good.clone()).or_default();
+                match row.action {
+                    crate::game::events::Action::Begins => *count += 1,
+                    crate::game::events::Action::Ends => *count = count.saturating_sub(1),
+                    crate::game::events::Action::Merged => {}
+                }
+            }
+        }
+        Ok(vec![ConfigValue::Array(
+            active
+                .into_iter()
+                .filter(|(_, count)| *count > 0)
+                .map(|(good, _)| ConfigValue::String(good))
+                .collect(),
+        )])
+    })
+}
+
 fn event_location(cell: [u32; 2]) -> String {
     let radius = ck_map::MERCATOR_RADIUS_METRES;
     let half = std::f64::consts::PI * radius;
@@ -959,8 +999,26 @@ fn counter_rows(rows: &[crate::game::view::GoodCounterView]) -> ConfigValue {
     )
 }
 
+fn stock_table(stock: &[crate::game::view::StockView]) -> ConfigValue {
+    ConfigValue::Array(
+        stock
+            .iter()
+            .map(|item| {
+                table([
+                    ("good", text(&item.good)),
+                    ("amount", integer(item.amount)),
+                    ("charged_ml", integer(item.charged_ml)),
+                    ("outside", ConfigValue::Bool(item.outside)),
+                ])
+            })
+            .collect(),
+    )
+}
+
 fn pop_table(pop: &PopView) -> ConfigValue {
     table([
+        ("stock", stock_table(&pop.stock)),
+        ("room_ml", integer(pop.room_ml)),
         ("kind", text(&pop.kind)),
         ("culture", text(&pop.culture)),
         ("religion", text(&pop.religion)),
@@ -1003,6 +1061,20 @@ fn pop_table(pop: &PopView) -> ConfigValue {
 
 fn building_table(building: &BuildingView) -> ConfigValue {
     table([
+        ("stock", stock_table(&building.stock)),
+        (
+            "made",
+            ConfigValue::Array(
+                building
+                    .made
+                    .iter()
+                    .map(|(good, amount)| {
+                        table([("good", text(good)), ("amount", integer(*amount))])
+                    })
+                    .collect(),
+            ),
+        ),
+        ("store_capacity_ml", integer(building.store_capacity_ml)),
         ("kind", text(&building.kind)),
         ("levels", integer(building.levels)),
         (
@@ -1530,6 +1602,32 @@ pub(crate) fn character_pop_function(
             ("slot", integer(u64::from(card.slot))),
             ("characters", ConfigValue::Array(members)),
         ])])
+    })
+}
+
+/// Cards of the members of an exact pop slot at a delivered revision.
+pub(crate) fn pop_members_function(cache: Arc<ViewCache>, names: PlaceNameSetting) -> HostFunction {
+    Arc::new(move |arguments| {
+        let [
+            Some(ConfigValue::String(place)),
+            Some(ConfigValue::Integer(slot)),
+            Some(ConfigValue::Integer(revision)),
+        ] = arguments
+        else {
+            return Err("game.pop_members: expected place, slot and revision".to_owned());
+        };
+        let revision = u64::try_from(*revision)
+            .map_err(|_| "game.pop_members: invalid revision".to_owned())?;
+        let slot = u32::try_from(*slot).map_err(|_| "game.pop_members: invalid slot".to_owned())?;
+        let view = cache.get_for("game.pop_members", revision)?;
+        let members = view
+            .characters
+            .pop_members(place, slot)
+            .iter()
+            .filter_map(|id| view.characters.card(*id))
+            .map(|card| card_table(card, &names))
+            .collect();
+        Ok(vec![ConfigValue::Array(members)])
     })
 }
 
@@ -2093,6 +2191,53 @@ mod tests {
     }
 
     #[test]
+    fn blights_are_bound_to_each_event_revision_and_place() {
+        use crate::game::events::{Action, Event, EventKind};
+        let cache = Arc::new(ViewCache::default());
+        let make = |hour, action| Event {
+            at: ck_sim::GameTime::from_date(ck_sim::Date {
+                year: 768,
+                month: 10,
+                day: 12,
+                hour,
+            })
+            .unwrap(),
+            action,
+            kind: EventKind::Blight {
+                good: "oats".into(),
+                place: "clonmacnoise".into(),
+                place_order: 0,
+            },
+        };
+        cache.post_events(1, Arc::new(vec![]));
+        cache.post_events(2, Arc::new(vec![make(9, Action::Begins)]));
+        cache.post_events(
+            3,
+            Arc::new(vec![make(9, Action::Begins), make(20, Action::Ends)]),
+        );
+        let blights = blights_function(cache);
+        let call = |place: &str, revision| {
+            blights(&[
+                Some(ConfigValue::String(place.into())),
+                Some(ConfigValue::Integer(revision)),
+            ])
+            .unwrap()
+            .remove(0)
+        };
+        assert_eq!(call("clonmacnoise", 1), ConfigValue::Array(vec![]));
+        assert_eq!(
+            call("clonmacnoise", 2),
+            ConfigValue::Array(vec![ConfigValue::String("oats".into())])
+        );
+        assert_eq!(call("elsewhere", 2), ConfigValue::Array(vec![]));
+        assert_eq!(call("clonmacnoise", 3), ConfigValue::Array(vec![]));
+        assert_eq!(
+            call("clonmacnoise", 2),
+            ConfigValue::Array(vec![ConfigValue::String("oats".into())])
+        );
+    }
+
+    #[test]
     fn the_event_log_names_a_blight_place_by_the_choice_and_keeps_its_id() {
         use crate::game::events::{Action, Event, EventKind};
         let cache = Arc::new(ViewCache::default());
@@ -2511,6 +2656,8 @@ mod tests {
             makeshift_housing_occupants: 2,
             crowding_pm: 2000,
             pops: vec![PopView {
+                stock: Vec::new(),
+                room_ml: 0,
                 kind: "peasant".to_owned(),
                 culture: "ulaid".to_owned(),
                 religion: "christianity".to_owned(),
@@ -2537,6 +2684,8 @@ mod tests {
                 crowding_pm: Some(2000),
             }],
             buildings: vec![BuildingView {
+                stock: Vec::new(),
+                made: Vec::new(),
                 kind: "farm".to_owned(),
                 levels: 3,
                 methods: vec![("mixed_farming".to_owned(), 3)],

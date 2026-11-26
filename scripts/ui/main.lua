@@ -20,6 +20,7 @@ local listbar = require("lib.listbar")
 local theme = require("lib.theme")
 local date_text = require("lib.time")
 local location = require("lib.location")
+local location_detail = require("lib.location_detail")
 local tooltip = require("lib.tooltip")
 local classes = require("lib.classes")
 local menu = require("lib.menu")
@@ -410,7 +411,14 @@ if game ~= nil then
 
   -- The location panel: the left third of the screen below the time bar, filled from the economy view of the revision `game_time`
   -- carries (`game.place`), never from live state.
-  local location_panel = location.new{
+  local detail_panel
+  local last_events_revision = 0
+  local location_panel
+  location_panel = location.new{
+    on_detail = function(kind, id, index, world)
+      if world ~= current_world then return end
+      detail_panel:open(kind, id, require("lib.place_names").name_of(id), index, location_panel:current_revision(), last_events_revision, world)
+    end,
     view = view,
     -- The title bar's go-to button: the camera goes to the place and zooms in (the window is the place's own and stays).
     on_go = function(id, revision) go_to.to("location", id, revision) end,
@@ -430,8 +438,10 @@ if game ~= nil then
     -- A load replaces the world (and with it every character and what a tooltip over one says): no tooltip outlives it.
     if (time.world or 0) ~= current_world then tooltip.close_all() end
     current_world = time.world or 0
+    last_events_revision = time.events_revision
     find_popup.set_revision(time.economy_revision, current_world)
     location_panel:set_revision(time.economy_revision, time.weather, time.year, time.month, time.day, time.hour, current_world)
+    if detail_panel ~= nil then detail_panel:refresh(time.economy_revision, time.events_revision, current_world) end
     classes.set_revision(time.economy_revision)
     -- The character screen reads the character again under this snapshot's revision, or closes (a new world, a character no longer live).
     if character_panel ~= nil then character_panel:refresh(time.economy_revision, current_world) end
@@ -479,6 +489,7 @@ if game ~= nil then
 
   relayouts[#relayouts + 1] = function()
     location_panel:relayout()
+    if detail_panel ~= nil then detail_panel:relayout() end
   end
 
   game.on_select(show_place)
@@ -551,6 +562,15 @@ if game ~= nil then
     -- The pop tab's open-location button: the screen has closed, and the place shows in the location panel.
     open_place = function(id, name)
       location_panel:show({id = id, name = name})
+    end,
+  }
+
+  detail_panel = location_detail.new{
+    view = view,
+    top = function() return time_panel ~= nil and time_panel.y + time_panel.height + MARGIN or 0 end,
+    on_go = function(id, revision) go_to.to("location", id, revision) end,
+    open_character = function(id, world)
+      if world == current_world then character_panel:open(id, location_panel:current_revision(), world) end
     end,
   }
 

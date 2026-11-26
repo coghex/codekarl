@@ -2067,6 +2067,10 @@ mod switch_step_tests {
         assert_eq!(after.paid_history[8], before.paid_history[8]);
         assert_eq!(after.paid_years[8], YEAR);
         assert_eq!(after.production_carries, before.production_carries);
+        assert_eq!(
+            after.last_made, before.last_made,
+            "a switch cull is not payday output"
+        );
         // The beef's wages (900 of every thousand, by the farm's overhead) go to the workers' stores, and what does not fit and
         // the overhead are passed on; none of it is lost or kept back in a carry.
         assert_eq!(after.wage_carries[beef], 0);

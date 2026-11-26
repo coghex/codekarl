@@ -118,12 +118,23 @@ game = {
     note("unsaved_count " .. tostring(unsaved_marks))
   end,
   places = function() return place_data end,
+  blights = function(_, revision) return revision == 2 and {"honey"} or {} end,
+  pop_members = function() return {} end,
   place = function(id, revision)
     place_calls[#place_calls + 1] = id .. "@" .. revision
     if window.actual_place ~= nil then return window.actual_place(id, revision) end
     local view = VIEWS[revision]
     if view == nil or view[id] == nil then error("game.place: no " .. id .. " at " .. revision) end
-    return view[id]
+    local place = view[id]
+    for _, pop in ipairs(place.pops) do
+      pop.stock = pop.stock or {}; pop.room_ml = pop.room_ml or 0; pop.equilibrium = pop.equilibrium or 0
+    end
+    for _, building in ipairs(place.buildings) do
+      building.stock = building.stock or {}; building.made = building.made or {}
+      building.store_capacity_ml = building.store_capacity_ml or building.store_capacity_l * 1000
+      building.housing_occupants = building.housing_occupants or 0
+    end
+    return place
   end,
 }
 -- `game.go_to` (CK-381) records its calls as `{kind, id, zoom, revision}` and fails with `go_to_refusal` when that is set.
@@ -423,7 +434,7 @@ render.set_group_visible = function(group, visible)
   return real_group_visible(group, visible)
 end
 function time(hour, revision, paused)
-  callbacks.time({year = 768, month = 1, day = 1, hour = hour, paused = paused == true, speed = 1, economy_revision = revision})
+  callbacks.time({year = 768, month = 1, day = 1, hour = hour, paused = paused == true, speed = 1, economy_revision = revision, events_revision = revision, world = 0})
 end
 function select_place(id, name) callbacks.select({id = id, name = name, kind = "town", size = 3}) end
 function use_many_ledger_places()
@@ -1265,4 +1276,245 @@ assert(empty and full, 'zero capacity bars')
 check_rows(wider, 202)
 "#]);
     rig.opened();
+}
+
+#[test]
+fn building_detail_uses_the_delivered_event_revision_for_stock_colours() {
+    let mut rig = rig(&[
+        r"local farm = VIEWS[1].cards.buildings[1]
+farm.stock = {{good = 'honey', amount = 10, charged_ml = 3500, outside = false},
+  {good = 'peat', amount = 1, charged_ml = 0, outside = true}}
+farm.store_capacity_ml = 10000; farm.made = {{good = 'honey', amount = 12}}
+colour_watch = true
+panel_detail = require('lib.location_detail').new{view = {width = 1800, height = 900}, top = function() return 0 end,
+  open_character = function() end, on_go = function() end}
+panel_detail:open('building', 'cards', 'Cards', 1, 1, 1, 0)
+local header = panel_detail.stack.items[1]
+local cattle = header.tooltip(1, 35)
+assert(cattle ~= nil and cattle.title == 'cattle', 'herd icon opens its glossary')
+local method = panel_detail.stack.items[2].tooltip(1, 12)
+assert(method ~= nil and method.title == 'mixed farming', 'method icon opens its glossary')
+local stock = panel_detail.stack.items[4]
+assert(stock.tooltip(1, 15) ~= nil, 'storage total keeps its tooltip')
+local good_hit = stock.hits[2]
+local good_tip = stock.tooltip(good_hit.x + 1, good_hit.y + 1)
+assert(good_tip and good_tip.title == 'honey', 'good icon opens its glossary, not the store tooltip')
+local name_tip = stock.tooltip(good_hit.x + 13, good_hit.y + 1)
+assert(name_tip and name_tip.title == 'honey', 'good name opens its glossary')
+note('before_revision')",
+        "panel_detail:refresh(1, 2, 0); note('blighted_revision')",
+        "panel_detail:refresh(1, 1, 0); note('unblighted_revision')",
+    ]);
+    rig.opened();
+    rig.opened();
+    rig.opened();
+    let captured = notes(&rig);
+    assert!(
+        captured.iter().any(|line| line.contains("honey blight")),
+        "{captured:?}"
+    );
+    assert!(
+        captured.iter().any(|line| line.contains("#b7a23c=10")),
+        "{captured:?}"
+    );
+    assert!(
+        captured.iter().any(|line| line.contains("3.5 / 10 L")),
+        "{captured:?}"
+    );
+    assert!(
+        captured.iter().any(|line| line.contains("35%")),
+        "{captured:?}"
+    );
+    assert!(
+        captured.iter().any(|line| line.contains("outside")),
+        "{captured:?}"
+    );
+}
+
+#[test]
+fn detail_binds_the_original_pop_slot_refreshes_and_closes_on_world_change() {
+    let mut rig = rig(&[
+        r"VIEWS[1].cards.pops[1].stock = {{good = 'oats', amount = 11, charged_ml = 1000, outside = false}}
+VIEWS[1].cards.pops[2].stock = {{good = 'honey', amount = 27, charged_ml = 3500, outside = false}}
+VIEWS[1].cards.pops[2].room_ml = 10000
+local members_calls = {}
+game.pop_members = function(place, slot, revision)
+  note('members ' .. place .. ' ' .. slot .. ' ' .. revision)
+  return {}
+end
+colour_watch = true
+panel_detail = require('lib.location_detail').new{view = {width = 1800, height = 900}, top = function() return 0 end,
+  open_character = function() end, on_go = function() end}
+panel_detail:open('pop', 'cards', 'Cards', 2, 1, 1, 0)
+note('pop_open ' .. tostring(panel_detail:is_open()))",
+        "panel_detail:refresh(2, 2, 0); note('pop_refreshed ' .. tostring(panel_detail:is_open()))",
+        "panel_detail:refresh(2, 2, 1); note('pop_new_world ' .. tostring(panel_detail:is_open()))",
+    ]);
+    for _ in 0..3 {
+        rig.opened();
+    }
+    let captured = notes(&rig);
+    assert!(
+        captured.iter().any(|line| line == "members cards 1 1"),
+        "{captured:?}"
+    );
+    assert!(
+        captured.iter().any(|line| line == "members cards 1 2"),
+        "{captured:?}"
+    );
+    assert!(
+        captured.iter().any(|line| line.contains("#5fb35a=27")),
+        "{captured:?}"
+    );
+    assert!(
+        captured.iter().any(|line| line == "pop_new_world false"),
+        "{captured:?}"
+    );
+}
+
+#[test]
+fn narrow_building_detail_wraps_herds_and_keeps_method_targets_inside() {
+    let mut rig = rig(&[r"local farm = VIEWS[1].cards.buildings[1]
+farm.kind = 'demesne'
+farm.methods = {{id = 'coastal_subsistence', levels = 15}}
+farm.herds = {{species='cattle', head=16, maximum=24}, {species='pigs', head=10, maximum=16},
+  {species='sheep', head=9, maximum=14}, {species='horses', head=4, maximum=6}}
+panel_detail = require('lib.location_detail').new{view = {width = 360, height = 700}, top = function() return 0 end,
+  open_character = function() end, on_go = function() end}
+panel_detail:open('building', 'cards', 'Cards', 1, 1, 1, 0)
+local stack = panel_detail.stack
+local width = stack.row_w // require('lib.ui').P
+local header, methods = stack.items[1], stack.items[2]
+local horse, max_y = nil, 0
+for _, hit in ipairs(header.hits) do
+  assert(hit.x >= 0 and hit.x + hit.width <= width, 'herd hit inside the panel')
+  if hit.content and hit.content.title == 'horses' then horse = hit end
+  max_y = math.max(max_y, hit.y)
+end
+assert(horse ~= nil and horse.y > 34, 'horses wrapped to another row')
+assert(methods.height >= 33, 'method level wrapped below its name')
+assert(methods.tooltip(1, 12) ~= nil, 'method icon target remains reachable')
+note('narrow_detail_ok')"]);
+    rig.opened();
+    assert!(notes(&rig).iter().any(|line| line == "narrow_detail_ok"));
+}
+
+#[test]
+fn zero_capacity_omits_empty_stock_and_shows_outside_and_overflow_stock() {
+    let mut rig = rig(&[
+        r"local farm = VIEWS[1].cards.buildings[1]
+farm.store_capacity_ml = 0; farm.stock = {}; farm.made = {}
+colour_watch = true
+panel_detail = require('lib.location_detail').new{view = {width = 1800, height = 900}, top = function() return 0 end,
+  open_character = function() end, on_go = function() end}
+panel_detail:open('building', 'cards', 'Cards', 1, 1, 1, 0)
+assert(#panel_detail.stack.items == 3, 'empty zero-capacity stock omitted')
+farm.stock = {{good = 'peat', amount = 1, charged_ml = 0, outside = true}}
+panel_detail:refresh(1, 1, 0)
+assert(#panel_detail.stack.items == 4, 'outside stock shown')
+note('outside_done')",
+        r"VIEWS[1].cards.buildings[1].stock = {{good = 'honey', amount = 10, charged_ml = 3500, outside = false}}
+panel_detail:refresh(1, 1, 0); note('overflow_done')",
+    ]);
+    rig.opened();
+    rig.opened();
+    let captured = notes(&rig);
+    assert!(
+        captured.iter().any(|line| line.contains("0 / 0 L")),
+        "{captured:?}"
+    );
+    assert!(
+        captured.iter().any(|line| line.contains("outside")),
+        "{captured:?}"
+    );
+    assert!(
+        captured.iter().any(|line| line.contains("#f66155=3.5")),
+        "{captured:?}"
+    );
+    assert!(
+        captured.iter().any(|line| line.contains('—')),
+        "{captured:?}"
+    );
+}
+
+#[test]
+fn standalone_pop_portraits_open_a_character_and_keep_an_overflow_chip() {
+    let mut rig = rig(&[r"game.pop_members = function()
+  local people = {}
+  for i = 1, 20 do people[i] = {id=i, name='Person ' .. i, epithet='', house='', role='worker'} end
+  return people
+end
+panel_detail = require('lib.location_detail').new{view = {width = 1800, height = 900}, top = function() return 0 end,
+  open_character = function(id, world) note('portrait_open ' .. id .. ' ' .. world) end, on_go = function() end}
+panel_detail:open('pop', 'cards', 'Cards', 1, 1, 1, 0)
+local portraits = panel_detail.stack.items[4]
+local first, chip
+for _, hit in ipairs(portraits.hits) do
+  if hit.part == 'portrait' and first == nil then first = hit end
+  if hit.part == 'chip' then chip = hit end
+end
+assert(first and first.open, 'the first portrait is not selected and remains clickable')
+assert(chip and chip.content.title:find('more'), 'overflow chip lists remaining members')
+first.open(); require('lib.pointer').dispatch({})"]);
+    rig.opened();
+    assert!(notes(&rig).iter().any(|line| line == "portrait_open 1 0"));
+}
+
+#[test]
+fn blighted_long_stock_name_keeps_the_mark_and_hit_inside_a_narrow_panel() {
+    let mut rig = rig(&[r"local good = 'an_extraordinarily_long_good_name'
+game.blights = function() return {good} end
+local farm = VIEWS[1].cards.buildings[1]
+farm.stock = {{good=good, amount=3, charged_ml=3000, outside=false}}; farm.store_capacity_ml = 10000
+colour_watch = true
+panel_detail = require('lib.location_detail').new{view = {width = 360, height = 700}, top = function() return 0 end,
+  open_character = function() end, on_go = function() end}
+panel_detail:open('building', 'cards', 'Cards', 1, 1, 1, 0)
+local stock = panel_detail.stack.items[4]
+local width = panel_detail.stack.row_w // require('lib.ui').P
+for _, hit in ipairs(stock.hits) do assert(hit.x + hit.width <= width, 'stock target remains inside the panel') end
+note('narrow_stock_ok')"]);
+    rig.opened();
+    let recorded = notes(&rig);
+    assert!(
+        recorded.iter().any(|line| line.contains("… blight")),
+        "{recorded:?}"
+    );
+    assert!(recorded.iter().any(|line| line == "narrow_stock_ok"));
+}
+
+#[test]
+fn standalone_pop_shows_zero_capacity_stock_in_each_case() {
+    let mut rig = rig(&[
+        r"local pop = VIEWS[1].cards.pops[1]
+pop.room_ml = 0; pop.stock = {}; colour_watch = true
+panel_detail = require('lib.location_detail').new{view = {width = 1800, height = 900}, top = function() return 0 end,
+  open_character = function() end, on_go = function() end}
+panel_detail:open('pop', 'cards', 'Cards', 1, 1, 1, 0)
+assert(#panel_detail.stack.items == 4, 'empty zero-room pop has no stock section')
+pop.stock = {{good='peat', amount=1, charged_ml=0, outside=true}}
+panel_detail:refresh(1, 1, 0)
+assert(#panel_detail.stack.items == 5, 'outside stock is shown')",
+        r"VIEWS[1].cards.pops[1].stock = {{good='honey', amount=10, charged_ml=3500, outside=false}}
+panel_detail:refresh(1, 1, 0); note('charged_pop_done')",
+    ]);
+    rig.opened();
+    rig.opened();
+    let recorded = notes(&rig);
+    assert!(
+        recorded.iter().any(|line| line.contains("0 / 0 L")),
+        "{recorded:?}"
+    );
+    assert!(
+        recorded.iter().any(|line| line.contains("outside")),
+        "{recorded:?}"
+    );
+    assert!(
+        recorded.iter().any(|line| line.contains("#f66155=3.5")),
+        "{recorded:?}"
+    );
+    assert!(
+        recorded.iter().any(|line| line.contains('—')),
+        "{recorded:?}"
+    );
 }
