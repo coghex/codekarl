@@ -40,6 +40,9 @@ pub struct MapLayers {
     pub rivers: bool,
     /// Whether roads are drawn.
     pub roads: bool,
+    /// Whether expeditions are drawn.
+    #[serde(default)]
+    pub expeditions: bool,
 }
 
 /// Sort used by the event log.

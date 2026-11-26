@@ -2576,6 +2576,9 @@ GUARDS: tuple[Guard, ...] = (
         "rust.app",
         ("assets/game/travel.toml", "assets/scenarios/ireland-768/"),
     ),
+    # CK-435: the map readback fixture loads the vehicle rules; the art witness hashes the shipped chips.
+    Guard("apps/codekarl/src/game/expedition_map.rs", "rust.app", ("assets/game/economy.toml",)),
+    Guard("apps/codekarl/src/expedition_art_tests.rs", "rust.app", ("assets/ui/expeditions/",)),
     Guard(
         "apps/codekarl/tests/travel_scale.rs",
         "travel.scale",

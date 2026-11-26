@@ -824,7 +824,7 @@ fn huge_core_section_length_is_refused_and_staging_is_removed() {
 }
 
 #[test]
-fn map_layers_are_required_booleans_in_the_header() {
+fn map_layers_are_booleans_and_existing_layers_are_required_in_the_header() {
     let mut save = valid_save();
     save.meta.layers.rivers = true;
     save.meta.layers.roads = false;
@@ -837,6 +837,20 @@ fn map_layers_are_required_booleans_in_the_header() {
     )));
     assert!(malformed(
         &with_header(|h| h.replace("roads = false\n", ""))
+    ));
+    assert!(malformed(&with_header(
+        |h| h.replace("expeditions = false", "expeditions = \"no\"")
+    )));
+}
+
+#[test]
+fn old_layer_header_reaches_the_build_identity_check() {
+    let old = with_header(|h| h.replace("expeditions = false\n", ""));
+    let mut newer = expected();
+    newer.build.push_str("-new");
+    assert!(matches!(
+        Save::<World>::from_bytes(&old, &newer),
+        Err(SaveError::BuildMismatch { .. })
     ));
 }
 

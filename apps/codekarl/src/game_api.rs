@@ -180,16 +180,17 @@ fn set_map_layer_function(controls: SimControls) -> HostFunction {
         ] = arguments
         else {
             return Err(
-                "game.set_map_layer: expected a layer name (rivers or roads) and a boolean"
+                "game.set_map_layer: expected a layer name (rivers, roads or expeditions) and a boolean"
                     .to_owned(),
             );
         };
         let layer = match name.as_str() {
             "rivers" => crate::game::slot::MapLayer::Rivers,
             "roads" => crate::game::slot::MapLayer::Roads,
+            "expeditions" => crate::game::slot::MapLayer::Expeditions,
             _ => {
                 return Err(
-                    "game.set_map_layer: expected a layer name (rivers or roads) and a boolean"
+                    "game.set_map_layer: expected a layer name (rivers, roads or expeditions) and a boolean"
                         .to_owned(),
                 );
             }
@@ -1667,13 +1668,16 @@ pub(crate) fn character_log_function(cache: Arc<ViewCache>) -> HostFunction {
 }
 
 /// The table a `game_time` callback gets for `snapshot`.
-pub(crate) fn time_table(snapshot: &SimSnapshot) -> ConfigValue {
-    let paused = match snapshot.paused {
+fn pause_value(reason: Option<PauseReason>) -> ConfigValue {
+    match reason {
         None => ConfigValue::Bool(false),
         Some(PauseReason::Player) => ConfigValue::String("player".to_owned()),
         Some(PauseReason::Error) => ConfigValue::String("error".to_owned()),
         Some(PauseReason::Load) => ConfigValue::String("load".to_owned()),
-    };
+    }
+}
+
+pub(crate) fn time_table(snapshot: &SimSnapshot) -> ConfigValue {
     ConfigValue::Table(BTreeMap::from([
         (
             "year".to_owned(),
@@ -1695,13 +1699,17 @@ pub(crate) fn time_table(snapshot: &SimSnapshot) -> ConfigValue {
             "speed".to_owned(),
             ConfigValue::Integer(i64::from(snapshot.speed.level())),
         ),
-        ("paused".to_owned(), paused),
+        ("paused".to_owned(), pause_value(snapshot.paused)),
         ("unsaved".to_owned(), ConfigValue::Bool(snapshot.unsaved)),
         (
             "rivers".to_owned(),
             ConfigValue::Bool(snapshot.layers.rivers),
         ),
         ("roads".to_owned(), ConfigValue::Bool(snapshot.layers.roads)),
+        (
+            "expeditions".to_owned(),
+            ConfigValue::Bool(snapshot.layers.expeditions),
+        ),
         (
             "economy_revision".to_owned(),
             integer(snapshot.economy_revision),
@@ -1841,6 +1849,7 @@ mod tests {
         for (name, layer) in [
             ("rivers", crate::game::slot::MapLayer::Rivers),
             ("roads", crate::game::slot::MapLayer::Roads),
+            ("expeditions", crate::game::slot::MapLayer::Expeditions),
         ] {
             assert!(
                 set(&[
@@ -1915,6 +1924,7 @@ mod tests {
                 "day",
                 "economy_revision",
                 "events_revision",
+                "expeditions",
                 "hour",
                 "log_blights",
                 "log_descending",

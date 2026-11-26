@@ -165,6 +165,7 @@ pub(super) fn write_save(game: &GameConfig, ticks: u64, seed: u64) -> (PathBuf, 
     meta.layers = ck_sim::MapLayers {
         rivers: true,
         roads: true,
+        expeditions: false,
     };
     simulation
         .save(meta)
@@ -192,7 +193,8 @@ fn a_loaded_game_is_the_save_exactly() {
         loaded.layers,
         ck_sim::MapLayers {
             rivers: true,
-            roads: true
+            roads: true,
+            expeditions: false,
         }
     );
     assert_eq!(loaded.simulation.seed(), 99);
@@ -215,7 +217,8 @@ fn a_loaded_game_is_the_save_exactly() {
         snapshots[0].layers,
         ck_sim::MapLayers {
             rivers: true,
-            roads: true
+            roads: true,
+            expeditions: false,
         }
     );
     // A load logs the save, not a new seed.

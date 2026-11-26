@@ -1436,6 +1436,7 @@ pub(crate) fn snapshot(hour: u8, speed: u8, paused: Option<PauseReason>) -> SimS
         log_choices: ck_sim::LogChoices::default(),
         economy_revision: 0,
         economy: None,
+        expeditions: Arc::new(Vec::new()),
         weather: BTreeMap::new(),
         events: Arc::new(Vec::new()),
         events_revision: 0,
@@ -1458,12 +1459,13 @@ fn setting_the_next_hour_replaces_one_quad_and_moves_none() {
     assert_eq!(
         first
             .iter()
-            .filter(|entry| entry.starts_with("create"))
+            .filter(|entry| entry.starts_with("create "))
             .count(),
         5,
         "{first:?}"
     );
-    assert_eq!(first[0], "load ui/font/glyphs/U+0031.png");
+    assert_eq!(first[0], "create_group g1");
+    assert_eq!(first[1], "load ui/font/glyphs/U+0031.png");
     assert!(
         first.contains(&"create q1 ui/font/glyphs/U+0031.png 10 20 10 22".to_owned()),
         "{first:?}"
@@ -1764,9 +1766,10 @@ fn the_time_bar_creates_its_panel_first_then_touches_only_what_changed() {
     readout.deliver(&snapshot(14, 1, Some(PauseReason::Load)));
     let first = readout.entries();
     // The cut-6 panel is at the snapped margin with fixed transport controls, boxes, Help and a date-only readout.
-    assert_eq!(first[0], "load ui/theme/cut6_tl_fill.png");
+    assert_eq!(first[0], "create_group g1");
+    assert_eq!(first[1], "load ui/theme/cut6_tl_fill.png");
     assert!(
-        first[1].starts_with("create q1 ui/theme/cut6_tl_fill.png 8 8 "),
+        first[2].starts_with("create q1 ui/theme/cut6_tl_fill.png 8 8 "),
         "{first:?}"
     );
     // Three panels (the time bar, the ledger bar and the map modes' bar) and twelve buttons use cut-6 frames; icons are precreated

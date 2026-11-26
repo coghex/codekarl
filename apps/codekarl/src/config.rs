@@ -2967,11 +2967,41 @@ mod tests {
 
     #[test]
     fn shipped_game_config_loads_existing_game_inputs_and_selects_the_default_binary() {
+        #[derive(Default)]
+        struct Sink(std::sync::Mutex<Option<ck_render_2d::Snapshot>>);
+        impl ck_render_2d::QuadSink for Sink {
+            fn publish(&self, snapshot: ck_render_2d::Snapshot) -> Option<ck_render_2d::Snapshot> {
+                self.0.lock().unwrap().replace(snapshot)
+            }
+        }
         let app = Path::new(env!("CARGO_MANIFEST_DIR"));
         let root = app.join("../..");
         let config_path = root.join("config/game.toml");
         let config =
             load_without_settings(&config_path).expect("the shipped game configuration loads");
+
+        assert_eq!(config.render.filter, ImageFilter::Nearest);
+        let sink = std::sync::Arc::new(Sink::default());
+        crate::scene_bridge(&config)
+            .attach(
+                &ck_window::WindowDesc {
+                    title: "filter witness".into(),
+                    width: 200,
+                    height: 100,
+                    clear: [0.0; 3],
+                    ..Default::default()
+                },
+                ck_window::PixelSize {
+                    width: 200,
+                    height: 100,
+                },
+                sink.clone(),
+            )
+            .unwrap();
+        assert_eq!(
+            sink.0.lock().unwrap().as_ref().unwrap().filter,
+            ck_render_2d::Filter::Nearest
+        );
 
         let assets = config.render.assets.expect("render assets are configured");
         assert!(
