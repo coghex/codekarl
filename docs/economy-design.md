@@ -1190,7 +1190,7 @@ herd stays. These are counts, not individual animals, so livestock stays abstrac
   part (CK-431).
 - **Expeditions** (CK-432, trade part C; spec `trade4-spec-r4`, section 7): a trade job (a plan's vehicles, cargo, animals and supplies)
   starts when its goods are gathered, its people are at home and willing and every leg of both ways assigns; its stockpile then
-  becomes an expedition, saved in its home place's trade state. The plan is given (part D will choose it).
+  becomes an expedition, saved in its home place's trade state. The plan is given (part D, below, chooses it).
   - **Legs.** Each leg of the way out and the way back is a mode (land or water), the work and speed of each stretch in the order the
     stretches are travelled, and the fixed delays with where they lie; a leg takes the sum of work over speed plus the delays, where each
     profile speed is scaled by the pace over 1000, rounded down, at least 1 (rule 6). Position is the leg and the exact progress through it,
@@ -1246,6 +1246,66 @@ herd stays. These are counts, not individual animals, so livestock stays abstrac
     a head on offer and the yield of its slaughter against the heads put on offer and the clock, a saved state's clock being the
     hour whose systems have not yet run, so a head is still on offer at the due hour's own clock); the next
     expedition number is saved with the others.
+- **Choosing a trade** (CK-433, trade part D; spec `trade4-spec-r6`, section 8 with rules 11b.4, 11c.3 and 11d.2, and design-trade-r5 3.5):
+  every pop is a trader; it looks at the places the network reaches, plans a trip to each, and makes the best a job. Looks are **off in the
+  shipped rules** (`[expedition] looks = false`) until part F opens a game with its first looks, so the shipped game and its yearly
+  digest are unchanged; the cases and the evidence harness turn them on.
+  - **When it looks (r134, r158).** Each pop's last look and a pending rest look are saved (`PlaceTrade.looks`). A trader is due in the first
+    hour when it has never looked (a pop with no look looks in the next hour; after part F only a pop made during the game), when 720
+    hours have passed since its last look (`look_hours`), when its pending rest look's hour comes (an expedition of its unloaded and 12
+    hours, `rest_hours`, have passed), or in the hour a vehicle it was building is done. Coincident triggers make one look; any look sets
+    its last look and clears the pending one; unloading sets the pending look to that hour plus 12 unless an earlier one is pending (so a
+    return at hour 100 gives one look at 112 and none at 113, and a 720-hour look at 105 clears the 112 one). Looks run after the hour's
+    builds, expeditions and starts, in the order of places and then of pops, so a look sees the holdings and prices of that hour, and
+    a job a look makes that is ready (its trader held everything) starts in that hour. `run_trade_hour_with_looks` is that hour; each
+    look is whole, so an error leaves the looks before it.
+  - **What it wants (item 1).** Its deficits against its targets, less what the plans under way will bring it, necessities first (food
+    and fuel), the biggest share of the target first; a trader holding under 60 days of food plans for food only (T6). A trader
+    considers only places within its type's round-trip limit (`limit_hours`: peasant and labourer 168, monk and noble 720, r137); a type
+    with none does not trade.
+  - **No screen (11d.2 rule 3).** The destinations are every place the network reaches from home, other than home and its neighbours, found
+    by one forward and one reverse single-source search from home for each effective profile (the party's profile with every speed scaled
+    by the pace, rounded down, at least 1, rule 6) with no time cut-off, because a clipped trip can be within the limit when its
+    centre-to-centre time is not. The searches are shared by every trader due in the hour with the same effective profile and kept for the
+    hour; the application's `trade_ways` makes the reverse search by turning every transition of the forward search round, with the same
+    exact-time order and fixed tie order, so the way home is reckoned in its own direction and a place's time home is the time a forward
+    search from it takes (a test). Each destination is then worked exactly for each plan.
+  - **The plans tried (rule 12).** On foot with 1 to 4 people (`foot_people`); or one land vehicle of each kind the trader has free (the
+    lower number of two equal ones) or could build, alone or with one boat of each kind it has free or could build, each with its full
+    crew or its fewest; and a boat alone, whose way must have no land leg (11c.3 rule 10). A plan that needs a vehicle the trader lacks
+    is possible only if the year pays for it (below).
+  - **A plan worked.** The wanted goods are the first tier the destination can give, each as much as is wanted and can be had there
+    (what other plans have spoken for there taken out, item 9). The cargo out is the trader's spare goods the destination wants, worth
+    most for their bulk first, as much as the legs carry with the supplies aboard and no more than pays for what is wanted. The supplies
+    are found by a fixed point (11d.2 rule 4): the supplies for the bare trip, then the trip's duration with those aboard and the
+    supplies that needs (food for every noon it eats at, the cheapest food for its hunger at home prices, and each vehicle's wear), until
+    what is needed is no more than what is aboard, at most eight times; the quantity dispatched is that last one and every check uses it:
+    both ways' itineraries (each searched at the pace its first leg's load gives, each leg timed at its own mode's pace), the arrival hour and
+    the noon cut-off (arriving at 12:00 waits for the next day's noon), the round-trip limit (the clipped way out, the wait, the clipped way
+    back), and weight and space on every leg. The exchange at the destination is worked forward on a copy of the place (the real exchange
+    with the trader as its visitor), and when several goods are wanted the worth received is divided among them in the ratio of their
+    deficits and the exchange worked again; the way back is searched at the pace of what it really carries. People are the trader's own
+    first, the rest hired from the cheapest pop with enough at home at the wage the job would pay.
+  - **The gain and the choice (items 7, 8, 10; rule 13).** The gain is the worth at home of what it receives less the worth at home of what
+    it gives up (swapped, given away or thrown away; cargo that comes back counts for nothing) less the running cost (the supplies at
+    home prices, the wages, and the work its own people miss at the pop's posted wage); a vehicle's cost is not in it. Among a
+    destination's plans the cheapest running cost wins, then the greater gain, then fewer vehicles, the kinds in the rules' order (on foot
+    last) and fewer people; among destinations the greatest gain, then the shorter round trip, then the place id, so the order the
+    candidates are listed in does not matter (a test). A trip that does not gain is not made (T4).
+  - **The yearly test (T13).** A plan that needs a vehicle the trader lacks is kept only if the year's trips (the fewer of 365 days over its
+    round trip and what the pop's year of the wanted goods, at the target's 240-day basis, needs over what a trip brings) times the gain of
+    one trip pays for the vehicle once (its inputs at the cheapest the place's prices give and its animal, and the build's wages). The
+    look then orders the build, which records the trip's destination and amounts (`Build.trip`: a forecast, like a job's plan), and the
+    trader looks again at once when the vehicle is built.
+  - **Forecasts (T27).** Every job's and expedition's plan counts from the hour its job is made: what it is to take from a place is
+    spoken for there (taken out of the stock the next trader's forward exchange sees) and what it is to bring is expected by its trader
+    (taken off its deficit); an expedition that has traded counts what it has aboard, a given-up job nothing. Two traders looking in one
+    hour therefore see the first one's job.
+  - **Saves.** Each pop's last look and pending rest look are saved and checked (the pop exists, the look has happened, the pending look is
+    not before it); a build's trip is checked as a plan's destination and amounts are.
+  - **The cost of looking.** `economy-soak --looks [--hours N] [--sample PLACES]` steps the shipped scenario hour by hour with looks on and
+    reports the looks by trigger, the destinations evaluated, the plans worked and refused, the searches run, and the time a day's looks
+    take, the opening (the first hour, when every trader looks) separately; part F's opening is a later spec.
 - **Later:** butchers turn live cattle into more meat than slaughter does, and buildings with room in their herds buy animals (Firm
   direction; out of scope).
 
