@@ -46,6 +46,126 @@ pub(crate) fn run_daily_swaps_at_prices(
     Ok(())
 }
 
+/// Runs both exchange phases over one set of opening books and market capacities.
+#[expect(
+    clippy::too_many_lines,
+    reason = "The two ordered phases share the same opening state and allocations."
+)]
+pub(crate) fn run_neighbour_swaps_at_prices(
+    rules: &Rules,
+    state: &mut EconomyState,
+    prices: &[Vec<u64>],
+    neighbours: &std::collections::BTreeMap<String, Vec<crate::NearbyPlace>>,
+) -> Result<(), DataError> {
+    if prices.len() != state.places.len() {
+        return Err(missing_data(
+            "swap.prices".to_owned(),
+            "price dimensions do not match places",
+        ));
+    }
+    let count = state.places.len();
+    let mut adjacent = vec![vec![false; count]; count];
+    for (a, place) in state.places.iter().enumerate() {
+        if let Some(list) = neighbours.get(&place.id) {
+            for other in list {
+                if other.distance_m < 4000
+                    && let Some(b) = state.places.iter().position(|p| p.id == other.id)
+                    && a != b
+                {
+                    adjacent[a][b] = true;
+                    adjacent[b][a] = true;
+                }
+            }
+        }
+    }
+    if adjacent
+        .iter()
+        .all(|row| row.iter().all(|neighbour| !neighbour))
+    {
+        return run_daily_swaps_at_prices(rules, state, prices);
+    }
+    let mut order: Vec<usize> = (0..count).collect();
+    order.sort_by(|&a, &b| state.places[a].id.cmp(&state.places[b].id));
+    let mut days = state
+        .places
+        .iter()
+        .zip(prices)
+        .map(|(place, opening)| PlaceDay::new(rules, place, opening))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut shares = NeighbourShares::new(&days, &state.places, &adjacent, rules.goods.len())?;
+    for second in [false, true] {
+        if second {
+            shares.second_pass(&days, &adjacent)?;
+        }
+        for &a in &order {
+            days[a].shares.scarce.clone_from(&shares.scarce[a]);
+            days[a].shares.left.clone_from(&shares.left[a][a]);
+            days[a].local_pass(rules, &mut state.places[a], second)?;
+            shares.left[a][a].clone_from(&days[a].shares.left);
+        }
+        for (i, &a) in order.iter().enumerate() {
+            for &b in &order[i + 1..] {
+                if !adjacent[a][b] {
+                    continue;
+                }
+                let (lo, hi) = if a < b { (a, b) } else { (b, a) };
+                let (places_a, places_b) = state.places.split_at_mut(hi);
+                let (days_a, days_b) = days.split_at_mut(hi);
+                let (low_p, high_p) = (&mut places_a[lo], &mut places_b[0]);
+                let (low_d, high_d) = (&mut days_a[lo], &mut days_b[0]);
+                if a == lo {
+                    neighbour_turn(
+                        rules,
+                        low_p,
+                        high_p,
+                        low_d,
+                        high_d,
+                        &mut shares,
+                        a,
+                        b,
+                        second,
+                    )?;
+                    neighbour_turn(
+                        rules,
+                        high_p,
+                        low_p,
+                        high_d,
+                        low_d,
+                        &mut shares,
+                        b,
+                        a,
+                        second,
+                    )?;
+                } else {
+                    neighbour_turn(
+                        rules,
+                        high_p,
+                        low_p,
+                        high_d,
+                        low_d,
+                        &mut shares,
+                        a,
+                        b,
+                        second,
+                    )?;
+                    neighbour_turn(
+                        rules,
+                        low_p,
+                        high_p,
+                        low_d,
+                        high_d,
+                        &mut shares,
+                        b,
+                        a,
+                        second,
+                    )?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// What a pop has of a good and what it lacks, against its target (rule 1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Position {
@@ -337,27 +457,50 @@ impl Book {
         }
     }
 
-    /// Follows a made swap: the starter gave one good and received the other, the partner the other way about.
+    /// Follows one side of a made swap; a building payment settles want without entering the pop's holding.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "A side records both goods, amounts and their source and receipt destination."
+    )]
+    fn settle_side(
+        &mut self,
+        pop: usize,
+        give_good: usize,
+        give: u64,
+        own_source: bool,
+        get_good: usize,
+        get: u64,
+        to_building: bool,
+    ) {
+        if own_source {
+            self.holding[pop][give_good] -= u128::from(give);
+        }
+        if to_building {
+            self.communal[pop][get_good] += u128::from(get);
+        } else {
+            self.holding[pop][get_good] += u128::from(get);
+        }
+    }
+
     fn settle(&mut self, trade: Trade) {
-        let (give, get) = (u128::from(trade.give_units), u128::from(trade.get_units));
-        if trade.starter_source == 0 {
-            self.holding[trade.starter][trade.give_good] -= give;
-        }
-        // A payment for an animal sold from a herd goes to the herd's building, not to the pop's holding, but it settles the pop's
-        // want of the good all the same.
-        if trade.get_to_building.is_none() {
-            self.holding[trade.starter][trade.get_good] += get;
-        } else {
-            self.communal[trade.starter][trade.get_good] += get;
-        }
-        if trade.give_to_building.is_none() {
-            self.holding[trade.partner][trade.give_good] += give;
-        } else {
-            self.communal[trade.partner][trade.give_good] += give;
-        }
-        if trade.partner_source == 0 {
-            self.holding[trade.partner][trade.get_good] -= get;
-        }
+        self.settle_side(
+            trade.starter,
+            trade.give_good,
+            trade.give_units,
+            trade.starter_source == 0,
+            trade.get_good,
+            trade.get_units,
+            trade.get_to_building.is_some(),
+        );
+        self.settle_side(
+            trade.partner,
+            trade.get_good,
+            trade.get_units,
+            trade.partner_source == 0,
+            trade.give_good,
+            trade.give_units,
+            trade.give_to_building.is_some(),
+        );
     }
 }
 
@@ -571,6 +714,237 @@ impl Shares {
     }
 }
 
+/// Scarcity allocations for each holder place, over local and directly neighbouring claimants.
+struct NeighbourShares {
+    scarce: Vec<Vec<bool>>,
+    left: Vec<Vec<Vec<Vec<u128>>>>,
+    claimants: Vec<Vec<Vec<Vec<bool>>>>,
+    wealth: Vec<Vec<(u128, u128)>>,
+}
+
+impl NeighbourShares {
+    fn eligible(
+        days: &[PlaceDay],
+        adjacent: &[Vec<bool>],
+        holder: usize,
+        source: usize,
+        pop: usize,
+        good: usize,
+    ) -> bool {
+        let claimant = &days[source];
+        if (source != holder && !adjacent[holder][source])
+            || claimant.book.position(pop, good).want == 0
+        {
+            return false;
+        }
+        let origin = &days[holder];
+        (0..origin.book.holding.len()).any(|seller| {
+            (source != holder || seller != pop)
+                && origin.parts.total(&origin.book, seller, good) > 0
+                && (0..origin.book.target[seller].len()).any(|payment| {
+                    payment != good
+                        && claimant.parts.total(&claimant.book, pop, payment) > 0
+                        && origin.book.position(seller, payment).want > 0
+                })
+        })
+    }
+
+    fn new(
+        days: &[PlaceDay],
+        places: &[PlaceState],
+        adjacent: &[Vec<bool>],
+        goods: usize,
+    ) -> Result<Self, DataError> {
+        let overflow = || missing_data("swap.shares".to_owned(), "share or wealth overflow");
+        let mut wealth = Vec::new();
+        for (day, place) in days.iter().zip(places) {
+            let mut values = Vec::new();
+            for pop in 0..place.pops.len() {
+                let mut value = 0_u128;
+                for good in 0..goods {
+                    let mut held = pop_market_holding(place, pop, good)?;
+                    for building in &day.parts.held {
+                        held = held.checked_add(building[pop][good]).ok_or_else(overflow)?;
+                    }
+                    value = value
+                        .checked_add(
+                            held.checked_mul(u128::from(place.prices_milli[good]))
+                                .ok_or_else(overflow)?,
+                        )
+                        .ok_or_else(overflow)?;
+                }
+                values.push((value, u128::from(Exchange::people(place, pop)?.max(1))));
+            }
+            wealth.push(values);
+        }
+        let mut out = Self {
+            scarce: vec![vec![false; goods]; places.len()],
+            left: places
+                .iter()
+                .enumerate()
+                .map(|(holder, _)| {
+                    places
+                        .iter()
+                        .enumerate()
+                        .map(|(source, p)| {
+                            if source == holder || adjacent[holder][source] {
+                                vec![vec![0; goods]; p.pops.len()]
+                            } else {
+                                Vec::new()
+                            }
+                        })
+                        .collect()
+                })
+                .collect(),
+            claimants: places
+                .iter()
+                .enumerate()
+                .map(|(holder, _)| {
+                    places
+                        .iter()
+                        .enumerate()
+                        .map(|(source, p)| {
+                            if source == holder || adjacent[holder][source] {
+                                vec![vec![false; goods]; p.pops.len()]
+                            } else {
+                                Vec::new()
+                            }
+                        })
+                        .collect()
+                })
+                .collect(),
+            wealth,
+        };
+        for holder in 0..places.len() {
+            for good in 0..goods {
+                let mut demand = 0_u128;
+                let mut supply = 0_u128;
+                for pop in 0..places[holder].pops.len() {
+                    supply = supply
+                        .checked_add(days[holder].parts.total(&days[holder].book, pop, good))
+                        .ok_or_else(overflow)?;
+                }
+                for source in 0..places.len() {
+                    if source != holder && !adjacent[holder][source] {
+                        continue;
+                    }
+                    for pop in 0..places[source].pops.len() {
+                        let eligible = Self::eligible(days, adjacent, holder, source, pop, good);
+                        out.claimants[holder][source][pop][good] = eligible;
+                        if eligible {
+                            demand = demand
+                                .checked_add(days[source].book.position(pop, good).want)
+                                .ok_or_else(overflow)?;
+                        }
+                    }
+                }
+                if demand > supply {
+                    out.scarce[holder][good] = true;
+                    out.allocate(days, holder, good, supply, demand, false, adjacent)?;
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    fn second_pass(&mut self, days: &[PlaceDay], adjacent: &[Vec<bool>]) -> Result<(), DataError> {
+        let overflow = || missing_data("swap.shares".to_owned(), "second share overflow");
+        for holder in 0..days.len() {
+            for good in 0..self.scarce[holder].len() {
+                if !self.scarce[holder][good] {
+                    continue;
+                }
+                let mut supply = 0_u128;
+                let mut demand = 0_u128;
+                for pop in 0..days[holder].book.holding.len() {
+                    supply = supply
+                        .checked_add(days[holder].parts.total(&days[holder].book, pop, good))
+                        .ok_or_else(overflow)?;
+                }
+                for source in 0..days.len() {
+                    if source != holder && !adjacent[holder][source] {
+                        continue;
+                    }
+                    for pop in 0..days[source].book.holding.len() {
+                        if self.claimants[holder][source][pop][good]
+                            && self.left[holder][source][pop][good] == 0
+                            && Self::eligible(days, adjacent, holder, source, pop, good)
+                        {
+                            demand = demand
+                                .checked_add(days[source].book.position(pop, good).want)
+                                .ok_or_else(overflow)?;
+                        }
+                    }
+                }
+                self.allocate(days, holder, good, supply, demand, true, adjacent)?;
+            }
+        }
+        Ok(())
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Allocation needs its holder, good, supply, demand and phase."
+    )]
+    fn allocate(
+        &mut self,
+        days: &[PlaceDay],
+        holder: usize,
+        good: usize,
+        supply: u128,
+        demand: u128,
+        second: bool,
+        adjacent: &[Vec<bool>],
+    ) -> Result<(), DataError> {
+        let overflow = || missing_data("swap.shares".to_owned(), "share overflow");
+        let mut assigned = 0_u128;
+        let mut order = Vec::new();
+        for source in 0..days.len() {
+            if source != holder && !adjacent[holder][source] {
+                continue;
+            }
+            for pop in 0..days[source].book.holding.len() {
+                let eligible = self.claimants[holder][source][pop][good]
+                    && (!second
+                        || (self.left[holder][source][pop][good] == 0
+                            && Self::eligible(days, adjacent, holder, source, pop, good)));
+                let want = days[source].book.position(pop, good).want;
+                let share = if !eligible {
+                    0
+                } else if supply >= demand {
+                    want
+                } else {
+                    mul_div_floor(supply, want, demand).ok_or_else(overflow)?
+                };
+                self.left[holder][source][pop][good] = share;
+                assigned = assigned.checked_add(share).ok_or_else(overflow)?;
+                if eligible {
+                    order.push((source, pop));
+                }
+            }
+        }
+        order.sort_by(|&(a, ap), &(b, bp)| {
+            let (av, an) = self.wealth[a][ap];
+            let (bv, bn) = self.wealth[b][bp];
+            (bv / bn)
+                .cmp(&(av / an))
+                .then_with(|| ((bv % bn) * an).cmp(&((av % an) * bn)))
+                .then((a, ap).cmp(&(b, bp)))
+        });
+        let mut remain = supply.saturating_sub(assigned);
+        for (source, pop) in order {
+            if remain == 0 {
+                break;
+            }
+            if self.left[holder][source][pop][good] < days[source].book.position(pop, good).want {
+                self.left[holder][source][pop][good] += 1;
+                remain -= 1;
+            }
+        }
+        Ok(())
+    }
+}
+
 /// One swap: the starter's pop, the partner's pop, what the starter gives and what it receives.
 #[derive(Clone, Copy)]
 struct Trade {
@@ -752,43 +1126,48 @@ impl Exchange<'_> {
             trade.get_good,
             trade.get_units,
         )?;
-        for (pop, good, units, to_building) in [
-            (
-                trade.starter,
-                trade.get_good,
-                trade.get_units,
-                trade.get_to_building,
-            ),
-            (
-                trade.partner,
-                trade.give_good,
-                trade.give_units,
-                trade.give_to_building,
-            ),
-        ] {
-            if let Some(species) = self.live(good) {
-                Self::receive_head(place, herds, pop, species, units)?;
-                continue;
-            }
-            if let Some(building) = to_building {
-                // What is paid for an animal goes once into the communal account of the building whose herd gave it (r5 3.2).
-                let unaccepted =
-                    receive_building(self.rules, &mut place.buildings[building], good, units)?;
-                if unaccepted != 0 {
-                    return Err(missing_data(
-                        "swap.pair".to_owned(),
-                        "an allowed pair no longer has room",
-                    ));
-                }
-                continue;
-            }
-            let unaccepted = receive_pop(self.rules, &mut place.pops[pop], good, units)?;
-            if unaccepted != 0 {
-                return Err(missing_data(
-                    "swap.pair".to_owned(),
-                    "an allowed pair no longer has room",
-                ));
-            }
+        self.receive(
+            place,
+            herds,
+            trade.starter,
+            trade.get_good,
+            trade.get_units,
+            trade.get_to_building,
+        )?;
+        self.receive(
+            place,
+            herds,
+            trade.partner,
+            trade.give_good,
+            trade.give_units,
+            trade.give_to_building,
+        )?;
+        Ok(())
+    }
+
+    /// Receives one side of a trade at that side's place.
+    fn receive(
+        &self,
+        place: &mut PlaceState,
+        herds: &mut HerdWants,
+        pop: usize,
+        good: usize,
+        units: u64,
+        to_building: Option<usize>,
+    ) -> Result<(), DataError> {
+        if let Some(species) = self.live(good) {
+            return Self::receive_head(place, herds, pop, species, units);
+        }
+        let unaccepted = if let Some(building) = to_building {
+            receive_building(self.rules, &mut place.buildings[building], good, units)?
+        } else {
+            receive_pop(self.rules, &mut place.pops[pop], good, units)?
+        };
+        if unaccepted != 0 {
+            return Err(missing_data(
+                "swap.pair".to_owned(),
+                "an allowed pair no longer has room",
+            ));
         }
         Ok(())
     }
@@ -993,11 +1372,28 @@ fn best_pair_rooms(
             Some(room) => room,
             None => exchange.room(place, partner, give_good)?,
         });
+    size_pair(
+        prices,
+        most_get,
+        most_give,
+        capacity_left,
+        rules.swap_loss_limit_pm,
+    )
+}
+
+/// Sizes a trade after each side's own want, available stock and receipt room have been checked.
+fn size_pair(
+    prices: Prices,
+    most_get: u128,
+    most_give: u128,
+    capacity_left: u128,
+    loss_limit_pm: u16,
+) -> Result<Option<(u64, u64)>, DataError> {
     if most_get == 0 || most_give == 0 || prices.give_price == 0 || prices.get_price == 0 {
         return Ok(None);
     }
     let overflow = || missing_data("swap.pair".to_owned(), "pair value overflow");
-    let limit = u128::from(rules.swap_loss_limit_pm);
+    let limit = u128::from(loss_limit_pm);
     let narrow = |units: u128| u64::try_from(units).map_err(|_| overflow());
     if limit == 0 {
         // Pairs of equal worth are the whole multiples of the two prices, each divided by their greatest common divisor.
@@ -1050,6 +1446,82 @@ fn best_pair_rooms(
     Ok(None)
 }
 
+/// The exchange's opening positions and remaining capacity persist through all of its phases.
+struct PlaceDay {
+    order: Vec<usize>,
+    book: Book,
+    parts: BuildingParts,
+    shares: Shares,
+    herds: HerdWants,
+    capacity: Vec<u128>,
+}
+
+impl PlaceDay {
+    fn new(rules: &Rules, place: &PlaceState, opening: &[u64]) -> Result<Self, DataError> {
+        if place.prices_milli.len() != rules.goods.len() || opening.len() != rules.goods.len() {
+            return Err(missing_data(
+                format!("places.{}.prices", place.id),
+                "saved price dimensions do not match goods",
+            ));
+        }
+        let book = Book::new(rules, place, opening)?;
+        let parts = BuildingParts::new(rules, place, opening)?;
+        let shares = Shares::new(&book, &parts, place)?;
+        Ok(Self {
+            order: want_order_at_prices(rules, &place.prices_milli, opening),
+            book,
+            parts,
+            shares,
+            herds: herd_wants(rules, place)?,
+            capacity: market_capacities(rules, place)?,
+        })
+    }
+
+    fn local_pass(
+        &mut self,
+        rules: &Rules,
+        place: &mut PlaceState,
+        second: bool,
+    ) -> Result<(), DataError> {
+        let exchange = Exchange {
+            rules,
+            house: place
+                .buildings
+                .iter()
+                .position(|b| b.storehouse_accounts.is_some()),
+        };
+        for (starter, left) in self.capacity.iter_mut().enumerate() {
+            if *left == 0 {
+                continue;
+            }
+            for &get_good in &self.order {
+                if self.book.hungry[starter] && rules.goods[get_good].hunger_centi == 0 {
+                    continue;
+                }
+                let mut turn = Turn {
+                    exchange: &exchange,
+                    order: &self.order,
+                    starter,
+                    get_good,
+                };
+                turn.work(
+                    place,
+                    &mut self.book,
+                    &mut self.parts,
+                    &mut self.shares,
+                    &mut self.herds,
+                    left,
+                    second,
+                )?;
+                if *left == 0 {
+                    break;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 fn run_place_exchange(
     rules: &Rules,
     place: &mut PlaceState,
@@ -1058,57 +1530,193 @@ fn run_place_exchange(
     if place.pops.len() < 2 {
         return Ok(());
     }
-    let mut capacity = market_capacities(rules, place)?;
-    if capacity.iter().all(|left| *left == 0) {
-        return Ok(());
-    }
-    if place.prices_milli.len() != rules.goods.len() || opening.len() != rules.goods.len() {
-        return Err(missing_data(
-            format!("places.{}.prices", place.id),
-            "saved price dimensions do not match goods",
-        ));
-    }
-    let order = want_order_at_prices(rules, &place.prices_milli, opening);
-    let mut book = Book::new(rules, place, opening)?;
-    let exchange = Exchange {
+    let mut day = PlaceDay::new(rules, place, opening)?;
+    day.local_pass(rules, place, false)?;
+    day.shares.second_pass(&day.book, &day.parts)?;
+    day.local_pass(rules, place, true)
+}
+
+/// A turn between two places uses the seller's price for each good and the starter's capacity.
+#[expect(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "A turn settles both places against their opening ledgers and shared allocations."
+)]
+fn neighbour_turn(
+    rules: &Rules,
+    starter_place: &mut PlaceState,
+    partner_place: &mut PlaceState,
+    starter_day: &mut PlaceDay,
+    partner_day: &mut PlaceDay,
+    shares: &mut NeighbourShares,
+    starter_index: usize,
+    partner_index: usize,
+    second: bool,
+) -> Result<(), DataError> {
+    let se = Exchange {
         rules,
-        house: place
+        house: starter_place
             .buildings
             .iter()
-            .position(|building| building.storehouse_accounts.is_some()),
+            .position(|b| b.storehouse_accounts.is_some()),
     };
-    let mut parts = BuildingParts::new(rules, place, opening)?;
-    let mut shares = Shares::new(&book, &parts, place)?;
-    let mut herds = herd_wants(rules, place)?;
-    for pass in 0..2 {
-        if pass == 1 {
-            shares.second_pass(&book, &parts)?;
-        }
-        for (starter, left) in capacity.iter_mut().enumerate() {
-            if *left == 0 {
+    let pe = Exchange {
+        rules,
+        house: partner_place
+            .buildings
+            .iter()
+            .position(|b| b.storehouse_accounts.is_some()),
+    };
+    for starter in 0..starter_place.pops.len() {
+        for &get_good in &starter_day.order {
+            if starter_day.book.hungry[starter] && rules.goods[get_good].hunger_centi == 0 {
                 continue;
             }
-            for &get_good in &order {
-                if book.hungry[starter] && rules.goods[get_good].hunger_centi == 0 {
-                    continue;
-                }
-                let mut turn = Turn {
-                    exchange: &exchange,
-                    order: &order,
-                    starter,
-                    get_good,
-                };
-                turn.work(
-                    place,
-                    &mut book,
-                    &mut parts,
-                    &mut shares,
-                    &mut herds,
-                    left,
-                    pass == 1,
-                )?;
-                if *left == 0 {
-                    break;
+            for partner in 0..partner_place.pops.len() {
+                for &give_good in &starter_day.order {
+                    if starter_day.capacity[starter] == 0
+                        || starter_day.book.position(starter, get_good).want == 0
+                    {
+                        break;
+                    }
+                    if give_good == get_good
+                        || partner_day.book.position(partner, give_good).want == 0
+                        || (second
+                            && !shares.scarce[starter_index][give_good]
+                            && !shares.scarce[partner_index][get_good])
+                    {
+                        continue;
+                    }
+                    for ss in 0..=starter_place.buildings.len() {
+                        for ps in 0..=partner_place.buildings.len() {
+                            let give_stock =
+                                starter_day
+                                    .parts
+                                    .source(&starter_day.book, ss, starter, give_good);
+                            let get_stock =
+                                partner_day
+                                    .parts
+                                    .source(&partner_day.book, ps, partner, get_good);
+                            let gb = (starter_day.book.live[give_good]
+                                && !starter_day.book.live[get_good]
+                                && ss > 0)
+                                .then(|| ss - 1);
+                            let pb = (partner_day.book.live[get_good]
+                                && !partner_day.book.live[give_good]
+                                && ps > 0)
+                                .then(|| ps - 1);
+                            let get_room = match gb {
+                                Some(b) => se.building_room(starter_place, b, get_good)?,
+                                None => se.room(starter_place, starter, get_good)?,
+                            };
+                            let give_room = match pb {
+                                Some(b) => pe.building_room(partner_place, b, give_good)?,
+                                None => pe.room(partner_place, partner, give_good)?,
+                            };
+                            let get_limit = if shares.scarce[partner_index][get_good] {
+                                shares.left[partner_index][starter_index][starter][get_good]
+                            } else {
+                                u128::MAX
+                            };
+                            let give_limit = if shares.scarce[starter_index][give_good] {
+                                shares.left[starter_index][partner_index][partner][give_good]
+                            } else {
+                                u128::MAX
+                            };
+                            let prices = Prices {
+                                give_price: u128::from(starter_place.prices_milli[give_good]),
+                                get_price: u128::from(partner_place.prices_milli[get_good]),
+                                give_volume: u128::from(rules.goods[give_good].volume_ml),
+                                get_volume: u128::from(rules.goods[get_good].volume_ml),
+                            };
+                            let Some((give, get)) = size_pair(
+                                prices,
+                                starter_day
+                                    .book
+                                    .position(starter, get_good)
+                                    .want
+                                    .min(get_stock)
+                                    .min(get_limit)
+                                    .min(get_room),
+                                partner_day
+                                    .book
+                                    .position(partner, give_good)
+                                    .want
+                                    .min(give_stock)
+                                    .min(give_limit)
+                                    .min(give_room),
+                                starter_day.capacity[starter],
+                                rules.swap_loss_limit_pm,
+                            )?
+                            else {
+                                continue;
+                            };
+                            se.pay_source(starter_place, ss, starter, give_good, give)?;
+                            pe.pay_source(partner_place, ps, partner, get_good, get)?;
+                            se.receive(
+                                starter_place,
+                                &mut starter_day.herds,
+                                starter,
+                                get_good,
+                                get,
+                                gb,
+                            )?;
+                            pe.receive(
+                                partner_place,
+                                &mut partner_day.herds,
+                                partner,
+                                give_good,
+                                give,
+                                pb,
+                            )?;
+                            starter_day.book.settle_side(
+                                starter,
+                                give_good,
+                                give,
+                                ss == 0,
+                                get_good,
+                                get,
+                                gb.is_some(),
+                            );
+                            partner_day.book.settle_side(
+                                partner,
+                                get_good,
+                                get,
+                                ps == 0,
+                                give_good,
+                                give,
+                                pb.is_some(),
+                            );
+                            if ss > 0 {
+                                starter_day.parts.spare[ss - 1][starter][give_good] -=
+                                    u128::from(give);
+                            }
+                            if ps > 0 {
+                                partner_day.parts.spare[ps - 1][partner][get_good] -=
+                                    u128::from(get);
+                            }
+                            if shares.scarce[starter_index][give_good] {
+                                shares.left[starter_index][partner_index][partner][give_good] -=
+                                    u128::from(give);
+                            }
+                            if shares.scarce[partner_index][get_good] {
+                                shares.left[partner_index][starter_index][starter][get_good] -=
+                                    u128::from(get);
+                            }
+                            starter_day.capacity[starter] -= u128::from(give) * prices.give_volume
+                                + u128::from(get) * prices.get_volume;
+                            if rules.goods[give_good].category_supplied("fuel", 1) > 0
+                                || rules.goods[get_good].category_supplied("fuel", 1) > 0
+                            {
+                                starter_day
+                                    .book
+                                    .refresh_fuel(rules, starter_place, starter)?;
+                                partner_day
+                                    .book
+                                    .refresh_fuel(rules, partner_place, partner)?;
+                            }
+                        }
+                    }
                 }
             }
         }

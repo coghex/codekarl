@@ -79,6 +79,7 @@ pub(super) fn run(arguments: impl IntoIterator<Item = String>) -> Result<String,
         .collect::<Result<BTreeMap<_, _>, String>>()?;
     let nearby_by_place =
         crate::game::setup::nearby_places(&map, crate::game::setup::max_recruit_range_m(&rules));
+    let trade_by_place = crate::game::setup::trade_neighbours(&map);
     let mut date = Date {
         year: map.start.year,
         month: map.start.month,
@@ -97,6 +98,7 @@ pub(super) fn run(arguments: impl IntoIterator<Item = String>) -> Result<String,
         &quality_by_place,
         &shelter_by_place,
         &nearby_by_place,
+        &trade_by_place,
     )
 }
 
@@ -113,6 +115,7 @@ fn simulate(
     quality_by_place: &BTreeMap<String, u16>,
     shelter_by_place: &BTreeMap<String, u64>,
     nearby_by_place: &BTreeMap<String, Vec<ck_economy::NearbyPlace>>,
+    trade_by_place: &BTreeMap<String, Vec<ck_economy::NearbyPlace>>,
 ) -> Result<String, String> {
     simulate_with_supply(
         rules,
@@ -123,6 +126,7 @@ fn simulate(
         quality_by_place,
         shelter_by_place,
         nearby_by_place,
+        trade_by_place,
         |_, _| {},
     )
 }
@@ -140,6 +144,7 @@ fn simulate_with_supply(
     quality_by_place: &BTreeMap<String, u16>,
     shelter_by_place: &BTreeMap<String, u64>,
     nearby_by_place: &BTreeMap<String, Vec<ck_economy::NearbyPlace>>,
+    trade_by_place: &BTreeMap<String, Vec<ck_economy::NearbyPlace>>,
     mut supply: impl FnMut(&Rules, &mut EconomyState),
 ) -> Result<String, String> {
     let mut csv = String::from(
@@ -150,13 +155,16 @@ fn simulate_with_supply(
         for day in 1..=days {
             date.day = day;
             supply(rules, &mut state);
-            let ledger = ck_economy::run_daily_economy_with_context(
+            let ledger = ck_economy::run_daily_economy_with_trade_neighbours(
                 rules,
                 &mut state,
                 date,
                 quality_by_place,
                 shelter_by_place,
                 nearby_by_place,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                trade_by_place,
             )
             .map_err(|error| error.to_string())?;
             if day == 1 {
@@ -513,6 +521,7 @@ mod tests {
             &quality_by_place,
             &shelter_by_place,
             &nearby_by_place,
+            &BTreeMap::new(),
             |_, state| {
                 writeln!(lines, "{day} {:016x}", state_digest(state)).unwrap();
                 day += 1;
@@ -672,6 +681,7 @@ mod tests {
             768,
             10,
             &BTreeMap::from([("herd_fixture".to_owned(), 1000)]),
+            &BTreeMap::new(),
             &BTreeMap::new(),
             &BTreeMap::new(),
         )
@@ -854,6 +864,7 @@ mod tests {
             &quality_by_place,
             &shelter_by_place,
             &nearby,
+            &BTreeMap::new(),
             |rules, state| {
                 // Explicit daily provisions replace the old impossible billion-bushel reserve. Each
                 // pop receives the same target of 100 bushels, bounded by its ordinary cap and

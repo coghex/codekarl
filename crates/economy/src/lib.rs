@@ -8294,6 +8294,37 @@ pub fn run_daily_economy_with_land(
     floors: &BTreeMap<(String, usize), u64>,
     land_by_place: &BTreeMap<String, LandCounts>,
 ) -> Result<ProductionLedger, DataError> {
+    run_daily_economy_with_trade_neighbours(
+        rules,
+        state,
+        date,
+        quality_by_place,
+        shelter_by_place,
+        nearby_by_place,
+        floors,
+        land_by_place,
+        &BTreeMap::new(),
+    )
+}
+
+/// Daily economy with direct trade between the supplied neighbouring places.
+/// # Errors
+/// Returns the first data error without changing the economy.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The daily step needs the separate map-derived trade and recruitment tables."
+)]
+pub fn run_daily_economy_with_trade_neighbours(
+    rules: &Rules,
+    state: &mut EconomyState,
+    date: Date,
+    quality_by_place: &BTreeMap<String, u16>,
+    shelter_by_place: &BTreeMap<String, u64>,
+    nearby_by_place: &BTreeMap<String, Vec<NearbyPlace>>,
+    floors: &BTreeMap<(String, usize), u64>,
+    land_by_place: &BTreeMap<String, LandCounts>,
+    trade_by_place: &BTreeMap<String, Vec<NearbyPlace>>,
+) -> Result<ProductionLedger, DataError> {
     let day_prices: Vec<Vec<u64>> = state
         .places
         .iter()
@@ -8309,7 +8340,7 @@ pub fn run_daily_economy_with_land(
         Some((land_by_place, &day_prices)),
     )?;
     // The exchange uses moved prices; fuel uses the price as the day began.
-    swap::run_daily_swaps_at_prices(rules, &mut next, &day_prices)?;
+    swap::run_neighbour_swaps_at_prices(rules, &mut next, &day_prices, trade_by_place)?;
     let (intake_pm, daily_consumption) =
         run_daily_consumption_at_prices(rules, &mut next, date, &day_prices)?;
     ledger.intake_pm = intake_pm;
