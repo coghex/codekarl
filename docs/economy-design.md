@@ -1195,8 +1195,12 @@ herd stays. These are counts, not individual animals, so livestock stays abstrac
     delays; a leg takes the sum of work over speed plus the delays, where each profile speed is scaled by the pace over 1000, rounded
     down, at least 1 (rule 6). Position is the leg and the exact fraction of it done, so the part of an hour a leg leaves over is carried
     to the next. `travel_network`'s `expedition_route` builds the legs from CK-402's quickest itinerary, clipped at 2 km from each
-    centre; at pace 1000 they take exactly CK-402's hours (a test). A clip that cuts a leg keeps its work and delays in proportion to
-    the length kept, since the network does not say where a ford lies.
+    centre by an exact search (the samples, the path's bends and the nearest point of each straight piece, so a shallow crossing
+    between samples is found); at pace 1000 they take exactly CK-402's hours (a test). A clip keeps what lies on the kept journey: a
+    water leg's work step by step at each step's own speed, a landing's delay at the shore. The one approximation is a land stretch's
+    wades, fords and tide wait, whose positions the data does not give: they are kept in proportion to the length of the stretch
+    kept. A delay-only transfer (as at a strait) takes the mode of the leg beside it. Each leg freezes the points of its path, so a
+    saved expedition is placed the same after a reload whatever the network becomes.
   - **What moves, and the pace.** On land the vehicles with a pace move and a boat rides whole in one of them; on water the boats move and
     the land vehicles and live animals ride; on foot each person's pack is a carrier. Items go first-fit by decreasing space, then weight,
     then kind and number, into carriers in kind order. People are assigned the fewest crew of each moving vehicle, then the drovers
@@ -1210,11 +1214,12 @@ herd stays. These are counts, not individual animals, so livestock stays abstrac
     animal nobody can take stays on offer in a held job, slaughtered after the set time), its people home and its vehicles free.
   - **The exchange.** A waiting expedition is a row in the day's book: what it carries to trade is its spare, what it is to bring home its
     want. It is a claimant in the scarcity shares like any pop, with the wealth of its pop at home and aboard at this place's prices; it
-    starts its swaps first, in the order it arrived, at the place's prices, spending no capacity; a swap is made only up to what still
-    assigns on every leg home. It then loads what it traded for, its unsold cargo as far as it fits (worth most for its bulk first), gives
-    the rest to pops that want it and have room (the neediest first) and throws away only what nobody takes. Pops do not start swaps
-    with a visitor: the visitor's own turn works every pair.
-  - **Away.** The people of an expedition are held (they cannot be hired), eat from its supplies at noon (a person-day each, whole goods
+    starts its swaps first, in the order it arrived, at the place's prices, spending no capacity; a pop may also start a swap with it
+    after its turn with the pops, again with no capacity on either side. A swap is made only up to an amount that itself still assigns
+    on every leg home (first-fit is not monotone, so the amount is tested, not assumed). It then loads what it traded for, its unsold cargo as far as it fits (worth most for its bulk first), gives
+    the rest to pops that want it and have room (the neediest first) and throws away only what nobody takes.
+  - **Away.** The people of an expedition are held (they cannot be hired, recruited or moved), neither breed nor die at the monthly
+    step (births, deaths and recruitment count the workers at home), eat from its supplies at noon (a person-day each, whole goods
     opened as a pop's eating does) and not from their pop's ration, and count a day away at each noon for the building each is taken
     from. A vehicle uses up one unit of its wear from the supplies for each 720 hours it moves.
   - **Saves.** The expeditions, their plans and positions are saved and checked against what a reachable game can hold; the next
