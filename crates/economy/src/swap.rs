@@ -9,7 +9,7 @@ use crate::{
     DataError, EconomyState, PlaceState, Rules, building_good_cap, building_market_holding,
     building_market_sells, fuel, herd_wants, live_species, missing_data, mul_div_floor,
     pop_market_holding, pop_store_limits, pop_target_units, receive_building, receive_pop,
-    room_by_cap_and_volume, store_capacity_ml, trade, volume_used,
+    resolve_owner_shares, room_by_cap_and_volume, store_capacity_ml, trade, volume_used,
 };
 
 /// Every owner pop's remaining want of each building's herds below standard, `[building][pop][species]` (CK-430): fixed when the
@@ -312,10 +312,11 @@ pub(crate) fn pop_position(
 }
 
 /// Each pop's market capacity for the day in millilitres (rules 5 to 8): a building's levels times its number, split among the pops
-/// holding owner positions in it by those positions (largest remainder, the earlier pop on a tie), summed over the pop's buildings.
+/// by their owner shares (largest remainder, the earlier pop on a tie), summed over the pop's buildings.
 pub(crate) fn market_capacities(rules: &Rules, place: &PlaceState) -> Result<Vec<u128>, DataError> {
     let mut capacity = vec![0_u128; place.pops.len()];
-    for building in &place.buildings {
+    let mut resolved = place.clone();
+    for (index, building) in place.buildings.iter().enumerate() {
         let per_level = rules
             .buildings
             .iter()
@@ -332,11 +333,7 @@ pub(crate) fn market_capacities(rules: &Rules, place: &PlaceState) -> Result<Vec
         }
         // The building's whole allowance is worked in u128: levels (u32) times the number (u64) cannot overflow it.
         let total = u128::from(building.levels) * u128::from(per_level);
-        let weights = building
-            .employment
-            .iter()
-            .map(|job| job.owners)
-            .collect::<Vec<_>>();
+        let weights = resolve_owner_shares(&mut resolved, index)?;
         let shares = wide_shares(total, &weights)
             .map_err(|problem| missing_data("swap.capacity".to_owned(), problem))?;
         for (pop_index, share) in shares.into_iter().enumerate() {
@@ -348,7 +345,7 @@ pub(crate) fn market_capacities(rules: &Rules, place: &PlaceState) -> Result<Vec
 
 /// `largest_remainder` for a total as wide as u128: each share is the total times its weight over the weights' sum, rounded down, and
 /// the units left over go one each to the largest remainders, the earlier pop on a tie. The product is never formed whole: the total
-/// is divided by the sum first, so any total and any owner positions that fit are shared exactly.
+/// is divided by the sum first, so any total and any weights that fit are shared exactly.
 pub(crate) fn wide_shares(total: u128, weights: &[u64]) -> Result<Vec<u128>, &'static str> {
     let sum = weights.iter().try_fold(0_u128, |sum, weight| {
         sum.checked_add(u128::from(*weight))
@@ -693,8 +690,9 @@ impl BuildingParts {
             place.buildings.len()
         ];
         let mut held = spare.clone();
+        let mut resolved = place.clone();
         for (b, building) in place.buildings.iter().enumerate() {
-            let weights: Vec<_> = building.employment.iter().map(|job| job.owners).collect();
+            let weights = resolve_owner_shares(&mut resolved, b)?;
             for good in 0..rules.goods.len() {
                 let amount = building_market_holding(rules, place, building, good)?;
                 let offer = sells[b][good];
@@ -2929,9 +2927,10 @@ mod share_tests {
         place.pops[0].stock[fish] = 10;
         place.pops[0].stock[wood] = 7;
         place.pops[1].stock[fish] = 20;
+        let farm = swap_tests::add_building(&rules, &mut place, "farm", 1);
+        swap_tests::own(&mut place, farm, 0, 1);
+        swap_tests::own(&mut place, farm, 1, 1);
         let house = swap_tests::storehouse(&rules, &mut place);
-        place.buildings[house].employment[0].owners = 2;
-        place.buildings[house].employment[1].owners = 1;
         let accounts = place.buildings[house].storehouse_accounts.as_mut().unwrap();
         accounts.pops[0][fish] = 5;
         accounts.communal[fish] = 30;
@@ -2944,9 +2943,9 @@ mod share_tests {
         assert!(
             building_market_sells(&rules, &place, &place.prices_milli).unwrap()[house][wood] > 0
         );
-        assert_eq!(parts.total(&book, 0, wood), 5_996);
-        assert_eq!(parts.total(&book, 1, wood), 2_998);
-        assert_eq!(shares.wealth, [(6_042, 2), (3_030, 3)]);
+        assert_eq!(parts.total(&book, 0, wood), 3_598);
+        assert_eq!(parts.total(&book, 1, wood), 5_398);
+        assert_eq!(shares.wealth, [(3_634, 2), (5_438, 3)]);
     }
 }
 

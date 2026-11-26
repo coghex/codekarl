@@ -10,7 +10,7 @@ text = "A single place on the map, consisting of {pop|pops} and {building|buildi
 
 [term.abandoned]
 title = "abandoned"
-text = "No one lives here now."
+text = "No one lives here, or no one owns this building."
 
 [term.resource_radius]
 title = "resource radius"
@@ -479,3 +479,53 @@ text = "The current air temperature and the expected temperature for this month.
 [term.wind]
 title = "wind"
 text = "The current wind speed and direction."
+
+
+[term.peasant_labour]
+title = "peasant labour"
+text = "A peasant labour job."
+
+[term.steward]
+title = "steward"
+text = "A steward job."
+
+[term.field_hands]
+title = "field hands"
+text = "A field hands job."
+
+[term.milkers]
+title = "milkers"
+text = "A milkers job."
+
+[term.herder]
+title = "herder"
+text = "A herder job."
+
+[term.butcher]
+title = "butcher"
+text = "A butcher job."
+
+[term.beekeeper]
+title = "beekeeper"
+text = "A beekeeper job."
+
+[term.brewer]
+title = "brewer"
+text = "A brewer job."
+
+[term.prior]
+title = "prior"
+text = "A prior job."
+
+[term.monks]
+title = "monks"
+text = "A monks job."
+
+[term.fishermen]
+title = "fishermen"
+text = "A fishermen job."
+
+[term.keepers]
+title = "keepers"
+text = "A keepers job."
+

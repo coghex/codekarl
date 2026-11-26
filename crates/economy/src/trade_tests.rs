@@ -51,8 +51,16 @@ fn only_workers(place: &mut PlaceState, only: usize, workers: u64) {
 /// for a month), so one head for one day is worth 201.
 fn farm_workers(rules: &Rules, place: &mut PlaceState, pop: usize, workers: u64) -> usize {
     let farm = add_building(rules, place, "farm", 0);
-    place.buildings[farm].employment[pop].workers = workers;
-    place.pops[pop].employment[farm].workers = workers;
+    let employment = Employment {
+        jobs: if workers == 0 {
+            BTreeMap::new()
+        } else {
+            BTreeMap::from([("peasant_labour".into(), workers)])
+        },
+        workers,
+    };
+    place.buildings[farm].employment[pop] = employment.clone();
+    place.pops[pop].employment[farm] = employment;
     place.buildings[farm].wage_history = vec![6000; WAGE_HISTORY_MONTHS];
     farm
 }
@@ -635,12 +643,16 @@ fn days_away_count_a_worker_as_that_much_less_of_a_worker_at_the_payday() {
     let positions = {
         let farm = &base.places[0].buildings[0];
         let definition = rules.buildings.iter().find(|b| b.id == farm.kind).unwrap();
-        u64::from(farm.levels) * u64::from(definition.workers_per_level)
+        u64::from(farm.levels) * ordinary_places_per_level(definition)
     };
     assert_eq!(positions, 10);
     for pop in 0..2 {
-        base.places[0].buildings[0].employment[pop].workers = 5;
-        base.places[0].pops[pop].employment[0].workers = 5;
+        let employment = Employment {
+            jobs: BTreeMap::from([("peasant_labour".into(), 5)]),
+            workers: 5,
+        };
+        base.places[0].buildings[0].employment[pop] = employment.clone();
+        base.places[0].pops[pop].employment[0] = employment;
     }
     // The first of October pays the 30 days of September, a harvest month.
     let date = Date {

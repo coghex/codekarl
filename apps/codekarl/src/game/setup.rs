@@ -2115,7 +2115,7 @@ mod stretch_save_tests {
         reason = "Each invalid fuel field is checked through both real load paths and their storage readers."
     )]
     // Long run: selected by app.long.
-    fn app_long_both_load_paths_refuse_invalid_saved_fuel_without_installing_storage() {
+    fn app_long_both_load_paths_refuse_invalid_fuel_and_older_builds_without_installing_storage() {
         let dir = crate::testing::Dir::new();
         let game = GameConfig {
             scenario: Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -2139,7 +2139,12 @@ mod stretch_save_tests {
         let source = new_game();
         let path = super::super::saves::quicksave_path(&game.saves);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
-        for (case, expected) in [(0, "hearth"), (1, "burned"), (2, "death_carry")] {
+        for (case, expected) in [
+            (0, "hearth"),
+            (1, "burned"),
+            (2, "death_carry"),
+            (3, "save is from build"),
+        ] {
             let mut save = source.simulation.save(source.identity.meta(42));
             let pop = save
                 .state
@@ -2155,7 +2160,8 @@ mod stretch_save_tests {
                     pop.consumption.fuel_need_month = 1;
                     pop.consumption.fuel_burned_month = 2;
                 }
-                _ => pop.consumption.fuel_death_carry = 12_000_000,
+                2 => pop.consumption.fuel_death_carry = 12_000_000,
+                _ => save.meta.build = format!("{}+0000000000000000", env!("CARGO_PKG_VERSION")),
             }
             let mut archive = fs::File::open(source.storage.path.join("ARCH")).unwrap();
             let mut logs = fs::File::open(source.storage.path.join("LOGS")).unwrap();
@@ -2249,6 +2255,20 @@ mod stretch_save_tests {
         building.levels = 0;
         building.level_records.clear();
         building.method_levels.fill(0);
+    }
+
+    /// A cut farm has no job places; clear both mirrors just as a switch would.
+    fn clear_cut_employment(save: &mut Save<GameState>) {
+        for place in &mut save.state.economy.places {
+            for (index, building) in place.buildings.iter_mut().enumerate() {
+                if building.kind == "farm" && building.levels == 0 {
+                    building.employment.fill(ck_economy::Employment::default());
+                    for pop in &mut place.pops {
+                        pop.employment[index] = ck_economy::Employment::default();
+                    }
+                }
+            }
+        }
     }
 
     /// The sums of a building follow its records, as a played game's do.
@@ -2419,7 +2439,7 @@ mod stretch_save_tests {
                 let moved = b.method_suitability[0].pop().unwrap();
                 b.method_suitability[1].insert(0, moved);
             }),
-            ("is not below its denominator", |b| {
+            ("is invalid for denominator", |b| {
                 b.production_carries[0][0] = u128::MAX;
             }),
             ("method mixed_farming good", |b| {
@@ -2436,6 +2456,7 @@ mod stretch_save_tests {
         for (expected, change) in refusals {
             let mut save = source.simulation.save(source.identity.meta(42));
             change(target(&mut save));
+            clear_cut_employment(&mut save);
             write(&save);
             let result = start_from();
             let message = result.err().expect("a start from the save refuses it");
@@ -2502,6 +2523,7 @@ mod stretch_save_tests {
             let farm = target(&mut save);
             change(farm);
             fix_sums(&rules, farm);
+            clear_cut_employment(&mut save);
             write(&save);
             let loaded = start_from().unwrap_or_else(|e| panic!("{label}: {e}"));
             assert_eq!(
@@ -2572,6 +2594,7 @@ mod stretch_save_tests {
         farm.production_carries = vec![vec![0; goods]; farm.method_levels.len()];
         farm.production_carries[0][0] = 1;
         fix_sums(&rules, farm);
+        clear_cut_employment(&mut save);
         write(&save);
         let message = start_from().err().expect("the carry is refused");
         assert!(
@@ -2609,7 +2632,7 @@ mod stretch_save_tests {
             "this place's quality gives a factor of {factor}"
         );
         let wanted = 19_800_000_000_000_000_001_u128;
-        let per_level = u128::from(definition.workers_per_level) * 12_000_000_000 * factor;
+        let per_level = u128::from(definition.methods[0].jobs[0].places) * 12_000_000_000 * factor;
         let levels = u32::try_from(wanted / per_level + 1000).unwrap();
         let farm = save.state.economy.places[place]
             .buildings
@@ -3555,7 +3578,7 @@ mod stretch_save_tests {
         assert_eq!(
             hashes::rules_hash(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets"))
                 .unwrap(),
-            "8b75301c710f28e7"
+            "5787c2c8956cfb3b"
         );
         let mut save = source.simulation.save(source.identity.meta(42));
         let weather = source.weather.as_ref().unwrap();

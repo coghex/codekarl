@@ -97,6 +97,8 @@ pub(crate) fn building_state(rules: &Rules, kind: &str, levels: u32, pops: usize
         .methods
         .len();
     BuildingState {
+        heir: None,
+        abandoned: false,
         kind: kind.to_owned(),
         levels,
         method_levels: vec![0; methods],
@@ -180,11 +182,25 @@ pub(crate) fn add_building(
     place.buildings.len() - 1
 }
 
-/// Gives a pop `owners` owner positions in a building.
+/// Give a fixture pop ownership under the jobs model.
 pub(crate) fn own(place: &mut PlaceState, building: usize, pop: usize, owners: u64) {
-    let job = Employment { owners, workers: 0 };
+    let kind = place.buildings[building].kind.clone();
+    let id = match kind.as_str() {
+        "holdings" => "monks",
+        "demesne" => "field_hands",
+        "storehouse" => "keepers",
+        _ => "peasant_labour",
+    };
+    let mut job = Employment::default();
+    if owners > 0 {
+        job.jobs.insert(id.to_owned(), owners);
+        job.workers = owners;
+    }
     place.buildings[building].employment[pop] = job.clone();
     place.pops[pop].employment[building] = job;
+    if kind == "demesne" || kind == "storehouse" {
+        place.buildings[building].heir = (owners > 0).then(|| u32::try_from(pop).unwrap());
+    }
 }
 
 /// Gives a pop a day's capacity of `ml` through a one-level building of its own kind, `farm` for the first pop, `holdings` for the
@@ -324,6 +340,13 @@ fn scarce_fish_is_shared_between_both_buyers() {
             place.pops.swap(PEASANT, THIRD);
             for building in &mut place.buildings {
                 building.employment.swap(PEASANT, THIRD);
+                if let Some(heir) = &mut building.heir {
+                    if *heir == u32::try_from(PEASANT).unwrap() {
+                        *heir = u32::try_from(THIRD).unwrap();
+                    } else if *heir == u32::try_from(THIRD).unwrap() {
+                        *heir = u32::try_from(PEASANT).unwrap();
+                    }
+                }
             }
         }
         let before = total(&rules, &place);
@@ -521,7 +544,7 @@ fn indivisible_fish_goes_to_the_wealthier_buyer() {
 }
 
 #[test]
-fn ownerless_communal_stock_is_in_orders_but_not_shares() {
+fn communal_stock_is_reserved_for_its_owners() {
     let (mut rules, mut place) = sharing_case();
     capacity(&mut rules, &mut place, PEASANT, 1_000_000);
     capacity(&mut rules, &mut place, THIRD, 1_000_000);
@@ -535,7 +558,7 @@ fn ownerless_communal_stock_is_in_orders_but_not_shares() {
     place.buildings[house].stock[fish] = 4;
     assert_eq!(
         daily_market_orders(&rules, &place).unwrap().sell_units[fish],
-        8
+        4
     );
     let before = total(&rules, &place);
     let first = stock(&rules, &place, PEASANT, "fish");
@@ -559,7 +582,7 @@ fn each_owner_can_only_give_its_part_of_a_building() {
     want(&rules, &mut place, THIRD, "fish", 30);
     want(&rules, &mut place, PEASANT, "oats", 20);
     capacity(&mut rules, &mut place, THIRD, 10_000_000);
-    let building = add_building(&rules, &mut place, "holdings", 1);
+    let building = add_building(&rules, &mut place, "farm", 1);
     own(&mut place, building, PEASANT, 2);
     own(&mut place, building, MONK, 1);
     let fish = good(&rules, "fish");
@@ -898,7 +921,7 @@ fn the_places_sell_orders_now_hold_a_pops_spare_wool_and_the_other_orders_are_wh
 // ---------------------------------------------------------------- rules 5 to 8: capacity
 
 #[test]
-fn a_buildings_capacity_is_its_levels_times_its_number_split_by_owner_positions() {
+fn a_buildings_capacity_is_split_by_owner_shares() {
     let mut rules = rules();
     rules
         .buildings
@@ -908,12 +931,12 @@ fn a_buildings_capacity_is_its_levels_times_its_number_split_by_owner_positions(
         .market_capacity_ml_per_level = 50_000;
     let mut place = place(&rules, 3);
     let farm = add_building(&rules, &mut place, "farm", 3);
-    // 150,000 ml among positions 1:2 leaves no remainder: 50,000 and 100,000.
+    // The 1:2 worker ratio rounds to owner shares of 333 and 667 per mille.
     own(&mut place, farm, PEASANT, 1);
     own(&mut place, farm, MONK, 2);
     assert_eq!(
         market_capacities(&rules, &place).unwrap(),
-        vec![50_000, 100_000, 0]
+        vec![49_950, 100_050, 0]
     );
 }
 
@@ -928,19 +951,18 @@ fn a_split_with_a_remainder_sums_to_the_whole_and_a_tie_goes_to_the_earlier_pop(
         .market_capacity_ml_per_level = 50_000;
     let mut place = place(&rules, 3);
     let farm = add_building(&rules, &mut place, "farm", 1);
-    // 50,000 among three equal positions: 16,666 each and two left, which the two earlier pops take.
+    // Owner shares round first to [334, 333, 333] per mille, then divide capacity.
     for pop in 0..3 {
         own(&mut place, farm, pop, 4);
     }
     let split = market_capacities(&rules, &place).unwrap();
-    assert_eq!(split, vec![16_667, 16_667, 16_666]);
+    assert_eq!(split, vec![16_700, 16_650, 16_650]);
     assert_eq!(split.iter().sum::<u128>(), 50_000);
-    // A remainder that is not tied: 50,000 among positions 1 and 2 is 16,666.67 and 33,333.33, so the one leftover unit goes to the
-    // larger fraction, the first.
+    // One and two workers give owner shares of 333 and 667 per mille.
     let mut place = place_with_two(&rules);
     assert_eq!(
         market_capacities(&rules, &place).unwrap(),
-        vec![16_667, 33_333, 0]
+        vec![16_650, 33_350, 0]
     );
     place.buildings.clear();
     assert_eq!(market_capacities(&rules, &place).unwrap(), vec![0, 0, 0]);
@@ -971,10 +993,10 @@ fn a_pop_with_positions_in_two_buildings_has_the_sum_and_one_with_none_has_none(
     own(&mut place, farm, PEASANT, 5);
     own(&mut place, holdings, PEASANT, 1);
     own(&mut place, holdings, MONK, 1);
-    // The peasants: all of the farm's 100,000 and half the holdings' 100,000. The monks: the other half. The third pop owns nothing.
+    // The peasant owns the farm; the monk owns the holdings. The third pop owns nothing.
     assert_eq!(
         market_capacities(&rules, &place).unwrap(),
-        vec![150_000, 50_000, 0]
+        vec![100_000, 100_000, 0]
     );
 }
 
@@ -1288,13 +1310,13 @@ fn the_allowance_of_a_valid_building_never_stops_the_day() {
     // it has 2^63.
     let mut rules = rules();
     let mut place = place(&rules, 2);
-    let building = add_building(&rules, &mut place, "demesne", 4);
+    let building = add_building(&rules, &mut place, "farm", 4);
     own(&mut place, building, PEASANT, 1);
     own(&mut place, building, MONK, 1);
     rules
         .buildings
         .iter_mut()
-        .find(|item| item.id == "demesne")
+        .find(|item| item.id == "farm")
         .unwrap()
         .market_capacity_ml_per_level = 1 << 62;
     assert_eq!(
@@ -1307,7 +1329,7 @@ fn the_allowance_of_a_valid_building_never_stops_the_day() {
     rules
         .buildings
         .iter_mut()
-        .find(|item| item.id == "demesne")
+        .find(|item| item.id == "farm")
         .unwrap()
         .market_capacity_ml_per_level = u64::MAX;
     let whole = u128::from(u32::MAX) * u128::from(u64::MAX);
@@ -1905,6 +1927,8 @@ fn goods_paid_on_the_first_are_swapped_that_noon_and_not_before_the_payday() {
     let pay =
         paid.places[0].pops[labourers].stock[oats] - state.places[0].pops[labourers].stock[oats];
     assert!(pay >= 2, "the labourers are paid oats on the 1st: {pay}");
+    let manager_pay =
+        paid.places[0].pops[nobles].stock[oats] - state.places[0].pops[nobles].stock[oats];
     // The labourers hold exactly their target of oats before the payday, so the pay is all spare after it; the nobles want a few bushels
     // of it and have fish above their target, which the labourers want.
     let mut state = state;
@@ -1917,7 +1941,7 @@ fn goods_paid_on_the_first_are_swapped_that_noon_and_not_before_the_payday() {
         }
     }
     let wanted = (pay / 2).min(10);
-    want(&rules, place, nobles, "oats", wanted);
+    want(&rules, place, nobles, "oats", wanted + manager_pay);
     spare(&rules, place, nobles, "fish", 80);
     want(&rules, place, labourers, "fish", 80);
     // Before the payday the labourers have nothing to give: a swap run then makes none.
@@ -1943,10 +1967,8 @@ fn goods_paid_on_the_first_are_swapped_that_noon_and_not_before_the_payday() {
     // The fish went the other way, from the nobles to the labourers, in whole units.
     let moved = gained(&day, labourers, fish) - gained(&idle, labourers, fish);
     assert!(moved > 0);
-    assert_eq!(
-        gained(&idle, nobles, fish) - gained(&day, nobles, fish),
-        moved
-    );
+    let noble_fish = gained(&idle, nobles, fish) - gained(&day, nobles, fish);
+    assert!(noble_fish > 0 && noble_fish <= moved);
 }
 
 #[test]
@@ -2358,6 +2380,12 @@ fn a_full_store_makes_no_swap_though_the_bushels_given_would_free_room() {
         }
         place.pops.push(hungry);
         let _house = storehouse(&rules, &mut place);
+        rules
+            .buildings
+            .iter_mut()
+            .find(|kind| kind.id == "holdings")
+            .unwrap()
+            .market_capacity_ml_per_level = 0;
         let church = add_building(&rules, &mut place, "holdings", 1);
         place.buildings[church].employment[THIRD].workers = 1;
         place.pops[THIRD].employment[church].workers = 1;

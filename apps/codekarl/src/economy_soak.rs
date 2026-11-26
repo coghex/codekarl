@@ -602,8 +602,8 @@ mod tests {
         assert_eq!(
             wage_entries,
             [
-                "building0.holdings=25097",
-                "building1.demesne=68062",
+                "building0.holdings=21623",
+                "building1.demesne=59184",
                 "building2.farm=10218",
                 "building3.storehouse=0",
             ],
@@ -618,7 +618,7 @@ mod tests {
         assert!(row_fields[17].contains("oats=95000"));
         assert_eq!(
             row_fields[18],
-            "apples=79;dairy=1496;ale=355;mead=36;linen=127;hardwood=1500"
+            "apples=83;dairy=1426;ale=373;mead=38;linen=127;hardwood=1500"
         );
         assert!(row_fields[19].contains("pop0:"));
         let herds = row_fields[20].split(';').collect::<Vec<_>>();

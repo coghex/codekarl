@@ -76,13 +76,9 @@ fn the_noble_pop_type_loads_at_exactly_the_approved_values() {
 fn the_demesne_loads_at_exactly_the_approved_values_and_the_old_buildings_are_unchanged() {
     let rules = rules();
     let demesne = building(&rules, "demesne");
-    assert_eq!(demesne.workers_per_level, 10);
+    assert_eq!(ordinary_places_per_level(demesne), 10);
     assert_eq!(demesne.land_per_level, 2);
-    assert_eq!(
-        demesne.owner_workers,
-        BTreeMap::from([("labourer".to_owned(), 10)])
-    );
-    assert_eq!(demesne.owner_kind.as_deref(), Some("noble"));
+    assert_eq!(demesne.methods[0].jobs[0].id, "steward");
     assert_eq!(demesne.penalty_pm, 500);
     assert_eq!(demesne.overhead_pm, 300);
     assert_eq!(demesne.recruit_range_m, Some(30_000));
@@ -139,38 +135,32 @@ fn the_demesne_loads_at_exactly_the_approved_values_and_the_old_buildings_are_un
         )
     );
 
-    // Employment of every other building is exactly what it was: no owner kind, same ratios.
-    for (id, owners) in [
-        ("farm", BTreeMap::from([("peasant".to_owned(), 10)])),
-        (
-            "holdings",
-            BTreeMap::from([("monk".to_owned(), 5), ("labourer".to_owned(), 10)]),
-        ),
-        ("storehouse", BTreeMap::new()),
-    ] {
-        let old = building(&rules, id);
-        assert_eq!(old.owner_workers, owners, "{id}");
-        assert_eq!(old.owner_kind, None, "{id}");
-    }
-    assert_eq!(building(&rules, "holdings").workers_per_level, 10);
+    assert_eq!(
+        building(&rules, "holdings").methods[0]
+            .jobs
+            .iter()
+            .map(|job| u64::from(job.places))
+            .sum::<u64>(),
+        11
+    );
     assert_eq!(building(&rules, "holdings").penalty_pm, 500);
     assert_eq!(building(&rules, "holdings").overhead_pm, 300);
 }
 
 #[test]
-fn an_owner_kind_must_name_a_known_population_type() {
+fn a_job_must_name_a_known_population_type() {
     let mut rules = rules();
     let index = rules
         .buildings
         .iter()
         .position(|item| item.id == "demesne")
         .unwrap();
-    rules.buildings[index].owner_kind = Some("ghost".to_owned());
+    rules.buildings[index].methods[0].jobs[0].pop_types = vec!["ghost".to_owned()];
     let error = rules.validate("fixture/economy.toml").unwrap_err();
-    assert_eq!(error.entry, format!("buildings[{index}].owner_kind"));
+    assert_eq!(error.entry, format!("buildings[{index}].jobs.steward"));
     assert_eq!(
         error.problem,
-        "owner kind must name a known population type"
+        "job needs positive places and wage weight and known eligible types"
     );
 }
 
@@ -315,23 +305,35 @@ fn a_noble_house_starts_with_its_pop_a_demesne_and_labourers_on_the_demesne_leve
         2,
         "the building's start stock"
     );
-    // Owners are the nobles, one for every ten labourers; all twenty positions are labourer jobs.
+    // Nobles fill the manager places; labourers fill the ordinary jobs.
     assert_eq!(
         demesne.employment[kind_index(place, "noble")],
         Employment {
-            owners: 2,
-            workers: 0
+            jobs: BTreeMap::from([("steward".into(), 2)]),
+            workers: 2,
         }
     );
     assert_eq!(
         demesne.employment[kind_index(place, "labourer")],
         Employment {
-            owners: 0,
-            workers: 20
+            jobs: BTreeMap::from([
+                ("field_hands".into(), 8),
+                ("milkers".into(), 4),
+                ("herder".into(), 2),
+                ("butcher".into(), 2),
+                ("beekeeper".into(), 2),
+                ("brewer".into(), 2),
+            ]),
+            workers: 20,
         }
     );
     assert_eq!(
-        building_coverage_pm(building(&rules, "demesne"), &place.pops, demesne),
+        manager_factor(
+            building(&rules, "demesne"),
+            demesne,
+            &vec![0; place.pops.len()],
+            1
+        ),
         Ok(1000)
     );
 }
@@ -560,7 +562,7 @@ fn the_starting_state_refuses_an_unknown_place_monk_or_peasant_culture() {
     }
 }
 
-// ---------------------------------------------------------------- roles, coverage and a monthly pass
+// ---------------------------------------------------------------- jobs, management and a monthly pass
 
 fn september_first() -> Date {
     Date {
@@ -578,7 +580,7 @@ fn oats_produced(rules: &Rules, state: &mut EconomyState) -> (u64, ProductionLed
 }
 
 #[test]
-fn owners_come_from_the_nobles_by_coverage_and_removing_them_scales_the_output_but_not_the_pay() {
+fn empty_steward_positions_reduce_output_while_field_hands_still_earn_pay() {
     let rules = rules();
     let data = start_data(Some(house("ulaid", 40, 2)), 0, 0, 0);
     let (state, _) = start(&rules, &data, pasture(40, 600)).unwrap();
@@ -592,26 +594,31 @@ fn owners_come_from_the_nobles_by_coverage_and_removing_them_scales_the_output_b
     let (full_oats, _) = oats_produced(&rules, &mut full);
     assert!(full_oats > 0);
 
-    // The same pass with the nobles removed: coverage 0, so the output takes the 500‰ penalty.
+    // The same pass with steward positions empty: the manager factor applies the 500‰ penalty.
     let mut without = state.clone();
     let place = &mut without.places[0];
-    place.buildings[demesne_index].employment[nobles].owners = 0;
-    place.pops[nobles].employment[demesne_index].owners = 0;
-    let coverage = building_coverage_pm(
+    place.buildings[demesne_index].employment[nobles]
+        .jobs
+        .remove("steward");
+    place.buildings[demesne_index].employment[nobles].workers = 0;
+    place.pops[nobles].employment[demesne_index] =
+        place.buildings[demesne_index].employment[nobles].clone();
+    let efficiency = manager_factor(
         building(&rules, "demesne"),
-        &place.pops,
         &place.buildings[demesne_index],
+        &vec![0; place.pops.len()],
+        1,
     );
-    assert_eq!(coverage, Ok(0));
+    assert_eq!(efficiency, Ok(500));
     let before = place.pops[labourers].stock[oats];
     let (scaled_oats, _) = oats_produced(&rules, &mut without);
     assert!(
         (scaled_oats * 2..=scaled_oats * 2 + 1).contains(&full_oats),
-        "500‰ penalty at no coverage: {scaled_oats} against {full_oats}"
+        "500‰ penalty without stewards: {scaled_oats} against {full_oats}"
     );
     // The labourers are still paid: they work and earn their share of the output.
     let paid = without.places[0].pops[labourers].stock[oats] - before;
-    assert!(paid > 0, "the labourers' pay arrives without owners");
+    assert!(paid > 0, "the labourers' pay arrives without stewards");
     let mut full_paid_state = state.clone();
     let before = full_paid_state.places[0].pops[labourers].stock[oats];
     oats_produced(&rules, &mut full_paid_state);
@@ -619,7 +626,7 @@ fn owners_come_from_the_nobles_by_coverage_and_removing_them_scales_the_output_b
 }
 
 #[test]
-fn monthly_hiring_draws_the_demesnes_owners_from_the_nobles_never_from_the_labourers() {
+fn monthly_hiring_prefers_available_nobles_for_steward_places() {
     let rules = rules();
     let data = start_data(Some(house("ulaid", 80, 4)), 0, 0, 0);
     let (mut state, _) = start(&rules, &data, pasture(60, 600)).unwrap();
@@ -627,23 +634,57 @@ fn monthly_hiring_draws_the_demesnes_owners_from_the_nobles_never_from_the_labou
     let demesne_index = building_index(place, "demesne");
     let nobles = kind_index(place, "noble");
     let labourers = kind_index(place, "labourer");
-    assert_eq!(place.buildings[demesne_index].employment[nobles].owners, 4);
-
-    // Release every owner: coverage is lost, and the monthly pass (10% of the open, at least one) hires.
-    place.buildings[demesne_index].employment[nobles].owners = 0;
-    place.pops[nobles].employment[demesne_index].owners = 0;
-    fill_monthly_hiring(&rules, place).unwrap();
-    assert_eq!(place.buildings[demesne_index].employment[nobles].owners, 1);
     assert_eq!(
-        place.buildings[demesne_index].employment[labourers].owners,
+        place.buildings[demesne_index].employment[nobles]
+            .jobs
+            .get("steward")
+            .copied()
+            .unwrap_or(0),
+        4
+    );
+
+    // Release the stewards; the monthly hiring cap fills from available nobles first.
+    place.buildings[demesne_index].employment[nobles]
+        .jobs
+        .remove("steward");
+    place.buildings[demesne_index].employment[nobles].workers = 0;
+    place.pops[nobles].employment[demesne_index] =
+        place.buildings[demesne_index].employment[nobles].clone();
+    fill_monthly_hiring(&rules, place).unwrap();
+    assert_eq!(
+        place.buildings[demesne_index].employment[nobles]
+            .jobs
+            .get("steward")
+            .copied()
+            .unwrap_or(0),
+        1
+    );
+    assert_eq!(
+        place.buildings[demesne_index].employment[labourers]
+            .jobs
+            .get("steward")
+            .copied()
+            .unwrap_or(0),
         0
     );
-    assert_eq!(place.pops[labourers].employment[demesne_index].owners, 0);
+    assert_eq!(
+        place.pops[labourers].employment[demesne_index]
+            .jobs
+            .get("steward")
+            .copied()
+            .unwrap_or(0),
+        0
+    );
     for _ in 0..40 {
         fill_monthly_hiring(&rules, place).unwrap();
     }
     assert_eq!(
-        place.buildings[demesne_index].employment[nobles].owners, 4,
+        place.buildings[demesne_index].employment[nobles]
+            .jobs
+            .get("steward")
+            .copied()
+            .unwrap_or(0),
+        4,
         "one per ten labourers"
     );
     assert_eq!(
@@ -668,7 +709,7 @@ fn an_employed_demesne_keeps_its_overhead_in_the_holdings_sized_store() {
     as_holdings.kind = "holdings".to_owned();
     assert_eq!(
         store_capacity_ml(&place.buildings[demesne_index]),
-        Ok(10 * 1_170_000)
+        Ok(11 * 1_170_000)
     );
     assert_eq!(
         store_capacity_ml(&place.buildings[demesne_index]),
@@ -926,6 +967,8 @@ fn building_state(rules: &Rules, kind: &str, levels: u32, pops: usize) -> Buildi
     let goods = rules.goods.len();
     let methods = building(rules, kind).methods.len();
     BuildingState {
+        heir: None,
+        abandoned: false,
         kind: kind.to_owned(),
         levels,
         method_levels: vec![0; methods],
@@ -987,9 +1030,20 @@ fn place_of(
         }
         let mut employment = vec![Employment::default(); buildings.len()];
         for (building_index, owners, workers) in &tenant.jobs {
+            let kind = place.buildings[*building_index].kind.as_str();
+            let (job, count) = match (kind, tenant.kind) {
+                ("demesne", "noble") => ("steward", (*workers).max(*owners)),
+                ("farm", "peasant") => ("peasant_labour", (*workers).max(*owners)),
+                ("holdings", "monk") => ("monks", *workers),
+                _ => ("field_hands", *workers),
+            };
             employment[*building_index] = Employment {
-                owners: *owners,
-                workers: *workers,
+                jobs: if count == 0 {
+                    BTreeMap::new()
+                } else {
+                    BTreeMap::from([(job.to_owned(), count)])
+                },
+                workers: count,
             };
             place.buildings[*building_index].employment[pop_index] =
                 employment[*building_index].clone();
@@ -1250,9 +1304,10 @@ fn two_labourers_with_a_basket_of_39_owe_three() {
 
 #[test]
 fn peasants_in_a_farm_and_nobles_in_their_own_demesne_pay_nothing() {
-    let rules = rent_rules();
-    let peasants = Tenant::new("peasant", "a", 11)
-        .dependents(5)
+    let mut rules = rent_rules();
+    rules.housing_per_level.insert("farm".to_owned(), 16);
+    let peasants = Tenant::new("peasant", "a", 10)
+        .dependents(6)
         .with_stock(&[("barley", 50)])
         .job(0, 1, 10);
     let nobles = Tenant::new("noble", "b", 12)
@@ -1297,9 +1352,9 @@ fn spare_housed_people_pay_where_they_land_and_a_mixed_overflow_charges_only_the
     // a unit of barley. The labourer's own basket (60) would have charged 3.
     assert_eq!(paid_and_short(&place.pops[2]), (1000, 0));
     assert_eq!(place.pops[2].stock[good(&rules, "barley")], 9);
-    // The demesne has no paid workers here, so its store holds nothing and the rent goes on by the
-    // overflow route: alms reach the labourers first.
-    assert_eq!(place.pops[3].stock[good(&rules, "barley")], 1);
+    // The steward is paid, so the demesne has storage for the rent.
+    assert_eq!(place.buildings[0].stock[good(&rules, "barley")], 1);
+    assert_eq!(place.pops[3].stock[good(&rules, "barley")], 0);
     assert_eq!(place.pops[3].counters.current, MonthlyCounters::default());
     assert_eq!(place.pops[3].stock[good(&rules, "oats")], 10);
 }
@@ -1651,7 +1706,13 @@ fn the_live_housing_read_keeps_the_months_priority_until_the_next_first_and_surv
         .iter()
         .position(|item| item.id == "demesne")
         .unwrap();
-    rules.buildings[index].workers_per_level = 1;
+    rules.buildings[index].methods[0]
+        .jobs
+        .retain(|job| job.id == "field_hands");
+    rules.buildings[index].methods[0].jobs[0].places = 1;
+    rules.buildings[index].methods[0]
+        .made_by
+        .retain(|_, job| job == "field_hands");
     // Two one-person households with no work contend for the spare place and have five makeshift
     // slots to fall back on. The first has no store, so its rent is short; the second can pay.
     let first = Tenant::new("labourer", "a", 1);

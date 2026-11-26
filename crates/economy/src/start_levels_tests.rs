@@ -72,6 +72,8 @@ fn method(id: &str, resource: &str, serves: &str, outputs: &[(&str, u64)]) -> Me
         })
         .collect();
     Method {
+        jobs: Vec::new(),
+        made_by: BTreeMap::new(),
         id: id.to_owned(),
         resource: resource.to_owned(),
         cells_per_level: None,
@@ -103,18 +105,39 @@ fn turf() -> Method {
     )
 }
 
-fn building(id: &str, methods: Vec<Method>) -> BuildingType {
+fn building(id: &str, mut methods: Vec<Method>) -> BuildingType {
+    let job = |id: &str, places, kinds: &[&str], manager| ProductionJob {
+        id: id.into(),
+        places,
+        pop_types: kinds.iter().map(|kind| (*kind).to_owned()).collect(),
+        wage_weight_pm: if manager { 1500 } else { 1000 },
+        manager,
+    };
+    for method in &mut methods {
+        method.jobs = match id {
+            "holdings" => vec![
+                job("prior", 1, &["monk"], true),
+                job("monks", 5, &["monk"], false),
+                job("field_hands", 5, &["labourer"], false),
+            ],
+            "demesne" => vec![
+                job("steward", 1, &["noble", "labourer"], true),
+                job("field_hands", 10, &["labourer"], false),
+            ],
+            _ => vec![job("peasant_labour", 10, &["peasant"], false)],
+        };
+    }
     BuildingType {
+        jobs: if id == "storehouse" {
+            vec![job("keepers", 2, &[], false)]
+        } else {
+            Vec::new()
+        },
         id: id.to_owned(),
         church: id == "holdings",
-        workers_per_level: 10,
+
         land_per_level: 2,
-        owner_workers: match id {
-            "demesne" => BTreeMap::from([("labourer".to_owned(), 10)]),
-            "holdings" => BTreeMap::from([("monk".to_owned(), 5), ("labourer".to_owned(), 10)]),
-            _ => BTreeMap::from([("peasant".to_owned(), 10)]),
-        },
-        owner_kind: (id == "demesne").then(|| "noble".to_owned()),
+
         penalty_pm: 500,
         overhead_pm: 100,
         recruit_range_m: Some(30_000),
@@ -162,6 +185,8 @@ fn rules_with(buildings: Vec<BuildingType>, fuel_need_milli_day: u64) -> Rules {
         good("cattle", 0, 0, 10, false),
     ];
     rules.herd_species = vec![HerdSpecies {
+        head_per_herder: 40,
+        carcass_units: 6,
         animal: "cattle".to_owned(),
         births_pm_year: 0,
         deaths_pm_year: 0,

@@ -610,9 +610,13 @@ mod tests {
                 .position(|pop| pop.kind == "noble")
                 .unwrap();
             assert_eq!(
-                demesne.employment[noble_index].owners,
+                demesne.employment[noble_index]
+                    .jobs
+                    .get("steward")
+                    .copied()
+                    .unwrap_or(0),
                 u64::from(noble.demesne_levels),
-                "{id}: one owner covers ten labourers"
+                "{id}: one steward per level"
             );
 
             // The labourers: one pop of the place's culture and religion; the heads added and the jobs
@@ -869,11 +873,23 @@ mod tests {
             .expect("the fixture has an employed building with a starting stockpile");
         let october_building = &october_state.places[place_index].buildings[building_index];
         let june_building = &june_state.places[place_index].buildings[building_index];
-        let paid_heads = october_building
+        let definition = rules
+            .buildings
+            .iter()
+            .find(|item| item.id == october_building.kind)
+            .unwrap();
+        let pools =
+            ck_economy::building_job_pools(definition, &october_building.method_levels).unwrap();
+        let shares: u128 = october_building
             .employment
             .iter()
-            .map(|employment| employment.workers)
-            .sum::<u64>();
+            .flat_map(|employment| {
+                pools.iter().map(move |pool| {
+                    u128::from(employment.jobs.get(&pool.job.id).copied().unwrap_or(0))
+                        * u128::from(pool.job.wage_weight_pm)
+                })
+            })
+            .sum();
         let starting_value = october_building
             .stock
             .iter()
@@ -882,11 +898,11 @@ mod tests {
             .sum::<u128>();
         assert_eq!(
             october_building.wage_history,
-            [u64::try_from(starting_value / (u128::from(paid_heads) * 11)).unwrap(); 12]
+            [u64::try_from(starting_value * 1000 / (shares * 11)).unwrap(); 12]
         );
         assert_eq!(
             june_building.wage_history,
-            [u64::try_from(starting_value / (u128::from(paid_heads) * 3)).unwrap(); 12]
+            [u64::try_from(starting_value * 1000 / (shares * 3)).unwrap(); 12]
         );
     }
 }
