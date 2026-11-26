@@ -1188,6 +1188,37 @@ herd stays. These are counts, not individual animals, so livestock stays abstrac
   of the building whose herd gave it, and a swap whose payment that building cannot store is not made. The opening's two thirds
   (`herd_start_share`) is the opening only, not a keep level. A job's want for an animal, holding it and giving up are the next
   part (CK-431).
+- **Expeditions** (CK-432, trade part C; spec `trade4-spec-r4`, section 7): a trade job (a plan's vehicles, cargo, animals and supplies)
+  starts when its goods are gathered, its people are at home and willing and every leg of both ways assigns; its stockpile then
+  becomes an expedition, saved in its home place's trade state. The plan is given (part D will choose it).
+  - **Legs.** Each leg of the way out and the way back is a mode (land or water), the work and speed of each stretch and the fixed
+    delays; a leg takes the sum of work over speed plus the delays, where each profile speed is scaled by the pace over 1000, rounded
+    down, at least 1 (rule 6). Position is the leg and the exact fraction of it done, so the part of an hour a leg leaves over is carried
+    to the next. `travel_network`'s `expedition_route` builds the legs from CK-402's quickest itinerary, clipped at 2 km from each
+    centre; at pace 1000 they take exactly CK-402's hours (a test). A clip that cuts a leg keeps its work and delays in proportion to
+    the length kept, since the network does not say where a ford lies.
+  - **What moves, and the pace.** On land the vehicles with a pace move and a boat rides whole in one of them; on water the boats move and
+    the land vehicles and live animals ride; on foot each person's pack is a carrier. Items go first-fit by decreasing space, then weight,
+    then kind and number, into carriers in kind order. People are assigned the fewest crew of each moving vehicle, then the drovers
+    (one for each 20 driven animals or part, land only), then spare people up to the full crews; anyone left walks. The pace is the
+    least of each moving vehicle's (base, lowered by its own load by up to 250‰ and by its own crew down to 700‰, each rounded down), the
+    walkers' and the driven species'; half of that when the supplies are gone. It is reckoned at leaving, at a change of what moves, at
+    turning back and when the supplies run out.
+  - **The hour.** Each trade hour, after builds complete and before jobs start, expeditions move one hour, arrive and unload (11c.1).
+    One that arrives by 11:00 takes part in that noon's exchange and starts back in the same noon; one arriving in the noon hour waits
+    for the next. At home it unloads in the hour it arrives: receipt, then the general overflow rule, live animals by 11b.1 rule 1 (an
+    animal nobody can take stays on offer in a held job, slaughtered after the set time), its people home and its vehicles free.
+  - **The exchange.** A waiting expedition is a row in the day's book: what it carries to trade is its spare, what it is to bring home its
+    want. It is a claimant in the scarcity shares like any pop, with the wealth of its pop at home and aboard at this place's prices; it
+    starts its swaps first, in the order it arrived, at the place's prices, spending no capacity; a swap is made only up to what still
+    assigns on every leg home. It then loads what it traded for, its unsold cargo as far as it fits (worth most for its bulk first), gives
+    the rest to pops that want it and have room (the neediest first) and throws away only what nobody takes. Pops do not start swaps
+    with a visitor: the visitor's own turn works every pair.
+  - **Away.** The people of an expedition are held (they cannot be hired), eat from its supplies at noon (a person-day each, whole goods
+    opened as a pop's eating does) and not from their pop's ration, and count a day away at each noon for the building each is taken
+    from. A vehicle uses up one unit of its wear from the supplies for each 720 hours it moves.
+  - **Saves.** The expeditions, their plans and positions are saved and checked against what a reachable game can hold; the next
+    expedition number is saved with the others.
 - **Later:** butchers turn live cattle into more meat than slaughter does, and buildings with room in their herds buy animals (Firm
   direction; out of scope).
 
