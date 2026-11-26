@@ -1179,9 +1179,15 @@ herd stays. These are counts, not individual animals, so livestock stays abstrac
   paid in order and any pop surplus passes on at once (§3.6).
 - **Coverage applies to herd products too,** because an unmanaged herd is poorly kept (Proposal): births, dairy and wool are multiplied
   by the coverage multiplier.
-- **Replenishing** (Firm): when a herd is below its maximum, live animals held by the building or its owner pops return to it. In M9
-  the surplus is always slaughtered and nothing can be bought, so no live animals are ever held and herds recover through births only.
-  Buying animals with spare goods comes with markets.
+- **Replenishing and the standard level** (CK-430, trade part A; owner r163): a herd keeps a standard level, 700‰ of its maximum
+  (`herd_standard_pm`), `⌊maximum × 700 / 1000⌋`. The herd offers the animals above it and its owners want the animals below it, each
+  split among the owner pops by their owner positions as a building's spare stock is. Live animals are goods in the daily swap
+  (CK-391): whole units, no market capacity, priced at the place and moved by its orders (the want is a buy order, the offer a sell
+  order), ranked after food and fuel and before the comforts. An animal never enters a pop's store (its limit is zero): a head received
+  joins the first herd, in building order, that the pop still wants it for. What is paid for a head goes once into the communal stock
+  of the building whose herd gave it, and a swap whose payment that building cannot store is not made. The opening's two thirds
+  (`herd_start_share`) is the opening only, not a keep level. A job's want for an animal, holding it and giving up are the next
+  part (CK-431).
 - **Later:** butchers turn live cattle into more meat than slaughter does, and buildings with room in their herds buy animals (Firm
   direction; out of scope).
 
