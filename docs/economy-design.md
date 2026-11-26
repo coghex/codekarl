@@ -1223,10 +1223,14 @@ herd stays. These are counts, not individual animals, so livestock stays abstrac
     step (births, deaths and recruitment count the workers at home), eat from its supplies at noon (a person-day each, whole goods
     opened as a pop's eating does) and not from their pop's ration, and count a day away at each noon for the building each is taken
     from. A vehicle uses up one unit of its wear from the supplies for each 720 hours it moves.
-  - **Wages.** A hired hand is paid for the days of the whole trip: out at the pace of the outbound load, the wait for the noon it
-    trades at, and back at the pace of the return load, rounded up to whole days.
+  - **Wages.** A hired hand is paid for the days of the whole trip, worked from the ticks the simulation will run: the expedition first
+    moves at the tick it starts in (a job started in the noon's daily step) or the next (one started in the hour's step), arrives at the
+    tick its outbound travel ends, trades at the first noon whose 11:00 cutoff it met, and is home at the tick its return ends; the
+    days are the hours from the start to then, rounded up, at least one. Times are checked and a trip longer than the calendar holds
+    is refused at the order and in a save; no plan holds more than 4,194,304 units of a good.
   - **Saves.** The expeditions, their plans and positions are saved and checked against what a reachable game can hold (the pace against the supplies aboard when it was last reckoned, which are saved with it;
-    a head on offer and the yield of its slaughter against the heads put on offer and the clock); the next
+    a head on offer and the yield of its slaughter against the heads put on offer and the clock, a saved state's clock being the
+    hour whose systems have not yet run, so a head is still on offer at the due hour's own clock); the next
     expedition number is saved with the others.
 - **Later:** butchers turn live cattle into more meat than slaughter does, and buildings with room in their herds buy animals (Firm
   direction; out of scope).
