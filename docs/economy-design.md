@@ -1199,7 +1199,7 @@ herd stays. These are counts, not individual animals, so livestock stays abstrac
     between samples is found); at pace 1000 they take exactly CK-402's hours (a test). A clip keeps what lies on the kept journey: a
     water leg's work step by step at each step's own speed, a landing's delay at the shore. The one approximation is a land stretch's
     wades, fords and tide wait, whose positions the data does not give: they are kept in proportion to the length of the stretch
-    kept. A delay-only transfer (as at a strait) takes the mode of the leg beside it. Each leg freezes the points of its path, so a
+    kept. A delay-only transfer (as at a strait) needs no carriers of its own and takes the mode of the leg before it (the one after it when it is first). Each leg freezes the points of its path, so a
     saved expedition is placed the same after a reload whatever the network becomes.
   - **What moves, and the pace.** On land the vehicles with a pace move and a boat rides whole in one of them; on water the boats move and
     the land vehicles and live animals ride; on foot each person's pack is a carrier. Items go first-fit by decreasing space, then weight,
@@ -1214,8 +1214,9 @@ herd stays. These are counts, not individual animals, so livestock stays abstrac
     animal nobody can take stays on offer in a held job, slaughtered after the set time), its people home and its vehicles free.
   - **The exchange.** A waiting expedition is a row in the day's book: what it carries to trade is its spare, what it is to bring home its
     want. It is a claimant in the scarcity shares like any pop, with the wealth of its pop at home and aboard at this place's prices; it
-    starts its swaps first, in the order it arrived, at the place's prices, spending no capacity; a pop may also start a swap with it
-    after its turn with the pops, again with no capacity on either side. A swap is made only up to an amount that itself still assigns
+    starts its swaps first, in the order it arrived, at the place's prices, spending no capacity; in a pop's turn, for each want, the other pops are tried first and then the waiting
+    expeditions in arrival order, with no capacity spent on either side, so a pop whose capacity is used up still tries them and one that
+    owns nothing has no turn. Visitors are partners only in their destination's local exchange. A swap is made only up to an amount that itself still assigns
     on every leg home (first-fit is not monotone, so the amount is tested, not assumed). It then loads what it traded for, its unsold cargo as far as it fits (worth most for its bulk first), gives
     the rest to pops that want it and have room (the neediest first) and throws away only what nobody takes.
   - **Away.** The people of an expedition are held (they cannot be hired, recruited or moved), neither breed nor die at the monthly
