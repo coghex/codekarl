@@ -1,5 +1,6 @@
 # Tooltip fonts B and C, frozen 2026-11-12 (owner-direction-tooltips-r4.md: "Both approved").
 # Source: mockups/tooltip_fonts_r1.py. Per glyph: font, character (U+code), advance, top row, then the rows ('#' set, '.' clear).
+# U+2026 drawn for Codekarl from the plain shape of an ellipsis; not copied from a font.
 # U+00B0 drawn for Codekarl from the plain shape of a degree sign; not copied from a font.
 # B: box 9 rows, space advance 3. C: box 8 rows, space advance 2. Provenance: ../tooltips-provenance-r2.md.
 
@@ -1483,3 +1484,8 @@ C ₉ U+2089 advance=4 top=4
   #.#
   ###
   ..#
+
+B … U+2026 advance=6 top=6
+  #.#.#
+C … U+2026 advance=6 top=5
+  #.#.#

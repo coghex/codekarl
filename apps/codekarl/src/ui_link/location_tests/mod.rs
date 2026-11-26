@@ -415,6 +415,15 @@ text_library.move = function(line, x, y)
       note(string.format("cardrun %g %g %s=%s", line.x, line.y, run.colour, run.text))
     end
   end
+  if ellipsis_watch and line.ck_test_text and line.ck_test_text:find('…', 1, true) then
+    local found = false
+    for _, glyph in ipairs(line.glyphs) do
+      assert(not glyph.texture:find('replacement', 1, true), 'cut name has no replacement glyph')
+      if glyph.texture:find('U+2026.png', 1, true) then found = true end
+    end
+    assert(found, 'cut name uses ellipsis glyph')
+    note('ellipsis_glyph_ok')
+  end
   if colour_watch and line.ck_test_text ~= nil then
     for _, run in ipairs(line.ck_test_runs or {}) do
       note(string.format("tintline %s|%s=%s", line.ck_test_text, run.colour, run.text))
@@ -1466,7 +1475,7 @@ fn blighted_long_stock_name_keeps_the_mark_and_hit_inside_a_narrow_panel() {
 game.blights = function() return {good} end
 local farm = VIEWS[1].cards.buildings[1]
 farm.stock = {{good=good, amount=3, charged_ml=3000, outside=false}}; farm.store_capacity_ml = 10000
-colour_watch = true
+ellipsis_watch = true; colour_watch = true
 panel_detail = require('lib.location_detail').new{view = {width = 360, height = 700}, top = function() return 0 end,
   open_character = function() end, on_go = function() end}
 panel_detail:open('building', 'cards', 'Cards', 1, 1, 1, 0)
@@ -1480,6 +1489,7 @@ note('narrow_stock_ok')"]);
         recorded.iter().any(|line| line.contains("… blight")),
         "{recorded:?}"
     );
+    assert!(recorded.iter().any(|line| line == "ellipsis_glyph_ok"));
     assert!(recorded.iter().any(|line| line == "narrow_stock_ok"));
 }
 
