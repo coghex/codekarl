@@ -10,6 +10,7 @@ local pressed_keys = {} -- key -> true, the widgets whose gesture is pressed
 local last_over = false
 local deferred = {} -- functions to run when the next dispatch ends
 local press_observers = {} -- functions told of each left press, in the packet's order, before any widget hears it
+local map_click_observers = {} -- completed empty-map clicks, classified by the map's own gesture rule
 local tagged_observers = {} -- functions told of each button press that carries a tag (CK-381)
 local gate = nil -- while set, `gate(key, event)` is asked before a keyed event reaches its widget; true swallows it (CK-305)
 
@@ -26,6 +27,10 @@ end
 -- lands elsewhere (a number field applying what was typed) reads `event.key`. It routes nothing and cannot stop the press.
 function pointer.observe_press(fn)
   press_observers[#press_observers + 1] = fn
+end
+
+function pointer.observe_map_click(fn)
+  map_click_observers[#map_click_observers + 1] = fn
 end
 
 -- Registers `fn(event, eligible)`, called for each `button_down` event that carries a `tag` (the tag of the hit region it was routed
@@ -137,6 +142,9 @@ function pointer.dispatch(p)
       for _, observe in ipairs(press_observers) do
         observe(event)
       end
+    end
+    if eligible and event.kind == "map_click" then
+      for _, observe in ipairs(map_click_observers) do observe(event) end
     end
     if key and event.kind == "down" then
       -- A keyed press is classified against the widgets registered at this boundary, even if no widget owns its key.

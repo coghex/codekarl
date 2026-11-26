@@ -397,6 +397,7 @@ enum GestureOwner {
 struct RoutedPointer {
     map: Vec<crate::map_app::RoutedMapEvent>,
     ui: Vec<crate::input_stash::PointerViewEvent>,
+    map_releases: Vec<(usize, PointerPosition)>,
 }
 
 fn view_event(
@@ -561,7 +562,10 @@ fn route_pointer_with(
                             .ui
                             .push(view_event("up", ui(position), Some(key.clone())));
                     }
-                    GestureOwner::Map => routed.map.push(MapEvent::Pointer(*event)),
+                    GestureOwner::Map => {
+                        routed.map.push(MapEvent::Pointer(*event));
+                        routed.map_releases.push((routed.ui.len(), ui(position)));
+                    }
                     GestureOwner::Idle | GestureOwner::Nobody => {}
                 }
                 if matches!(owner, GestureOwner::Ui(_) | GestureOwner::Map) {
@@ -1397,6 +1401,9 @@ impl UiLink for CodekarlUi {
         // In a window opened in pixels the UI works in UI units: the scale follows the drawable, and one conversion serves the Lua events, the
         // hit tests and the hover. The map's own input stays in points.
         let units = self.unit_map(tick.metrics);
+        if let Some(map) = &self.map {
+            crate::map_app::lock(map).set_ui_units(units);
+        }
         let scale_k = self
             .scene
             .as_ref()
@@ -1519,7 +1526,7 @@ impl UiLink for CodekarlUi {
         let mut owner = self.state.pointer_owner.borrow_mut();
         let pointer_viewport =
             (tick.mode == ck_window::WindowMode::Fullscreen).then_some(tick.metrics.points);
-        let routed = route_pointer_with(
+        let mut routed = route_pointer_with(
             &mut owner,
             &input,
             regions.as_deref(),
@@ -1561,13 +1568,22 @@ impl UiLink for CodekarlUi {
             } else {
                 None
             };
-            crate::map_app::lock(map).update_routed(
+            let mut controller = crate::map_app::lock(map);
+            controller.update_routed(
                 &map_tick,
                 &routed.map,
                 hover_position,
                 suppress_hover,
                 input.pointer_overflow,
             )?;
+            let clicks = controller.take_empty_clicks();
+            for ((index, position), clicked) in routed.map_releases.iter().zip(clicks).rev() {
+                if clicked {
+                    routed
+                        .ui
+                        .insert(*index, view_event("map_click", *position, None));
+                }
+            }
         }
         if map_owns_gesture && input.pointer_overflow && !input.pointer_held {
             *owner = GestureOwner::Idle;
@@ -1634,6 +1650,8 @@ impl UiLink for CodekarlUi {
     }
 }
 
+#[cfg(test)]
+mod expedition_tests;
 #[cfg(test)]
 mod find_tests;
 #[cfg(test)]
@@ -4461,6 +4479,7 @@ mod tests {
             log_choices: ck_sim::LogChoices::default(),
             economy_revision: 0,
             economy: None,
+            expeditions: std::sync::Arc::new(Vec::new()),
             weather: BTreeMap::new(),
             events: std::sync::Arc::new(Vec::new()),
             events_revision: 0,

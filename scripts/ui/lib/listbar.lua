@@ -805,8 +805,8 @@ function listbar.layers(spec)
     picker.group = ui.create_group()
     picker.rows_group = ui.create_group()
     local colours = theme.kind("places_bar")
-    local width = (math.max(width_of("rivers"), width_of("roads")) + 20) * P
-    local height = 2 * ROW + 6 * P
+    local width = (math.max(width_of("rivers"), width_of("roads"), width_of("expeditions")) + 20) * P
+    local height = 3 * ROW + 6 * P
     local x, y = spec.position(width, height)
     picker.panel = panel.new{x = x, y = y, width = width, height = height, kind = "places_bar", cut = 3, group = picker.group}
     picker.panel_key = ui.key("layers_panel")
@@ -845,7 +845,7 @@ function listbar.layers(spec)
       render.destroy_group(self.rows_group)
       render.destroy_group(self.group)
     end
-    for index, name in ipairs({"rivers", "roads"}) do
+    for index, name in ipairs({"rivers", "roads", "expeditions"}) do
       local top = (index - 1) * ROW
       local key = ui.key("layers_box")
       picker.owned[key] = true

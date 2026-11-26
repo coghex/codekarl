@@ -259,8 +259,8 @@ fn layers_button_toggles_rivers_on_the_real_ordered_route() {
     rig.opened();
     assert!(mode_button(&rig, "layers").2);
     rig.feed(&[
-        PointerEvent::Down(points(830.0, 808.0)),
-        PointerEvent::Up(points(830.0, 808.0)),
+        PointerEvent::Down(points(830.0, 778.0)),
+        PointerEvent::Up(points(830.0, 778.0)),
     ]);
     rig.deliver_fixture_frame_at(1800, 900, 2);
     assert_eq!(
@@ -268,8 +268,8 @@ fn layers_button_toggles_rivers_on_the_real_ordered_route() {
         crate::game::core::Message::SetMapLayer(crate::game::slot::MapLayer::Rivers, true)
     );
     rig.feed(&[
-        PointerEvent::Down(points(830.0, 808.0)),
-        PointerEvent::Up(points(830.0, 808.0)),
+        PointerEvent::Down(points(830.0, 778.0)),
+        PointerEvent::Up(points(830.0, 778.0)),
     ]);
     rig.deliver_fixture_frame_at(1800, 900, 2);
     assert_eq!(

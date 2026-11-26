@@ -426,6 +426,30 @@ impl Leg {
     #[must_use]
     pub fn position(&self, done: &Hours) -> Option<(Hours, Hours)> {
         let last = self.path.len().checked_sub(1)?;
+        if last == 0 {
+            let [x, y] = self.path[0];
+            return Some((
+                BigRational::from_integer(x.into()),
+                BigRational::from_integer(y.into()),
+            ));
+        }
+        let (index, rest) = self.path_segment(done)?;
+        let ([ax, ay], [bx, by]) = (self.path[index], self.path[index + 1]);
+        let mix = |a: i64, b: i64| {
+            BigRational::from_integer(a.into())
+                + (BigRational::from_integer(b.into()) - BigRational::from_integer(a.into()))
+                    * &rest
+        };
+        Some((mix(ax, bx), mix(ay, by)))
+    }
+
+    /// The frozen path segment and its fraction at this movement progress, including fixed delays.
+    #[must_use]
+    pub fn path_segment(&self, done: &Hours) -> Option<(usize, Hours)> {
+        let last = self.path.len().checked_sub(1)?;
+        if last == 0 {
+            return None;
+        }
         let pieces = self.pieces();
         let total: Hours = pieces
             .iter()
@@ -442,21 +466,7 @@ impl Leg {
                 .map_or_else(|| whole(0), |piece| &piece.distance * &share);
             (before + inside) / total
         };
-        if last == 0 {
-            let [x, y] = self.path[0];
-            return Some((
-                BigRational::from_integer(x.into()),
-                BigRational::from_integer(y.into()),
-            ));
-        }
-        let (index, rest) = self.segment(&fraction, last)?;
-        let ([ax, ay], [bx, by]) = (self.path[index], self.path[index + 1]);
-        let mix = |a: i64, b: i64| {
-            BigRational::from_integer(a.into())
-                + (BigRational::from_integer(b.into()) - BigRational::from_integer(a.into()))
-                    * &rest
-        };
-        Some((mix(ax, bx), mix(ay, by)))
+        self.segment(&fraction, last)
     }
 
     /// The segment of the path `fraction` of the leg's distance lies in (the index of its first point) and how far along it, from 0 to 1.
@@ -1346,6 +1356,36 @@ impl Canonical for Expedition {
 }
 
 impl Expedition {
+    /// The slowest moving vehicle's kind for the map chip, with ties in kind and vehicle-number order.
+    /// Returns `None` when the party travels on foot or its saved assignment is invalid.
+    #[must_use]
+    pub fn map_vehicle(&self, rules: &Rules) -> Option<u32> {
+        let mode = self.reckoned_mode;
+        let assigned = assign_after(
+            rules,
+            &self.vehicles,
+            self.people(),
+            &self.cargo,
+            &self.loaded,
+            &self.reckoned,
+            mode,
+        )?;
+        assigned
+            .moving
+            .iter()
+            .filter_map(|(index, crew, weight)| {
+                let vehicle = self.vehicles.get(*index)?;
+                let kind = rules.vehicles.get(vehicle.kind as usize)?;
+                Some((
+                    vehicle_pace(rules, kind, mode, *crew, *weight),
+                    vehicle.kind,
+                    vehicle.number,
+                ))
+            })
+            .min()
+            .map(|(_, kind, _)| kind)
+    }
+
     /// How many people go with it.
     pub(crate) fn people(&self) -> u64 {
         self.groups

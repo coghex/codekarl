@@ -75,6 +75,9 @@ mod debug_layer;
 #[cfg(test)]
 mod demo_tests;
 mod economy_soak;
+mod expedition_api;
+#[cfg(test)]
+mod expedition_art_tests;
 #[cfg(test)]
 mod fakes;
 #[cfg_attr(
@@ -815,7 +818,7 @@ fn supervise_with_owner_factory(
         Some(connected) => (
             ui.with_sim(ui_link::SimLink {
                 controls: connected.controls.clone(),
-                slot: connected.slot,
+                slot: Arc::clone(&connected.slot),
                 time_registered: Arc::clone(&time_registered),
                 hover_registered: Arc::clone(&hover_registered),
                 select_registered: Arc::clone(&select_registered),
@@ -829,6 +832,10 @@ fn supervise_with_owner_factory(
                     select_registered,
                     Arc::clone(&wake),
                     connected.controls,
+                )
+                .function(
+                    "expeditions",
+                    expedition_api::function(connected.slot, map_controller.clone()),
                 )
                 .function(
                     "scenario",

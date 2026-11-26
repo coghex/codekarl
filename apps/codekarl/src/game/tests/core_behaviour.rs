@@ -435,7 +435,8 @@ fn layer_changes_are_ordered_and_only_changes_mark_unsaved() {
         h.core.snapshot().layers,
         MapLayers {
             rivers: true,
-            roads: false
+            roads: false,
+            expeditions: false,
         }
     );
     assert!(h.core.has_unsaved_changes());
@@ -445,7 +446,8 @@ fn layer_changes_are_ordered_and_only_changes_mark_unsaved() {
         h.core.snapshot().layers,
         MapLayers {
             rivers: true,
-            roads: true
+            roads: true,
+            expeditions: false,
         }
     );
 }
@@ -456,12 +458,17 @@ fn quicksave_restores_layer_choices_without_changing_simulation_digest() {
     let mut h = Harness::new(42);
     let digest = h.digest();
     h.core
+        .dispatch(Message::SetMapLayer(MapLayer::Expeditions, true), h.now);
+    h.core
         .dispatch(Message::SetMapLayer(MapLayer::Rivers, true), h.now);
     h.control(Control::Quicksave);
     assert!(!h.core.has_unsaved_changes());
     h.core
+        .dispatch(Message::SetMapLayer(MapLayer::Expeditions, false), h.now);
+    h.core
         .dispatch(Message::SetMapLayer(MapLayer::Roads, true), h.now);
     h.control(Control::Quickload);
+    assert!(h.core.snapshot().layers.expeditions);
     assert!(h.core.snapshot().layers.rivers);
     assert!(!h.core.snapshot().layers.roads);
     assert!(!h.core.has_unsaved_changes());

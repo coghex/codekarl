@@ -128,6 +128,7 @@ type FailureProbe<S> = Box<dyn FnMut(&S) -> Option<String> + Send>;
 /// How the core builds the immutable economy view of a state (design §6).
 pub(crate) type ViewBuilder<S> = Box<dyn Fn(&S, Date) -> EconomyView + Send>;
 pub(crate) type WeatherBuilder<S> = Box<dyn Fn(&S, Date) -> super::slot::HourlyWeather + Send>;
+type ExpeditionBuilder<S> = Box<dyn Fn(&S) -> Vec<super::expedition_map::ExpeditionMap> + Send>;
 
 type ExternalStorage<S> = (
     super::character_storage::Storage,
@@ -158,6 +159,7 @@ pub(crate) struct Core<S, C> {
     failed: bool,
     views: Option<ViewBuilder<S>>,
     weather: Option<WeatherBuilder<S>>,
+    expeditions: Option<ExpeditionBuilder<S>>,
     /// The revision of `view`; `0` while the core has no view.
     revision: u64,
     view: Option<Arc<EconomyView>>,
@@ -314,6 +316,7 @@ where
             failed: false,
             views,
             weather,
+            expeditions: None,
             revision: 0,
             view: None,
             world: 0,
@@ -367,6 +370,16 @@ where
         self
     }
 
+    /// Adds the inexpensive hourly expedition readback to snapshots.
+    pub(crate) fn with_expeditions(
+        mut self,
+        build: impl Fn(&S) -> Vec<super::expedition_map::ExpeditionMap> + Send + 'static,
+    ) -> Self {
+        self.expeditions = Some(Box::new(build));
+        self.publish_if_changed();
+        self
+    }
+
     /// Lets a host callback mark a missed gameplay-VM deadline as a terminal run failure.
     pub(crate) fn with_terminal_probe(
         mut self,
@@ -392,6 +405,12 @@ where
             log_choices: self.log_choices,
             economy_revision: self.revision,
             economy: self.view.clone(),
+            expeditions: Arc::new(
+                self.expeditions
+                    .as_ref()
+                    .filter(|_| self.layers.expeditions)
+                    .map_or_else(Vec::new, |build| build(self.simulation.state())),
+            ),
             weather: self
                 .weather
                 .as_ref()
@@ -459,6 +478,7 @@ where
                 let value = match layer {
                     MapLayer::Rivers => &mut self.layers.rivers,
                     MapLayer::Roads => &mut self.layers.roads,
+                    MapLayer::Expeditions => &mut self.layers.expeditions,
                 };
                 if *value != shown {
                     *value = shown;

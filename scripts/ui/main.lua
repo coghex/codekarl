@@ -56,11 +56,14 @@ windows.update_viewport(view.width, view.height)
 local relayouts = {}
 local help_window = nil
 local places_window = nil
+local expedition_layer = nil
 
 if game ~= nil then
+  if game.expeditions ~= nil then expedition_layer = require("lib.expeditions").new() end
   -- The time bar is created with the first `game_time`: fixed transport controls and speed boxes, then the changing date.
   local time_colours = theme.kind("time_bar")
-  local readout = text.line(0, 0, nil, time_colours.text)
+  local time_group = ui.create_group()
+  local readout = text.line(0, 0, time_group, time_colours.text)
   local time_panel = nil
   local readout_x = nil
   local readout_key = "date_readout"
@@ -79,7 +82,7 @@ if game ~= nil then
   local mode_buttons = {}
   local shown_mode = "off"
   local layers_button, layers_picker
-  local layers = {rivers = false, roads = false}
+  local layers = {rivers = false, roads = false, expeditions = false}
   local speed_boxes = {}
   local time_controls = {}
   local event_button
@@ -98,10 +101,10 @@ if game ~= nil then
     local height = 19 * P
     local x, y = ui.anchor("top_left", width, height, MARGIN, MARGIN, view.width, view.height)
     time_panel:set_rect(x, y, width, height)
-    render.set_hit("time_bar", {{x = time_panel.x, y = time_panel.y, width = time_panel.width, height = time_panel.height}})
+    render.set_hit("time_bar", {{x = time_panel.x, y = time_panel.y, width = time_panel.width, height = time_panel.height}}, time_group)
     text.move(readout, readout_x, y + 4 * P)
     if event_button then event_button:move(readout_x + readout.width * P + 3 * P, y + 2 * P) end
-    render.set_hit(readout_key, {{x = readout_x, y = y + 4 * P, width = readout.width * P, height = readout.height * P}})
+    render.set_hit(readout_key, {{x = readout_x, y = y + 4 * P, width = readout.width * P, height = readout.height * P}}, time_group)
   end
 
   -- Defined below, with the Places window.
@@ -113,6 +116,7 @@ if game ~= nil then
       x = x,
       y = y,
       text = "?",
+      group = time_group,
       kind = "time_bar",
       on_click = function()
         if help_window ~= nil then
@@ -260,7 +264,11 @@ if game ~= nil then
         return left, top - height - P
       end,
       value = function(name) return layers[name] end,
-      change = function(name, shown) layers[name] = shown; game.set_map_layer(name, shown) end,
+      change = function(name, shown)
+        layers[name] = shown
+        if name == "expeditions" and not shown and expedition_layer then expedition_layer:clear() end
+        game.set_map_layer(name, shown)
+      end,
       on_open = function() layers_button:set_selected(true) end,
       on_close = function() layers_button:set_selected(false) end,
     }
@@ -360,21 +368,21 @@ if game ~= nil then
     local height = 19 * P
     local x, y = ui.anchor("top_left", width, height, MARGIN, MARGIN, view.width, view.height)
     -- The panel and broad capture region precede all button regions.
-    time_panel = panel.new{x = x, y = y, width = width, height = height, kind = "time_bar", cut = 6}
-    render.set_hit("time_bar", {{x = x, y = y, width = width, height = height}})
+    time_panel = panel.new{x = x, y = y, width = width, height = height, kind = "time_bar", cut = 6, group = time_group}
+    render.set_hit("time_bar", {{x = x, y = y, width = width, height = height}}, time_group)
     for index = 1, 5 do
       local box_x = x + (48 + 8 * (index - 1)) * P
       local outline = render.create_quad{
         texture = ui.texture("ui/theme/speed_box.png"),
         x = box_x, y = y + 4 * P, width = 6 * P, height = 11 * P,
-        tint = time_colours.speed_box,
+        tint = time_colours.speed_box, group = time_group,
       }
       local filled = index <= time.speed
       local inner_tint = filled and time_colours.speed_fill or "#00000000"
       local inner = render.create_quad{
         texture = ui.texture("ui/theme/white.png"),
         x = box_x + 2 * P, y = y + 6 * P, width = 2 * P, height = 7 * P,
-        tint = inner_tint,
+        tint = inner_tint, group = time_group,
       }
       local key = "speed_" .. index
       local widget = speed_box_widget(index, key)
@@ -382,17 +390,17 @@ if game ~= nil then
       widget.outline, widget.outline_tint = outline, time_colours.speed_box
       widget.inner, widget.inner_tint = inner, inner_tint
       speed_boxes[index] = widget
-      render.set_hit(key, {{x = x + (47 + 8 * (index - 1)) * P, y = y + 2 * P, width = 8 * P, height = 15 * P}})
+      render.set_hit(key, {{x = x + (47 + 8 * (index - 1)) * P, y = y + 2 * P, width = 8 * P, height = 15 * P}}, time_group)
       pointer.register(key, widget)
     end
 
     local row_y = y + 2 * P
-    button.new{x = x + 5 * P, y = row_y, icons = {"rewind"}, icon = "rewind", tooltip = "slower", kind = "time_bar",
+    button.new{x = x + 5 * P, y = row_y, icons = {"rewind"}, icon = "rewind", tooltip = "slower", kind = "time_bar", group = time_group,
       on_click = function() game.control("time_slower") end}
     time_controls.pause = button.new{x = x + 19 * P, y = row_y, icons = {"pause", "play"},
-      icon = time.paused and "play" or "pause", tooltip = time.paused and "play" or "pause", kind = "time_bar",
+      icon = time.paused and "play" or "pause", tooltip = time.paused and "play" or "pause", kind = "time_bar", group = time_group,
       on_click = function() game.control("time_pause") end}
-    button.new{x = x + 31 * P, y = row_y, icons = {"fast_forward"}, icon = "fast_forward", tooltip = "faster", kind = "time_bar",
+    button.new{x = x + 31 * P, y = row_y, icons = {"fast_forward"}, icon = "fast_forward", tooltip = "faster", kind = "time_bar", group = time_group,
       on_click = function() game.control("time_faster") end}
 
     shown_speed = time.speed
@@ -402,11 +410,11 @@ if game ~= nil then
     readout_x = x + date_left * P
     text.set_segments(readout, text.colour_numbers(content, theme.colour("text"), theme.colour("number")))
     text.move(readout, readout_x, y + 4 * P)
-    render.set_hit(readout_key, {{x = readout_x, y = y + 4 * P, width = readout.width * P, height = readout.height * P}})
+    render.set_hit(readout_key, {{x = readout_x, y = y + 4 * P, width = readout.width * P, height = readout.height * P}}, time_group)
     create_places_bar()
     create_modes_bar()
     event_button = button.new{x = readout_x + readout.width * P + 3 * P, y = row_y, icons = {"event_log"}, icon = "event_log",
-      tooltip = "event log", kind = "time_bar", on_click = function() if event_log:is_open() then event_log:close() else event_log:open() end end}
+      tooltip = "event log", kind = "time_bar", group = time_group, on_click = function() if event_log:is_open() then event_log:close() else event_log:open() end end}
   end
 
   -- The location panel: the left third of the screen below the time bar, filled from the economy view of the revision `game_time`
@@ -432,7 +440,7 @@ if game ~= nil then
 
   game.on_time(function(time)
     event_log:refresh(time)
-    layers.rivers, layers.roads = not not time.rivers, not not time.roads
+    layers.rivers, layers.roads, layers.expeditions = not not time.rivers, not not time.roads, not not time.expeditions
     if layers_picker ~= nil then layers_picker:refresh() end
     require("lib.save_screen").set_time(time)
     -- A load replaces the world (and with it every character and what a tooltip over one says): no tooltip outlives it.
@@ -916,6 +924,7 @@ frame.on_update(function(update)
   -- An update's typing is handled first, all of it, and then its pointer events (lib/typing.lua).
   typing.dispatch(update)
   pointer.dispatch(update.pointer)
+  if expedition_layer ~= nil then expedition_layer:update(game.expeditions(expedition_layer.selected or false), update.width, update.height) end
   theme.refresh()
   require("lib.settings_window").update(update)
   listbar.update(update)
@@ -946,6 +955,7 @@ window.on_close_request(function(source)
   log.info("close requested by " .. source)
   -- Escape closes what is open and, with nothing left, opens the pause menu; the close button ends the run.
   if source == "key" and find_popup.current() then find_popup.close(); return false end
+  if source == "key" and expedition_layer and expedition_layer.selected ~= nil then expedition_layer:clear(); return false end
   return menu.close_request(source, view)
 end)
 

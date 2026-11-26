@@ -1364,8 +1364,9 @@ fn the_time_bar_routes_its_buttons_through_game_controls() {
             .any(|entry| entry.starts_with("set_hit readout ")),
         "the former readout-only hit region is removed"
     );
-    assert!(entries[0].starts_with("load ui/theme/cut6_tl_fill.png"));
-    assert!(entries[1].starts_with("create q1 ui/theme/cut6_tl_fill.png 8 8 "));
+    assert_eq!(entries[0], "create_group g1");
+    assert!(entries[1].starts_with("load ui/theme/cut6_tl_fill.png"));
+    assert!(entries[2].starts_with("create q1 ui/theme/cut6_tl_fill.png 8 8 "));
     assert_eq!(
         entries
             .iter()

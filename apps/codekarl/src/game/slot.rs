@@ -24,6 +24,7 @@ pub(crate) use ck_sim::MapLayers;
 pub(crate) enum MapLayer {
     Rivers,
     Roads,
+    Expeditions,
 }
 
 /// Per-place temperature in tenths of a degree and optional wind in knots and compass direction.
@@ -50,6 +51,8 @@ pub(crate) struct SimSnapshot {
     pub(crate) economy_revision: u64,
     /// The economy view of that revision, immutable and published in this same write as the time fields (design §6).
     pub(crate) economy: Option<Arc<EconomyView>>,
+    /// Positions and frozen paths at this hour.
+    pub(crate) expeditions: Arc<Vec<super::expedition_map::ExpeditionMap>>,
     /// Weather computed from the state at this hour, independent of the economy revision.
     pub(crate) weather: HourlyWeather,
     /// Event rows at this revision.
@@ -84,6 +87,7 @@ impl SimSnapshot {
             || self.layers != other.layers
             || self.log_choices != other.log_choices
             || self.economy_revision != other.economy_revision
+            || self.expeditions != other.expeditions
             || self.events_revision != other.events_revision
             || self.world != other.world
     }

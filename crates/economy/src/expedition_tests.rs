@@ -432,6 +432,47 @@ pub(crate) fn trip_expedition(state: &EconomyState) -> &Expedition {
 }
 
 #[test]
+fn map_icon_names_the_moving_vehicle() {
+    let mut rules = herd_rules();
+    let mut state = two_places(&mut rules);
+    state
+        .order_trade(&rules, 0, PEASANT, the_plan(&rules, 6, 5), hours(at(10, 5)))
+        .unwrap();
+    tick(&rules, &mut state, at(10, 5));
+    let expedition = trip_expedition(&state);
+    assert_eq!(
+        expedition.map_vehicle(&rules),
+        Some(kind(&rules, "ox_cart"))
+    );
+    let mut trip = expedition.clone();
+    trip.cargo.fill(0);
+    trip.loaded.fill(0);
+    trip.reckoned.fill(0);
+    trip.groups[0].count = 4;
+    trip.vehicles = vehicles(&rules, &["covered_wagon", "ox_cart"]);
+    trip.reckoned_mode = Mode::Land;
+    assert_eq!(trip.map_vehicle(&rules), Some(kind(&rules, "ox_cart")));
+    trip.vehicles = vehicles(&rules, &["currach", "simple_barge"]);
+    trip.reckoned_mode = Mode::Water;
+    assert_eq!(trip.map_vehicle(&rules), Some(kind(&rules, "simple_barge")));
+    trip.vehicles.clear();
+    trip.reckoned_mode = Mode::Land;
+    assert_eq!(trip.map_vehicle(&rules), None);
+}
+
+#[test]
+fn map_path_split_uses_the_same_distance_as_the_travelling_position() {
+    let mut leg = four_hour_road();
+    leg.path = vec![[0, 0], [100, 0], [100, 300]];
+    leg.along = vec![0, 100, 400];
+    assert_eq!(leg.path_segment(&ratio(1, 2)), Some((1, ratio(1, 3))));
+    assert_eq!(
+        leg.position(&ratio(1, 2)),
+        Some((ratio(100, 1), ratio(100, 1)))
+    );
+}
+
+#[test]
 fn an_expedition_that_arrives_at_11_trades_that_noon_starts_back_and_unloads_in_the_hour_it_comes_home()
  {
     let mut rules = herd_rules();

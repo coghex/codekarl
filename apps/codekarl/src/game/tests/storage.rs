@@ -1393,7 +1393,11 @@ fn layer_saves_and_loads_follow_the_ordered_route() {
             ));
             assert_eq!(
                 h.core.snapshot().layers,
-                ck_sim::MapLayers { rivers, roads }
+                ck_sim::MapLayers {
+                    rivers,
+                    roads,
+                    expeditions: false
+                }
             );
             assert_eq!(h.digest(), digest);
             h.core
@@ -1401,7 +1405,11 @@ fn layer_saves_and_loads_follow_the_ordered_route() {
             h.control(Control::Quickload);
             assert_eq!(
                 h.core.snapshot().layers,
-                ck_sim::MapLayers { rivers, roads }
+                ck_sim::MapLayers {
+                    rivers,
+                    roads,
+                    expeditions: false
+                }
             );
             h.core
                 .dispatch(Message::SetMapLayer(MapLayer::Roads, !roads), h.now);
@@ -1419,7 +1427,8 @@ fn layer_saves_and_loads_follow_the_ordered_route() {
                 h.core.snapshot().layers,
                 ck_sim::MapLayers {
                     rivers,
-                    roads: !roads
+                    roads: !roads,
+                    expeditions: false
                 }
             );
         }

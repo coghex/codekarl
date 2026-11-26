@@ -734,6 +734,7 @@ fn core_over(
     let level_validation = wiring.level_validation();
     let hourly_weather = wiring.weather.clone();
     let fuel_rules = prepared.economy_rules.clone();
+    let expedition_rules = prepared.economy_rules.clone();
     let stretch_ids = prepared
         .simulation
         .state()
@@ -769,6 +770,11 @@ fn core_over(
         })),
         (layers, events, log_choices),
     )
+    .with_expeditions(move |state: &GameState| {
+        expedition_rules.as_deref().map_or_else(Vec::new, |rules| {
+            super::expedition_map::build(&state.economy, rules)
+        })
+    })
     .with_state_validation(move |state: &GameState, date| {
         super::stretch::validate(&state.stretches, &stretch_ids)?;
         level_validation(state, date)?;
@@ -893,6 +899,7 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
     } = prepared;
     let wiring_gameplay = gameplay.clone();
     let fuel_rules = economy_rules.clone();
+    let expedition_rules = economy_rules.clone();
     let (sender, receiver) = channel();
     let controls = SimControls::with_wake(sender.clone(), Arc::clone(&wake));
     let slot = SimSlot::new(wake);
@@ -931,6 +938,11 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
                 })),
                 (layers, events, log_choices),
             )
+            .with_expeditions(move |state: &GameState| {
+                expedition_rules.as_deref().map_or_else(Vec::new, |rules| {
+                    super::expedition_map::build(&state.economy, rules)
+                })
+            })
             .with_state_validation(move |state: &GameState, date| {
                 super::stretch::validate(&state.stretches, &stretch_ids)?;
                 level_validation(state, date)?;
@@ -4836,7 +4848,9 @@ mod switch_replay_tests {
             apply,
         );
         let save = |game: &Simulation<GameState, GameCommand>| {
-            game.save(identity("aa").meta(42)).to_bytes().unwrap()
+            let mut meta = identity("aa").meta(42);
+            meta.layers.expeditions = true;
+            game.save(meta).to_bytes().unwrap()
         };
         let end = GameTime::from_date(Date {
             year: 768,
@@ -4871,6 +4885,11 @@ mod switch_replay_tests {
                 let errors = branch.started.step().unwrap();
                 assert!(errors.is_empty(), "{errors:?}");
                 branch.playing.step_for_tests();
+                assert!(
+                    branch.playing.snapshot().layers.expeditions,
+                    "{}",
+                    branch.label
+                );
                 let digest = unbroken.digest().unwrap();
                 assert_eq!(
                     branch.started.digest().unwrap(),

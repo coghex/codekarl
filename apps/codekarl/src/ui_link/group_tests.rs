@@ -1526,7 +1526,7 @@ fn a_press_at_the_untranslated_position_goes_to_the_map() {
     let summary = rig.deliver();
     assert_eq!(
         text(&summary, "events"),
-        "map_down:false:false",
+        "map_down:false:false,map_click:false:false",
         "the map press is reported for tooltip dismissal"
     );
     assert_eq!(clicks(&summary), 0);
@@ -1577,7 +1577,10 @@ fn a_press_on_the_clipped_half_is_not_a_hit() {
     rig.feed(&[down(135.0, 65.0)]);
     rig.feed(&[up(135.0, 65.0)]);
     let summary = rig.deliver();
-    assert_eq!(text(&summary, "events"), "map_down:false:false");
+    assert_eq!(
+        text(&summary, "events"),
+        "map_down:false:false,map_click:false:false"
+    );
     assert_eq!(clicks(&summary), 0);
 }
 
@@ -1608,7 +1611,10 @@ window.on_opened(function() render.set_group_offset(g, 200, 0) end)
     rig.feed(&[down(315.0, 65.0)]);
     rig.feed(&[up(315.0, 65.0)]);
     let summary = rig.deliver();
-    assert_eq!(text(&summary, "events"), "map_down:false:false");
+    assert_eq!(
+        text(&summary, "events"),
+        "map_down:false:false,map_click:false:false"
+    );
     assert_eq!(clicks(&summary), 0);
 }
 

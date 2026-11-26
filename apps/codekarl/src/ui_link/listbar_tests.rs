@@ -1623,7 +1623,7 @@ fn layers_picker_shares_slot_rows_and_escape_with_list_pickers() {
     let mut rig = rig(
         r#"
 new_window(120, 100) new_bar()
-values = {rivers = false, roads = false}
+values = {rivers = false, roads = false, expeditions = false}
 calls = {}
 layer_bar = lb.layers{
   opener = "layer_opener", position = function() return 300, 200 end,
@@ -1638,6 +1638,9 @@ layer_bar:toggle()
 expect(layer_bar.picker ~= nil)
 eq(layer_bar.picker.rows[1].name, "rivers")
 eq(layer_bar.picker.rows[2].name, "roads")
+eq(layer_bar.picker.rows[3].name, "expeditions")
+local ex, ey, ew, eh = hit_rect(layer_bar.picker.rows[3].key)
+mark("expedition", ex + ew / 2, ey + eh / 2)
 local x, y, w, h = hit_rect(layer_bar.picker.rows[1].key)
 mark("river", x + w / 2, y + h / 2)
 "#,
@@ -1648,6 +1651,10 @@ expect(layer_bar.picker ~= nil and layer_bar.picker.rows[1].tick ~= nil)
             r#"
 eq(calls[2], "riversfalse")
 expect(layer_bar.picker.rows[1].tick == nil)
+"#,
+            r#"
+eq(calls[3], "expeditionstrue")
+expect(layer_bar.picker.rows[3].tick ~= nil)
 expect(lb.close_open())
 eq(layer_bar.picker, nil)
 "#,
@@ -1657,6 +1664,8 @@ eq(layer_bar.picker, nil)
     click(&mut rig, "river");
     rig.opened();
     click(&mut rig, "river");
+    rig.opened();
+    click(&mut rig, "expedition");
     rig.opened();
 }
 

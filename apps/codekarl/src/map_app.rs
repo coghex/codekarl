@@ -113,6 +113,7 @@ pub(crate) struct MapController<R: RiverViewSelector = PreparedRivers> {
     location_names: LocationNames,
     location_details: Vec<(String, u8, bool)>,
     selection: Option<Selection>,
+    empty_clicks: Vec<bool>,
     pointer_position: Option<PointerPosition>,
     hover: Option<Hover>,
     overlay_palette: Vec<ck_map::Rgba8>,
@@ -125,6 +126,7 @@ pub(crate) struct MapController<R: RiverViewSelector = PreparedRivers> {
     scroll_remainder: [i32; 2],
     scroll_direction: [i8; 2],
     camera: Option<Camera>,
+    ui_units: Option<ck_render_2d::ui_scale::UnitMap>,
     /// The scene bridge's metrics generation the camera was last published (or staged) for. A newer generation (the window's points
     /// or pixels changed, even when the view, pan and zoom did not: a change of display scale moves only the pixels) means the
     /// bridge refuses the camera as stale, so it is published again for the current one.
@@ -193,6 +195,29 @@ impl MapController<PreparedRivers> {
 }
 
 impl<R: RiverViewSelector> MapController<R> {
+    pub(crate) fn set_ui_units(&mut self, units: Option<ck_render_2d::ui_scale::UnitMap>) {
+        self.ui_units = units;
+    }
+
+    /// Projects a frozen fixed-point map coordinate into the UI's units.
+    pub(crate) fn project_ui(&self, point: [i64; 2]) -> Option<[f64; 2]> {
+        let camera = self.camera?;
+        let top = camera.top_left();
+        let size = i64::from(STEP_SIZE[usize::from(camera.step)]);
+        let x = (point[0].div_euclid(size) - i64::from(top.x)) * 4;
+        let y = (point[1].div_euclid(size) - i64::from(top.y)) * 4;
+        Some(match self.ui_units {
+            Some(units) => [
+                f64::from(units.x_fixed(x)) / 256.0,
+                f64::from(units.y_fixed(y)) / 256.0,
+            ],
+            None => [
+                f64::from(i32::try_from(x).ok()?),
+                f64::from(i32::try_from(y).ok()?),
+            ],
+        })
+    }
+
     /// Republish the current camera as soon as the ordered layer state changes.
     pub(crate) fn set_layers(&mut self, layers: ck_sim::MapLayers) -> Result<(), String> {
         if self.layers != layers {
@@ -330,6 +355,7 @@ impl<R: RiverViewSelector> MapController<R> {
             location_names,
             location_details,
             selection: None,
+            empty_clicks: Vec::new(),
             pointer_position: None,
             hover: None,
             overlay_palette,
@@ -343,6 +369,7 @@ impl<R: RiverViewSelector> MapController<R> {
             scroll_remainder: [0; 2],
             scroll_direction: [0; 2],
             camera: None,
+            ui_units: None,
             layers: ck_sim::MapLayers::default(),
             published_generation: 0,
             zoom_in_elapsed: Duration::ZERO,
@@ -399,6 +426,7 @@ impl<R: RiverViewSelector> MapController<R> {
         suppress_hover: bool,
         raw_overflow: bool,
     ) -> Result<bool, String> {
+        self.empty_clicks.clear();
         let Some(mut camera) = self.camera else {
             return Ok(false);
         };
@@ -438,8 +466,12 @@ impl<R: RiverViewSelector> MapController<R> {
                 }
                 PointerEvent::ButtonDown { .. } | PointerEvent::ButtonUp { .. } => {}
                 PointerEvent::Move(position) | PointerEvent::Up(position) => {
+                    let mut empty_click = false;
                     let inside = map_pointer_in_view(position, update.mode, update.metrics.points);
                     if !inside && self.drag.is_none() {
+                        if matches!(*event, PointerEvent::Up(_)) {
+                            self.empty_clicks.push(false);
+                        }
                         continue;
                     }
                     if let Some(drag) = &mut self.drag {
@@ -454,20 +486,22 @@ impl<R: RiverViewSelector> MapController<R> {
                         drag.applied = total;
                         if matches!(*event, PointerEvent::Up(_)) {
                             let click = drag.eligible && !drag.dragged;
-                            if click
-                                && inside
-                                && let Some(selected) = self.selected_at(
+                            if click && inside {
+                                if let Some(selected) = self.selected_at(
                                     camera,
                                     position,
                                     update.mode,
                                     update.metrics.points,
-                                )
-                            {
-                                self.selection = Some(selected);
+                                ) {
+                                    self.selection = Some(selected);
+                                } else {
+                                    empty_click = true;
+                                }
                             }
                         }
                     }
                     if matches!(*event, PointerEvent::Up(_)) {
+                        self.empty_clicks.push(empty_click);
                         self.drag = None;
                     }
                 }
@@ -743,6 +777,11 @@ impl<R: RiverViewSelector> MapController<R> {
 
     pub(crate) fn selection(&self) -> Option<Selection> {
         self.selection.clone()
+    }
+
+    /// The empty-map click decision for each routed map release in the latest update.
+    pub(crate) fn take_empty_clicks(&mut self) -> Vec<bool> {
+        std::mem::take(&mut self.empty_clicks)
     }
 
     fn selected_at(
@@ -1159,6 +1198,32 @@ pub(crate) mod tests {
 
     fn expanded_controller() -> MapController {
         expanded_controller_with(400, 320, 24)
+    }
+
+    #[test]
+    fn expedition_projection_follows_camera_and_ui_scale() {
+        let mut controller = expanded_controller();
+        for step in [20, 60] {
+            controller.camera.as_mut().unwrap().step = step;
+            let camera = controller.camera.unwrap();
+            let top = camera.top_left();
+            let size = i64::from(STEP_SIZE[usize::from(step)]);
+            let point = [
+                (i64::from(top.x) + 10) * size,
+                (i64::from(top.y) + 20) * size,
+            ];
+            controller.set_ui_units(None);
+            assert_eq!(controller.project_ui(point), Some([40.0, 80.0]));
+            controller.set_ui_units(Some(ck_render_2d::ui_scale::UnitMap {
+                points: (400, 320),
+                pixels: PixelSize {
+                    width: 800,
+                    height: 640,
+                },
+                k: 2,
+            }));
+            assert_eq!(controller.project_ui(point), Some([80.0, 160.0]));
+        }
     }
 
     fn expanded_controller_with(
@@ -1726,6 +1791,7 @@ pub(crate) mod tests {
             .set_layers(ck_sim::MapLayers {
                 rivers: true,
                 roads: false,
+                expeditions: false,
             })
             .unwrap();
         let check_camera = |controller: &mut MapController, camera: Camera| {
@@ -1841,7 +1907,11 @@ pub(crate) mod tests {
             let mut previous = None;
             for rivers in [false, true] {
                 for roads in [false, true] {
-                    controller.layers = ck_sim::MapLayers { rivers, roads };
+                    controller.layers = ck_sim::MapLayers {
+                        rivers,
+                        roads,
+                        expeditions: false,
+                    };
                     let snapshot = controller
                         .snapshot(camera, controller.bridge.metrics_generation())
                         .unwrap();
@@ -1873,6 +1943,7 @@ pub(crate) mod tests {
             .set_layers(ck_sim::MapLayers {
                 rivers: true,
                 roads: true,
+                expeditions: false,
             })
             .unwrap();
         assert!(!sink.latest().map.unwrap().camera.rivers().is_empty());
@@ -2441,6 +2512,42 @@ assert(scroll_reset == 1, "reset scroll used " .. tostring(scroll_reset))
             ))
             .expect("empty-map click is valid");
         assert_eq!(empty.selection(), None, "empty map has no place to select");
+    }
+
+    #[test]
+    fn empty_click_signal_uses_the_map_gesture_rule() {
+        let mut map = hover_controller();
+        let a = PointerPosition { x: 0, y: 0 };
+        let b = PointerPosition { x: 8 * 256, y: 0 };
+        map.update(&pointer_update(
+            vec![
+                PointerEvent::Down(a),
+                PointerEvent::Move(b),
+                PointerEvent::Up(b),
+            ],
+            Some(b),
+            false,
+            false,
+        ))
+        .unwrap();
+        assert_eq!(map.take_empty_clicks(), vec![false]);
+        map.update(&pointer_update(
+            vec![PointerEvent::Down(a), PointerEvent::Up(a)],
+            Some(a),
+            false,
+            false,
+        ))
+        .unwrap();
+        assert_eq!(map.take_empty_clicks(), vec![true]);
+        let marker = hover_pointer(&mut map);
+        map.update(&pointer_update(
+            vec![PointerEvent::Down(marker), PointerEvent::Up(marker)],
+            Some(marker),
+            false,
+            false,
+        ))
+        .unwrap();
+        assert_eq!(map.take_empty_clicks(), vec![false]);
     }
 
     #[test]
