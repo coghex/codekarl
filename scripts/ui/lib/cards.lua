@@ -3,8 +3,7 @@
 --
 -- **The scroll bar** (CK-299, `lib/scrollbar.lua`). While the items and their gaps are taller than the view the stack has a bar at the
 -- view's right edge, and `draw` is given the row width, `row_w`: the stack's width less the bar's 5 UI pixels (its 3 and a gap of 2). Each
--- item's hit region is as wide. The heights do not depend on the width, so the bar appears or goes only when the items change, and
--- `set_items` then draws every item again at the width it has.
+-- item's hit region is as wide. Width-dependent items are measured again when the bar appears.
 --
 -- **Widgets over an item (CK-305).** An item's hit region is made after its `draw`, so it is above any widget the draw made. A view
 -- that has `raise_hits()` is called after the item's region is set (at each sync, scrolled or not) and puts its widgets' regions above it.
@@ -32,7 +31,8 @@ local function checked_items(items)
   for index = 1, count do
     local item = items[index]
     if type(item) ~= "table" or not finite(item.height) or item.height < 1 or item.height ~= math.floor(item.height)
-      or type(item.draw) ~= "function" or (item.on_click ~= nil and type(item.on_click) ~= "function") then
+      or type(item.draw) ~= "function" or (item.measure ~= nil and type(item.measure) ~= "function")
+      or (item.on_click ~= nil and type(item.on_click) ~= "function") then
       error("cards: item " .. index .. " needs a positive integer height, draw, and optional on_click", 3)
     end
     copy[index] = item
@@ -49,15 +49,26 @@ local function top_of(self, index)
 end
 
 local function measure(self)
-  local total, tops = 0, {}
-  for index, item in ipairs(self.items) do
-    tops[index] = total
-    total = total + item.height * P
-    if index < #self.items then total = total + gap_points(self) end
+  local function at_width(width)
+    local total, tops = 0, {}
+    for index, item in ipairs(self.items) do
+      if item.measure ~= nil then
+        local height = item.measure(width)
+        if not finite(height) or height < 1 or height ~= math.floor(height) then error("cards: invalid measured height", 2) end
+        item.height = height
+      end
+      tops[index] = total
+      total = total + item.height * P
+      if index < #self.items then total = total + gap_points(self) end
+    end
+    return total, tops
   end
+  local total, tops = at_width(self.width)
+  local row_w = scrollbar.row_width(self.width, self.height, total)
+  if row_w < self.width then total, tops = at_width(row_w) end
   self.tops = tops
   self.content_height = total
-  self.row_w = scrollbar.row_width(self.width, self.height, total)
+  self.row_w = row_w
 end
 
 local function max_scroll(self)

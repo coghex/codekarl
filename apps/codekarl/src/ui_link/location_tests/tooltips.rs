@@ -176,13 +176,13 @@ local building = card_object.items[1]
 local cattle_x = 5 + 4
 local pigs_x = 5 + 11 + font.layout("27/36").width + 10
 local left, top = card_object.origin_x + card_object.x, card_object.origin_y + card_object.y + card_object.tops[1]
-note(string.format("cattle_point %g %g", left + cattle_x * P, top + 42 * P))
-note(string.format("pigs_point %g %g", left + (pigs_x + 4) * P, top + 42 * P))
+note(string.format("cattle_point %g %g", left + cattle_x * P, top + 19 * P))
+note(string.format("pigs_point %g %g", left + (pigs_x + 4) * P, top + 19 * P))
 local cattle_count_right = 16 + font.layout("27/36").width
-note(string.format("gap_point %g %g", left + (cattle_count_right + 3) * P, top + 42 * P))
-local content, part = building.tooltip(cattle_x + 4, 42)
+note(string.format("gap_point %g %g", left + (cattle_count_right + 3) * P, top + 19 * P))
+local content, part = building.tooltip(cattle_x + 4, 19)
 note("card_cattle_source title=" .. content.title .. " part=" .. tostring(part))
-content, part = building.tooltip(pigs_x + 4, 42)
+content, part = building.tooltip(pigs_x + 4, 19)
 note("card_pigs_source title=" .. content.title .. " part=" .. tostring(part))"#]);
     rig.opened();
 
@@ -409,27 +409,26 @@ local wage_text = "wage 3.2"
 local wage_left = width - 5 - font.layout(wage_text).width
 tip("building_wage_word", building, wage_left + 1, 4)
 tip("building_wage_value", building, wage_left + font.layout("wage ").width + 1, 4)
-tip("building_method_one", building, 22, 15)
-tip("building_method_two", building, 110, 15)
+local method_x = 17 + font.layout("farm").width + 4
+tip("building_method_one", building, method_x + 1, 4)
 tip("building_housing", building, width - 28, 15)
 tip("building_positions_word", building, 10, 26)
 tip("building_positions_bar", building, positions_bar_x + positions_bar_width // 2, 31)
 tip("building_positions_count", building, count_x + 1, 26)
 tip("building_storage_word", building, storage_x + 1, 26)
 tip("building_storage_bar", building, storage_bar_x + 1, 31)
-tip("building_herd_icon", building, 9, 42)
-tip("building_herd_count", building, 20, 42)
+tip("building_herd_icon", building, 9, 19)
+tip("building_herd_count", building, 20, 19)
 local pigs_x = 5 + 11 + font.layout("27/36").width + 10
-tip("building_pigs_icon", building, pigs_x + 2, 42)
-tip("building_pigs_count", building, pigs_x + 12, 42)"#]);
+tip("building_pigs_icon", building, pigs_x + 2, 19)
+tip("building_pigs_count", building, pigs_x + 12, 19)"#]);
     rig.opened();
     let captured = notes(&rig);
     for expected in [
         "building_kind title=farm part=kind",
         "building_wage_word title=wage part=wage_word",
         "building_wage_value May 769: 3.2 per head (18 paid)|... 13 lines part=wage",
-        "building_method_one title=mixed farming part=mixed_farming",
-        "building_method_two title=coastal subsistence part=coastal_subsistence",
+        "building_method_one title=methods part=methods",
         "building_housing title=housing part=housing",
         "building_positions_word title=position part=positions",
         "building_positions_bar filled 80|open 8 part=staff_bar",
@@ -933,26 +932,25 @@ fn location_tab_words_and_place_tab_open_their_sources_without_a_window_title() 
     );
     let expected = [
         ("tab_1_1", "title=population|"),
-        ("tab_1_2", "peasants 120|"),
-        ("tab_2_1", "title=worker|"),
-        ("tab_2_2", "peasants 120|"),
-        ("tab_3_1", "title=dependent|"),
-        ("tab_3_2", "peasants 120|"),
+        ("tab_2_1", "peasants 120|"),
+        ("tab_2_2", "title=population|"),
+        ("tab_2_3", "peasant "),
+        ("tab_2_4", "title=food days|"),
+        ("tab_3_2", "title=worker|"),
+        ("tab_3_4", "title=dependent|"),
         ("tab_4_1", "title=housing|"),
-        ("tab_4_2", "title=basic housing|"),
-        ("tab_4_3", "basic "),
-        ("tab_4_5", "title=makeshift housing|"),
-        ("tab_4_6", "basic "),
-        ("tab_5_1", "title=crowding|"),
-        ("tab_5_2", "people "),
-        ("tab_6_1", "title=food days|"),
-        ("tab_6_2", "peasant "),
-        ("tab_7_1", "title=building land|"),
-        ("tab_7_2", "in use "),
-        ("tab_8_1", "title=storage|"),
-        ("tab_8_2", "pops "),
-        ("tab_9_1", "title=overflow|"),
-        ("tab_9_2", "nothing lost"),
+        ("tab_5_1", "title=basic housing|"),
+        ("tab_5_2", "basic "),
+        ("tab_6_1", "title=makeshift housing|"),
+        ("tab_6_2", "basic "),
+        ("tab_7_1", "title=crowding|"),
+        ("tab_7_2", "people "),
+        ("tab_9_1", "title=building land|"),
+        ("tab_9_2", "in use "),
+        ("tab_10_1", "title=storage|"),
+        ("tab_10_2", "pops "),
+        ("tab_11_1", "title=overflow|"),
+        ("tab_11_2", "nothing lost"),
     ];
     for (name, expected) in expected {
         assert!(
@@ -965,54 +963,29 @@ fn location_tab_words_and_place_tab_open_their_sources_without_a_window_title() 
 }
 
 #[test]
-fn a_wrapped_housing_continuation_keeps_the_place_class_source() {
+fn housing_figure_keeps_the_place_class_source_and_number_tints() {
     let mut rig = rig(&[
-        "colour_watch = true; time(1, 1); select_place('rowan', 'Rowan'); announce_wrapped_housing_source()",
-        "time(1, 1)",
+        r"colour_watch = true; time(1, 1); select_place('rowan', 'Rowan')
+local rows = require('lib.location').rows(require('lib.location').lines('location', game.place('rowan', 1), 266), 266)
+local found = false
+for _, row in ipairs(rows) do
+  if type(row) == 'table' and row.cells[1] and row.cells[1].text == 'basic' then
+    local content = row.tooltip(0, 0, 2)
+    assert(content ~= nil, 'basic figure has the housing source')
+    found = true
+  end
+end
+assert(found, 'basic housing row')",
     ]);
     rig.opened();
-    rig.deliver_fixture_frame_at(1278, 900, 2);
-    rig.opened();
-    let housing_rows = notes(&rig)
-        .iter()
-        .filter_map(|line| line.strip_prefix("housing_row ").map(str::to_owned))
-        .collect::<Vec<_>>();
-    assert_eq!(
-        housing_rows,
-        vec!["  80/100,", "  makeshift 10/20"],
-        "wrapped housing text matches the old wrap() layout at the same width"
-    );
-    assert!(
-        notes(&rig)
-            .iter()
-            .any(|line| line.starts_with("housing_continuation ")),
-        "a continued housing number retains the housing class source: {:?}",
-        notes(&rig)
-    );
-    assert!(
-        notes(&rig)
-            .iter()
-            .any(|line| line == "housing_continuation_found true"),
-        "the actual place line wraps at this test width: {:?}",
-        notes(&rig)
-    );
     let recorded = notes(&rig);
     assert!(
-        tint_line(&recorded, "makeshift ", "#92ddea", "makeshift "),
-        "wrapped term retains term tint: {recorded:?}"
+        tint_line(&recorded, "makeshift", "#92ddea", "makeshift"),
+        "{recorded:?}"
     );
-    assert!(
-        tint_line(&recorded, "10/20", "#5fb35a", "10"),
-        "wrapped first number retains number tint: {recorded:?}"
-    );
-    assert!(
-        tint_line(&recorded, "10/20", "#ece3cb", "/"),
-        "wrapped slash retains text tint: {recorded:?}"
-    );
-    assert!(
-        tint_line(&recorded, "10/20", "#5fb35a", "20"),
-        "wrapped second number retains number tint: {recorded:?}"
-    );
+    assert!(tint_line(&recorded, "10", "#5fb35a", "10"), "{recorded:?}");
+    assert!(tint_line(&recorded, "/20", "#ece3cb", "/"), "{recorded:?}");
+    assert!(tint_line(&recorded, "/20", "#5fb35a", "20"), "{recorded:?}");
 }
 
 #[test]
@@ -1129,4 +1102,100 @@ note(string.format('horse_point %g %g', left + 20 * P, top + 78 * P))"]);
         seen.iter().any(|s| s.contains("4 / 6")),
         "horse count: {seen:?}"
     );
+}
+
+#[test]
+fn method_card_tooltip_draws_the_breakdown_and_links_each_method() {
+    for split in [false, true] {
+        let setup = if split {
+            "VIEWS[1].cards.buildings[1].methods = {{id='mixed_farming',levels=15},{id='coastal_subsistence',levels=3}}"
+        } else {
+            "VIEWS[1].cards.buildings[1].methods = {{id='mixed_farming',levels=15}}"
+        };
+        let first = format!(
+            r"{setup}
+local ui = require('lib.ui')
+local real_texture = ui.texture
+local textures = {{}}
+ui.texture = function(name) local id = real_texture(name); textures[id] = name; return id end
+local real_quad = render.create_quad
+render.create_quad = function(spec)
+  local name = textures[spec.texture]
+  if name and name:find('ui/location/icon_method_', 1, true) then note('method_quad ' .. name .. ' tint=' .. tostring(spec.tint or '-')) end
+  return real_quad(spec)
+end
+local real_hit = render.set_hit
+render.set_hit = function(key, rects, group)
+  if key:match('^tooltip_span_') and rects and rects[1] then
+    local r = rects[1]; note(string.format('method_link %g %g', r.x + r.width / 2, r.y + r.height / 2))
+  end
+  return real_hit(key, rects, group)
+end
+local text = require('lib.text'); local real_set = text.set
+text.set = function(line, value) real_set(line, value); if capture_methods then note('method_text ' .. value) end end
+capture_methods = true
+time(1, 1); select_place('cards', 'Cards'); tabs_by_title.Cards:select('buildings', true)
+local x = card_object.origin_x + card_object.x + (17 + font.layout('farm').width + 5) * ui.P
+local y = card_object.origin_y + card_object.y + card_object.tops[1] + 4 * ui.P
+note(string.format('method_point %g %g', x, y))"
+        );
+        let mut rig = rig(&[&first]);
+        rig.opened();
+        let point = point_note(&rig, "method_point ");
+        rig.feed(&[PointerEvent::Move(points(point.0, point.1))]);
+        for _ in 0..82 {
+            rig.deliver_fixture_frame_at(1800, 900, 2);
+        }
+        let captured = notes(&rig);
+        assert!(
+            captured.iter().any(|line| line == "method_text methods"),
+            "{captured:?}"
+        );
+        assert!(
+            captured.iter().any(|line| line
+                .contains("method_quad ui/location/icon_method_mixed_farming.png tint=-")),
+            "{captured:?}"
+        );
+        assert!(
+            captured.iter().any(|line| line == "method_text 15"),
+            "{captured:?}"
+        );
+        if split {
+            assert!(
+                captured.iter().any(|line| line.contains(
+                    "method_quad ui/location/icon_method_coastal_subsistence.png tint=-"
+                )),
+                "{captured:?}"
+            );
+            assert!(
+                captured.iter().any(|line| line == "method_text 3"),
+                "{captured:?}"
+            );
+        }
+        let links: Vec<_> = captured
+            .iter()
+            .filter_map(|line| line.strip_prefix("method_link "))
+            .map(|line| {
+                let mut values = line
+                    .split_whitespace()
+                    .map(|value| value.parse::<f64>().unwrap());
+                (values.next().unwrap(), values.next().unwrap())
+            })
+            .collect();
+        assert_eq!(links.len(), if split { 2 } else { 1 }, "{captured:?}");
+        for (link, expected) in links.iter().zip(["mixed farming", "coastal subsistence"]) {
+            let before = notes(&rig).len();
+            rig.feed(&[PointerEvent::Move(points(link.0, link.1))]);
+            for _ in 0..22 {
+                rig.deliver_fixture_frame_at(1800, 900, 2);
+            }
+            assert!(
+                notes(&rig)[before..]
+                    .iter()
+                    .any(|line| line == &format!("method_text {expected}")),
+                "{}",
+                notes(&rig).join("\n")
+            );
+        }
+    }
 }

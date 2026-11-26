@@ -15,24 +15,24 @@ fn herd_counts_use_full_colour_icons_on_cards_and_open_rows() {
     ] {
         assert!(
             card_icons.iter().any(|line| {
-                line == &format!("goodsquad ui/goods/{name}.png {icon_x} 76 18 18 -")
+                line == &format!("goodsquad ui/goods/{name}.png {icon_x} 30 18 18 -")
             }),
-            "card herd {name} icon is at ({},38) UI pixels, untinted 9x9: {card_icons:?}",
+            "card herd {name} icon is at ({},15) UI pixels, untinted 9x9: {card_icons:?}",
             icon_x / 2
         );
         assert!(
-            card_text_with_colour_at(&card_icons, count_x, 74, colour, count),
-            "card herd {name} count is at ({},37) UI pixels with {colour}: {card_icons:?}",
+            card_text_with_colour_at(&card_icons, count_x, 28, colour, count),
+            "card herd {name} count is at ({},14) UI pixels with {colour}: {card_icons:?}",
             count_x / 2
         );
     }
     assert_eq!(
-        card_run_count_at(&card_icons, 236, 74, "#5fb35a", "64"),
+        card_run_count_at(&card_icons, 236, 28, "#5fb35a", "64"),
         2,
         "both maximum herd digits are green: {card_icons:?}"
     );
     assert!(
-        card_run_at(&card_icons, 236, 74, "#ece3cb", "/"),
+        card_run_at(&card_icons, 236, 28, "#ece3cb", "/"),
         "maximum herd separator keeps text colour: {card_icons:?}"
     );
     rig.opened();
@@ -76,7 +76,7 @@ local function tip(name, x, y)
   note(name .. ' ' .. text(content and content.title or content) .. ' part=' .. tostring(part or '-'))
 end
 local goats_x = 5 + 11 + font.layout('27/36').width + 10
-tip('goats_icon_card', goats_x + 1, 42); tip('goats_count_card', goats_x + 12, 42)
+tip('goats_icon_card', goats_x + 1, 19); tip('goats_count_card', goats_x + 12, 19)
 look_buttons.rows.on_click()
 local row = card_object.items[2]
 row.on_click()
@@ -91,7 +91,7 @@ row_tip('goats_icon_row', 20, 50); row_tip('goats_count_row', 30, 50)",
     let card = notes(&rig);
     assert!(
         card.iter()
-            .any(|line| line == "goodsquad ui/goods/fallback/unknown.png 112 76 18 18 -"),
+            .any(|line| line == "goodsquad ui/goods/fallback/unknown.png 112 30 18 18 -"),
         "the card herd icon uses the fallback at the normal location and size: {card:?}"
     );
     assert!(
@@ -464,12 +464,7 @@ fn building_cards_render_mockup_values_and_empty_or_clamped_bars() {
         card_stacks(&rig).get(1).map(String::as_str),
         Some("gap=3 heights=50,39,39,39,39")
     );
-    for text in [
-        "mixed_farming 8, coastal_subsistence 1",
-        "wage 3.2",
-        "housing 3",
-        "80/88",
-    ] {
+    for text in ["wage 3.2", "housing 3", "80/88"] {
         assert!(
             recorded.iter().any(|line| line.contains(text)),
             "missing {text}: {recorded:?}"
@@ -478,9 +473,7 @@ fn building_cards_render_mockup_values_and_empty_or_clamped_bars() {
     for (colour, value) in [
         ("#92ddea", "farm"),
         ("#92ddea", "wage "),
-        ("#92ddea", "mixed_farming"),
         ("#5fb35a", "3.2"),
-        ("#5fb35a", "8"),
         ("#5fb35a", "27"),
         ("#5fb35a", "36"),
         ("#9a927e", "/"),
@@ -822,4 +815,149 @@ fn an_overflowing_card_stack_draws_its_frame_and_right_aligned_numbers_5_pixels_
     assert_eq!(field(&over_tip, "at_full_edge"), "nil", "{over_tip}");
     assert_eq!(field(&fit_tip, "row"), field(&fit_tip, "full"), "{fit_tip}");
     assert_eq!(field(&fit_tip, "at_full_edge"), "size", "{fit_tip}");
+}
+
+#[test]
+fn building_card_remeasures_and_keeps_method_and_herd_targets() {
+    let mut rig = rig(&[r"
+VIEWS[1].cards.buildings[1].kind = 'demesne'
+VIEWS[1].cards.buildings[1].wage = 12500
+VIEWS[1].cards.buildings[1].herds = {
+  {species='cattle', head=27, maximum=36}, {species='pigs', head=64, maximum=64},
+  {species='sheep', head=10, maximum=20}, {species='horses', head=12, maximum=20}}
+time(1, 1); select_place('cards', 'Cards'); tabs_by_title.Cards:select('buildings', true)
+local item = card_object.items[1]
+assert(item.measure(133 * require('lib.ui').P) == 61)
+item.draw(require('lib.ui').create_group(), 0, 0, 133 * require('lib.ui').P)
+local method_x = 17 + font.layout('demesne').width + 4
+local tip, part = item.tooltip(method_x + 1, 4)
+assert(tip.title == 'methods' and part == 'methods' and #tip == 2)
+assert(tip[1][1].icon:match('mixed_farming'))
+local wage_left = 133 - 5 - font.layout('wage 12.5').width
+assert(method_x + 9 + 8 <= wage_left, 'method and wage have their eight pixel gap')
+local wage, wage_part = item.tooltip(wage_left + font.layout('wage ').width + 1, 4)
+assert(wage ~= nil and wage_part == 'wage', 'wage value stays reachable')
+local horses = 5 + 11 + font.layout('10/20').width + 10
+local horse_tip, horse_part = item.tooltip(horses + 1, 49)
+assert(horse_tip ~= nil and horse_part == 'horses')
+local building = VIEWS[1].cards.buildings[1]
+building.kind = 'extraordinarily long building'
+building.herds = {}
+assert(item.measure(133 * require('lib.ui').P) == 39)
+item.draw(require('lib.ui').create_group(), 0, 0, 133 * require('lib.ui').P)
+local fallback, fallback_part = item.tooltip(6, 15)
+assert(fallback ~= nil and fallback.title == 'methods' and fallback_part == 'methods')
+building.herds = {{species='cattle', head=1, maximum=1}}
+assert(item.measure(133 * require('lib.ui').P) == 39, 'herd fits after the moved method')
+item.draw(require('lib.ui').create_group(), 0, 0, 133 * require('lib.ui').P)
+local moved, moved_part = item.tooltip(6, 15)
+assert(moved ~= nil and moved.title == 'methods' and moved_part == 'methods')
+local icon, icon_part = item.tooltip(19, 16)
+local count, count_part = item.tooltip(30, 15)
+assert(icon ~= nil and icon_part == 'cattle', 'herd icon follows the method')
+assert(count ~= nil and count_part == 'cattle', 'herd count follows its icon')
+"]);
+    rig.opened();
+}
+
+#[test]
+fn location_method_and_demesne_art_matches_the_approved_pixels() {
+    for (name, expected) in [
+        ("coastal_subsistence", 0x4569_4a9d_dc92_abb9_u64),
+        ("demesne_farming", 0x3a77_7b05_6a90_6b8d),
+        ("mixed_farming", 0x684f_d0f3_ca29_42fa),
+        ("monastic_farming", 0x1d83_fe2d_8e57_f825),
+        ("monastic_fishing", 0x0b28_1040_6517_519e),
+        ("split", 0x21b4_81e3_6ee5_44a5),
+        ("turf_cutting", 0x3132_bfc4_2155_9892),
+        ("wood_focus", 0x07bb_7c87_6c5e_2b71),
+        ("demesne", 0x40fa_7500_bbd6_b079),
+    ] {
+        let file = if name == "demesne" {
+            "icon_demesne.png".to_owned()
+        } else {
+            format!("icon_method_{name}.png")
+        };
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../assets/ui/location")
+            .join(file);
+        let mut reader =
+            png::Decoder::new(std::io::BufReader::new(std::fs::File::open(path).unwrap()))
+                .read_info()
+                .unwrap();
+        let mut pixels = vec![0; reader.output_buffer_size().unwrap()];
+        let info = reader.next_frame(&mut pixels).unwrap();
+        assert_eq!((info.width, info.height), (9, 11));
+        let hash = pixels[..info.buffer_size()]
+            .iter()
+            .fold(0xcbf2_9ce4_8422_2325_u64, |h, byte| {
+                (h ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
+            });
+        assert_eq!(hash, expected, "{name}");
+    }
+}
+
+#[test]
+fn building_cards_remeasure_at_the_scrollbar_threshold() {
+    let mut rig = rig(&[r"
+local building = VIEWS[1].cards.buildings[1]
+building.herds = {{species='cattle', head=10000, maximum=100000}}
+time(1, 1); select_place('cards', 'Cards'); tabs_by_title.Cards:select('buildings', true)
+local ui, cards = require('lib.ui'), require('lib.cards')
+local item = card_object.items[1]
+local width = 5 + 11 + font.layout('10000/100000').width + 8 + 5 + font.layout('housing 3').width
+assert(item.measure(width * ui.P) == 39, 'eight pixel gap fits')
+assert(item.measure((width - 5) * ui.P) == 50, 'scrollbar moves herd to bottom')
+local stack = cards.new{window=window_objects.Cards, x=0, y=0, width=width * ui.P, height=39 * ui.P, gap=3, items={item}}
+assert(stack.row_w == width * ui.P and stack.items[1].height == 39)
+local dummy = {height=1, draw=function() return nil end}
+stack:set_items({item, dummy})
+assert(stack.row_w == (width - 5) * ui.P and stack.items[1].height == 50)
+assert(stack.tops[2] == 53 * ui.P, 'next card follows the measured frame')
+local herd, part = item.tooltip(6, 39)
+assert(herd ~= nil and part == 'cattle', 'herd icon follows bottom line')
+local housing = item.tooltip(width - 5 - 5 - font.layout('housing 3').width + 1, 15)
+assert(housing ~= nil and housing.title == 'housing')
+stack:set_items({item})
+assert(stack.row_w == width * ui.P and stack.items[1].height == 39)
+local herd_again, again_part = item.tooltip(6, 15)
+assert(herd_again ~= nil and again_part == 'cattle', 'herd returns beside housing')
+stack:destroy()
+"]);
+    rig.opened();
+}
+
+#[test]
+fn building_cards_draw_the_selected_method_and_demesne_icons() {
+    let mut rig = rig(&[r"
+local building = VIEWS[1].cards.buildings[1]
+building.kind = 'demesne'
+time(1, 1); select_place('cards', 'Cards'); tabs_by_title.Cards:select('buildings', true)
+local ui = require('lib.ui')
+local real_texture, real_quad = ui.texture, render.create_quad
+local texture_names, seen = {}, {}
+ui.texture = function(name) local token = real_texture(name); texture_names[token] = name; return token end
+render.create_quad = function(spec)
+  local name = texture_names[spec.texture]
+  if name and name:find('ui/location/icon_', 1, true) then seen[name] = (seen[name] or 0) + 1 end
+  return real_quad(spec)
+end
+local function draw(item)
+  seen = {}
+  local view = item.draw(ui.create_group(), 0, 0, 200 * ui.P)
+  view:destroy()
+  return seen
+end
+building.methods = {{id='mixed_farming', levels=15}}
+local single = draw(card_object.items[1])
+assert(single['ui/location/icon_method_mixed_farming.png'] == 1 and single['ui/location/icon_method_split.png'] == nil, 'single method')
+building.methods = {{id='mixed_farming', levels=15}, {id='coastal_subsistence', levels=3}}
+local split = draw(card_object.items[1])
+assert(split['ui/location/icon_method_split.png'] == 1 and split['ui/location/icon_method_mixed_farming.png'] == nil, 'split method')
+local storehouse = draw(card_object.items[3])
+for name in pairs(storehouse) do assert(not name:find('icon_method_', 1, true), 'storehouse has no method icon') end
+local demesne = draw(card_object.items[1])
+assert(demesne['ui/location/icon_demesne.png'] == 1, 'demesne kind icon')
+"]);
+    rig.opened();
 }

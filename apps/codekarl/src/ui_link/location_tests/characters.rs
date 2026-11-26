@@ -1000,3 +1000,23 @@ pub(crate) fn real_data_notes(cards: &str, record: &str, id: i64, rank: usize) -
     rig.opened();
     mine(&rig)
 }
+
+#[test]
+fn character_heading_uses_the_divider_gold_and_its_own_outline() {
+    let mut rig = characters_rig(&[
+        "ctime(1, 1, 0) announce_bars()",
+        "announce_cards() announce_ledger_origin() forget_drawn()",
+        r"local word
+for _, item in ipairs(drawn_texts) do if item.text == 'body' then word = item; break end end
+assert(word ~= nil and word.colour == require('lib.theme').kind('place').divider, 'heading is gold')
+local found = false
+for _, rect in ipairs(drawn_rects) do
+  if rect.y == word.y + 4 and rect.colour == require('lib.theme').kind('window').outline then found = true end
+end
+assert(found, 'character heading rule uses its own outline')",
+    ]);
+    open_characters(&mut rig);
+    let (x, y) = card_point(&rig, 1);
+    click(&mut rig, x, y);
+    rig.opened();
+}

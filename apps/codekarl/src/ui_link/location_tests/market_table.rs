@@ -22,35 +22,29 @@ fn the_time_bar_and_location_tab_split_terms_numbers_and_ordinary_punctuation() 
         "{recorded:?}"
     );
     assert!(
-        tint_line(&recorded, "people: ", "#92ddea", "people: "),
+        tint_line(&recorded, "people", "#92ddea", "people"),
         "{recorded:?}"
     );
     assert!(
-        tint_line(&recorded, "120", "#5fb35a", "120"),
+        tint_line(&recorded, "120 ", "#5fb35a", "120"),
         "{recorded:?}"
     );
     assert!(
-        tint_line(&recorded, "basic ", "#92ddea", "basic "),
+        tint_line(&recorded, "basic", "#92ddea", "basic"),
+        "{recorded:?}"
+    );
+    assert!(tint_line(&recorded, "80", "#5fb35a", "80"), "{recorded:?}");
+    assert!(tint_line(&recorded, "/100", "#ece3cb", "/"), "{recorded:?}");
+    assert!(
+        tint_line(&recorded, "215 ", "#5fb35a", "215"),
         "{recorded:?}"
     );
     assert!(
-        tint_line(&recorded, "80/100", "#5fb35a", "80"),
+        tint_line(&recorded, "food days", "#92ddea", "food days"),
         "{recorded:?}"
     );
     assert!(
-        tint_line(&recorded, "80/100", "#ece3cb", "/"),
-        "{recorded:?}"
-    );
-    assert!(
-        tint_line(&recorded, "215 days", "#5fb35a", "215"),
-        "{recorded:?}"
-    );
-    assert!(
-        tint_line(&recorded, "215 days", "#ece3cb", " days"),
-        "{recorded:?}"
-    );
-    assert!(
-        tint_line(&recorded, "4200 / 24200 m²", "#ece3cb", " m²"),
+        tint_line(&recorded, "/24200 m²", "#ece3cb", " m²"),
         "{recorded:?}"
     );
 }
@@ -439,7 +433,7 @@ const MARKET_HELPERS: &str = r#"
 function figures()
   local texts = {}
   for _, item in ipairs(list_object.items) do
-    if item.bar ~= nil then break end
+    if item.cells[1] ~= nil and item.cells[1].text == "good" then break end
     local cells = {}
     for _, cell in ipairs(item.cells) do cells[#cells + 1] = cell.text end
     texts[#texts + 1] = table.concat(cells, "|")
@@ -449,7 +443,7 @@ end
 -- The list item of the first goods row.
 function first_goods_item()
   for _, item in ipairs(list_object.items) do
-    if item.bar ~= nil then return item end
+    if item.icon ~= nil then return item end
   end
 end
 "#;
@@ -669,7 +663,7 @@ local px = panel_bar.window.content_width // P
 -- 60 goods and the figures are more rows than the list holds: its bar shows, and its rows are 5 pixels narrower.
 expect_that(#list_object.items * 26 > list_object.view_height, 'more rows than fit')
 local at = 1
-while list_object.items[at].cells[1].text ~= 'good' do at = at + 1 end
+while not (list_object.items[at].cells[1] and list_object.items[at].cells[1].text == 'good') do at = at + 1 end
 local header = list_object.items[at]
 eq_that(header.cells[1].text, 'good', 'the header')
 eq_that(header.cells[2].x, px - 5 - 82, 'prices end at the row width less 82')
@@ -681,7 +675,7 @@ eq_that(row.bar.x, px - 5 - 48) eq_that(row.bar.width, 46, 'the balance bar stay
 expect_that(row.bar.x + row.bar.width <= px - 5, 'and clear of the gap and the track')
 local widest = 0
 for _, item in ipairs(list_object.items) do
-  if item.bar ~= nil then
+  if item.icon ~= nil then
     widest = math.max(widest, font.layout(item.cells[2].text).width)
     expect_that(font.layout(item.cells[1].text).width + 16 + widest + 4 <= px - 5 - 82 + widest, 'the name leaves its gap before the widest price')
   end
@@ -696,7 +690,7 @@ note('tab ready')",
 local px = panel_bar.window.content_width // P
 expect_that(#list_object.items * 26 <= list_object.view_height, 'three goods fit')
 local at = 1
-while list_object.items[at].cells[1].text ~= 'good' do at = at + 1 end
+while not (list_object.items[at].cells[1] and list_object.items[at].cells[1].text == 'good') do at = at + 1 end
 local header = list_object.items[at]
 eq_that(header.cells[2].x, px - 82, 'the full width again')
 eq_that(header.cells[3].x, px - 56) eq_that(header.cells[4].x, px - 48)
@@ -705,7 +699,7 @@ eq_that(spy_widths[#spy_widths], 'rows ' .. (px * 2), 'wrapped at the full width
             r"panel_bar:clear()
 local px = panel_bar.window.content_width // P
 local at = 1
-while list_object.items[at].cells[1].text ~= 'good' do at = at + 1 end
+while not (list_object.items[at].cells[1] and list_object.items[at].cells[1].text == 'good') do at = at + 1 end
 local header = list_object.items[at]
 eq_that(header.cells[2].x, px - 5 - 82, 'clearing the filter gives the narrower columns back')
 eq_that(list_object.items[at + 1].bar.x, px - 5 - 48)",
@@ -772,7 +766,7 @@ fn a_width_where_the_bar_forces_one_more_wrapped_line_lays_the_figures_out_again
  {
     // The panel is a third of the window: scan the window's width until the figures wrap into more rows at the row width than at the full
     // width (a line that fits the full width and not the 5 pixels less).
-    let found = (1200..=1800).step_by(3).find_map(|width| {
+    let found = (864..=1300).step_by(3).find_map(|width| {
         let mut rig = rig_with_prelude_at(
             &format!("{PANEL_BARS}\n{ROWS_SPY}"),
             &["const_goods() time(1, 1); select_place('rowan', 'Rowan') note_wrap('probe')"],

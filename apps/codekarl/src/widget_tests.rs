@@ -4608,3 +4608,46 @@ fn time_bar_event_button_opens_and_closes_the_log() {
             .any(|line| line.starts_with("destroy_group"))
     );
 }
+
+#[test]
+fn tooltip_icon_spans_are_measured_untinted_and_preserve_links() {
+    let mut readout = Readout::script_with_glossary_and_tooltips(
+        r"
+local pointer = require('lib.pointer')
+local tooltip = require('lib.tooltip')
+pointer.register('methods_target', {on_event=function() end, on_hover=function() end, on_overflow=function() end})
+render.set_hit('methods_target', {{x=20, y=20, width=80, height=24}})
+tooltip.attach('methods_target', function() return {title='methods',
+  {{icon='ui/location/icon_method_mixed_farming.png'}, ' ', {text='mixed farming', term='population'}, ' level 15'},
+  {{icon='ui/location/icon_method_coastal_subsistence.png'}, ' ', {text='coastal subsistence', term='population'}, ' level 3'}} end)
+frame.on_update(function(update) pointer.dispatch(update.pointer); tooltip.update(update) end)
+",
+        "[term.population]\ntitle = \"population\"\ntext = \"People.\"\n",
+        TooltipsConfig {
+            delay: 0.0,
+            lock: "timer",
+            lock_timer: 0.01,
+        },
+    );
+    for _ in 0..3 {
+        readout.update(
+            800,
+            600,
+            Some(pointer_packet("methods_target", 32.0, Vec::new())),
+        );
+    }
+    let entries = readout.entries();
+    for icon in [
+        "icon_method_mixed_farming.png",
+        "icon_method_coastal_subsistence.png",
+    ] {
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.starts_with("create ") && entry.contains(icon)),
+            "{icon}: {entries:?}"
+        );
+    }
+    assert_eq!(current_hits(&entries, "tooltip_span_").len(), 2);
+    assert_eq!(tooltip_panel_rect(&readout).expect("methods panel").3, 70);
+}
