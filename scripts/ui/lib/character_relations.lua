@@ -143,7 +143,7 @@ end
 
 -- A portrait cell at (x, y): the frame and the unknown portrait, the dead dimmed; an empty dim cell for `nil`.
 local function paint_cell(result, group, x, y, person)
-  draw.frame(result, group, x, y, CELL, CELL, theme.colour("tile"), theme.kind("window").outline)
+  draw.frame(result, group, x, y, CELL, CELL, theme.colour("tile"), theme.kind("social").outline)
   if person == nil then return end
   local ink = person.live and theme.colour("dim") or theme.colour("track")
   draw.image(result, group, "unknown_card", x, y, CELL, CELL, ink)
@@ -323,7 +323,7 @@ local function others_section(record, inner, kit)
     end
     if slot ~= nil then
       local x, cy = (slot % columns) * pitch, y + 10 + (slot // columns) * (CELL + UNDER)
-      draw.frame(result, group, x, cy, CELL, CELL, theme.colour("tile"), theme.kind("window").outline)
+      draw.frame(result, group, x, cy, CELL, CELL, theme.colour("tile"), theme.kind("social").outline)
       local label = "+" .. #rest
       local used = draw.width(label, "small")
       draw.text(result, group, x + (CELL - used) // 2, cy + (CELL - 7) // 2, label, theme.colour("text"), "small")

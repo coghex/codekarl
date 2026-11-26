@@ -348,6 +348,10 @@ if game ~= nil then
     end
   end
 
+  theme.watch(speed_boxes, function(boxes)
+    for _, box in ipairs(boxes) do update_speed_box(box) end
+  end)
+
   local function create_bar(time, content)
     local help_width = select(1, button.measure("?"))
     local date_left = 90 + help_width / P + 4
@@ -604,9 +608,9 @@ if game ~= nil then
       header = {}
       header.lay = function(width)
         header.cells = {
-          {text = "name", x = 1, align = "left", colour = theme.colour("term")},
-          {text = "people", x = width - 37, align = "right", colour = theme.colour("term")},
-          {text = "food", x = width - 3, align = "right", colour = theme.colour("term")},
+          {text = "name", x = 1, align = "left", colour = theme.colour("term"), identity = true},
+          {text = "people", x = width - 37, align = "right", colour = theme.colour("term"), identity = true},
+          {text = "food", x = width - 3, align = "right", colour = theme.colour("term"), identity = true},
         }
       end
       header.tooltip = function(_, _, cell)
@@ -624,7 +628,7 @@ if game ~= nil then
           if place.state == "abandoned" then label = label .. " (" .. place.kind:gsub("_", " ") .. ")" end
           row.cells = {{text = clip_column(label, width - 72), x = 1, align = "left"}}
           if place.state == "abandoned" then
-            row.cells[2] = {text = "abandoned", x = width - 3, align = "right", colour = theme.colour("term")}
+            row.cells[2] = {text = "abandoned", x = width - 3, align = "right", colour = theme.colour("term"), identity = true}
           elseif place_view ~= nil and #place_view.pops > 0 then
             row.cells[2] = {text = tostring(place_view.workers + place_view.dependents), x = width - 37, align = "right"}
             row.cells[3] = {text = tostring(place_view.food_days) .. "d", x = width - 3, align = "right"}
@@ -658,12 +662,12 @@ if game ~= nil then
               sort = {type = pop.kind, culture = pop.culture, people = pop.workers + pop.dependents, place = place.name},
               filter = {type = pop.kind, religion = pop.religion, culture = pop.culture},
               stripe = pop_colour(pop.kind),
-              icon = {name = "pops", colour = pop_colour(pop.kind)},
+              icon = {name = "pops", colour = pop_colour(pop.kind), identity = true},
               tag = go_to.tag("pop", go_to.pop_id(place.id, pop_index - 1), revision, current_world),
             }
             row.lay = function(width)
               row.cells = {
-                {text = clip_column(kind_culture, width - 120), x = 16, align = "left", colour = pop_colour(pop.kind)},
+                {text = clip_column(kind_culture, width - 120), x = 16, align = "left", colour = pop_colour(pop.kind), identity = true},
                 {text = tostring(pop.workers + pop.dependents), x = width - 70, align = "right"},
                 {text = clip_column(place.name, 63), x = width - 66, align = "left"},
               }
@@ -892,6 +896,7 @@ frame.on_update(function(update)
   -- An update's typing is handled first, all of it, and then its pointer events (lib/typing.lua).
   typing.dispatch(update)
   pointer.dispatch(update.pointer)
+  theme.refresh()
   require("lib.settings_window").update(update)
   listbar.update(update)
   find_popup.update(update, view)

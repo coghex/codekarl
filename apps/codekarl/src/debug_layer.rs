@@ -459,7 +459,7 @@ mod tests {
         .expect("resource service");
         let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
         let fonts = Arc::new(crate::font::load_all(&assets).expect("shipped fonts"));
-        let theme = theme_text.map(|text| crate::theme::parse(text).expect("test theme"));
+        let theme = theme_text.map(crate::theme::partial_for_test);
         let now = Arc::new(AtomicU64::new(0));
         let clock: ck_window::UptimeNs = {
             let now = Arc::clone(&now);

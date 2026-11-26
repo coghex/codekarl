@@ -761,8 +761,8 @@ fn a_buttons_frame_is_eleven_quads_below_its_glyphs_and_its_looks_are_tints_only
     }
     for (mark, fill, line) in [
         (1, "#15110a", "#6e130f"), // normal
-        (2, "#15110a", "#a8261c"), // hover
-        (3, "#a8261c", "#a8261c"), // pressed
+        (2, "#15110a", "#a71d17"), // hover
+        (3, "#a71d17", "#a71d17"), // pressed
         (4, "#15110a", "#6e130f"), // the up outside ends the press, and the pointer is not over: normal again
     ] {
         assert_eq!(
@@ -862,10 +862,10 @@ fn a_button_is_hover_when_the_pointer_is_over_it_pressed_on_a_down_and_clicks_on
     ));
     // over: hover (the outline takes the hot colour)
     assert_eq!(readout.after_mark(1), Vec::<String>::new());
-    assert_eq!(readout.tints_after_mark(1), retint(6, 11, "#a8261c"));
+    assert_eq!(readout.tints_after_mark(1), retint(6, 11, "#a71d17"));
     // down: pressed (the fill takes the hot colour too; the text colour stays, `pressed_text` being the text colour)
     assert_eq!(readout.after_mark(2), Vec::<String>::new());
-    assert_eq!(readout.tints_after_mark(2), retint(1, 5, "#a8261c"));
+    assert_eq!(readout.tints_after_mark(2), retint(1, 5, "#a71d17"));
     // no click yet, and a move while pressed changes nothing on screen
     assert_eq!(readout.after_mark(3), ["record clicks 0"]);
     assert_eq!(readout.tints_after_mark(3), ["record clicks 0"]);
@@ -991,7 +991,7 @@ fn an_over_only_packet_changes_the_look_and_an_identical_one_makes_no_scene_call
              send(packet(key, {{}}), false)\nmark()\n\
              send(packet(key, {{}}, false, true), false)\nmark()"
     ));
-    assert_eq!(readout.tints_after_mark(1), retint(6, 11, "#a8261c"));
+    assert_eq!(readout.tints_after_mark(1), retint(6, 11, "#a71d17"));
     // identical: unchanged, no scene call (`held` alone is not a change)
     assert!(readout.after_mark(1).is_empty());
     assert!(readout.after_mark(2).is_empty());
@@ -1049,11 +1049,11 @@ fn an_overflow_packet_with_no_events_and_the_button_up_releases_every_pressed_wi
     // both buttons were pressed: each frame's fill and line are hot (the first button's quads are q1 to q13, the second's q14 to q26)
     assert_eq!(
         frame_colours(&readout, 1, Some(1)),
-        look("#a8261c", "#a8261c")
+        look("#a71d17", "#a71d17")
     );
     assert_eq!(
         frame_colours(&readout, 14, Some(1)),
-        look("#a8261c", "#a8261c")
+        look("#a71d17", "#a71d17")
     );
     // after the packet both are normal again, and nobody clicked
     assert_eq!(frame_colours(&readout, 1, None), look("#15110a", "#6e130f"));
@@ -1074,14 +1074,14 @@ fn an_overflow_packet_clicks_nothing_even_with_a_retained_down_and_up() {
     assert_eq!(
         readout.tints_after_mark(1),
         [
-            retint(1, 5, "#a8261c"),
+            retint(1, 5, "#a71d17"),
             // the first press: hover was not yet told, so the line was normal and goes hot with the fill
-            retint(6, 11, "#a8261c"),
+            retint(6, 11, "#a71d17"),
             // released: back to normal
             retint(1, 5, "#15110a"),
             retint(6, 11, "#6e130f"),
             // then hover (the pointer is over the button)
-            retint(6, 11, "#a8261c"),
+            retint(6, 11, "#a71d17"),
             vec!["record clicks 0".to_owned()],
         ]
         .concat()
@@ -1104,7 +1104,7 @@ fn an_overflow_packet_that_ends_held_releases_the_pressed_button_and_the_next_cl
     // after the overflow packet the button is not pressed: it has the hover look (the pointer is over it)
     assert_eq!(
         frame_colours(&readout, 1, Some(1)),
-        look("#15110a", "#a8261c")
+        look("#15110a", "#a71d17")
     );
 }
 
@@ -1117,7 +1117,7 @@ fn the_cancel_of_a_gesture_clears_the_pressed_state_without_a_click() {
     // pressed at the mark; the cancel clears the press, and the pointer is not over the button
     assert_eq!(
         frame_colours(&readout, 1, Some(1)),
-        look("#a8261c", "#a8261c")
+        look("#a71d17", "#a71d17")
     );
     assert_eq!(frame_colours(&readout, 1, None), look("#15110a", "#6e130f"));
     assert_eq!(
@@ -1722,7 +1722,7 @@ fn speed_boxes_follow_simulation_state_and_only_changed_boxes_are_retinted() {
             let expected: Vec<String> = (1..=5)
                 .map(|index| {
                     if index <= speed {
-                        "#a8261c"
+                        "#a71d17"
                     } else {
                         "#00000000"
                     }
@@ -1773,7 +1773,7 @@ fn speed_boxes_follow_simulation_state_and_only_changed_boxes_are_retinted() {
     );
     assert_eq!(
         speed_inner_tints(&readout, 2),
-        ["#a8261c", "#a8261c", "#a8261c", "#00000000", "#00000000"]
+        ["#a71d17", "#a71d17", "#a71d17", "#00000000", "#00000000"]
     );
     let before_speed = readout.tints().len();
     readout.deliver(&crate::readout_tests::snapshot(
@@ -1787,10 +1787,10 @@ fn speed_boxes_follow_simulation_state_and_only_changed_boxes_are_retinted() {
         1,
         "one newly filled box while paused: {changed:?}"
     );
-    assert!(changed[0].ends_with(" #a8261c"), "{changed:?}");
+    assert!(changed[0].ends_with(" #a71d17"), "{changed:?}");
     assert_eq!(
         speed_inner_tints(&readout, 2),
-        ["#a8261c", "#a8261c", "#a8261c", "#a8261c", "#00000000"]
+        ["#a71d17", "#a71d17", "#a71d17", "#a71d17", "#00000000"]
     );
 }
 
@@ -1974,7 +1974,7 @@ fn speed_box_hover_recolors_its_outline_and_press_fills_its_inner_bar() {
     assert!(
         readout
             .tints()
-            .contains(&format!("set_tint {outline_id} #a8261c")),
+            .contains(&format!("set_tint {outline_id} #a71d17")),
         "hover tints: {:?}",
         readout.tints()
     );
@@ -1982,7 +1982,7 @@ fn speed_box_hover_recolors_its_outline_and_press_fills_its_inner_bar() {
     assert!(
         readout
             .tints()
-            .contains(&format!("set_tint {inner_id} #a8261c"))
+            .contains(&format!("set_tint {inner_id} #a71d17"))
     );
 }
 

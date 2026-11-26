@@ -82,7 +82,7 @@ local function identity_section(data, inner, kit)
     }
     -- The button: a frame, the ledger's location icon and the words.
     local left = inner - button_width
-    draw.frame(result, group, left, y, button_width, 13, theme.colour("tile"), theme.kind("window").outline)
+    draw.frame(result, group, left, y, button_width, 13, theme.colour("tile"), theme.kind("social").outline)
     local icon = render.create_quad{
       texture = ui.texture("ui/theme/icon_location.png"), x = (left + 3) * P, y = (y + 1) * P, width = 9 * P, height = 11 * P,
       group = group, tint = theme.colour("text"),
@@ -195,9 +195,9 @@ local function characters_section(data, inner, kit)
       local x, top = column * pitch, y + 10 + row * (CELL + UNDER)
       local current = card.id == kit.subject.id
       if current then
-        draw.frame(result, group, x - 1, top - 1, CELL + 2, CELL + 2, theme.colour("tile"), theme.kind("window").hot)
+        draw.frame(result, group, x - 1, top - 1, CELL + 2, CELL + 2, theme.colour("tile"), theme.kind("social").hot)
       end
-      draw.frame(result, group, x, top, CELL, CELL, theme.colour("tile"), theme.kind("window").outline)
+      draw.frame(result, group, x, top, CELL, CELL, theme.colour("tile"), theme.kind("social").outline)
       draw.image(result, group, "unknown_card", x, top, CELL, CELL, theme.colour("dim"))
       hits[#hits + 1] = {
         part = "portrait", x = x, y = top - y, width = CELL, height = CELL, content = portrait_tip(card),
@@ -208,7 +208,7 @@ local function characters_section(data, inner, kit)
       local index = #shown
       local column, row = index % columns, index // columns
       local x, top = column * pitch, y + 10 + row * (CELL + UNDER)
-      draw.frame(result, group, x, top, CELL, CELL, theme.colour("tile"), theme.kind("window").outline)
+      draw.frame(result, group, x, top, CELL, CELL, theme.colour("tile"), theme.kind("social").outline)
       local label = "+" .. #rest
       draw.text(result, group, x + (CELL - draw.width(label, "small")) // 2, top + (CELL - 7) // 2, label, theme.colour("text"), "small")
       local lines = {title = label .. " more"}

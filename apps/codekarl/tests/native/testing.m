@@ -974,7 +974,8 @@ void ck_app_t_schedule_sim_keys(void) {
 /* Posts the marked keys the test asks for, one at a time, once AppKit reports a visible window. The environment names a directory;
  * the test writes a file `NNN.key` there for each key it wants pressed, holding `<hexadecimal key code>:<characters>`, and the
  * poll (on the main queue, every 5 ms) taps each such file's key (a key-down and a key-up, marked) in name order, then renames
- * the file to `NNN.key.done`. A file holding `D<hex>:<characters>` presses the key and leaves it down; `U<hex>:` lets it up. So the keys are ordered by what the test has seen happen, not by a count or a delay. */
+ * the file to `NNN.key.done`. `MD:x y` and `MU:x y` inject marked mouse down and up at UI point coordinates.
+ * A file holding `D<hex>:<characters>` presses the key and leaves it down; `U<hex>:` lets it up. So the keys are ordered by what the test has seen happen, not by a count or a delay. */
 void ck_app_t_schedule_key_files(void) {
     const char *dir = getenv("CK_WINDOWED_TEST_KEY_FILES");
     if (dir == NULL) {
@@ -1013,10 +1014,29 @@ void ck_app_t_schedule_key_files(void) {
                 if (colon.location == NSNotFound) {
                     continue;
                 }
+                NSString *head = [text substringToIndex:colon.location];
+                if ([head isEqualToString:@"MD"] || [head isEqualToString:@"MU"]) {
+                    NSString *coordinates = [text substringFromIndex:colon.location + 1];
+                    NSScanner *scanner = [NSScanner scannerWithString:coordinates];
+                    double x = 0.0, y = 0.0;
+                    if ([scanner scanDouble:&x] && [scanner scanDouble:&y]) {
+                        NSPoint view = NSMakePoint(x, window.contentView.bounds.size.height - y);
+                        NSPoint point = [window.contentView convertPoint:view toView:nil];
+                        if ([head isEqualToString:@"MD"]) {
+                            ck_app_t_send_ui_mouse(window, NSEventTypeMouseMoved, point);
+                            ck_app_t_send_ui_mouse(window, NSEventTypeLeftMouseDown, point);
+                        } else {
+                            ck_app_t_send_ui_mouse(window, NSEventTypeLeftMouseUp, point);
+                        }
+                    }
+                    [NSFileManager.defaultManager moveItemAtPath:path
+                                                          toPath:[path stringByAppendingString:@".done"]
+                                                           error:nil];
+                    continue;
+                }
                 unsigned code = 0;
                 /* A leading "D" holds the key down and a leading "U" lets it up (a map pan held while the UI is held); no
                  * prefix is a tap. */
-                NSString *head = [text substringToIndex:colon.location];
                 int hold = 0;
                 if ([head hasPrefix:@"D"] || [head hasPrefix:@"U"]) {
                     hold = [head hasPrefix:@"D"] ? 1 : 2;

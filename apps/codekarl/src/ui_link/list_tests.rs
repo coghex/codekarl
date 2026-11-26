@@ -1741,7 +1741,7 @@ window.on_opened(function() {drive} end)
             .map(|quad| ((quad.x, quad.y, quad.width, quad.height), quad.tint))
             .collect()
     };
-    // The Places window is kind `window`: row_hover is its outline (#6e130f), row_pressed its hot colour (#a8261c). Row 3 is the
+    // The Places window is kind `window`: row_hover is its outline (#6e130f), row_pressed its hot colour (#a71d17). Row 3 is the
     // third row of the list at the content origin (106, 86): y 86 + 2 * 26 = 138.
     let mut rig = Rig::new(&script("dispatch({}, row(3))"));
     rig.opened();
@@ -1753,7 +1753,7 @@ window.on_opened(function() {drive} end)
     rig.opened();
     assert_eq!(
         shown(&rig),
-        [((106.0, 138.0, 90.0, 26.0), tint(0xa8, 0x26, 0x1c))]
+        [((106.0, 138.0, 90.0, 26.0), tint(0xa7, 0x1d, 0x17))]
     );
     // The highlight is the shared `white` texture: nothing loads the old button art.
     assert!(

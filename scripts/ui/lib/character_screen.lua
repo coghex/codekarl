@@ -118,7 +118,7 @@ end
 
 local function heading(result, group, x, y, width, word)
   local used = draw.text(result, group, x, y, word, theme.kind("place").divider, "small")
-  draw.rect(result, group, x + used + 3, y + 4, math.max(1, width - used - 3), 1, theme.kind("window").outline)
+  draw.rect(result, group, x + used + 3, y + 4, math.max(1, width - used - 3), 1, theme.kind("social").outline)
 end
 
 -- A two-sided bar around a centre line: an icon, the bar, the signed number. `top` is the value at each end; the values beyond it are drawn at
@@ -160,7 +160,7 @@ local function body_section(record, inner)
     for index, entry in ipairs(BODY) do
       local value = record.body[index]
       local cx, cy = ((index - 1) % 4) * pitch, y + 10 + ((index - 1) // 4) * 13
-      draw.frame(result, group, cx, cy, 13, 11, theme.colour("tile"), theme.kind("window").outline)
+      draw.frame(result, group, cx, cy, 13, 11, theme.colour("tile"), theme.kind("social").outline)
       draw.image(result, group, entry.icon, cx + 2, cy + 1, 9, 9)
       local used = draw.text(result, group, cx + 16, cy + 2, tostring(value.value), theme.colour("number"), "small")
       if entry.unit ~= nil then
@@ -338,7 +338,7 @@ local function traits_section(record, inner)
       local chip, cy = entry.chip, y + 10 + entry.row * CHIP_PITCH
       local ink = chip.attribute and theme.colour("chip_light_text") or theme.colour("text")
       draw.frame(result, group, entry.x, cy, entry.width, CHIP_HEIGHT,
-        chip.attribute and theme.colour("chip_light") or theme.colour("tile"), theme.kind("window").outline)
+        chip.attribute and theme.colour("chip_light") or theme.colour("tile"), theme.kind("social").outline)
       local used = draw.text(result, group, entry.x + 4, cy + 2, chip.words, ink, "small")
       if chip.letter ~= "" then
         draw.text(result, group, entry.x + 4 + used + draw.width(" ", "small"), cy + 2, chip.letter,
@@ -386,7 +386,7 @@ local function draw_header(self, record)
   if self.header ~= nil then self.header:destroy() end
   local result = draw.view()
   local group = self.window.content
-  local line = theme.kind("window").outline
+  local line = theme.kind("social").outline
   draw.frame(result, group, 0, 0, PORTRAIT, PORTRAIT, theme.colour("tile"), line)
   draw.image(result, group, "unknown_header", 0, 0, PORTRAIT, PORTRAIT, theme.colour("dim"))
   local x = PORTRAIT + 6
@@ -404,7 +404,7 @@ local function draw_header(self, record)
     {text = "age ", colour = text_colour}, {text = tostring(record.age), colour = theme.colour("number")},
   }, text_colour, "small")
   draw.text(result, group, x, 36, draw.clip(record.role, room, "small"), text_colour, "small")
-  draw.rect(result, group, 0, RULE_Y, self.window.content_width // P, 1, theme.kind("window").hot)
+  draw.rect(result, group, 0, RULE_Y, self.window.content_width // P, 1, theme.kind("social").hot)
   self.header = result
 end
 
@@ -526,7 +526,7 @@ local function build(self)
   }
   if self.log_button ~= nil then self.log_button:destroy() end
   self.log_button = button.new{
-    x = self.window.content_width - LOG_BUTTON * P, y = 0, icons = {"scroll"}, icon = "scroll", tooltip = "life log", kind = "window",
+    x = self.window.content_width - LOG_BUTTON * P, y = 0, icons = {"scroll"}, icon = "scroll", tooltip = "life log", kind = "social",
     group = self.window.content, owner = self.window,
     on_click = function()
       if self:is_open() then self.log:open(self.character, self.record.name, self.revision, self.world) end
@@ -544,6 +544,14 @@ function character_screen.new(spec)
     error("character_screen.new: expected `view` and `top`", 2)
   end
   local self = setmetatable({view = spec.view, top = spec.top, open_place = spec.open_place, tab = "character"}, character_screen)
+  self.theme_base = theme.kind("social").outline
+  theme.watch(self, function(screen)
+    local base = theme.kind("social").outline
+    if screen.theme_base ~= base then
+      screen.theme_base = base
+      if screen:is_open() then screen:relayout() end
+    end
+  end)
   self.log = character_log.new{geometry = function() return location.slot(self.view, ui.snap(self.top())) end}
   return self
 end
@@ -601,7 +609,7 @@ function character_screen:open(id, revision, world)
   local top, width, height = geometry(self)
   local created
   created = windows.new{
-    title = "character", kind = "window", outer_width = width, outer_height = height, x = 0, y = top, draggable = false,
+    title = "character", kind = "social", outer_width = width, outer_height = height, x = 0, y = top, draggable = false,
     on_close = function()
       if self.window == created then
         self.log:close()

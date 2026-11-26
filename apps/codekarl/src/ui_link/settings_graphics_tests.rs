@@ -22,9 +22,9 @@ fn graphics_is_the_second_settings_tab_and_has_window_mode_and_frame_rate_rows()
         r#"
 local s = require("lib.settings_window").current()
 expect(s.tabs.graphics ~= nil, "graphics is a settings tab")
-eq(#s.tab_order, 5)
+eq(#s.tab_order, 6)
 eq(s.tab_order[1], "general") eq(s.tab_order[2], "graphics")
-eq(s.tab_order[3], "map") eq(s.tab_order[4], "input") eq(s.tab_order[5], "development")
+eq(s.tab_order[3], "colours") eq(s.tab_order[4], "map") eq(s.tab_order[5], "input") eq(s.tab_order[6], "development")
 mark_settings()
 "#,
         r#"
@@ -825,5 +825,134 @@ eq(s.controls.fps:get(), 45, "the field keeps the last number for the run")
     ]);
     open_graphics(&mut rig);
     click_at_metrics(&mut rig, "settings_control_defaults", 640, 400);
+    rig.opened();
+}
+
+#[test]
+fn colours_tab_applies_a_valid_colour_and_refuses_invalid_input() {
+    let mut rig = settings_graphics_rig(&[
+        r"mark_settings()",
+        r"mark_settings()",
+        r##"
+local s = require("lib.settings_window").current()
+eq(s.selected, "colours")
+local row = s.controls.colours.general
+eq(row.field:get(), "#6e130f")
+row.field:set("#AbCdEf")
+row.field.apply_callback("#AbCdEf")
+eq(fixture.colours.general, "#abcdef")
+eq(row.field:get(), "#abcdef")
+eq(require("lib.theme").kind("window").outline, "#abcdef")
+eq(row.field.frame.line, "#abcdef", "field outline repaints")
+eq(s.controls.colours.social.field.frame.line, "#abcdef", "other field outline repaints")
+eq(scene.quads[s.divider].tint, "#abcdef", "tab divider repaints")
+row.field:set("#oops")
+row.field.apply_callback("#oops")
+eq(row.field:get(), "#abcdef")
+eq(fixture.colours.general, "#abcdef")
+s.controls.defaults.on_click()
+s:show("colours")
+"##,
+        r##"
+local s = require("lib.settings_window").current()
+eq(fixture.colours.general, nil)
+eq(s.controls.colours.general.field:get(), "#6e130f")
+"##,
+    ]);
+    rig.opened();
+    click(&mut rig, "settings");
+    rig.opened();
+    click(&mut rig, "settings_tab_colours");
+    rig.opened();
+    rig.opened();
+}
+
+#[test]
+fn colour_picker_cancels_the_draft_before_any_picker_press() {
+    use super::numberfield_tests::{start, update};
+    let mut rig = settings_graphics_rig(&[
+        r"mark_settings()",
+        r"mark_settings()",
+        r#"
+local s = require("lib.settings_window").current()
+local row = s.controls.colours.general
+local x,y,w,h = hit_rect(row.field.key) mark("colour_field", x+w/2, y+h/2)
+x,y,w,h = hit_rect(row.opener.key) mark("colour_opener", x+w/2, y+h/2)
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+local row = s.controls.colours.general
+expect(row.field:editing())
+"#,
+        r##"
+local s = require("lib.settings_window").current()
+local row = s.controls.colours.general
+expect(not row.field:editing())
+eq(fixture.colours.general, nil, "opener did not apply draft")
+eq(row.field:get(), "#6e130f")
+local picker = row.picker.picker
+expect(picker ~= nil)
+picker:set_pos(100000)
+local found
+for _, item in ipairs(picker.rows) do if item.entry.value == "#ece3cb" then found = item end end
+expect(found ~= nil)
+local x,y,w,h = hit_rect(found.key) mark("palette_text", x+w/2, y+h/2)
+"##,
+        r##"
+eq(fixture.colours.general, "#ece3cb")
+local sets = 0
+for _, call in ipairs(fixture.calls) do if call[1] == "set" and call[2] == "ui.colours.general" then
+  sets = sets + 1; eq(call[3], "#ece3cb")
+end end
+eq(sets, 1)
+eq(require("lib.settings_window").current().controls.colours.general.field:get(), "#ece3cb")
+"##,
+    ]);
+    rig.opened();
+    click(&mut rig, "settings");
+    rig.opened();
+    click(&mut rig, "settings_tab_colours");
+    rig.opened();
+    start(&mut rig, "colour_field");
+    rig.opened();
+    let mut typed = vec![TypedEntry::Backspace; 7];
+    typed.extend(chars("#111111"));
+    update(&mut rig, &typed, &[]);
+    click(&mut rig, "colour_opener");
+    rig.opened();
+    click(&mut rig, "palette_text");
+    rig.opened();
+}
+
+#[test]
+fn colour_swatches_follow_saved_values_then_restore_theme_defaults() {
+    let mut rig = settings_graphics_rig(&[
+        r"
+local bases = theme.bases
+theme.bases = function() local b = bases(); b.location = '#2468ac'; return b end
+fixture.colours.general = '#123456'
+fixture.graphics.list_look = 'rows'
+require('lib.theme').refresh()
+mark_settings()
+",
+        "mark_settings()",
+        r"
+local s = require('lib.settings_window').current()
+eq(s.controls.colours.general.field:get(), '#123456')
+eq(scene.quads[s.controls.colours.general.swatch].tint, '#123456')
+eq(s.controls.colours.location.field:get(), '#2468ac')
+eq(scene.quads[s.controls.colours.location.swatch].tint, '#2468ac')
+s.controls.defaults.on_click(); s:show('colours')
+eq(s.controls.colours.general.field:get(), '#6e130f')
+eq(s.controls.colours.location.field:get(), '#2468ac')
+eq(s.controls.colours.social.field:get(), '#6e130f')
+eq(s.controls.colours.expedition.field:get(), '#c9932e')
+eq(fixture.graphics.list_look, 'rows')
+",
+    ]);
+    rig.opened();
+    click(&mut rig, "settings");
+    rig.opened();
+    click(&mut rig, "settings_tab_colours");
     rig.opened();
 }

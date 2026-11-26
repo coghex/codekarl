@@ -39,9 +39,10 @@ local real_list_new = lists.new
 lists.new = function(spec)
   local first = spec.items[1]
   if type(first) == 'table' then
-    local cells = {}
-    for _, cell in ipairs(first.cells) do cells[#cells + 1] = cell.text end
-    first = table.concat(cells)
+    assert(first.cells[1].text == 'people', 'the location tab starts with its people heading')
+    local count = spec.items[2].cells[1].text:match('^%s*(%d+)%s*$')
+    assert(count ~= nil, 'the first people figure has a count')
+    first = 'people: ' .. count
   end
   log.info('location tab ' .. first)
   return real_list_new(spec)

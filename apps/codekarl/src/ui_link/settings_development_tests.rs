@@ -37,14 +37,14 @@ fn open_development(rig: &mut super::group_tests::Rig) {
 }
 
 #[test]
-fn development_is_the_fifth_tab_and_the_window_still_fits_the_smallest_view() {
+fn development_is_the_sixth_tab_and_the_window_still_fits_the_smallest_view() {
     let mut rig = development_rig(&[
         r"mark_settings()",
         r#"
 local s = require("lib.settings_window").current()
-eq(#s.tab_order, 5)
-eq(s.tab_order[1], "general") eq(s.tab_order[2], "graphics") eq(s.tab_order[3], "map")
-eq(s.tab_order[4], "input") eq(s.tab_order[5], "development")
+eq(#s.tab_order, 6)
+eq(s.tab_order[1], "general") eq(s.tab_order[2], "graphics") eq(s.tab_order[3], "colours") eq(s.tab_order[4], "map")
+eq(s.tab_order[5], "input") eq(s.tab_order[6], "development")
 expect(s.tabs.development ~= nil, "development is a tab")
 local widest = 0
 for _, name in ipairs(s.tab_order) do widest = math.max(widest, font.layout(name).width) end

@@ -21,6 +21,9 @@
 -- dispatched (`pointer.observe_tagged` hands it to its observers). The list reads no tag back and keeps no history; the keys and regions
 -- of its rows are the same with or without tags.
 --
+-- A cell with an identity colour (a term or pop type) sets `identity = true`; on a highlighted fill it keeps that colour only
+-- when opaque and at least 3:1 against the fill. Other cell text uses the highlighted row's ink.
+--
 -- Only the rows that intersect the visible rectangle have glyph quads and, with `on_select`, hit keys; at most `rows + 1`. Two
 -- highlight quads (hover and pressed), created first so that the text is above them, are moved to the row that has the look and
 -- parked at `ui.HIDDEN` otherwise, since one pointer has at most one hovered row and one pressed row.
@@ -112,7 +115,7 @@ local function checked_items(who, items)
         end
       end
       if item.icon ~= nil then
-        if type(item.icon) ~= "table" then
+        if type(item.icon) ~= "table" or (item.icon.identity ~= nil and type(item.icon.identity) ~= "boolean") then
           error(who .. ": item " .. index .. " icon must use exactly one of name and colour or image", 3)
         end
         local has_image = item.icon.image ~= nil
@@ -126,7 +129,7 @@ local function checked_items(who, items)
         elseif not has_name or not has_colour or type(item.icon.name) ~= "string" or type(item.icon.colour) ~= "string" then
           error(who .. ": item " .. index .. " icon must use exactly one of name and colour or image", 3)
         else
-          checked.icon = {name = item.icon.name, colour = item.icon.colour}
+          checked.icon = {name = item.icon.name, colour = item.icon.colour, identity = item.icon.identity}
         end
       end
       for cell_index = 1, cell_count do
@@ -134,11 +137,12 @@ local function checked_items(who, items)
         if type(cell) ~= "table" or type(cell.text) ~= "string" or not finite(cell.x)
           or (cell.align ~= "left" and cell.align ~= "right")
           or (cell.colour ~= nil and type(cell.colour) ~= "string")
-          or (cell.over_limit ~= nil and type(cell.over_limit) ~= "boolean") then
+          or (cell.over_limit ~= nil and type(cell.over_limit) ~= "boolean")
+          or (cell.identity ~= nil and type(cell.identity) ~= "boolean") then
           error(who .. ": item " .. index .. " cell " .. cell_index .. " needs text, finite x, left/right align, and optional colour", 3)
         end
         checked.cells[cell_index] = {text = cell.text, x = cell.x, align = cell.align,
-          colour = cell.colour, over_limit = cell.over_limit, font = cell.font}
+          colour = cell.colour, over_limit = cell.over_limit, font = cell.font, identity = cell.identity}
       end
       copy[index] = checked
     else
@@ -399,8 +403,15 @@ local function set_cell(self, row_view, row_index, index, cell)
     row_view.lines[index] = line
   end
   local colour = cell.colour or self.colours.text
+  local pressed = self.pressed_row == row_index
+  local highlighted = self.hover_row == row_index or pressed
+  if highlighted then
+    local ink = pressed and self.colours.pressed_text or self.colours.title_text
+    local fill = pressed and self.colours.hot or self.colours.outline
+    if cell.identity and cell.colour ~= nil then colour = theme.row_ink(cell.colour, fill, ink)
+    else colour = ink end
+  end
   if self.numbers or cell.over_limit then
-    local highlighted = self.hover_row == row_index or self.pressed_row == row_index
     local number_colour = cell.over_limit and (highlighted and self.colours.highlight_over_limit or theme.colour("over_limit"))
       or highlighted and self.colours.highlight_number or theme.colour("number")
     text.set_segments(line, text.colour_numbers(cell.text, colour, number_colour))
@@ -446,6 +457,12 @@ local function update_visual(self, index)
     row_view.stripe = nil
   end
   if item.icon ~= nil then
+    local icon_colour = item.icon.colour
+    if item.icon.identity and icon_colour ~= nil and (self.hover_row == index or self.pressed_row == index) then
+      local pressed = self.pressed_row == index
+      icon_colour = theme.row_ink(icon_colour, pressed and self.colours.hot or self.colours.outline,
+        pressed and self.colours.pressed_text or self.colours.title_text)
+    end
     local source = item.icon.image ~= nil and ("image:" .. item.icon.image) or ("theme:" .. item.icon.name)
     if row_view.icon ~= nil and row_view.icon_source ~= source then
       render.destroy_quad(row_view.icon)
@@ -457,11 +474,11 @@ local function update_visual(self, index)
           y = row_top(index) + 2 * P, width = 9 * P, height = 9 * P, group = self.rows_group}
       else
         row_view.icon = render.create_quad{texture = ui.texture("ui/theme/icon_" .. item.icon.name .. ".png"), x = 4 * P,
-          y = row_top(index) + P, width = 9 * P, height = 11 * P, group = self.rows_group, tint = item.icon.colour}
+          y = row_top(index) + P, width = 9 * P, height = 11 * P, group = self.rows_group, tint = icon_colour}
       end
       row_view.icon_source = source
     else
-      if item.icon.image == nil then render.set_tint(row_view.icon, item.icon.colour) end
+      if item.icon.image == nil then render.set_tint(row_view.icon, icon_colour) end
     end
   elseif row_view.icon ~= nil then
     render.destroy_quad(row_view.icon)
@@ -709,6 +726,12 @@ function list.new(spec)
   render.set_hit(self.area_key, {{x = self.x, y = self.y, width = self.width, height = self.view_height}}, window.content)
   pointer.register(self.area_key, self, window)
   window:attach(self)
+  theme.watch(self, function(item)
+    render.set_tint(item.hover_quad, item.colours.row_hover)
+    render.set_tint(item.pressed_quad, item.colours.row_pressed)
+    if item.selected_quad ~= nil then render.set_tint(item.selected_quad, item.colours.hot) end
+    refresh_visible(item)
+  end)
   self.bar:update(self.view_height, #self.items * ROW, self.s)
   sync(self)
   return self
@@ -826,6 +849,7 @@ function list:destroy()
     return
   end
   self.closed = true
+  theme.unwatch(self)
   local indices = {}
   for index in pairs(self.row_keys) do
     indices[#indices + 1] = index

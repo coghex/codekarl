@@ -949,6 +949,109 @@ end
     assert!(seen.stdout.lines().any(|line| line.starts_with("camera ")));
 }
 
+fn colour_settings_picker_interaction_persists_only_the_selected_colour() {
+    fn input(markers: &Path, order: u32, value: &str) {
+        let target = markers.join(format!("{order:03}.key"));
+        let temporary = markers.join(format!("{order:03}.tmp"));
+        fs::write(&temporary, value).expect("the complete input");
+        fs::rename(temporary, target).expect("publish the input");
+    }
+    fn mouse(markers: &Path, order: &mut u32, action: &str, position: &str) {
+        input(markers, *order, &format!("M{action}:{position}"));
+        *order += 1;
+    }
+    fn point(markers: &Path, name: &str) -> String {
+        wait_for_marker(&markers.join(name), Duration::from_secs(30));
+        fs::read_to_string(markers.join(name)).expect("the UI point")
+    }
+    fn click(markers: &Path, order: &mut u32, position: &str) {
+        mouse(markers, order, "D", position);
+        mouse(markers, order, "U", position);
+    }
+    fn replace(markers: &Path, order: &mut u32, value: &str, enter: bool) {
+        for _ in 0..7 {
+            input(markers, *order, "33:\u{7f}");
+            *order += 1;
+        }
+        for character in value.chars() {
+            input(markers, *order, &format!("0:{character}"));
+            *order += 1;
+        }
+        if enter {
+            input(markers, *order, "24:\r");
+            *order += 1;
+        }
+    }
+    let fixture = Fixture::new();
+    time_bar_witness::install_fixture_assets(&fixture.path(""), &fixture.path("assets"));
+    let config_text = format!(
+        "[window]\nbackend = \"native-metal\"\n\n[render]\nassets = '{}'\n",
+        shipped_assets().display()
+    );
+    let config = fixture.windowed(&config_text, include_str!("support/colour_settings.lua"));
+    let args: Vec<&OsStr> = vec![OsStr::new("--config"), config.as_os_str()];
+    let mut worker = start(&args);
+    let markers = worker
+        .report
+        .parent()
+        .expect("worker markers")
+        .to_path_buf();
+    wait_for(
+        &mut worker,
+        "window: window opened",
+        Duration::from_secs(30),
+    );
+    wait_for_drops(&worker);
+    fixture.release();
+    let mut order = 1;
+    let field = point(&markers, "field-ready");
+    click(&markers, &mut order, &field);
+    wait_for_marker(&markers.join("field-focused"), Duration::from_secs(30));
+    replace(&markers, &mut order, "#111111", false);
+    let opener = point(&markers, "draft-ready");
+    let saved = || fs::read_to_string(fixture.path("settings.toml")).unwrap_or_default();
+    mouse(&markers, &mut order, "D", &opener);
+    wait_for_marker(&markers.join("opener-down"), Duration::from_secs(30));
+    assert!(!saved().contains("#111111"));
+    mouse(&markers, &mut order, "U", &opener);
+    let palette = point(&markers, "palette-ready");
+    assert!(!saved().contains("#111111"));
+    mouse(&markers, &mut order, "D", &palette);
+    wait_for_marker(&markers.join("palette-down"), Duration::from_secs(30));
+    assert!(!saved().contains("#111111") && !saved().contains("#ece3cb"));
+    mouse(&markers, &mut order, "U", &palette);
+    let field = point(&markers, "picked");
+    assert!(!saved().contains("#111111") && saved().contains("#ece3cb"));
+    click(&markers, &mut order, &field);
+    wait_for_marker(&markers.join("second-focused"), Duration::from_secs(30));
+    replace(&markers, &mut order, "#AbCdEf", true);
+    let field = point(&markers, "mixed-applied");
+    assert!(saved().contains("#abcdef"));
+    click(&markers, &mut order, &field);
+    wait_for_marker(&markers.join("third-focused"), Duration::from_secs(30));
+    replace(&markers, &mut order, "invalid", true);
+    let field = point(&markers, "invalid-refused");
+    assert!(saved().contains("#abcdef"));
+    click(&markers, &mut order, &field);
+    wait_for_marker(&markers.join("fourth-focused"), Duration::from_secs(30));
+    replace(&markers, &mut order, "#111111", false);
+    wait_for_marker(&markers.join("map-draft"), Duration::from_secs(30));
+    click(&markers, &mut order, "5 5");
+    let defaults = point(&markers, "map-applied");
+    assert!(saved().contains("#111111"));
+    click(&markers, &mut order, &defaults);
+    wait_for_marker(&markers.join("defaults-applied"), Duration::from_secs(30));
+    assert!(!saved().contains("[ui.colours]"));
+    let seen = finish(worker);
+    assert_eq!(seen.code, Some(0), "{}", seen.stdout);
+    assert!(
+        seen.stdout.contains("native colour interactions complete"),
+        "{}",
+        seen.stdout
+    );
+    assert!(!seen.stdout.contains("ERROR"), "{}", seen.stdout);
+}
+
 fn a_fixture_scenario_time_bar_changes_speed_pause_and_captures_a_gap_drag() {
     let fixture = Fixture::new();
     let scenario = fixture.scenario_fixture();
@@ -3058,6 +3161,7 @@ fn cases() -> Vec<(&'static str, fn())> {
         case!(a_fixture_scenario_resumes_picks_a_speed_pans_pauses_and_saves_from_marked_keys_and_closes_normally),
         case!(a_fixture_scenarios_time_callback_follows_speed_pause_and_load_one_delivery_each),
         case!(a_fixture_scenario_time_bar_changes_speed_pause_and_captures_a_gap_drag),
+        case!(colour_settings_picker_interaction_persists_only_the_selected_colour),
         case!(time_bar_output_assertion_rejects_the_capture_and_accepts_a_doctored_drag_offline),
         case!(a_held_ui_does_not_stop_the_map_and_gets_every_transition_after_the_release),
         case!(a_worker_that_fails_before_opening_the_pipe_is_released_reaped_and_removed_at_once),
@@ -3148,7 +3252,8 @@ fn run_case(name: &str, case: fn()) -> bool {
     );
     SIM_INPUT_CASE.store(name == "a_fixture_scenario_resumes_picks_a_speed_pans_pauses_and_saves_from_marked_keys_and_closes_normally", Ordering::SeqCst);
     KEYS_CASE.store(
-        name == "a_fixture_scenarios_time_callback_follows_speed_pause_and_load_one_delivery_each",
+        name == "a_fixture_scenarios_time_callback_follows_speed_pause_and_load_one_delivery_each"
+            || name == "colour_settings_picker_interaction_persists_only_the_selected_colour",
         Ordering::SeqCst,
     );
     HELD_UI_CASE.store(

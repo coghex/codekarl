@@ -9,6 +9,7 @@
 -- that has `raise_hits()` is called after the item's region is set (at each sync, scrolled or not) and puts its widgets' regions above it.
 local ui = require("lib.ui")
 local pointer = require("lib.pointer")
+local theme = require("lib.theme")
 local tooltip = require("lib.tooltip")
 local scrollbar = require("lib.scrollbar")
 
@@ -280,6 +281,14 @@ function cards.new(spec)
   render.set_hit(self.area_key, {{x = self.x, y = self.y, width = self.width, height = self.height}}, window.content)
   pointer.register(self.area_key, self.area_widget, window)
   window:attach(self)
+  self.theme_outline = theme.kind(window.kind).outline
+  theme.watch(self, function(item)
+    local outline = theme.kind(item.window.kind).outline
+    if outline ~= item.theme_outline then
+      item.theme_outline = outline
+      sync(item, true)
+    end
+  end)
   self.bar:update(self.height, self.content_height, ui.snap(self.scroll_offset))
   sync(self, false)
   return self
@@ -339,6 +348,7 @@ end
 function cards:destroy()
   if self.closed then return end
   self.closed = true
+  theme.unwatch(self)
   clear_hits(self)
   destroy_views(self)
   render.set_hit(self.area_key, nil, self.window.content)

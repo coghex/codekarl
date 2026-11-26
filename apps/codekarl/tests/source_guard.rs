@@ -449,6 +449,7 @@ fn keyboard_offences(root: &Path) -> Vec<(String, usize, &'static str)> {
                     | "src/bin/economy_soak.rs"
                     | "src/bin/travel_times.rs"
                     | "src/bin/weather_trial.rs"
+                    | "src/bin/colour-sheet-data.rs"
             ) && (line.contains("args_os") || line.contains("env::args"))
             {
                 found.push((

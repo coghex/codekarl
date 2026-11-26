@@ -622,6 +622,7 @@ fixture = {
   debug = {level = 0, rate = "frames"},
   base_debug = {level = 0, rate = "frames"},
   calls = {},
+  colours = {},
   bindings = {
     {name="close", bindings={"Escape"}},
     {name="time_pause", bindings={"Space"}},
@@ -649,6 +650,7 @@ for _, action in ipairs(fixture.bindings) do
   for index, key in ipairs(action.bindings) do fixture.base_bindings[action.name][index] = key end
 end
 settings = {
+  colours = function() return fixture.colours end,
   tooltips = function() return fixture.tooltips end,
   map = function() return fixture.map end,
   debug = function() return {level = fixture.debug.level, rate = fixture.debug.rate} end,
@@ -686,7 +688,8 @@ settings = {
   end,
   set = function(name, value)
     fixture.calls[#fixture.calls + 1] = {"set", name, value}
-    if name == "ui.tooltips.delay" then fixture.tooltips.delay = value
+    if name:match("^ui%.colours%.") then fixture.colours[name:sub(12)] = value
+    elseif name == "ui.tooltips.delay" then fixture.tooltips.delay = value
     elseif name == "ui.tooltips.lock" then fixture.tooltips.lock = value
     elseif name == "ui.tooltips.lock_timer" then fixture.tooltips.lock_timer = value
     elseif name == "map.pan_pixels_per_frame" then fixture.map.pan_pixels_per_frame = value
@@ -713,7 +716,8 @@ settings = {
   end,
   reset = function(tab)
     fixture.calls[#fixture.calls + 1] = {"reset", tab}
-    if tab == "tooltips" then fixture.tooltips = {delay=0.3, lock="middle_mouse", lock_timer=1.5}
+    if tab == "colours" then fixture.colours = {}
+    elseif tab == "tooltips" then fixture.tooltips = {delay=0.3, lock="middle_mouse", lock_timer=1.5}
     elseif tab == "graphics" then
       fixture.graphics = {width=1280, height=800, list_look="cards", scale=nil, mode="windowed", vsync=true}
       fixture.calls[#fixture.calls + 1] = {"resize", 1280, 800}
@@ -1034,7 +1038,7 @@ eq(s.page.scroll, s.kept_scroll, "applying a binding keeps the exact scroll posi
 }
 
 #[test]
-fn settings_opens_from_the_menu_as_a_centred_resizable_window_with_the_four_side_tabs() {
+fn settings_opens_from_the_menu_as_a_centred_resizable_window_with_six_side_tabs() {
     let mut rig = settings_rig(&[
         r#"
 expect(not menu_button("settings").inactive, "settings is a live menu action")
@@ -1047,16 +1051,17 @@ eq(win.title, "Settings")
 eq(win.kind, "window")
 expect(not win.fixed and not win.draggable and win.close_button ~= nil, "a close x, not draggable")
 eq(s.selected, "general", "opens on general")
-eq(#s.tab_order, 5)
+eq(#s.tab_order, 6)
 eq(s.tab_order[1], "general") eq(s.tab_order[2], "graphics")
-eq(s.tab_order[3], "map") eq(s.tab_order[4], "input") eq(s.tab_order[5], "development")
+eq(s.tab_order[3], "colours") eq(s.tab_order[4], "map") eq(s.tab_order[5], "input") eq(s.tab_order[6], "development")
 expect(s.tabs.graphics ~= nil and s.tabs.gameplay == nil, "graphics is present and gameplay is not")
 local widest = math.max(font.layout("general").width, font.layout("graphics").width,
   font.layout("map").width, font.layout("input").width, font.layout("development").width)
 eq(s.tab_width, (widest + 12) * P, "the reserved column includes development, the longest name")
 eq(s.tabs.general.width, s.tab_width - 3 * P, "the tab fill stops three UI pixels before the divider")
 eq(s.tabs.graphics.y - s.tabs.general.y, 13 * P, "tab rows are thirteen UI pixels tall")
-eq(s.tabs.map.y - s.tabs.graphics.y, 13 * P, "the graphics row keeps the same spacing")
+eq(s.tabs.colours.y - s.tabs.graphics.y, 13 * P, "the colours row follows graphics")
+eq(s.tabs.map.y - s.tabs.colours.y, 13 * P, "the map row follows colours")
 expect(s.tabs.general.selected and s.tabs.general.frame.fill == theme_lib.kind("window").hot)
 local x, y = win:position()
 local w, h = win:size()

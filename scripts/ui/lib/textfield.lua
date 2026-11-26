@@ -267,6 +267,7 @@ function textfield.new(spec)
   publish_region(self)
   pointer.register(self.key, self, self.owner)
   fieldedit.register(self)
+  theme.watch(self, function(item) if item.frame ~= nil then draw(item) end end)
   return self
 end
 
@@ -386,6 +387,7 @@ function textfield:destroy()
   if self.frame == nil then
     return
   end
+  theme.unwatch(self)
   fieldedit.end_editing(self, false)
   fieldedit.unregister(self)
   pointer.unregister(self.key)

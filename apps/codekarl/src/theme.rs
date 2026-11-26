@@ -1,9 +1,9 @@
-//! The theme: `assets/ui/theme.toml` parsed and checked, and the `theme` extension of the UI VM.
+//! The checked theme data and the `theme` extension of the UI VM.
 //!
-//! The file has two tables, `[colour]` (named colours) and `[kind.<name>]` (the colours of one kind of panel). Every value is a
-//! colour string in the tint grammar, `#rrggbb` or `#rrggbbaa`; every name matches `[a-z][a-z0-9_]*`; every kind has an `outline` and
-//! a `hot`. Other tables and keys are allowed under `[kind.*]` so that further kinds and mods need no change here. The extension
-//! returns the strings as written; the UI library applies the defaults.
+//! Palette colours and the four opaque kind bases are read from `assets/ui/theme.toml`.
+//! Managed kinds derive their shades from a base; custom kinds provide their own outline and hot.
+
+mod colours;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -18,6 +18,7 @@ const REQUIRED: [&str; 2] = ["outline", "hot"];
 pub(crate) struct Theme {
     colours: BTreeMap<String, String>,
     kinds: BTreeMap<String, BTreeMap<String, String>>,
+    bases: BTreeMap<String, String>,
 }
 
 impl Theme {
@@ -26,9 +27,46 @@ impl Theme {
         self.colours.get(name).map(String::as_str)
     }
 
-    /// The keys of a kind, as written.
+    /// A kind's checked data and derived shades.
     pub(crate) fn kind(&self, name: &str) -> Option<&BTreeMap<String, String>> {
         self.kinds.get(name)
+    }
+}
+
+pub(crate) fn valid_base(value: &str) -> bool {
+    value.len() == 7
+        && value.starts_with('#')
+        && value.as_bytes()[1..].iter().all(u8::is_ascii_hexdigit)
+}
+
+fn managed(name: &str) -> Option<&'static str> {
+    match name {
+        "window" | "time_bar" | "places_bar" | "tooltip" => Some("general"),
+        "place" => Some("location"),
+        "social" => Some("social"),
+        "expedition" => Some("expedition"),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn partial_for_test(text: &str) -> Theme {
+    let document: toml::Value = toml::from_str(text).expect("test theme TOML");
+    let colours = document["colour"]
+        .as_table()
+        .expect("test colours")
+        .iter()
+        .map(|(name, value)| {
+            (
+                name.clone(),
+                value.as_str().expect("test colour string").to_owned(),
+            )
+        })
+        .collect();
+    Theme {
+        colours,
+        kinds: BTreeMap::new(),
+        bases: BTreeMap::new(),
     }
 }
 
@@ -66,13 +104,17 @@ fn table<'a>(
 /// Parses `theme.toml` and checks it.
 ///
 /// # Errors
-/// A message naming the table and key: not valid TOML, a top-level table other than `colour` and `kind`, a value that is not a colour
-/// string, a name outside `[a-z][a-z0-9_]*`, or a kind without `outline` or `hot`.
+/// A message naming a malformed entry, a missing required base or palette colour, or a forbidden managed-kind key.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the theme is validated as one file before derived kinds are built"
+)]
 pub(crate) fn parse(text: &str) -> Result<Theme, String> {
     let root: toml::Value = toml::from_str(text).map_err(|error| error.message().to_owned())?;
     let root = table("the file", &root)?;
     let mut colours = BTreeMap::new();
     let mut kinds = BTreeMap::new();
+    let mut bases = BTreeMap::new();
     for (name, value) in root {
         match name.as_str() {
             "colour" => {
@@ -84,6 +126,19 @@ pub(crate) fn parse(text: &str) -> Result<Theme, String> {
                         key.clone(),
                         colour_value(&format!("[colour] {key}"), value)?,
                     );
+                }
+            }
+            "kind_colours" => {
+                for (key, value) in table("[kind_colours]", value)? {
+                    let place = format!("[kind_colours] {key}");
+                    if !["general", "location", "social", "expedition"].contains(&key.as_str()) {
+                        return Err(format!("{place}: unknown base colour"));
+                    }
+                    let colour = colour_value(&place, value)?;
+                    if colour.len() != 7 {
+                        return Err(format!("{place}: expected #rrggbb without alpha"));
+                    }
+                    bases.insert(key.clone(), colour.to_ascii_lowercase());
                 }
             }
             "kind" => {
@@ -103,9 +158,22 @@ pub(crate) fn parse(text: &str) -> Result<Theme, String> {
                             colour_value(&format!("[kind.{kind}] {key}"), value)?,
                         );
                     }
-                    for required in REQUIRED {
-                        if !keys.contains_key(required) {
-                            return Err(format!("[kind.{kind}]: missing `{required}`"));
+                    if managed(kind).is_none() {
+                        for required in REQUIRED {
+                            if !keys.contains_key(required) {
+                                return Err(format!("[kind.{kind}]: missing `{required}`"));
+                            }
+                        }
+                    } else {
+                        for key in keys.keys() {
+                            let allowed = (kind == "tooltip" && key == "title_text")
+                                || (kind == "time_bar" && key == "speed_box")
+                                || ((kind == "place" || kind == "expedition") && key == "divider");
+                            if !allowed {
+                                return Err(format!(
+                                    "[kind.{kind}] {key}: managed kind key is derived or not permitted"
+                                ));
+                            }
                         }
                     }
                     kinds.insert(kind.clone(), keys);
@@ -118,7 +186,47 @@ pub(crate) fn parse(text: &str) -> Result<Theme, String> {
             }
         }
     }
-    Ok(Theme { colours, kinds })
+    for name in ["general", "location", "social", "expedition"] {
+        if !bases.contains_key(name) {
+            return Err(format!("[kind_colours] {name}: missing colour"));
+        }
+    }
+    for name in ["text", "body", "number", "over_limit", "over_limit_dark"] {
+        let value = colours
+            .get_mut(name)
+            .ok_or_else(|| format!("[colour] {name}: missing colour"))?;
+        if value.len() == 9 {
+            if !value[7..].eq_ignore_ascii_case("ff") {
+                return Err(format!("[colour] {name}: must be opaque"));
+            }
+            value.truncate(7);
+        }
+        *value = value.to_ascii_lowercase();
+    }
+    for name in [
+        "window",
+        "time_bar",
+        "places_bar",
+        "tooltip",
+        "place",
+        "social",
+        "expedition",
+    ] {
+        let base = &bases[managed(name).expect("managed kind")];
+        let mut derived = colours::derive(base, &colours);
+        if let Some(data) = kinds.remove(name) {
+            derived.extend(data);
+        }
+        if name == "time_bar" {
+            derived.insert("speed_fill".into(), derived["hot"].clone());
+        }
+        kinds.insert(name.to_owned(), derived);
+    }
+    Ok(Theme {
+        colours,
+        kinds,
+        bases,
+    })
 }
 
 /// Reads and checks `<assets>/ui/theme.toml`.
@@ -146,7 +254,7 @@ fn colour_function(theme: Arc<Theme>) -> HostFunction {
 /// `theme.kind(name)`: a new table of the kind's keys and strings as written.
 fn kind_function(theme: Arc<Theme>) -> HostFunction {
     Arc::new(move |arguments: &[Option<ConfigValue>]| match arguments {
-        [Some(ConfigValue::String(name))] => theme
+        [Some(ConfigValue::String(name))] | [Some(ConfigValue::String(name)), None] => theme
             .kind(name)
             .map(|keys| {
                 vec![ConfigValue::Table(
@@ -156,7 +264,56 @@ fn kind_function(theme: Arc<Theme>) -> HostFunction {
                 )]
             })
             .ok_or_else(|| format!("theme.kind: no kind named `{name}`")),
+        [
+            Some(ConfigValue::String(name)),
+            Some(ConfigValue::String(base)),
+        ] if managed(name).is_some() => {
+            if !valid_base(base) {
+                return Err("theme.kind: invalid base colour".into());
+            }
+            let mut keys = colours::derive(&base.to_ascii_lowercase(), &theme.colours);
+            let data = theme
+                .kind(name)
+                .ok_or_else(|| format!("theme.kind: no kind named `{name}`"))?;
+            for key in ["divider", "speed_box"] {
+                if let Some(value) = data.get(key) {
+                    keys.insert(key.into(), value.clone());
+                }
+            }
+            if name == "tooltip" {
+                keys.insert("title_text".into(), data["title_text"].clone());
+            }
+            if name == "time_bar" {
+                keys.insert("speed_fill".into(), keys["hot"].clone());
+            }
+            Ok(vec![ConfigValue::Table(
+                keys.into_iter()
+                    .map(|(k, v)| (k, ConfigValue::String(v)))
+                    .collect(),
+            )])
+        }
         _ => Err("theme.kind: expected one string".to_owned()),
+    })
+}
+
+fn palette_function(theme: Arc<Theme>) -> HostFunction {
+    Arc::new(move |_| {
+        Ok(vec![ConfigValue::Table(
+            theme
+                .colours
+                .iter()
+                .filter_map(|(name, value)| {
+                    if value.len() == 7 || value[7..].eq_ignore_ascii_case("ff") {
+                        Some((
+                            name.clone(),
+                            ConfigValue::String(value[..7].to_ascii_lowercase()),
+                        ))
+                    } else {
+                        None
+                    }
+                })
+                .collect(),
+        )])
     })
 }
 
@@ -166,8 +323,46 @@ fn kind_function(theme: Arc<Theme>) -> HostFunction {
 /// written, with no defaults applied, so a script that changes it changes nothing else. An unknown name, or an argument that is not
 /// one string, is a Lua error naming it.
 pub(crate) fn extension(theme: Arc<Theme>) -> Extension {
+    let bases = Arc::clone(&theme);
     Extension::new("theme")
         .function("colour", colour_function(Arc::clone(&theme)))
+        .function(
+            "bases",
+            Arc::new(move |_| {
+                Ok(vec![ConfigValue::Table(
+                    bases
+                        .bases
+                        .iter()
+                        .map(|(k, v)| (k.clone(), ConfigValue::String(v.clone())))
+                        .collect(),
+                )])
+            }),
+        )
+        .function("palette", palette_function(Arc::clone(&theme)))
+        .function(
+            "row_ink",
+            Arc::new(move |args| match args {
+                [
+                    Some(ConfigValue::String(ink)),
+                    Some(ConfigValue::String(fill)),
+                    Some(ConfigValue::String(fallback)),
+                ] => {
+                    let opaque = ink.is_ascii()
+                        && (ink.len() == 7
+                            || (ink.len() == 9 && ink[7..].eq_ignore_ascii_case("ff")));
+                    let keep = opaque
+                        && valid_base(&ink[..7])
+                        && valid_base(fill)
+                        && colours::contrast(ink, fill) >= 3.0;
+                    Ok(vec![ConfigValue::String(if keep {
+                        ink.clone()
+                    } else {
+                        fallback.clone()
+                    })])
+                }
+                _ => Err("theme.row_ink: expected three colours".into()),
+            }),
+        )
         .function("kind", kind_function(theme))
 }
 
@@ -179,6 +374,47 @@ mod tests {
         path::{Path, PathBuf},
         time::SystemTime,
     };
+
+    #[test]
+    fn derived_kind_colours_follow_the_specified_contrast_rules() {
+        let theme = shipped();
+        for (kind, outline, hot, title, pressed, number, limit) in [
+            (
+                "window", "#6e130f", "#a71d17", "#ece3cb", "#ece3cb", "#d4a8d7", "#f66155",
+            ),
+            (
+                "social", "#6e130f", "#a71d17", "#ece3cb", "#ece3cb", "#d4a8d7", "#f66155",
+            ),
+            (
+                "place", "#4fb3c8", "#b0dde6", "#15110a", "#15110a", "#663069", "#4b0b06",
+            ),
+            (
+                "expedition",
+                "#c9932e",
+                "#e3c386",
+                "#15110a",
+                "#15110a",
+                "#663069",
+                "#4b0b06",
+            ),
+        ] {
+            let actual = theme.kind(kind).unwrap();
+            for (key, expected) in [
+                ("outline", outline),
+                ("hot", hot),
+                ("title_text", title),
+                ("pressed_text", pressed),
+                ("highlight_number", number),
+                ("highlight_over_limit", limit),
+            ] {
+                assert_eq!(
+                    actual.get(key).map(String::as_str),
+                    Some(expected),
+                    "{kind}.{key}"
+                );
+            }
+        }
+    }
 
     use ck_resources::Image;
 
@@ -219,6 +455,72 @@ mod tests {
     }
 
     #[test]
+    fn palette_offers_new_opaque_colours_and_excludes_translucent_entries() {
+        let data = shipped_text().replace(
+            "[colour]",
+            "[colour]\nnew_opaque = \"#aabbccff\"\nnew_translucent = \"#11223380\"",
+        );
+        let theme = Arc::new(parse(&data).unwrap());
+        let result = palette_function(theme)(&[]).unwrap();
+        let ConfigValue::Table(entries) = &result[0] else {
+            panic!("palette table")
+        };
+        assert_eq!(
+            entries.get("new_opaque"),
+            Some(&ConfigValue::String("#aabbcc".into()))
+        );
+        assert!(!entries.contains_key("new_translucent"));
+    }
+
+    #[test]
+    fn derived_grey_uses_separate_contrast_choices_and_caps_hot() {
+        let theme = shipped();
+        let grey = colours::derive("#666666", &theme.colours);
+        assert_eq!(grey["hot"], "#969696");
+        assert_eq!(grey["title_text"], "#ece3cb");
+        assert_eq!(grey["pressed_text"], "#15110a");
+        let pale = colours::derive("#e6e6e6", &theme.colours);
+        assert_eq!(pale["hot"], "#ebebeb");
+    }
+
+    #[test]
+    fn managed_data_rejects_invalid_bases_alpha_and_derived_keys() {
+        let text = shipped_text();
+        for (old, new, expected) in [
+            (
+                "general = \"#6e130f\"",
+                "general = \"#6e130fff\"",
+                "[kind_colours] general",
+            ),
+            (
+                "general = \"#6e130f\"",
+                "general = \"bad\"",
+                "[kind_colours] general",
+            ),
+            ("general = \"#6e130f\"", "", "[kind_colours] general"),
+            (
+                "text = \"#ece3cb\"",
+                "text = \"#ece3cb00\"",
+                "[colour] text",
+            ),
+            (
+                "[kind.window]",
+                "[kind.window]\nhot = \"#000000\"",
+                "[kind.window] hot",
+            ),
+        ] {
+            assert!(
+                parse(&text.replacen(old, new, 1))
+                    .unwrap_err()
+                    .contains(expected),
+                "{expected}"
+            );
+        }
+        let opaque = text.replacen("text = \"#ece3cb\"", "text = \"#ece3cbff\"", 1);
+        assert_eq!(parse(&opaque).unwrap().colour("text"), Some("#ece3cb"));
+    }
+
+    #[test]
     fn the_shipped_theme_loads_with_the_owners_colours() {
         let theme = shipped();
         assert_eq!(theme.colour("body"), Some("#15110a"));
@@ -231,7 +533,7 @@ mod tests {
         let place = theme.kind("place").expect("the place kind");
         assert_eq!(place.get("divider").map(String::as_str), Some("#c9932e"));
         assert_eq!(place.get("outline").map(String::as_str), Some("#4fb3c8"));
-        assert_eq!(place.get("hot").map(String::as_str), Some("#92ddea"));
+        assert_eq!(place.get("hot").map(String::as_str), Some("#b0dde6"));
         assert_eq!(place.get("title_text").map(String::as_str), Some("#15110a"));
         assert_eq!(
             place.get("pressed_text").map(String::as_str),
@@ -248,7 +550,7 @@ mod tests {
         assert_eq!(place.len(), 7);
         let window = theme.kind("window").expect("the window kind");
         assert_eq!(window.get("outline").map(String::as_str), Some("#6e130f"));
-        assert_eq!(window.get("hot").map(String::as_str), Some("#a8261c"));
+        assert_eq!(window.get("hot").map(String::as_str), Some("#a71d17"));
         assert_eq!(
             window.get("highlight_number").map(String::as_str),
             Some("#d4a8d7")
@@ -264,7 +566,7 @@ mod tests {
             );
         }
         let tooltip = theme.kind("tooltip").expect("the tooltip kind");
-        assert_eq!(tooltip.get("outline").map(String::as_str), Some("#ece3cb"));
+        assert_eq!(tooltip.get("outline").map(String::as_str), Some("#6e130f"));
         assert_eq!(
             tooltip.get("title_text").map(String::as_str),
             Some("#c9932e")
@@ -317,8 +619,13 @@ mod tests {
         );
         assert!(refused("not toml at all =").len() > 3);
         // Alpha is accepted, and so are further kinds and keys.
-        let fine = "[colour]\nx = \"#12345678\"\n[kind.mod_kind]\noutline = \"#000000\"\nhot = \"#ffffffff\"\nnew_key = \"#010203\"\n";
-        assert!(parse(fine).is_ok());
+        let fine =
+            "[kind.mod_kind]\noutline = \"#000000\"\nhot = \"#ffffffff\"\nnew_key = \"#010203\"\n";
+        let custom = parse(&format!("{}\n{}", shipped_text(), fine)).unwrap();
+        let kind = custom.kind("mod_kind").unwrap();
+        assert_eq!(kind["outline"], "#000000");
+        assert_eq!(kind["hot"], "#ffffffff");
+        assert_eq!(kind["new_key"], "#010203");
     }
 
     fn call(function: &str, arguments: &[Option<ConfigValue>]) -> Result<Vec<ConfigValue>, String> {
@@ -359,11 +666,11 @@ mod tests {
             keys["highlight_number"],
             ConfigValue::String("#663069".into())
         );
-        // No defaults are applied: `window` has only its specified keys.
+        // Managed keys are derived for the window.
         let ConfigValue::Table(window) = &call("kind", &text("window")).unwrap()[0] else {
             panic!("a table")
         };
-        assert_eq!(window.len(), 3);
+        assert_eq!(window.len(), 6);
         assert_eq!(
             window["highlight_number"],
             ConfigValue::String("#d4a8d7".into())

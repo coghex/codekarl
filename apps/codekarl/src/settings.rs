@@ -128,6 +128,7 @@ impl Runtime {
     }
 
     pub(crate) fn extension(self: &Arc<Self>) -> Extension {
+        let colours = Arc::clone(self);
         let tooltips = Arc::clone(self);
         let map = Arc::clone(self);
         let debug = Arc::clone(self);
@@ -140,6 +141,23 @@ impl Runtime {
         let capture = Arc::clone(self);
         let cancel_capture = Arc::clone(self);
         Extension::new("settings")
+            .function(
+                "colours",
+                Arc::new(move |args| {
+                    expect_no_arguments("settings.colours", args)?;
+                    let overrides = colours
+                        .overrides
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner);
+                    Ok(vec![ConfigValue::Table(
+                        overrides
+                            .ui_colours
+                            .iter()
+                            .map(|(k, v)| (k.clone(), ConfigValue::String(v.clone())))
+                            .collect(),
+                    )])
+                }),
+            )
             .function(
                 "tooltips",
                 Arc::new(move |args| {
@@ -216,6 +234,20 @@ impl Runtime {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         match name.as_str() {
+            name if name.starts_with("ui.colours.") => {
+                let key = &name["ui.colours.".len()..];
+                let ConfigValue::String(colour) = value else {
+                    return Err(format!("settings.set: `{name}` must be #rrggbb"));
+                };
+                if !["general", "location", "social", "expedition"].contains(&key)
+                    || !crate::theme::valid_base(colour)
+                {
+                    return Err(format!("settings.set: `{name}` must be #rrggbb"));
+                }
+                overrides
+                    .ui_colours
+                    .insert(key.to_owned(), colour.to_ascii_lowercase());
+            }
             "ui.tooltips.delay" => {
                 let tenths = tooltip_number(name, value, 0, 20)?;
                 values.tooltips.delay = f64::from(tenths) / 10.0;
@@ -573,6 +605,7 @@ impl Runtime {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         match tab.as_str() {
+            "colours" => overrides.ui_colours.clear(),
             "tooltips" => {
                 values.tooltips = self.base.tooltips;
                 overrides.tooltip_delay = None;
@@ -975,6 +1008,13 @@ fn settings_text(overrides: &SettingsOverrides) -> Vec<u8> {
     use std::fmt::Write as _;
     let mut text = String::new();
     push_ui_table(&mut text, overrides);
+    if !overrides.ui_colours.is_empty() {
+        text.push_str("[ui.colours]\n");
+        for (key, value) in &overrides.ui_colours {
+            let _ = writeln!(text, "{key} = \"{value}\"");
+        }
+        text.push('\n');
+    }
     if overrides.frame_fps_limit.is_some() || overrides.frame_vsync.is_some() {
         text.push_str("[frame]\n");
         if let Some(limit) = overrides.frame_fps_limit {
@@ -1067,6 +1107,103 @@ mod tests {
     use ck_lua::HostFunction;
     use std::fs;
     use std::sync::OnceLock;
+
+    #[test]
+    fn colour_overrides_are_validated_persisted_and_reset_independently() {
+        let rig = LiveRig::with_saved_settings(
+            "",
+            Some(
+                "[ui]\nplace_names = 'local'\n[ui.colours]\ngeneral = '#AbCdEf'\nlocation = 'bad'\n",
+            ),
+            None,
+            false,
+        );
+        assert_eq!(
+            rig.config
+                .settings_overrides
+                .ui_colours
+                .get("general")
+                .map(String::as_str),
+            Some("#abcdef")
+        );
+        assert!(
+            !rig.config
+                .settings_overrides
+                .ui_colours
+                .contains_key("location")
+        );
+        assert!(
+            rig.config
+                .settings_warnings
+                .iter()
+                .any(|w| w.contains("location"))
+        );
+        let call = |name: &str, value: &str| {
+            rig.runtime.set(&[
+                Some(ConfigValue::String(name.into())),
+                Some(ConfigValue::String(value.into())),
+            ])
+        };
+        assert!(
+            call("ui.colours.social", "invalid")
+                .unwrap_err()
+                .contains("ui.colours.social")
+        );
+        call("ui.colours.social", "#123ABC").unwrap();
+        let saved: toml::Value =
+            toml::from_str(&fs::read_to_string(&rig.settings_path).unwrap()).unwrap();
+        assert_eq!(saved["ui"]["colours"]["social"].as_str(), Some("#123abc"));
+        rig.runtime
+            .reset(&[Some(ConfigValue::String("colours".into()))])
+            .unwrap();
+        let saved: toml::Value =
+            toml::from_str(&fs::read_to_string(&rig.settings_path).unwrap()).unwrap();
+        assert!(saved["ui"].get("colours").is_none());
+        assert_eq!(saved["ui"]["place_names"].as_str(), Some("local"));
+        let restarted = crate::config::load(&rig.config_path).expect("reload settings");
+        assert!(restarted.settings_overrides.ui_colours.is_empty());
+        assert_eq!(restarted.graphics.place_names, "local");
+    }
+
+    #[test]
+    fn restart_combines_theme_defaults_with_independent_saved_overrides() {
+        let rig = LiveRig::with_saved_settings(
+            "",
+            Some(
+                "[ui]\nplace_names = 'local'\n[ui.colours]\ngeneral = '#123456'\nlocation = 'invalid'\n",
+            ),
+            None,
+            false,
+        );
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let source = fs::read_to_string(root.join("assets/ui/theme.toml"))
+            .unwrap()
+            .replace("location = \"#4fb3c8\"", "location = \"#2468ac\"");
+        let theme = Arc::new(crate::theme::parse(&source).unwrap());
+        let script = "local c = require('lib.theme').bases(); assert(c.general == '#123456' and c.location == '#2468ac' and c.social == '#6e130f'); settings.reset('colours')";
+        let _first = crate::testing::Harness::new(
+            script,
+            crate::testing::Extras {
+                modules: Some(root.join("scripts/ui")),
+                extensions: vec![
+                    rig.runtime.extension(),
+                    crate::theme::extension(Arc::clone(&theme)),
+                ],
+                ..Default::default()
+            },
+        );
+        let config = crate::config::load(&rig.config_path).unwrap();
+        assert_eq!(config.graphics.place_names, "local");
+        let runtime = Runtime::new(&config, None).unwrap();
+        let _second = crate::testing::Harness::new(
+            "local c = require('lib.theme').bases(); assert(c.general == '#6e130f' and c.location == '#2468ac' and c.social == '#6e130f' and c.expedition == '#c9932e')",
+            crate::testing::Extras {
+                modules: Some(root.join("scripts/ui")),
+                extensions: vec![runtime.extension(), crate::theme::extension(theme)],
+                ..Default::default()
+            },
+        );
+    }
 
     struct LiveRig {
         _dir: crate::testing::Dir,
