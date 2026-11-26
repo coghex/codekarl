@@ -1193,8 +1193,11 @@ herd stays. These are counts, not individual animals, so livestock stays abstrac
   becomes an expedition, saved in its home place's trade state. The plan is given (part D will choose it).
   - **Legs.** Each leg of the way out and the way back is a mode (land or water), the work and speed of each stretch in the order the
     stretches are travelled, and the fixed delays with where they lie; a leg takes the sum of work over speed plus the delays, where each
-    profile speed is scaled by the pace over 1000, rounded down, at least 1 (rule 6). Position is the leg and the exact fraction of its
-    time done, so the part of an hour a leg leaves over is carried to the next; the point on the map follows the movement, not the time:
+    profile speed is scaled by the pace over 1000, rounded down, at least 1 (rule 6). Position is the leg and the exact progress through it,
+    so the part of an hour a leg leaves over is carried to the next. Progress counts the leg's pieces (each stretch walked, each delay waited)
+    weighed at the walking pace, so a change of pace (the supplies running out at noon) changes how long each piece takes and never where
+    the expedition is or how much of a delay is left; the point on the map follows the movement, not the time, and a waiting expedition
+    stays at the way's frozen end (the plan's arrival point where the way has no leg):
     the stretches are walked in order at the pace held, a landing's or a boarding's delay is waited out at the shore (the start or the end
     of its leg), and a ford, wade or tide is spread along its stretch, so a leg of two speeds is not placed by the share of its hours. `travel_network`'s `expedition_route` builds the legs from CK-402's quickest itinerary, clipped at 2 km from each
     centre by an exact search (the samples, the path's bends and the nearest point of each straight piece, so a shallow crossing
@@ -1220,7 +1223,8 @@ herd stays. These are counts, not individual animals, so livestock stays abstrac
     want. It is a claimant in the scarcity shares like any pop, with the wealth of its pop at home and aboard at this place's prices; it
     starts its swaps first, in the order it arrived, at the place's prices, spending no capacity; in a pop's turn, for each want, the other pops are tried first and then the waiting
     expeditions in arrival order, with no capacity spent on either side, so a pop whose capacity is used up still tries them and one that
-    owns nothing has no turn. Visitors are partners only in their destination's local exchange. A swap is made only up to an amount that itself still assigns
+    owns nothing has no turn. Visitors are partners only in their destination's local exchange. Whether a place's stock is one pool or two
+    (visitors' and pops') is fixed when the exchange opens and kept through both passes, whoever has stopped claiming since. A swap is made only up to an amount that itself still assigns
     on every leg home (first-fit is not monotone, so the amount is tested, not assumed). It then loads what it traded for, its unsold cargo as far as it fits (worth most for its bulk first), gives
     the rest to pops that want it and have room (the neediest first) and throws away only what nobody takes.
   - **Away.** The people of an expedition are held (they cannot be hired, recruited or moved), neither breed nor die at the monthly
