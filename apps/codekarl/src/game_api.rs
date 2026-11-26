@@ -1026,6 +1026,21 @@ fn pop_table(pop: &PopView) -> ConfigValue {
         ("workers", integer(pop.workers)),
         ("dependents", integer(pop.dependents)),
         ("employed", integer(pop.employed)),
+        (
+            "jobs",
+            ConfigValue::Array(
+                pop.jobs
+                    .iter()
+                    .map(|(building, job, workers)| {
+                        table([
+                            ("building", text(building)),
+                            ("job", text(job)),
+                            ("workers", integer(*workers)),
+                        ])
+                    })
+                    .collect(),
+            ),
+        ),
         ("unemployed", integer(pop.unemployed)),
         ("food_days", integer(pop.food_days)),
         (
@@ -1089,6 +1104,23 @@ fn building_table(building: &BuildingView) -> ConfigValue {
             ),
         ),
         ("filled", integer(building.filled)),
+        (
+            "jobs",
+            ConfigValue::Array(
+                building
+                    .jobs
+                    .iter()
+                    .map(|(id, filled, places)| {
+                        table([
+                            ("id", text(id)),
+                            ("filled", integer(*filled)),
+                            ("places", integer(*places)),
+                        ])
+                    })
+                    .collect(),
+            ),
+        ),
+        ("abandoned", ConfigValue::Bool(building.abandoned)),
         ("open", integer(building.open)),
         (
             "herds",
@@ -2666,6 +2698,7 @@ mod tests {
             makeshift_housing_occupants: 2,
             crowding_pm: 2000,
             pops: vec![PopView {
+                jobs: Vec::new(),
                 stock: Vec::new(),
                 room_ml: 0,
                 kind: "peasant".to_owned(),
@@ -2694,6 +2727,8 @@ mod tests {
                 crowding_pm: Some(2000),
             }],
             buildings: vec![BuildingView {
+                jobs: Vec::new(),
+                abandoned: false,
                 stock: Vec::new(),
                 made: Vec::new(),
                 kind: "farm".to_owned(),

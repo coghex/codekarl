@@ -1,6 +1,7 @@
 fuel_deaths_pm_year=100
 herd_start_share = [2, 3]
 herd_standard_pm = 700
+butcher_units_per_month = 12
 # Trade, part B (CK-431): a job not started this many hours after it was made is given up (30 days, a proposal), and an animal of
 # a given-up job that nobody took is slaughtered this many hours after (30 days, a proposal).
 job_giveup_hours = 720
@@ -31,6 +32,8 @@ floor_per_level = 1
 
 [[herd_species]]
 animal="cattle"
+head_per_herder=40
+carcass_units=6
 births_pm_year=500
 deaths_pm_year=80
 emergency_order=2
@@ -39,6 +42,8 @@ products=[{good="dairy", amount_milli=72000, season="dairy"}]
 
 [[herd_species]]
 animal="pigs"
+head_per_herder=60
+carcass_units=3
 births_pm_year=1500
 deaths_pm_year=100
 emergency_order=0
@@ -46,6 +51,8 @@ yields=[{good="pork", units=88}]
 
 [[herd_species]]
 animal="sheep"
+head_per_herder=150
+carcass_units=2
 births_pm_year=800
 deaths_pm_year=80
 emergency_order=1
@@ -54,6 +61,8 @@ products=[{good="wool", amount_milli=1500, month=6}]
 
 [[herd_species]]
 animal="horses"
+head_per_herder=10
+carcass_units=6
 births_pm_year=300
 deaths_pm_year=60
 emergency_order=3
@@ -475,27 +484,28 @@ noble=[1000,700,300]   # start content, at their expectations
 [[buildings]]
 id="farm"
 herds={ cattle={maximum=12}, pigs={maximum=8}, sheep={maximum=7} }
-workers_per_level=10
 land_per_level=2
-owner_workers={ peasant=10 }
 penalty_pm=500
 overhead_pm=100
 recruit_range_m=30000
 market_capacity_ml_per_level=50000
 [[buildings.methods]]
 id="mixed_farming"
+jobs=[{ id="peasant_labour", places=10, pop_types=["peasant"], wage_weight_pm=1000, manager=false }]
 resource="usable_land"
 suitability="crops"
 annual_output={ oats=300, barley=50, peas_beans=6, vegetables=32, beef=1100, pork=970, mutton=165, dairy=860, wool=10, hides=5, linen=10, hemp=10 }
 score_share_pm={ oats=690, barley=120, peas_beans=30, vegetables=80, beef=25, pork=20, mutton=5, dairy=10, wool=5, hides=5, linen=5, hemp=5 }
 [[buildings.methods]]
 id="coastal_subsistence"
+jobs=[{ id="peasant_labour", places=10, pop_types=["peasant"], wage_weight_pm=1000, manager=false }]
 resource="sea"
 suitability="sea"
 annual_output={ fish=8000, seabirds=1500 }
 score_share_pm={ fish=850, seabirds=150 }
 [[buildings.methods]]
 id="wood_focus"
+jobs=[{ id="peasant_labour", places=10, pop_types=["peasant"], wage_weight_pm=1000, manager=false }]
 serves="fuel"
 resource="forest"
 cells_per_level=4
@@ -504,6 +514,7 @@ annual_output={ hardwood=3000, beef=1100, pork=970, mutton=165, dairy=860, wool=
 score_share_pm={ hardwood=930, beef=25, pork=20, mutton=5, dairy=10, wool=5, hides=5 }
 [[buildings.methods]]
 id="turf_cutting"
+jobs=[{ id="peasant_labour", places=10, pop_types=["peasant"], wage_weight_pm=1000, manager=false }]
 serves="fuel"
 resource="bog"
 cells_per_level=2
@@ -514,42 +525,39 @@ score_share_pm={ peat=930, beef=25, pork=20, mutton=5, dairy=10, wool=5, hides=5
 id="holdings"
 church=true
 herds={ cattle={maximum=12}, pigs={maximum=8}, sheep={maximum=7} }
-workers_per_level=10
 land_per_level=2
-owner_workers={ monk=5, labourer=10 }
 penalty_pm=500
 overhead_pm=300
 recruit_range_m=100000
 market_capacity_ml_per_level=100000
 [[buildings.methods]]
 id="monastic_farming"
+jobs=[{ id="prior", places=1, pop_types=["monk"], wage_weight_pm=1500, manager=true }, { id="monks", places=5, pop_types=["monk"], wage_weight_pm=1000, manager=false }, { id="field_hands", places=5, pop_types=["labourer"], wage_weight_pm=1000, manager=false }]
+made_by={ vegetables="monks", herbs="monks", beeswax="monks", honey="monks", mead="monks", ale="monks", apples="monks", oats="field_hands", barley="field_hands", peas_beans="field_hands", beef="field_hands", pork="field_hands", mutton="field_hands", dairy="field_hands", hides="field_hands" }
 resource="usable_land"
 suitability="crops"
 annual_output={ oats=300, barley=50, peas_beans=6, vegetables=32, beef=1100, pork=970, mutton=165, dairy=860, wool=10, hides=5, ale=400, honey=40, mead=40, apples=30, herbs=20, beeswax=10 }
 score_share_pm={ oats=450, barley=80, peas_beans=20, vegetables=50, beef=20, pork=15, mutton=5, dairy=15, wool=5, hides=5, ale=120, honey=30, mead=60, apples=60, herbs=50, beeswax=15 }
 [[buildings.methods]]
 id="monastic_fishing"
+jobs=[{ id="prior", places=1, pop_types=["monk"], wage_weight_pm=1500, manager=true }, { id="monks", places=5, pop_types=["monk"], wage_weight_pm=1000, manager=false }, { id="fishermen", places=5, pop_types=["labourer"], wage_weight_pm=1000, manager=false }]
+made_by={ vegetables="monks", herbs="monks", fish="fishermen", seabirds="fishermen" }
 resource="sea"
 suitability="sea"
 annual_output={ fish=8000, seabirds=1500, vegetables=20, herbs=10 }
 score_share_pm={ fish=800, seabirds=150, vegetables=30, herbs=20 }
-# The lord's own land (the demesne), worked by paid labourers and owned by nobles; not `holdings`, which stays the monks'.
-# Source: p1-noble-economy-r1.toml, approved by the owner (r191). The designer's `owner_workers={ noble=1, labourer=10 }` is
-# translated: the keys of `owner_workers` are the worker kinds a building employs, so all ten positions per level are labourer
-# jobs (one owner covers 10 of them) and `owner_kind` names the pop type that owns: one noble covers 10 labourers.
 [[buildings]]
 id="demesne"
 herds={ cattle={maximum=12}, pigs={maximum=8}, sheep={maximum=7}, horses={maximum=3} }
-workers_per_level=10
 land_per_level=2
-owner_workers={ labourer=10 }
-owner_kind="noble"
 penalty_pm=500
 overhead_pm=300
 recruit_range_m=30000
 market_capacity_ml_per_level=100000
 [[buildings.methods]]
 id="demesne_farming"
+jobs=[{ id="steward", places=1, pop_types=["noble","labourer"], wage_weight_pm=1500, manager=true }, { id="field_hands", places=4, pop_types=["labourer"], wage_weight_pm=1000, manager=false }, { id="milkers", places=2, pop_types=["labourer"], wage_weight_pm=1000, manager=false }, { id="herder", places=1, pop_types=["labourer"], wage_weight_pm=1000, manager=false }, { id="butcher", places=1, pop_types=["labourer"], wage_weight_pm=1000, manager=false }, { id="beekeeper", places=1, pop_types=["labourer"], wage_weight_pm=1000, manager=false }, { id="brewer", places=1, pop_types=["labourer"], wage_weight_pm=1000, manager=false }]
+made_by={ oats="field_hands", barley="field_hands", peas_beans="field_hands", vegetables="field_hands", apples="field_hands", dairy="milkers", beef="butcher", pork="butcher", mutton="butcher", hides="butcher", honey="beekeeper", ale="brewer", mead="brewer" }
 resource="usable_land"
 suitability="crops"
 # Cattle-rich (a lord's wealth was his herds), with ale, mead and honey for his table; no herbs or beeswax (the monks' specialties).
@@ -557,9 +565,8 @@ annual_output={ oats=300, barley=80, peas_beans=6, vegetables=20, beef=1300, por
 score_share_pm={ oats=430, barley=110, peas_beans=20, vegetables=30, beef=40, pork=20, mutton=5, dairy=20, wool=5, hides=5, ale=150, honey=40, mead=100, apples=25 }
 [[buildings]]
 id="storehouse"
-workers_per_level=2
+jobs=[{ id="keepers", places=2, pop_types=[], wage_weight_pm=1000, manager=false }]
 land_per_level=0
-owner_workers={}
 penalty_pm=0
 overhead_pm=0
 recruit_range_m=0

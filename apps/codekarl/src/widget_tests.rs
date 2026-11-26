@@ -2722,7 +2722,7 @@ local breakdown = {
   prices = {},
   pops = {
     {kind = "peasant", culture = "mumu", religion = "christianity", workers = 60, dependents = 40,
-      employed = 60, unemployed = 0, food_days = 2, food = {
+      employed = 60, unemployed = 0, jobs = {{building = "farm", job = "peasant_labour", workers = 60}}, food_days = 2, food = {
         {good = "oats", units = 300, unit = "bushel", share_pm = 658},
         {good = "barley", units = 100, unit = "bushel", share_pm = 341},
         {good = "fish", units = 2, unit = "pound dried", share_pm = 1},
@@ -2734,6 +2734,7 @@ local breakdown = {
   },
   buildings = {
     {kind = "farm", store_used_l = 20, store_capacity_l = 100, filled = 7, open = 2, wage = 3200,
+      jobs = {{id = "steward", filled = 1, places = 1}, {id = "field_hands", filled = 6, places = 8}},
       wages = {{month = 5, year = 769, wage_milli = 3200, paid = 18}, {month = 4, wage_milli = 2900},
         {month = 3, year = 769, wage_milli = 2900, paid = 10}, {month = 2, year = 769, wage_milli = 2900, paid = 10},
         {month = 1, year = 769, wage_milli = 2900, paid = 10}, {month = 12, year = 768, wage_milli = 2900, paid = 10},
@@ -2833,7 +2834,7 @@ assert(tooltip.content("pop_size", {place = "breakdown", pop = 9}) == nil, "inva
 assert(tooltip.content("pop_size", {place = "not_in_view", pop = 1}) == nil, "missing place")
 expect("pop_food", joined("pop_food", {place = "breakdown", pop = 1}),
   "oats 300 bushels, 65% of meals\nbarley 100 bushels, 34% of meals\nfish 2 pound dried, 0% of meals")
-expect("jobs", joined("jobs", {place = "breakdown", pop = 1}), "employed 60\nunemployed 0")
+expect("jobs", joined("jobs", {place = "breakdown", pop = 1}), "employed 60\nunemployed 0\nfarm peasant labour 60")
 expect("pop_housing", joined("pop_housing", {place = "breakdown", pop = 1}), "basic 80\nmakeshift 20")
 expect("pop_crowding", joined("pop_crowding", {place = "breakdown", pop = 1}), "crowding 75%\nhousing 100")
 assert(tooltip.content("pop_food", {place = "breakdown", pop = 9}) == nil, "missing pop food target")
@@ -2847,13 +2848,13 @@ expect("building_land", joined("building_land", {place = "breakdown"}), "in use 
 expect("storage", joined("storage", {place = "breakdown"}), "pops 200 / 500 L\nfarm 20 / 100 L\nbrewery 10 / 50 L")
 expect("overflow", joined("overflow", {place = "breakdown"}), "oats 40\ndairy 12")
 assert(joined("overflow", {place = "closed_empty"}) == "nothing lost")
-expect("staff", joined("staff", {place = "breakdown", building = 1}), "filled 7\nopen 2")
+expect("staff", joined("staff", {place = "breakdown", building = 1}), "filled 7\nopen 2\nsteward 1 of 1\nfield hands 6 of 8")
 expect("store", joined("store", {place = "breakdown", building = 1}), "used 20 L of 100 L")
 assert(tooltip.content("staff", {place = "breakdown", building = 9}) == nil, "missing building staff target")
 assert(tooltip.content("store", {place = "breakdown", building = 9}) == nil, "missing building store target")
 local wage_lines = texts(tooltip.content("wage", {place = "breakdown", building = 1}))
-assert(#wage_lines == 13 and wage_lines[1] == "May 769: 3.2 per head (18 paid)"
-  and wage_lines[2] == "Apr: 2.9 per head" and wage_lines[13] == "average 3.2", table.concat(wage_lines, "\n"))
+assert(#wage_lines == 13 and wage_lines[1] == "May 769: 3.2 per ordinary worker (18 paid)"
+  and wage_lines[2] == "Apr: 2.9 per ordinary worker" and wage_lines[13] == "average 3.2", table.concat(wage_lines, "\n"))
 expect("herd", joined("herd", {place = "breakdown", building = 1, species = "pigs"}), "pigs 51 of 64")
 assert(tooltip.content("herd", {place = "breakdown", building = 1, species = "goats"}) == nil, "missing herd species")
 assert(tooltip.content("herd", {place = "breakdown", building = 9, species = "pigs"}) == nil, "missing building")

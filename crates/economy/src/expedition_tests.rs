@@ -976,6 +976,12 @@ fn hired_hands_are_paid_when_the_trip_starts_held_while_away_and_counted_as_days
     let farm = add_building(&rules, &mut state.places[0], "farm", 0);
     state.places[0].buildings[farm].employment[MONK].workers = 600;
     state.places[0].pops[MONK].employment[farm].workers = 600;
+    state.places[0].buildings[farm].employment[MONK]
+        .jobs
+        .insert("peasant_labour".into(), 600);
+    state.places[0].pops[MONK].employment[farm]
+        .jobs
+        .insert("peasant_labour".into(), 600);
     state.places[0].buildings[farm].wage_history = vec![6000; 12];
     let mut plan = the_plan(&rules, 6, 5);
     plan.people = vec![
@@ -1564,6 +1570,12 @@ fn workers_who_return_at_noon_and_leave_again_in_the_same_hour_are_charged_one_n
     home.pops[PEASANT].workers = 2;
     home.pops[PEASANT].employment[farm].workers = 2;
     home.buildings[farm].employment[PEASANT].workers = 2;
+    home.buildings[farm].employment[PEASANT]
+        .jobs
+        .insert("peasant_labour".into(), 2);
+    home.pops[PEASANT].employment[farm]
+        .jobs
+        .insert("peasant_labour".into(), 2);
     let second_cart = add_vehicle(&mut state, &rules, "ox_cart");
     let mut next = the_plan(&rules, 6, 1);
     next.vehicles = vec![second_cart];
@@ -1621,6 +1633,25 @@ fn workers_away_on_an_expedition_do_not_die_or_move_at_the_monthly_step() {
         "the away workers survive the month"
     );
     assert_eq!(state.places[0].trade.away(PEASANT), 2);
+}
+
+#[test]
+fn partly_away_workers_reduce_the_movement_allowance() {
+    let mut rules = herd_rules();
+    let mut state = two_places(&mut rules);
+    state.places[0].pops[PEASANT].workers = 40;
+    let mut plan = the_plan(&rules, 30, 5);
+    plan.people = vec![(u32::try_from(PEASANT).unwrap(), 20)];
+    state
+        .order_trade(&rules, 0, PEASANT, plan, hours(at(10, 5)))
+        .unwrap();
+    tick(&rules, &mut state, at(10, 5));
+    let place = &state.places[0];
+    assert_eq!(place.trade.away(PEASANT), 20);
+    assert_eq!(
+        leave_allowance(place.pops[PEASANT].workers, place.trade.away(PEASANT), 50).unwrap(),
+        1
+    );
 }
 
 #[test]
@@ -1899,6 +1930,12 @@ fn hired_hands_are_paid_for_both_days_of_a_thirty_five_hour_trip() {
     let farm = add_building(&rules, &mut state.places[0], "farm", 0);
     state.places[0].buildings[farm].employment[MONK].workers = 600;
     state.places[0].pops[MONK].employment[farm].workers = 600;
+    state.places[0].buildings[farm].employment[MONK]
+        .jobs
+        .insert("peasant_labour".into(), 600);
+    state.places[0].pops[MONK].employment[farm]
+        .jobs
+        .insert("peasant_labour".into(), 600);
     state.places[0].buildings[farm].wage_history = vec![6000; 12];
     state.places[0].prices_milli.fill(100);
     let mut plan = the_plan(&rules, 30, 5);
@@ -1909,7 +1946,7 @@ fn hired_hands_are_paid_for_both_days_of_a_thirty_five_hour_trip() {
     state
         .order_trade(&rules, 0, PEASANT, plan, hours(at(10, 5)))
         .unwrap();
-    assert_eq!(trade::pop_wage(&state.places[0], MONK), 6000);
+    assert_eq!(trade::pop_wage(&rules, &state.places[0], MONK), 6000);
     tick(&rules, &mut state, at(10, 5));
     let paid = &trip_expedition(&state).groups[1].paid;
     assert_eq!(paid.len(), 1);
@@ -1980,6 +2017,12 @@ fn a_noon_departure_that_reaches_the_destination_at_eleven_pays_no_extra_wait() 
     let farm = add_building(&rules, &mut state.places[0], "farm", 0);
     state.places[0].buildings[farm].employment[MONK].workers = 600;
     state.places[0].pops[MONK].employment[farm].workers = 600;
+    state.places[0].buildings[farm].employment[MONK]
+        .jobs
+        .insert("peasant_labour".into(), 600);
+    state.places[0].pops[MONK].employment[farm]
+        .jobs
+        .insert("peasant_labour".into(), 600);
     state.places[0].buildings[farm].wage_history = vec![6000; 12];
     state.places[0].prices_milli.fill(100);
     let mut plan = the_plan(&rules, 24, 1);

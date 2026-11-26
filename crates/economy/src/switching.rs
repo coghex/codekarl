@@ -128,12 +128,13 @@ impl SignedFraction {
 
 use super::{
     BuildingState, BuildingType, DataError, Date, LandCounts, LevelRecord, Method, PlaceState,
-    Rules,
+    PopState, Rules,
 };
 use super::{
-    add_counter_units, building_coverage_pm, choose_terrain, derive_level_sums, herd_supplies,
-    mean_fertility, method_suitability_pm, missing_data, projected_pop_order_units,
-    seasonal_accounts, settle_overflow, split_and_pay,
+    add_counter_units, building_job_pools, choose_terrain, derive_level_sums, give, good_staffing,
+    herd_supplies, manager_factor, mean_fertility, method_suitability_pm, missing_data,
+    mul_div_floor, pool_staffing, projected_pop_order_units, seasonal_accounts, settle_overflow,
+    split_and_pay,
 };
 use std::collections::BTreeMap;
 
@@ -183,20 +184,67 @@ fn staffing(
     building: &BuildingState,
     def: &BuildingType,
 ) -> Result<(u64, u64, u64), DataError> {
-    let positions = u64::from(building.levels) * u64::from(def.workers_per_level);
+    let positions = u64::from(building.levels);
     let workers = building
         .employment
         .iter()
-        .try_fold(0u64, |sum, e| sum.checked_add(e.workers))
-        .ok_or_else(|| missing_data("employment".into(), "worker count overflow"))?
-        .min(positions);
-    let coverage = u64::from(building_coverage_pm(def, &place.pops, building)?);
-    let efficiency = 1000 - u64::from(def.penalty_pm) * (1000 - coverage) / 1000;
+        .try_fold(0_u64, |sum, entry| sum.checked_add(entry.workers))
+        .ok_or_else(|| missing_data("employment".into(), "worker count overflow"))?;
+    let efficiency = manager_factor(def, building, &vec![0; place.pops.len()], 1)?;
     Ok((workers, positions, efficiency))
 }
 fn amount(n: &[u128], d: &[u128]) -> Fraction {
     Fraction::new(super::bigint::product(n), super::bigint::product(d))
 }
+fn forecast_staffing(
+    def: &BuildingType,
+    building: &BuildingState,
+    method: &Method,
+    good: &str,
+    levels: &[u32],
+) -> Result<(u64, u64), DataError> {
+    let current = building_job_pools(def, &building.method_levels)?;
+    let future = building_job_pools(def, levels)?;
+    let staffed = pool_staffing(
+        &current,
+        &building.employment,
+        &vec![0; building.employment.len()],
+        1,
+    )?;
+    if let Some(id) = method.made_by.get(good) {
+        if let Some(target) = future.iter().find(|pool| pool.job.id == *id)
+            && let Some(index) = current.iter().position(|pool| pool.job.id == *id)
+        {
+            return Ok((staffed[index].min(target.places), target.places));
+        }
+    } else {
+        let capacity = future
+            .iter()
+            .filter(|pool| !pool.job.manager)
+            .try_fold(0_u64, |sum, pool| sum.checked_add(pool.places))
+            .ok_or_else(|| missing_data("look.jobs".into(), "capacity overflow"))?;
+        let filled = current
+            .iter()
+            .zip(&staffed)
+            .filter(|(pool, _)| !pool.job.manager)
+            .try_fold(0_u64, |sum, (_, count)| sum.checked_add(*count))
+            .ok_or_else(|| missing_data("look.jobs".into(), "staffing overflow"))?;
+        return Ok((filled.min(capacity), capacity));
+    }
+    let ordinary = current
+        .iter()
+        .zip(&staffed)
+        .filter(|(pool, _)| !pool.job.manager)
+        .try_fold((0_u64, 0_u64), |(filled, places), (pool, count)| {
+            Some((
+                filled.checked_add(*count)?,
+                places.checked_add(pool.places)?,
+            ))
+        })
+        .ok_or_else(|| missing_data("look.jobs".into(), "staffing overflow"))?;
+    Ok(ordinary)
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "The formula needs the place, level and alternative at a stated moment."
@@ -212,13 +260,21 @@ fn output(
     month: u8,
     quality: u16,
     full: bool,
+    candidate_levels: Option<&[u32]>,
 ) -> Result<Vec<Fraction>, DataError> {
     let mut values = vec![Fraction::integer(0); rules.goods.len()];
-    let (workers, positions, efficiency) = staffing(place, building, def)?;
-    if positions == 0 {
-        return Ok(values);
-    }
+    let (_, _, efficiency) = staffing(place, building, def)?;
     for (good, annual) in &method.annual_output {
+        let (workers, positions) = forecast_staffing(
+            def,
+            building,
+            method,
+            good,
+            candidate_levels.unwrap_or(&building.method_levels),
+        )?;
+        if positions == 0 {
+            continue;
+        }
         if herd_supplies(rules, def, good) {
             continue;
         }
@@ -376,6 +432,7 @@ fn wanted_base(
                 month,
                 quality,
                 false,
+                None,
             )?;
             for (total, item) in produced.iter_mut().zip(made) {
                 *total = total.add(&item);
@@ -443,6 +500,7 @@ fn own_output(
         month,
         quality,
         false,
+        None,
     )?;
     for (total, item) in
         own.iter_mut()
@@ -585,13 +643,100 @@ fn target_ground(
     )
     .map(Some))
 }
+fn rescale_carries(
+    rules: &Rules,
+    building: &mut BuildingState,
+    definition: &BuildingType,
+    levels: &[u32],
+) -> Result<(), DataError> {
+    let old = building_job_pools(definition, &building.method_levels)?;
+    let new = building_job_pools(definition, levels)?;
+    let old_zero = vec![0; old.len()];
+    let new_zero = vec![0; new.len()];
+    for (method_index, row) in building.production_carries.iter_mut().enumerate() {
+        let method = definition.methods.get(method_index).ok_or_else(|| {
+            missing_data(
+                "production.carries".into(),
+                "method dimensions do not match",
+            )
+        })?;
+        for (index, carry) in row.iter_mut().enumerate() {
+            let good = rules.goods.get(index).ok_or_else(|| {
+                missing_data("production.carries".into(), "good dimensions do not match")
+            })?;
+            let (_, before) = good_staffing(method, &good.id, &old, &old_zero, 1)?;
+            let (_, after) = good_staffing(method, &good.id, &new, &new_zero, 1)?;
+            *carry = if before == 0 || after == 0 {
+                0
+            } else {
+                mul_div_floor(*carry, u128::from(after), u128::from(before)).ok_or_else(|| {
+                    missing_data("production.carries".into(), "carry rescale overflow")
+                })?
+            };
+        }
+    }
+    Ok(())
+}
+
+fn trim_jobs(
+    pops: &mut [PopState],
+    building: &mut BuildingState,
+    definition: &BuildingType,
+    building_index: usize,
+) -> Result<(), DataError> {
+    let pools = building_job_pools(definition, &building.method_levels)?;
+    if building.employment.len() != pops.len() {
+        return Err(missing_data(
+            "employment.jobs".into(),
+            "employment dimensions do not match",
+        ));
+    }
+    for pool in &pools {
+        let counts = building
+            .employment
+            .iter()
+            .map(|entry| entry.jobs.get(&pool.job.id).copied().unwrap_or(0))
+            .collect::<Vec<_>>();
+        let total = counts.iter().try_fold(0_u64, |sum, count| {
+            sum.checked_add(*count)
+                .ok_or_else(|| missing_data("employment.jobs".into(), "job worker total overflow"))
+        })?;
+        let releases = give(total.saturating_sub(pool.places), &counts)?;
+        let awards = counts
+            .into_iter()
+            .zip(releases)
+            .map(|(count, released)| count - released);
+        for (entry, award) in building.employment.iter_mut().zip(awards) {
+            if award == 0 {
+                entry.jobs.remove(&pool.job.id);
+            } else {
+                entry.jobs.insert(pool.job.id.clone(), award);
+            }
+        }
+    }
+    for (pop, entry) in pops.iter_mut().zip(&mut building.employment) {
+        entry
+            .jobs
+            .retain(|id, _| pools.iter().any(|pool| pool.job.id == *id));
+        entry.workers = entry
+            .jobs
+            .values()
+            .try_fold(0_u64, |sum, count| sum.checked_add(*count))
+            .ok_or_else(|| missing_data("employment.jobs".into(), "worker count overflow"))?;
+        pop.employment[building_index] = entry.clone();
+    }
+    Ok(())
+}
+
+type HerdSwitch = (Vec<u64>, Vec<u64>, Vec<u64>, Vec<u64>);
+
 fn switching_heads(
     rules: &Rules,
     building: &BuildingState,
     def: &BuildingType,
     level: &LevelRecord,
     target: &Method,
-) -> (Vec<u64>, Vec<u64>, Vec<u64>) {
+) -> Result<HerdSwitch, DataError> {
     let mut keeping = building
         .level_records
         .iter()
@@ -603,27 +748,53 @@ fn switching_heads(
     if target.resource != "sea" {
         keeping += 1;
     }
+    let mut levels = building.method_levels.clone();
+    levels[level.method as usize] = levels[level.method as usize].saturating_sub(1);
+    if let Some(index) = def.methods.iter().position(|method| method.id == target.id) {
+        levels[index] = levels[index].saturating_add(1);
+    }
+    let pools = building_job_pools(def, &levels)?;
+    let herder = pools.iter().find(|pool| pool.job.id == "herder");
+    let has_butcher = pools.iter().any(|pool| pool.job.id == "butcher");
+    let herders = herder.map_or(0, |pool| {
+        building
+            .employment
+            .iter()
+            .fold(0_u64, |sum, entry| {
+                sum.saturating_add(entry.jobs.get("herder").copied().unwrap_or(0))
+            })
+            .min(pool.places)
+    });
     let mut next = Vec::new();
     let mut gone = Vec::new();
     let mut founders = Vec::new();
+    let mut dead = Vec::new();
     for (i, species) in rules.herd_species.iter().enumerate() {
         let current = building.herds.get(i).copied().unwrap_or(0);
-        let maximum =
-            keeping.saturating_mul(def.herds.get(&species.animal).map_or(0, |c| c.maximum));
+        let land = keeping.saturating_mul(def.herds.get(&species.animal).map_or(0, |c| c.maximum));
+        let soft = if herder.is_some() {
+            land.min(herders.saturating_mul(species.head_per_herder))
+        } else {
+            land
+        };
+        let deaths = current.saturating_sub(land.saturating_mul(2));
+        let survivors = current - deaths;
+        let slaughter = if has_butcher {
+            0
+        } else {
+            survivors.saturating_sub(soft)
+        };
         let founder = if current == 0 && target.resource != "sea" {
-            keeping.saturating_mul(2).min(maximum)
+            keeping.saturating_mul(2).min(soft)
         } else {
             0
         };
-        next.push(if current == 0 {
-            founder
-        } else {
-            current.min(maximum)
-        });
-        gone.push(current.saturating_sub(maximum));
+        next.push(survivors - slaughter + founder);
+        gone.push(slaughter);
         founders.push(founder);
+        dead.push(deaths);
     }
-    (next, gone, founders)
+    Ok((next, gone, founders, dead))
 }
 fn herd_loss(
     rules: &Rules,
@@ -759,11 +930,15 @@ pub fn look_in_year(
                     month,
                     quality,
                     true,
+                    None,
                 )?;
                 let old_value = value(rules, &old, &want, prices);
                 slot.insert((want, old, old_value));
             }
             let (want, _, old_value) = &per_level[&level.number];
+            let mut candidate_levels = building.method_levels.clone();
+            candidate_levels[level.method as usize] -= 1;
+            candidate_levels[target_index] += 1;
             let new = output(
                 rules,
                 place,
@@ -775,6 +950,7 @@ pub fn look_in_year(
                 month,
                 quality,
                 true,
+                Some(&candidate_levels),
             )?;
             let slow = output(
                 rules,
@@ -787,9 +963,11 @@ pub fn look_in_year(
                 month,
                 quality,
                 false,
+                Some(&candidate_levels),
             )?;
             let new_value = value(rules, &new, want, prices);
-            let (heads, gone, founders) = switching_heads(rules, building, def, level, target);
+            let (heads, gone, founders, dead) =
+                switching_heads(rules, building, def, level, target)?;
             let old_herd = value(rules, &old_herd_made, want, prices);
             let new_herd = value(
                 rules,
@@ -812,7 +990,12 @@ pub fn look_in_year(
                 ));
             }
             let slow_start = new_value.saturating_sub(&value(rules, &slow, want, prices));
-            let herd_cost = herd_loss(rules, &gone, &founders, prices)?;
+            let lost = gone
+                .iter()
+                .zip(&dead)
+                .map(|(slaughter, deaths)| slaughter.saturating_add(*deaths))
+                .collect::<Vec<_>>();
+            let herd_cost = herd_loss(rules, &lost, &founders, prices)?;
             let threshold = staying
                 .add(&staying.mul(&Fraction::ratio(
                     u128::from(rules.method_switch_margin_pm),
@@ -867,13 +1050,13 @@ fn make_move(
         .iter()
         .position(|record| record.number == entry.level)
         .ok_or_else(|| missing_data("switch.level".into(), "the level has no record"))?;
-    let (_, gone, founders) = switching_heads(
+    let (_, gone, founders, dead) = switching_heads(
         rules,
         building,
         def,
         &building.level_records[position],
         target,
-    );
+    )?;
     let record = &mut building.level_records[position];
     record.method = u32::try_from(entry.method)
         .map_err(|_| missing_data("switch.method".into(), "method index exceeds u32"))?;
@@ -885,7 +1068,9 @@ fn make_move(
     for record in &building.level_records {
         counts[record.method as usize] += 1;
     }
+    rescale_carries(rules, building, def, &counts)?;
     building.method_levels = counts;
+    trim_jobs(&mut place.pops, building, def, building_index)?;
     let (suitability, grazing) = derive_level_sums(rules, def, &building.level_records)?;
     building.method_suitability = suitability;
     building.herd_grazing_sums = grazing;
@@ -915,7 +1100,11 @@ fn make_move(
                 }
             }
             building.herds[species_index] =
-                building.herds[species_index] - slaughtered + founders[species_index];
+                building.herds[species_index] - slaughtered - dead[species_index]
+                    + founders[species_index];
+            ledger.herd_deaths[species_index] = ledger.herd_deaths[species_index]
+                .checked_add(dead[species_index])
+                .ok_or_else(|| missing_data("ledger.herds".into(), "death total overflow"))?;
             ledger.herd_slaughter[species_index] = ledger.herd_slaughter[species_index]
                 .checked_add(slaughtered)
                 .ok_or_else(|| missing_data("ledger.herds".into(), "slaughter total overflow"))?;
@@ -985,8 +1174,7 @@ pub(super) fn run_place_switches(
     for building_index in 0..place.buildings.len() {
         let building = &place.buildings[building_index];
         let def = definition(rules, building)?;
-        if def.methods.len() < 2 || building.level_records.is_empty() || def.workers_per_level == 0
-        {
+        if def.methods.len() < 2 || building.level_records.is_empty() || building.levels == 0 {
             continue;
         }
         let result = look_in_year(
@@ -1016,6 +1204,7 @@ pub(super) fn run_place_switches(
 #[cfg(test)]
 mod fraction_tests {
     use super::*;
+    use ck_sim::Canonical;
     fn fixture(annual: u64, good: &str) -> (Rules, PlaceState) {
         let mut rules = crate::tests::level_rules();
         rules.fertility_reference_pm = 1000;
@@ -1046,6 +1235,142 @@ mod fraction_tests {
             pop.dependents = 0;
         }
         (rules, state.places.remove(0))
+    }
+
+    #[test]
+    fn switch_rescales_job_carries_both_directions_across_save() {
+        let (rules, mut place) = fixture(100, "oats");
+        let def = rules
+            .buildings
+            .iter()
+            .find(|kind| kind.id == "holdings")
+            .unwrap();
+        let oats = crate::tests::good_at(&rules, "oats");
+        let building = &mut place.buildings[0];
+        building.kind = "holdings".into();
+        building.levels = 2;
+        building.method_levels = vec![1, 1];
+        building.production_carries = vec![vec![0; rules.goods.len()]; 2];
+        building.production_carries[0][oats] = 25_000_000_000;
+        rescale_carries(&rules, building, def, &[2, 0]).unwrap();
+        building.method_levels = vec![2, 0];
+        assert_eq!(building.production_carries[0][oats], 50_000_000_000);
+        let state = crate::EconomyState {
+            places: vec![place],
+            trade: crate::TradeCounters::default(),
+        };
+        let bytes = state.to_bytes().unwrap();
+        let mut state = crate::EconomyState::from_bytes(&bytes).unwrap();
+        let building = &mut state.places[0].buildings[0];
+        super::super::check_production_carries(
+            &rules,
+            def,
+            building,
+            rules.fertility_reference_pm,
+            "fixture",
+        )
+        .unwrap();
+        rescale_carries(&rules, building, def, &[1, 1]).unwrap();
+        building.method_levels = vec![1, 1];
+        assert_eq!(building.production_carries[0][oats], 25_000_000_000);
+        let bytes = state.to_bytes().unwrap();
+        let state = crate::EconomyState::from_bytes(&bytes).unwrap();
+        super::super::check_production_carries(
+            &rules,
+            def,
+            &state.places[0].buildings[0],
+            rules.fertility_reference_pm,
+            "fixture",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn switch_hard_cap_kills_overflow_without_slaughter_yield() {
+        let (rules, mut place) = fixture(100, "oats");
+        let mut def = rules
+            .buildings
+            .iter()
+            .find(|kind| kind.id == "demesne")
+            .unwrap()
+            .clone();
+        def.methods.push(
+            rules
+                .buildings
+                .iter()
+                .find(|kind| kind.id == "holdings")
+                .unwrap()
+                .methods[1]
+                .clone(),
+        );
+        let building = &mut place.buildings[0];
+        building.method_levels = vec![2, 0];
+        building.levels = 2;
+        building.level_records = vec![
+            crate::tests::level(0, 0, Some("pasture"), 13),
+            crate::tests::level(1, 0, Some("pasture"), 13),
+        ];
+        building.herds = vec![30, 0, 0, 0];
+        let (heads, slaughter, _, deaths) = switching_heads(
+            &rules,
+            building,
+            &def,
+            &building.level_records[0],
+            &def.methods[1],
+        )
+        .unwrap();
+        assert_eq!((heads[0], slaughter[0], deaths[0]), (24, 0, 6));
+    }
+
+    #[test]
+    fn look_forecasts_changed_job_capacity_and_new_jobs() {
+        let (rules, mut place) = fixture(100, "oats");
+        let def = rules
+            .buildings
+            .iter()
+            .find(|kind| kind.id == "holdings")
+            .unwrap();
+        let building = &mut place.buildings[0];
+        building.method_levels = vec![1, 1];
+        building.employment[0].jobs = BTreeMap::from([
+            ("prior".into(), 2),
+            ("monks".into(), 5),
+            ("field_hands".into(), 5),
+        ]);
+        assert_eq!(
+            forecast_staffing(def, building, &def.methods[0], "oats", &[2, 0]).unwrap(),
+            (5, 10)
+        );
+        assert_eq!(
+            forecast_staffing(def, building, &def.methods[0], "honey", &[2, 0]).unwrap(),
+            (5, 10)
+        );
+    }
+
+    #[test]
+    fn a_switch_releases_excess_job_workers_in_pop_order() {
+        let (rules, mut place) = fixture(100, "oats");
+        let definition = rules
+            .buildings
+            .iter()
+            .find(|kind| kind.id == "holdings")
+            .unwrap();
+        let count = place.buildings.len();
+        let building = &mut place.buildings[0];
+        building.method_levels = vec![1, 0];
+        for index in 0..2 {
+            building.employment[index]
+                .jobs
+                .insert("field_hands".into(), 4);
+            building.employment[index].workers = 4;
+            place.pops[index]
+                .employment
+                .resize(count, crate::Employment::default());
+        }
+        trim_jobs(&mut place.pops, &mut place.buildings[0], definition, 0).unwrap();
+        assert_eq!(place.buildings[0].employment[0].jobs["field_hands"], 2);
+        assert_eq!(place.buildings[0].employment[1].jobs["field_hands"], 3);
+        assert_eq!(place.pops[1].employment[0].workers, 3);
     }
 
     #[test]
@@ -1197,6 +1522,7 @@ mod fraction_tests {
             12,
             1000,
             true,
+            None,
         )
         .unwrap();
         let oats = crate::tests::good_at(&rules, "oats");
@@ -1238,16 +1564,17 @@ mod fraction_tests {
         prices[crate::tests::good_at(&rules, "cattle")] = 240;
         for (heads, expected) in [(100, 0), (118, 900)] {
             farm.herds[cattle] = heads;
-            let (_, gone, founders) =
-                switching_heads(&rules, farm, def, &farm.level_records[0], &def.methods[1]);
+            let (_, gone, founders, _) =
+                switching_heads(&rules, farm, def, &farm.level_records[0], &def.methods[1])
+                    .unwrap();
             assert_eq!(
                 herd_loss(&rules, &gone, &founders, &prices).unwrap(),
                 Fraction::integer(expected)
             );
         }
         prices[crate::tests::good_at(&rules, "cattle")] = 100;
-        let (_, gone, founders) =
-            switching_heads(&rules, farm, def, &farm.level_records[0], &def.methods[1]);
+        let (_, gone, founders, _) =
+            switching_heads(&rules, farm, def, &farm.level_records[0], &def.methods[1]).unwrap();
         assert_eq!(
             herd_loss(&rules, &gone, &founders, &prices).unwrap(),
             Fraction::integer(0)
@@ -1262,8 +1589,8 @@ mod fraction_tests {
         farm.level_records[1].method = 0;
         farm.level_records[1].ground = Some("pasture".into());
         farm.herds.fill(0);
-        let (heads, _, founders) =
-            switching_heads(&rules, farm, def, &farm.level_records[2], &def.methods[0]);
+        let (heads, _, founders, _) =
+            switching_heads(&rules, farm, def, &farm.level_records[2], &def.methods[0]).unwrap();
         assert_eq!(heads[cattle], 6);
         assert_eq!(founders[cattle], 6);
         assert_eq!(
@@ -1277,8 +1604,8 @@ mod fraction_tests {
             Fraction::integer(1440)
         );
         farm.herds[cattle] = 1;
-        let (_, _, founders) =
-            switching_heads(&rules, farm, def, &farm.level_records[2], &def.methods[0]);
+        let (_, _, founders, _) =
+            switching_heads(&rules, farm, def, &farm.level_records[2], &def.methods[0]).unwrap();
         assert_eq!(founders[cattle], 0);
     }
 
@@ -2202,32 +2529,10 @@ mod switch_step_tests {
     }
 
     #[test]
-    fn scratch_butcher() {
-        for size in (3000_u64..=60_000).step_by(1500) {
-            let (rules, mut state, land, cattle) = daily_culling(118);
-            state.places[0].pops[0].workers = size;
-            let lands = BTreeMap::from([("fixture".to_owned(), land)]);
-            let ledger = crate::run_daily_economy_with_land(
-                &rules,
-                &mut state,
-                on(9, YEAR),
-                &BTreeMap::new(),
-                &BTreeMap::new(),
-                &BTreeMap::new(),
-                &BTreeMap::new(),
-                &lands,
-            )
-            .unwrap();
-            eprintln!(
-                "BUTCH {size}: {}",
-                ledger.daily_consumption.as_ref().unwrap().herd_slaughter[cattle]
-            );
-        }
-    }
-
-    #[test]
     fn a_cull_and_the_same_days_emergency_butchering_are_two_ledgers() {
-        let (rules, state, land, cattle) = daily_culling(118);
+        let (rules, mut state, land, cattle) = daily_culling(118);
+        state.places[0].pops[0].consumption.necessities_pm = 400;
+        state.places[0].pops[0].workers = 60_000;
         let lands = BTreeMap::from([("fixture".to_owned(), land)]);
         let mut day = state.clone();
         let ledger = crate::run_daily_economy_with_land(
@@ -2253,10 +2558,9 @@ mod switch_step_tests {
         // The day's own ledger has the pop's butchering after it, and starts from the 108.
         let eating = ledger.daily_consumption.as_ref().unwrap();
         assert_eq!(eating.herds_before[cattle], 108);
-        // 24,000 people want half a day of food, which the cull's beef and the rest of what they hold falls two head of cattle
-        // short of: the pop butchers two head, in the day's ledger and not in the production pass's.
-        assert_eq!(eating.herd_slaughter[cattle], 2);
-        assert_eq!(eating.herds_after[cattle], 106);
+        // The hungry owner needs another 79 cattle after the switching cull; the two ledgers count them separately.
+        assert_eq!(eating.herd_slaughter[cattle], 79);
+        assert_eq!(eating.herds_after[cattle], 29);
         assert_eq!(
             day.places[0].buildings[0].herds[cattle],
             eating.herds_after[cattle]
@@ -2764,7 +3068,8 @@ mod switch_step_tests {
         // The moves are (year, month, building, level, from, to) with methods in the farm's order: mixed farming, sea, wood,
         // turf. Each year one good is dear: fish in 768, wood in 769, peat in 770, oats in 771 and fish again in 772. The earlier
         // building looks first, so where the forest's twelve cells (three wood levels) or the turf's six run short in 769 and
-        // 770 it is the later building that waits. No level moves twice in a year and the herds add up for the pass in every
+        // 770 it is the later building that waits. Typed staffing and herd caps change the literal moves from the earlier model.
+        // No level moves twice in a year and the herds add up for the pass in every
         // month (both checked in the replay), and every month's state is a loadable one.
         assert_eq!(
             replay(),
@@ -2773,58 +3078,28 @@ mod switch_step_tests {
                 (768, 1, 1, 0, 0, 1),
                 (768, 2, 0, 1, 0, 1),
                 (768, 2, 1, 1, 0, 1),
-                (768, 7, 0, 2, 0, 1),
-                (768, 7, 1, 2, 0, 1),
-                (768, 8, 0, 3, 0, 1),
-                (768, 8, 1, 3, 0, 1),
-                (768, 9, 0, 4, 0, 1),
-                (768, 9, 1, 4, 0, 1),
-                (768, 10, 0, 5, 0, 1),
-                (768, 10, 1, 5, 0, 1),
-                (768, 11, 0, 6, 0, 1),
-                (768, 11, 1, 6, 0, 1),
-                (768, 12, 0, 7, 0, 1),
-                (768, 12, 1, 7, 0, 1),
-                (769, 1, 0, 7, 1, 2),
-                (769, 1, 1, 7, 1, 2),
-                (769, 2, 0, 6, 1, 2),
-                (770, 1, 0, 6, 2, 3),
-                (770, 1, 1, 7, 2, 3),
-                (770, 2, 0, 7, 2, 3),
+                (768, 3, 0, 2, 0, 1),
+                (768, 3, 1, 2, 0, 1),
+                (768, 4, 0, 3, 0, 1),
+                (768, 4, 1, 3, 0, 1),
+                (768, 5, 0, 4, 0, 1),
+                (768, 5, 1, 4, 0, 1),
+                (768, 7, 0, 5, 0, 1),
+                (768, 7, 1, 5, 0, 1),
+                (769, 1, 0, 5, 1, 2),
+                (769, 1, 1, 5, 1, 2),
+                (769, 2, 0, 4, 1, 2),
+                (770, 1, 0, 4, 2, 3),
+                (770, 1, 1, 5, 2, 3),
+                (770, 2, 0, 5, 2, 3),
                 (771, 1, 0, 0, 1, 0),
                 (771, 1, 1, 0, 1, 0),
                 (771, 2, 0, 1, 1, 0),
-                (771, 2, 1, 1, 1, 0),
-                (771, 3, 0, 2, 1, 0),
-                (771, 3, 1, 2, 1, 0),
-                (771, 9, 0, 3, 1, 0),
-                (771, 9, 1, 3, 1, 0),
-                (771, 10, 0, 4, 1, 0),
-                (771, 10, 1, 4, 1, 0),
-                (771, 11, 0, 5, 1, 0),
-                (771, 11, 1, 5, 1, 0),
-                (771, 12, 0, 6, 3, 0),
-                (771, 12, 1, 6, 1, 0),
-                (772, 1, 0, 6, 0, 1),
-                (772, 1, 1, 6, 0, 1),
-                (772, 2, 0, 5, 0, 1),
-                (772, 2, 1, 5, 0, 1),
-                (772, 3, 0, 4, 0, 1),
-                (772, 3, 1, 4, 0, 1),
-                (772, 6, 0, 3, 0, 1),
-                (772, 6, 1, 3, 0, 1),
-                (772, 7, 0, 2, 0, 1),
-                (772, 7, 1, 2, 0, 1),
-                (772, 8, 0, 7, 3, 1),
-                (772, 8, 1, 7, 3, 1),
-                (772, 9, 0, 0, 0, 1),
-                (772, 9, 1, 0, 0, 1),
-                (772, 10, 0, 1, 0, 1),
-                (772, 10, 1, 1, 0, 1),
-                (772, 11, 0, 8, 0, 1),
-                (772, 11, 1, 8, 0, 1),
-                (772, 12, 0, 9, 0, 1),
-                (772, 12, 1, 9, 0, 1),
+                (771, 9, 0, 6, 0, 1),
+                (772, 1, 0, 1, 0, 1),
+                (772, 1, 1, 0, 0, 1),
+                (772, 7, 0, 0, 0, 1),
+                (772, 8, 0, 4, 3, 1),
             ]
         );
     }

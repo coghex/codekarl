@@ -427,7 +427,7 @@ tip("building_pigs_count", building, pigs_x + 12, 19)"#]);
     for expected in [
         "building_kind title=farm part=kind",
         "building_wage_word title=wage part=wage_word",
-        "building_wage_value May 769: 3.2 per head (18 paid)|... 13 lines part=wage",
+        "building_wage_value May 769: 3.2 per ordinary worker (18 paid)|... 13 lines part=wage",
         "building_method_one title=methods part=methods",
         "building_housing title=housing part=housing",
         "building_positions_word title=position part=positions",

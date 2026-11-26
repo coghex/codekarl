@@ -53,8 +53,9 @@ pub(crate) struct PopView {
     pub(crate) religion: String,
     pub(crate) workers: u64,
     pub(crate) dependents: u64,
-    /// Workers holding a place in a building, owners included.
+    /// Workers holding a job in a building.
     pub(crate) employed: u64,
+    pub(crate) jobs: Vec<(String, String, u64)>,
     /// Workers with no place.
     pub(crate) unemployed: u64,
     /// Whole days of food held (the store and the storehouse accounts) at a full daily need.
@@ -116,6 +117,8 @@ pub(crate) struct BuildingView {
     /// Paid positions held, and positions open.
     pub(crate) filled: u64,
     pub(crate) open: u64,
+    pub(crate) jobs: Vec<(String, u64, u64)>,
+    pub(crate) abandoned: bool,
     pub(crate) herds: Vec<HerdView>,
     pub(crate) store_used_ml: u64,
     pub(crate) store_capacity_ml: u64,
@@ -345,9 +348,32 @@ fn pop_view(
         .iter()
         .filter_map(|building| building.employment.get(index))
         .fold(0_u64, |sum, employment| {
-            sum.saturating_add(employment.owners)
-                .saturating_add(employment.workers)
+            sum.saturating_add(employment.workers)
         });
+    let mut jobs = Vec::new();
+    for building in &place.buildings {
+        let Some(definition) = rules.buildings.iter().find(|kind| kind.id == building.kind) else {
+            continue;
+        };
+        let levels = if definition.methods.is_empty() {
+            vec![building.levels]
+        } else {
+            building.method_levels.clone()
+        };
+        if let Ok(pools) = ck_economy::building_job_pools(definition, &levels) {
+            for pool in pools {
+                let count = building
+                    .employment
+                    .get(index)
+                    .and_then(|entry| entry.jobs.get(&pool.job.id))
+                    .copied()
+                    .unwrap_or(0);
+                if count > 0 {
+                    jobs.push((building.kind.clone(), pool.job.id, count));
+                }
+            }
+        }
+    }
     PopView {
         stock: stock_view(rules, &pop.stock),
         room_ml: size_of(pop).saturating_mul(POP_STORE_ML_PER_PERSON),
@@ -357,6 +383,7 @@ fn pop_view(
         workers: pop.workers,
         dependents: pop.dependents,
         employed,
+        jobs,
         unemployed: pop.workers.saturating_sub(employed),
         food_days: days_of(food_centi(rules, place, index), size_of(pop)),
         food: food_view(rules, pop),
@@ -507,36 +534,42 @@ fn building_view(
                 .collect()
         })
         .unwrap_or_default();
-    let positions = definition.map_or(0, |definition| {
-        u64::from(building.levels).saturating_mul(u64::from(definition.workers_per_level))
-    });
-    let filled = building.employment.iter().fold(0_u64, |sum, employment| {
-        sum.saturating_add(employment.workers)
-    });
-    // A herd's maximum grows with the farming levels: every method that is not fishing (the same count that sets the start).
-    let farming_levels = definition.map_or(0, |definition| {
-        definition
-            .methods
-            .iter()
-            .zip(&building.method_levels)
-            .filter(|(method, _)| method.resource != "sea")
-            .fold(0_u64, |sum, (_, levels)| {
-                sum.saturating_add(u64::from(*levels))
-            })
-    });
+    let jobs = definition
+        .and_then(|definition| {
+            let levels = if definition.methods.is_empty() {
+                vec![building.levels]
+            } else {
+                building.method_levels.clone()
+            };
+            ck_economy::building_job_pools(definition, &levels).ok()
+        })
+        .unwrap_or_default()
+        .into_iter()
+        .map(|pool| {
+            let filled = building.employment.iter().fold(0_u64, |sum, entry| {
+                sum.saturating_add(entry.jobs.get(&pool.job.id).copied().unwrap_or(0))
+            });
+            (pool.job.id, filled, pool.places)
+        })
+        .collect::<Vec<_>>();
+    let positions = jobs
+        .iter()
+        .fold(0_u64, |sum, (_, _, places)| sum.saturating_add(*places));
+    let filled = jobs
+        .iter()
+        .fold(0_u64, |sum, (_, filled, _)| sum.saturating_add(*filled));
+    let maxima = ck_economy::herd_maximums(rules, building).unwrap_or_default();
     let herds = rules
         .herd_species
         .iter()
         .zip(&building.herds)
-        .filter_map(|(species, head)| {
-            definition?
-                .herds
-                .get(&species.animal)
-                .map(|capacity| HerdView {
-                    species: species.animal.clone(),
-                    head: *head,
-                    maximum: farming_levels.saturating_mul(capacity.maximum),
-                })
+        .zip(maxima)
+        .filter_map(|((species, head), maximum)| {
+            maximum.map(|maximum| HerdView {
+                species: species.animal.clone(),
+                head: *head,
+                maximum,
+            })
         })
         .collect();
     BuildingView {
@@ -553,6 +586,8 @@ fn building_view(
         methods,
         filled,
         open: positions.saturating_sub(filled),
+        jobs,
+        abandoned: building.abandoned,
         herds,
         store_used_ml: volume_ml(rules, &building.stock),
         store_capacity_ml: building_capacity_ml(building),
@@ -830,7 +865,7 @@ mod tests {
     }
 
     /// One place: a peasant pop of 80 workers and 40 dependents with 1,000 oats (1,800 hundredths of a person-day each) and
-    /// 10 ale, a farm of 3 levels with 10 owners and 25 workers employed, and a storehouse level holding 5 oats for the pop's account.
+    /// 10 ale, a farm of 3 levels with 25 workers employed, and a storehouse level holding 5 oats for the pop's account.
     #[expect(
         clippy::too_many_lines,
         reason = "the fixture keeps its full state together"
@@ -858,7 +893,13 @@ mod tests {
                 literacy_pm: 0,
                 workers: 80,
                 dependents: 40,
-                employment: vec![Employment::default(); 2],
+                employment: vec![
+                    Employment {
+                        jobs: std::collections::BTreeMap::from([("peasant_labour".into(), 25)]),
+                        workers: 25,
+                    },
+                    Employment::default(),
+                ],
                 stock,
                 consumption: PopConsumption {
                     pantry_hunger_centi: vec![0; goods],
@@ -878,19 +919,21 @@ mod tests {
             }],
             buildings: vec![
                 BuildingState {
+                    heir: None,
+                    abandoned: false,
                     kind: "farm".to_owned(),
                     levels: 3,
-                    method_levels: vec![3, 0],
+                    method_levels: vec![3, 0, 0, 0],
                     level_records: Vec::new(),
                     herds: vec![27, 18, 15, 0],
                     employment: vec![Employment {
-                        owners: 10,
+                        jobs: std::collections::BTreeMap::from([("peasant_labour".into(), 25)]),
                         workers: 25,
                     }],
                     stock: farm_stock,
                     storehouse_accounts: None,
-                    production_carries: vec![vec![0; goods]; 2],
-                    method_suitability: vec![vec![0; goods]; 2],
+                    production_carries: vec![vec![0; goods]; 4],
+                    method_suitability: vec![vec![0; goods]; 4],
                     herd_birth_carries: vec![0; 4],
                     herd_death_carries: vec![0; 4],
                     herd_product_carries: vec![0; 2],
@@ -904,6 +947,8 @@ mod tests {
                     paid_years: vec![0; 12],
                 },
                 BuildingState {
+                    heir: None,
+                    abandoned: false,
                     kind: "storehouse".to_owned(),
                     levels: 1,
                     method_levels: vec![1, 0, 0],
@@ -1696,8 +1741,8 @@ mod tests {
             ),
             ("peasant", "ulaid", "christianity")
         );
-        // The farm's table employs 10 owners and 25 workers of the pop: 35 are employed.
-        assert_eq!((pop.employed, pop.unemployed), (35, 45));
+        // Owning adds no employment; the farm has 25 workers in its job.
+        assert_eq!((pop.employed, pop.unemployed), (25, 55));
         assert_eq!(pop.food_days, place.food_days);
         assert_eq!(
             (
@@ -1720,7 +1765,7 @@ mod tests {
         assert_eq!(farm.kind, "farm");
         assert_eq!(farm.methods, [("mixed_farming".to_owned(), 3)]);
         // 3 levels at the shipped farm's positions per level, 25 of them paid and filled.
-        let per_level = u64::from(rules.buildings[0].workers_per_level);
+        let per_level = u64::from(rules.buildings[0].methods[0].jobs[0].places);
         assert_eq!(rules.buildings[0].id, "farm");
         assert_eq!((farm.filled, farm.open), (25, 3 * per_level - 25));
         assert_eq!(
@@ -1760,7 +1805,8 @@ mod tests {
         farm.pops.clear();
         farm.buildings.truncate(1);
         farm.buildings[0].employment = vec![Employment {
-            owners: 1,
+            jobs: std::collections::BTreeMap::new(),
+
             workers: 10,
         }];
         farm.buildings[0].stock.fill(0);
@@ -1779,7 +1825,8 @@ mod tests {
         holdings.buildings.truncate(1);
         holdings.buildings[0].kind = "holdings".to_owned();
         holdings.buildings[0].employment = vec![Employment {
-            owners: 2,
+            jobs: std::collections::BTreeMap::new(),
+
             workers: 10,
         }];
         holdings.buildings[0].stock.fill(0);
@@ -1791,7 +1838,8 @@ mod tests {
         owners_only.pops.clear();
         owners_only.buildings.truncate(1);
         owners_only.buildings[0].employment = vec![Employment {
-            owners: 10,
+            jobs: std::collections::BTreeMap::new(),
+
             workers: 0,
         }];
         assert_eq!(
@@ -1812,7 +1860,8 @@ mod tests {
         saturating.pops.clear();
         saturating.buildings.truncate(1);
         saturating.buildings[0].employment = vec![Employment {
-            owners: 0,
+            jobs: std::collections::BTreeMap::new(),
+
             workers: u64::MAX,
         }];
         assert_eq!(
@@ -1825,11 +1874,13 @@ mod tests {
         invalid_worker_total.buildings.truncate(1);
         invalid_worker_total.buildings[0].employment = vec![
             Employment {
-                owners: 0,
+                jobs: std::collections::BTreeMap::new(),
+
                 workers: u64::MAX,
             },
             Employment {
-                owners: 0,
+                jobs: std::collections::BTreeMap::new(),
+
                 workers: 1,
             },
         ];
@@ -2076,6 +2127,8 @@ mod tests {
         goat.id = "goats".into();
         rules.goods.push(goat);
         rules.herd_species.push(ck_economy::HerdSpecies {
+            head_per_herder: 40,
+            carcass_units: 6,
             animal: "goats".into(),
             births_pm_year: 0,
             deaths_pm_year: 0,
@@ -2100,7 +2153,7 @@ mod tests {
             BTreeMap::from([("dairy".into(), 860), ("oats".into(), 100)]);
         let mut place = fixture(&rules);
         let farm = &mut place.buildings[0];
-        farm.method_levels = vec![1, 0];
+        farm.method_levels = vec![1, 0, 0, 0];
         farm.herds = vec![0, 0, 3, 0, 2];
         farm.method_suitability[0][index_of(&rules, "dairy")] = 700;
         farm.method_suitability[0][index_of(&rules, "oats")] = 1000;
@@ -2125,6 +2178,7 @@ mod tests {
         assert_eq!(projected_yield(&rules, farm, 550), 602 * dairy + 5 * oats);
         let mut holdings = farm.clone();
         holdings.kind = "holdings".into();
+        holdings.method_levels = vec![1, 0];
         holdings.herds = vec![4, 0, 0, 0, 0];
         let other = building_view(&rules, &holdings, 0, test_date());
         assert_eq!(

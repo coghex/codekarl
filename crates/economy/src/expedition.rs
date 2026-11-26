@@ -1663,7 +1663,7 @@ pub(crate) fn start_trade(
         let mut paid = Vec::new();
         if pop != trader {
             let wage = u128::from(*count)
-                .saturating_mul(u128::from(trade::pop_wage(&work, pop)))
+                .saturating_mul(u128::from(trade::pop_wage(rules, &work, pop)))
                 .saturating_mul(days)
                 / 30
                 + 1;
@@ -1682,7 +1682,7 @@ pub(crate) fn start_trade(
         groups.push(Group {
             pop: trade::convert(pop),
             count: *count,
-            by_building: trade::hand_buildings(&work, pop, *count),
+            by_building: trade::hand_buildings(rules, &work, pop, *count),
             paid,
         });
     }

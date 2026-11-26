@@ -251,7 +251,11 @@ end)
 tooltip.define("jobs", function(args)
   local pop = pop_view(args)
   if pop == nil then return nil end
-  return { {"employed ", number(pop.employed)}, {"unemployed ", number(pop.unemployed)} }
+  local lines = { {"employed ", number(pop.employed)}, {"unemployed ", number(pop.unemployed)} }
+  for _, job in ipairs(pop.jobs or {}) do
+    lines[#lines + 1] = {term(job.building), " ", term(job.job), " ", number(job.workers)}
+  end
+  return lines
 end)
 
 tooltip.define("pop_housing", function(args)
@@ -283,7 +287,11 @@ end
 tooltip.define("staff", function(args)
   local building = building_view(args)
   if building == nil then return nil end
-  return {{"filled ", number(building.filled)}, {"open ", number(building.open)}}
+  local lines = {{"filled ", number(building.filled)}, {"open ", number(building.open)}}
+  for _, job in ipairs(building.jobs or {}) do
+    lines[#lines + 1] = {term(job.id), " ", number(job.filled), " of ", number(job.places)}
+  end
+  return lines
 end)
 
 tooltip.define("store", function(args)
@@ -308,7 +316,7 @@ tooltip.define("wage", function(args)
     if month ~= nil then
       local prefix = wage.year == nil and month .. ": " or month .. " " .. number(wage.year) .. ": "
       local suffix = wage.paid == nil and "" or " (" .. number(wage.paid) .. " paid)"
-      lines[#lines + 1] = {prefix .. wage_value(wage.wage_milli) .. " per head" .. suffix}
+      lines[#lines + 1] = {prefix .. wage_value(wage.wage_milli) .. " per ordinary worker" .. suffix}
     end
   end
   lines[#lines + 1] = {"average ", wage_value(building.wage)}

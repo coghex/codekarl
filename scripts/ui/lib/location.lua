@@ -231,7 +231,7 @@ local function card_layout(building, width)
   local housing = "housing " .. (building.housing_occupants or 0)
   local housing_left = width - 5 - font.layout(housing).width
   local wage_left = width - 5 - font.layout("wage " .. milli(building.wage)).width
-  local kind = building.kind
+  local kind = (building.abandoned and "abandoned " or "") .. building.kind
   while font.layout(kind).width > wage_left - 17 - 4 and utf8.len(kind) > 1 do
     kind = kind:sub(1, utf8.offset(kind, -1) - 1)
   end
@@ -652,7 +652,7 @@ local function building_row(building, _, place_id, building_index)
     local count_width = font.layout(count).width
     local method = #building.methods > 0
     local positions = true
-    local name = building.kind
+    local name = (building.abandoned and "abandoned " or "") .. building.kind
     local function needed() return 16 + font.layout(name).width + (method and 13 or 0) + (positions and count_width + 4 or 0) + 4 end
     if needed() > wage_left then positions = false end
     if needed() > wage_left then method = false end

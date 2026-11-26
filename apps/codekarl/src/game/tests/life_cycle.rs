@@ -438,7 +438,7 @@ fn level_records_and_production_carries_survive_saves_on_both_sides_of_noon_at_t
         .unwrap();
     let definition = rules.buildings.iter().find(|b| b.id == "farm").unwrap();
     // A carry above nothing in the first good of each method that has a level, and one young level among the mature.
-    let positions = u128::from(farm.levels) * u128::from(definition.workers_per_level);
+    let positions = u128::from(farm.levels) * u128::from(definition.methods[0].jobs[0].places);
     for (method, levels) in farm.method_levels.iter().enumerate() {
         if *levels > 0 {
             farm.production_carries[method] =

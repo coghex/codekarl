@@ -16,9 +16,9 @@ use serde::Deserialize;
 
 use crate::expedition::{Expedition, Plan};
 use crate::{
-    DataError, EconomyState, PlaceState, Rules, building_market_sells, herd_levels, herd_maximums,
-    herd_standard_level, missing_data, pop_market_holding, pop_target_units, receive_pop,
-    swap::wide_shares,
+    BuildingState, DataError, EconomyState, PlaceState, Rules, building_market_sells, herd_levels,
+    herd_maximums, herd_standard_level, missing_data, pop_market_holding, pop_target_units,
+    receive_pop, resolve_owner_shares, swap::wide_shares,
 };
 
 /// The hour of the day the economy's daily step runs.
@@ -223,7 +223,7 @@ pub struct Hands {
     /// How many.
     pub count: u64,
     /// The building each hand works in, as `(building, hands)` in building order: the building that employs most of the pop's
-    /// workers takes the next hand, ties by building order, owners only where no worker is paid.
+    /// ordinary workers takes the next hand, ties by building order; managers are used only when no ordinary job is held.
     pub by_building: Vec<(u32, u64)>,
     /// The hour the job started.
     pub started: u64,
@@ -406,16 +406,15 @@ pub(crate) fn place_head(
             head -= take;
         }
     }
+    let ownership = (0..place.buildings.len())
+        .map(|index| resolve_owner_shares(place, index))
+        .collect::<Result<Vec<_>, _>>()?;
     for to_standard in [true, false] {
-        for building in &mut place.buildings {
+        for (index, building) in place.buildings.iter_mut().enumerate() {
             if head == 0 {
                 break;
             }
-            if building
-                .employment
-                .get(pop)
-                .is_none_or(|job| job.owners == 0)
-            {
+            if ownership[index].get(pop).copied().unwrap_or(0) == 0 {
                 continue;
             }
             let Some(maximum) = herd_maximums(rules, building)?[species] else {
@@ -468,8 +467,11 @@ fn take(
         }
     }
     let sells = building_market_sells(rules, place, prices)?;
+    let ownership = (0..place.buildings.len())
+        .map(|index| resolve_owner_shares(place, index))
+        .collect::<Result<Vec<_>, _>>()?;
     for (b, building) in place.buildings.iter_mut().enumerate() {
-        let weights: Vec<u64> = building.employment.iter().map(|job| job.owners).collect();
+        let weights = &ownership[b];
         if weights.get(pop).is_none_or(|owners| *owners == 0) {
             continue;
         }
@@ -478,7 +480,7 @@ fn take(
             if wanted == 0 {
                 continue;
             }
-            let share = wide_shares(sells[b][good], &weights)
+            let share = wide_shares(sells[b][good], weights)
                 .map_err(|problem| missing_data("trade.take".to_owned(), problem))?[pop];
             let moved = u64::try_from(share).unwrap_or(u64::MAX).min(wanted);
             if moved == 0 {
@@ -500,7 +502,7 @@ fn take(
             if wanted == 0 {
                 continue;
             }
-            let share = wide_shares(u128::from(offers[species].0), &weights)
+            let share = wide_shares(u128::from(offers[species].0), weights)
                 .map_err(|problem| missing_data("trade.take".to_owned(), problem))?[pop];
             let moved = u64::try_from(share).unwrap_or(u64::MAX).min(wanted);
             if moved == 0 {
@@ -682,27 +684,58 @@ impl EconomyState {
     }
 }
 
-/// A pop's posted wage: that of the building that employs most of its paid workers (the building a hand would be taken from), in
-/// thousandths of a value unit for each head for a month.
-pub(crate) fn pop_wage(place: &PlaceState, pop: usize) -> u64 {
-    let mut best: Option<(u64, u64)> = None;
-    for building in &place.buildings {
-        let workers = building.employment.get(pop).map_or(0, |job| job.workers);
-        if workers > 0 && best.is_none_or(|(most, _)| workers > most) {
-            best = Some((workers, building.posted_wage()));
-        }
-    }
-    best.map_or(0, |(_, wage)| wage)
+fn job_heads(rules: &Rules, building: &BuildingState, pop: usize, manager: bool) -> u64 {
+    let Some(definition) = rules.buildings.iter().find(|kind| kind.id == building.kind) else {
+        return 0;
+    };
+    let Some(employment) = building.employment.get(pop) else {
+        return 0;
+    };
+    employment
+        .jobs
+        .iter()
+        .filter(|(id, _)| {
+            definition
+                .jobs
+                .iter()
+                .chain(definition.methods.iter().flat_map(|method| &method.jobs))
+                .any(|job| job.id == **id && job.manager == manager)
+        })
+        .fold(0_u64, |sum, (_, count)| sum.saturating_add(*count))
 }
 
-/// The building each hand of a pop works in, one hand at a time (see [`Hands::by_building`]): of the positions of the pop's ordinary
-/// work not already charged to a hand another job holds, the building with most takes the next hand, ties by building order; owners'
-/// positions where the pop has no paid worker anywhere.
-pub(crate) fn hand_buildings(place: &PlaceState, pop: usize, count: u64) -> Vec<(u32, u64)> {
+/// The ordinary posted wage of the building from which a hand is drawn.
+pub(crate) fn pop_wage(rules: &Rules, place: &PlaceState, pop: usize) -> u64 {
+    let ordinary = place
+        .buildings
+        .iter()
+        .any(|building| job_heads(rules, building, pop, false) > 0);
+    place
+        .buildings
+        .iter()
+        .map(|building| {
+            (
+                job_heads(rules, building, pop, !ordinary),
+                building.posted_wage(),
+            )
+        })
+        .enumerate()
+        .filter(|(_, (workers, _))| *workers > 0)
+        .max_by(|(a, (left, _)), (b, (right, _))| left.cmp(right).then_with(|| b.cmp(a)))
+        .map_or(0, |(_, (_, wage))| wage)
+}
+
+/// Allocate hands to ordinary jobs first, or managers when no ordinary job is held.
+pub(crate) fn hand_buildings(
+    rules: &Rules,
+    place: &PlaceState,
+    pop: usize,
+    count: u64,
+) -> Vec<(u32, u64)> {
     let paid: Vec<u64> = place
         .buildings
         .iter()
-        .map(|building| building.employment.get(pop).map_or(0, |job| job.workers))
+        .map(|building| job_heads(rules, building, pop, false))
         .collect();
     let mut left = if paid.iter().any(|workers| *workers > 0) {
         paid
@@ -710,7 +743,7 @@ pub(crate) fn hand_buildings(place: &PlaceState, pop: usize, count: u64) -> Vec<
         place
             .buildings
             .iter()
-            .map(|building| building.employment.get(pop).map_or(0, |job| job.owners))
+            .map(|building| job_heads(rules, building, pop, true))
             .collect()
     };
     // What the pop's hands held by other jobs already take of each building's positions.
@@ -890,7 +923,7 @@ fn try_start(
             0
         } else {
             u128::from(count)
-                .saturating_mul(u128::from(pop_wage(place, pop)))
+                .saturating_mul(u128::from(pop_wage(rules, place, pop)))
                 .saturating_mul(days)
                 / 30
                 + 1
@@ -914,7 +947,7 @@ fn try_start(
             }
             paid.push((convert(good), units));
         }
-        let by_building = hand_buildings(place, pop, count);
+        let by_building = hand_buildings(rules, place, pop, count);
         place.trade.jobs[index].hands = Some(Hands {
             pop: convert(pop),
             count,

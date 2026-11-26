@@ -1,7 +1,7 @@
 //! Fuel accounting and ordering for the daily economy.
 use super::{
-    BuildingState, DailyConsumptionLedger, DataError, PlaceState, PopState, Rules, missing_data,
-    receive_pop,
+    BuildingState, DailyConsumptionLedger, DataError, PlaceState, PopState, Rules,
+    debit_storehouse, missing_data, receive_pop,
 };
 pub(super) fn fuel_ranking(
     rules: &Rules,
@@ -85,12 +85,34 @@ pub(super) fn fuel_daily_need(rules: &Rules, pop: &PopState) -> Result<u128, Dat
         .ok_or_else(|| missing_data("fuel.need".to_owned(), "daily need overflow"))
 }
 
+#[cfg(test)]
 pub(super) fn draw_and_burn(
     rules: &Rules,
     place: &mut PlaceState,
     pop_index: usize,
     prices: &[u64],
     ledger: &mut DailyConsumptionLedger,
+) -> Result<(), DataError> {
+    let (owners, mut allowances) = super::daily_ownership(place, rules.goods.len())?;
+    draw_and_burn_with_owners(
+        rules,
+        place,
+        pop_index,
+        prices,
+        ledger,
+        &owners,
+        &mut allowances,
+    )
+}
+
+pub(super) fn draw_and_burn_with_owners(
+    rules: &Rules,
+    place: &mut PlaceState,
+    pop_index: usize,
+    prices: &[u64],
+    ledger: &mut DailyConsumptionLedger,
+    owners: &[Vec<u64>],
+    allowances: &mut [Vec<u64>],
 ) -> Result<(), DataError> {
     let need = fuel_daily_need(rules, &place.pops[pop_index])?;
     let target = need
@@ -102,15 +124,11 @@ pub(super) fn draw_and_burn(
         &place.pops[pop_index].stock,
         place.pops[pop_index].consumption.hearth_milli,
     )?;
-    for building_index in 0..place.buildings.len() {
+    for (building_index, owner_shares) in owners.iter().enumerate().take(place.buildings.len()) {
         if holding >= target {
             break;
         }
-        if place.buildings[building_index]
-            .employment
-            .get(pop_index)
-            .is_none_or(|job| job.owners == 0)
-        {
+        if owner_shares[pop_index] == 0 {
             continue;
         }
         for &index in &ranking {
@@ -118,14 +136,32 @@ pub(super) fn draw_and_burn(
                 break;
             }
             let supply = rules.goods[index].category_supplied("fuel", 1);
+            let is_storehouse = place.buildings[building_index]
+                .storehouse_accounts
+                .is_some();
+            let available = if is_storehouse {
+                place.buildings[building_index]
+                    .storehouse_accounts
+                    .as_ref()
+                    .expect("storehouse")
+                    .communal[index]
+                    .min(allowances[pop_index][index])
+            } else {
+                place.buildings[building_index].stock[index]
+            };
             let wanted = (target - holding)
                 .div_ceil(supply)
-                .min(u128::from(place.buildings[building_index].stock[index]));
+                .min(u128::from(available));
             let offered = u64::try_from(wanted)
                 .map_err(|_| missing_data("fuel.draw".to_owned(), "draw exceeds u64"))?;
             let rejected = receive_pop(rules, &mut place.pops[pop_index], index, offered)?;
             let moved = offered - rejected;
-            place.buildings[building_index].stock[index] -= moved;
+            if is_storehouse {
+                debit_storehouse(&mut place.buildings[building_index], None, index, moved)?;
+                allowances[pop_index][index] -= moved;
+            } else {
+                place.buildings[building_index].stock[index] -= moved;
+            }
             holding += u128::from(moved) * supply;
         }
     }

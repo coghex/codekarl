@@ -195,6 +195,7 @@ mod tests {
 
     fn pop() -> PopView {
         PopView {
+            jobs: Vec::new(),
             stock: Vec::new(),
             room_ml: 0,
             kind: "peasant".to_owned(),
