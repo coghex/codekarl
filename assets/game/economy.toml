@@ -1,5 +1,6 @@
 fuel_deaths_pm_year=100
 herd_start_share = [2, 3]
+herd_standard_pm = 700
 # Shared M9 economy rules. Quantities are integer native units;
 # hunger/tier values are integer hundredths of a person-day.
 # are hundredths of a person-day, storage limits are thousandths of a unit/person.

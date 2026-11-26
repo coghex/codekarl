@@ -5,10 +5,15 @@
 //! a swap spends the starter's. Nothing here is saved: spare, want and capacity are worked out afresh at each exchange.
 
 use crate::{
-    DataError, EconomyState, PlaceState, Rules, building_market_holding, building_market_sells,
-    fuel, missing_data, mul_div_floor, pop_market_holding, pop_store_limits, pop_target_units,
-    receive_pop, volume_used,
+    DataError, EconomyState, PlaceState, Rules, building_good_cap, building_market_holding,
+    building_market_sells, fuel, herd_wants, live_species, missing_data, mul_div_floor,
+    pop_market_holding, pop_store_limits, pop_target_units, receive_building, receive_pop,
+    room_by_cap_and_volume, store_capacity_ml, volume_used,
 };
+
+/// Every owner pop's remaining want of each building's herds below standard, `[building][pop][species]` (CK-430): fixed when the
+/// exchange begins, and spent by the animals the pops receive, in the buildings' order.
+type HerdWants = Vec<Vec<Vec<u64>>>;
 
 /// Runs every place's exchange.
 ///
@@ -157,19 +162,23 @@ pub(crate) fn want_order(rules: &Rules, prices_milli: &[u64]) -> Vec<usize> {
 
 fn want_order_at_prices(rules: &Rules, prices_milli: &[u64], opening: &[u64]) -> Vec<usize> {
     let mut order = (0..rules.goods.len()).collect::<Vec<_>>();
+    let live = live_species(rules);
     order.sort_by(|&left, &right| {
         let (a, b) = (&rules.goods[left], &rules.goods[right]);
-        let group = |g: &crate::Good| {
+        let group = |g: &crate::Good, index: usize| {
             if g.hunger_centi > 0 {
                 0
             } else if g.category_supplied("fuel", 1) > 0 {
                 1
-            } else {
+            } else if live[index].is_some() {
+                // A herd's want for an animal ranks after food and fuel and before the comforts (CK-430, r163).
                 2
+            } else {
+                3
             }
         };
-        let food = group(a).cmp(&group(b));
-        if group(a) == 1 && group(b) == 1 {
+        let food = group(a, left).cmp(&group(b, right));
+        if group(a, left) == 1 && group(b, right) == 1 {
             return (u128::from(opening[left]) * b.category_supplied("fuel", 1))
                 .cmp(&(u128::from(opening[right]) * a.category_supplied("fuel", 1)))
                 .then(left.cmp(&right));
@@ -191,6 +200,12 @@ pub(crate) struct Book {
     hungry: Vec<bool>,
     fuel: Vec<Vec<Option<Position>>>,
     fuel_prices: Vec<u64>,
+    /// Whether each good is a live animal: a pop's want for one is its herds' shortfall, it holds none, and what it receives joins a
+    /// herd (CK-430).
+    live: Vec<bool>,
+    /// What each pop has been paid into a building's communal stock for an animal sold from its herd, by good (CK-430): spent from
+    /// the pop's want of the good, though it is no part of the pop's own holding, so one want is settled once.
+    communal: Vec<Vec<u128>>,
 }
 
 impl Book {
@@ -199,12 +214,16 @@ impl Book {
     pub(crate) fn from_parts(target: Vec<Vec<u128>>, holding: Vec<Vec<u128>>) -> Self {
         let hungry = vec![false; target.len()];
         let fuel = target.iter().map(|row| vec![None; row.len()]).collect();
+        let live = vec![false; target.first().map_or(0, Vec::len)];
+        let (target_height, target_width) = (target.len(), target.first().map_or(0, Vec::len));
         Self {
             target,
             holding,
             fuel,
             fuel_prices: Vec::new(),
             hungry,
+            live,
+            communal: vec![vec![0; target_width]; target_height],
         }
     }
 
@@ -215,7 +234,11 @@ impl Book {
             hungry: Vec::with_capacity(place.pops.len()),
             fuel: Vec::new(),
             fuel_prices: opening.to_vec(),
+            live: live_species(rules).iter().map(Option::is_some).collect(),
+            communal: vec![vec![0; rules.goods.len()]; place.pops.len()],
         };
+        let live = live_species(rules);
+        let wants = herd_wants(rules, place)?;
         for (pop_index, pop) in place.pops.iter().enumerate() {
             let people = pop.workers.checked_add(pop.dependents).ok_or_else(|| {
                 missing_data("swap.pop.size".to_owned(), "population size overflow")
@@ -229,6 +252,15 @@ impl Book {
                 if good.category_supplied("fuel", 1) > 0 {
                     target.push(0);
                     holding.push(held);
+                } else if let Some(species) = live[good_index] {
+                    // The want is what the pop's herds lack of their standard levels; the pop holds no animal itself.
+                    target.push(
+                        wants
+                            .iter()
+                            .map(|building| u128::from(building[pop_index][species]))
+                            .sum(),
+                    );
+                    holding.push(0);
                 } else {
                     target.push(pop_target_units(rules, &pop.kind, people, good_index)?);
                     holding.push(held);
@@ -268,6 +300,15 @@ impl Book {
             target,
             &self.fuel_prices,
         )?;
+        // The pop has one fuel shortfall, which each fuel states as a load count. The heat it was paid into a seller's building for an
+        // animal (CK-430) spends that shortfall, whichever fuel it was paid in; it is no part of the pop's own holding.
+        let paid_heat = rules
+            .goods
+            .iter()
+            .enumerate()
+            .map(|(i, good)| self.communal[pop_index][i] * good.category_supplied("fuel", 1))
+            .sum::<u128>();
+        let short = target.saturating_sub(holding).saturating_sub(paid_heat);
         self.fuel[pop_index] = rules
             .goods
             .iter()
@@ -276,7 +317,7 @@ impl Book {
                 let supply = good.category_supplied("fuel", 1);
                 (supply > 0).then(|| Position {
                     spare: u128::from(spare[i]),
-                    want: target.saturating_sub(holding).div_ceil(supply),
+                    want: short.div_ceil(supply),
                 })
             })
             .collect();
@@ -285,12 +326,14 @@ impl Book {
 
     pub(crate) fn position(&self, pop: usize, good: usize) -> Position {
         if let Some(position) = self.fuel[pop][good] {
+            // A fuel's want already counts what the pop was paid into a building (see `refresh_fuel`).
             return position;
         }
+        let paid = self.communal[pop][good];
         let (target, holding) = (self.target[pop][good], self.holding[pop][good]);
         Position {
             spare: holding.saturating_sub(target),
-            want: target.saturating_sub(holding),
+            want: target.saturating_sub(holding).saturating_sub(paid),
         }
     }
 
@@ -300,8 +343,18 @@ impl Book {
         if trade.starter_source == 0 {
             self.holding[trade.starter][trade.give_good] -= give;
         }
-        self.holding[trade.starter][trade.get_good] += get;
-        self.holding[trade.partner][trade.give_good] += give;
+        // A payment for an animal sold from a herd goes to the herd's building, not to the pop's holding, but it settles the pop's
+        // want of the good all the same.
+        if trade.get_to_building.is_none() {
+            self.holding[trade.starter][trade.get_good] += get;
+        } else {
+            self.communal[trade.starter][trade.get_good] += get;
+        }
+        if trade.give_to_building.is_none() {
+            self.holding[trade.partner][trade.give_good] += give;
+        } else {
+            self.communal[trade.partner][trade.give_good] += give;
+        }
         if trade.partner_source == 0 {
             self.holding[trade.partner][trade.get_good] -= get;
         }
@@ -529,6 +582,10 @@ struct Trade {
     get_units: u64,
     starter_source: usize,
     partner_source: usize,
+    /// The building whose herd sold the animal the starter gives, which the starter's receipt goes to instead of its own store.
+    get_to_building: Option<usize>,
+    /// The building whose herd sold the animal the partner gives, which the partner's receipt goes to instead of its own store.
+    give_to_building: Option<usize>,
 }
 
 pub(crate) struct Exchange<'a> {
@@ -548,6 +605,10 @@ impl Exchange<'_> {
     /// The units of a good a pop's own store can take as it stands (rule 13): what the good's limit leaves, and what the store's free
     /// volume holds. A store at its limit, full or over its volume takes none.
     fn room(&self, place: &PlaceState, pop: usize, good_index: usize) -> Result<u128, DataError> {
+        if self.live(good_index).is_some() {
+            // An animal never enters a store (its limit is zero); it joins a herd, and the want bounds what comes.
+            return Ok(u128::MAX);
+        }
         let people = Self::people(place, pop)?;
         let stock = &place.pops[pop].stock;
         let (good_cap, capacity) = pop_store_limits(self.rules, people, good_index)?;
@@ -565,6 +626,39 @@ impl Exchange<'_> {
             return Ok(by_limit);
         }
         Ok(by_limit.min(free / volume))
+    }
+
+    /// The herd species a good is the live animal of.
+    fn live(&self, good_index: usize) -> Option<usize> {
+        let id = &self.rules.goods.get(good_index)?.id;
+        self.rules
+            .herd_species
+            .iter()
+            .position(|species| species.animal == *id)
+    }
+
+    /// The units of a good a building's own stock can take as it stands, for a payment into its communal account (CK-430). A
+    /// storehouse is never a herd's building and takes none.
+    fn building_room(
+        &self,
+        place: &PlaceState,
+        building: usize,
+        good_index: usize,
+    ) -> Result<u128, DataError> {
+        let building = &place.buildings[building];
+        if building.storehouse_accounts.is_some() {
+            return Ok(0);
+        }
+        let room = room_by_cap_and_volume(
+            self.rules,
+            &building.stock,
+            good_index,
+            building_good_cap(self.rules, building, good_index)?,
+            store_capacity_ml(building)?,
+            None,
+            u64::MAX,
+        )?;
+        Ok(u128::from(room))
     }
 
     /// Takes `units` of a good from a pop: its store first, then its storehouse account (rule 13).
@@ -605,6 +699,23 @@ impl Exchange<'_> {
         good: usize,
         units: u64,
     ) -> Result<(), DataError> {
+        if let Some(species) = self.live(good) {
+            // An animal given leaves its herd, which only a building holds; the herd keeps the head count.
+            let herd = source
+                .checked_sub(1)
+                .and_then(|building| place.buildings.get_mut(building))
+                .and_then(|building| building.herds.get_mut(species))
+                .ok_or_else(|| {
+                    missing_data(
+                        "swap.pair".to_owned(),
+                        "a pop gives an animal it has no herd for",
+                    )
+                })?;
+            *herd = herd.checked_sub(units).ok_or_else(|| {
+                missing_data("swap.parts".to_owned(), "herd head count underflow")
+            })?;
+            return Ok(());
+        }
         if source == 0 {
             return self.pay(place, pop, good, units);
         }
@@ -621,7 +732,12 @@ impl Exchange<'_> {
     }
 
     /// Makes a swap: both loads leave their pops, and what each pop receives goes into its own store and nowhere else (rule 13).
-    fn apply(&self, place: &mut PlaceState, trade: Trade) -> Result<(), DataError> {
+    fn apply(
+        &self,
+        place: &mut PlaceState,
+        herds: &mut HerdWants,
+        trade: Trade,
+    ) -> Result<(), DataError> {
         self.pay_source(
             place,
             trade.starter_source,
@@ -636,10 +752,36 @@ impl Exchange<'_> {
             trade.get_good,
             trade.get_units,
         )?;
-        for (pop, good, units) in [
-            (trade.starter, trade.get_good, trade.get_units),
-            (trade.partner, trade.give_good, trade.give_units),
+        for (pop, good, units, to_building) in [
+            (
+                trade.starter,
+                trade.get_good,
+                trade.get_units,
+                trade.get_to_building,
+            ),
+            (
+                trade.partner,
+                trade.give_good,
+                trade.give_units,
+                trade.give_to_building,
+            ),
         ] {
+            if let Some(species) = self.live(good) {
+                Self::receive_head(place, herds, pop, species, units)?;
+                continue;
+            }
+            if let Some(building) = to_building {
+                // What is paid for an animal goes once into the communal account of the building whose herd gave it (r5 3.2).
+                let unaccepted =
+                    receive_building(self.rules, &mut place.buildings[building], good, units)?;
+                if unaccepted != 0 {
+                    return Err(missing_data(
+                        "swap.pair".to_owned(),
+                        "an allowed pair no longer has room",
+                    ));
+                }
+                continue;
+            }
             let unaccepted = receive_pop(self.rules, &mut place.pops[pop], good, units)?;
             if unaccepted != 0 {
                 return Err(missing_data(
@@ -647,6 +789,42 @@ impl Exchange<'_> {
                     "an allowed pair no longer has room",
                 ));
             }
+        }
+        Ok(())
+    }
+
+    /// Adds `units` animals of a species that a pop received to the herds it wants them for: the first herd, in the buildings' order,
+    /// where the pop's want is not spent (11b.1). A head is never lost or duplicated, and no herd goes past its standard level.
+    fn receive_head(
+        place: &mut PlaceState,
+        herds: &mut HerdWants,
+        pop: usize,
+        species: usize,
+        units: u64,
+    ) -> Result<(), DataError> {
+        let mut left = units;
+        for (building, wants) in place.buildings.iter_mut().zip(herds.iter_mut()) {
+            if left == 0 {
+                break;
+            }
+            let taken = wants[pop][species].min(left);
+            if taken == 0 {
+                continue;
+            }
+            let herd = building.herds.get_mut(species).ok_or_else(|| {
+                missing_data("swap.pair".to_owned(), "a want has no herd to receive it")
+            })?;
+            *herd = herd
+                .checked_add(taken)
+                .ok_or_else(|| missing_data("herds".to_owned(), "herd count overflow"))?;
+            wants[pop][species] -= taken;
+            left -= taken;
+        }
+        if left != 0 {
+            return Err(missing_data(
+                "swap.pair".to_owned(),
+                "an animal arrived that no herd of the pop wants",
+            ));
         }
         Ok(())
     }
@@ -754,7 +932,35 @@ pub(crate) fn best_pair(
     )
 }
 
+#[cfg(test)]
 pub(crate) fn best_pair_capped(
+    exchange: &Exchange<'_>,
+    place: &PlaceState,
+    book: &Book,
+    pops: [usize; 2],
+    goods: [usize; 2],
+    capacity_left: u128,
+    limits: [u128; 4],
+) -> Result<Option<(u64, u64)>, DataError> {
+    best_pair_rooms(
+        exchange,
+        place,
+        book,
+        pops,
+        goods,
+        capacity_left,
+        limits,
+        [None, None],
+    )
+}
+
+/// [`best_pair_capped`] where a receipt that goes to a herd's building and not to a pop's store has that building's room in
+/// `rooms`: the starter's for the good it gets, then the partner's for the good it is given.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The pair is fixed by both pops, both goods, the starter's capacity, four ceilings and two receipt rooms."
+)]
+fn best_pair_rooms(
     exchange: &Exchange<'_>,
     place: &PlaceState,
     book: &Book,
@@ -762,6 +968,7 @@ pub(crate) fn best_pair_capped(
     [give_good, get_good]: [usize; 2],
     capacity_left: u128,
     [give_stock, get_stock, give_limit, get_limit]: [u128; 4],
+    [get_room, give_room]: [Option<u128>; 2],
 ) -> Result<Option<(u64, u64)>, DataError> {
     let rules = exchange.rules;
     let prices = Prices {
@@ -775,11 +982,17 @@ pub(crate) fn best_pair_capped(
         .want
         .min(get_stock)
         .min(get_limit)
-        .min(exchange.room(place, starter, get_good)?);
+        .min(match get_room {
+            Some(room) => room,
+            None => exchange.room(place, starter, get_good)?,
+        });
     let most_give = give_stock
         .min(give_limit)
         .min(book.position(partner, give_good).want)
-        .min(exchange.room(place, partner, give_good)?);
+        .min(match give_room {
+            Some(room) => room,
+            None => exchange.room(place, partner, give_good)?,
+        });
     if most_get == 0 || most_give == 0 || prices.give_price == 0 || prices.get_price == 0 {
         return Ok(None);
     }
@@ -866,6 +1079,7 @@ fn run_place_exchange(
     };
     let mut parts = BuildingParts::new(rules, place, opening)?;
     let mut shares = Shares::new(&book, &parts, place)?;
+    let mut herds = herd_wants(rules, place)?;
     for pass in 0..2 {
         if pass == 1 {
             shares.second_pass(&book, &parts)?;
@@ -884,7 +1098,15 @@ fn run_place_exchange(
                     starter,
                     get_good,
                 };
-                turn.work(place, &mut book, &mut parts, &mut shares, left, pass == 1)?;
+                turn.work(
+                    place,
+                    &mut book,
+                    &mut parts,
+                    &mut shares,
+                    &mut herds,
+                    left,
+                    pass == 1,
+                )?;
                 if *left == 0 {
                     break;
                 }
@@ -904,12 +1126,17 @@ struct Turn<'a> {
 }
 
 impl Turn<'_> {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "One turn works the place, the day's book, parts, shares and herd wants with the starter's capacity."
+    )]
     fn work(
         &mut self,
         place: &mut PlaceState,
         book: &mut Book,
         parts: &mut BuildingParts,
         shares: &mut Shares,
+        herds: &mut HerdWants,
         capacity: &mut u128,
         second: bool,
     ) -> Result<(), DataError> {
@@ -934,7 +1161,26 @@ impl Turn<'_> {
                         let give_spare =
                             parts.source(book, starter_source, self.starter, give_good);
                         let get_spare = parts.source(book, partner_source, partner, self.get_good);
-                        let Some((give, get)) = best_pair_capped(
+                        // An animal sold from a herd is paid for into the herd's building, not the pop's store (CK-430).
+                        let (give_live, get_live) =
+                            (book.live[give_good], book.live[self.get_good]);
+                        let get_to_building = (give_live && !get_live && starter_source > 0)
+                            .then(|| starter_source - 1);
+                        let give_to_building = (get_live && !give_live && partner_source > 0)
+                            .then(|| partner_source - 1);
+                        let rooms = [
+                            get_to_building
+                                .map(|building| {
+                                    self.exchange.building_room(place, building, self.get_good)
+                                })
+                                .transpose()?,
+                            give_to_building
+                                .map(|building| {
+                                    self.exchange.building_room(place, building, give_good)
+                                })
+                                .transpose()?,
+                        ];
+                        let Some((give, get)) = best_pair_rooms(
                             self.exchange,
                             place,
                             book,
@@ -947,6 +1193,7 @@ impl Turn<'_> {
                                 shares.limit(partner, give_good),
                                 shares.limit(self.starter, self.get_good),
                             ],
+                            rooms,
                         )?
                         else {
                             continue;
@@ -960,8 +1207,10 @@ impl Turn<'_> {
                             get_units: get,
                             starter_source,
                             partner_source,
+                            get_to_building,
+                            give_to_building,
                         };
-                        self.exchange.apply(place, trade)?;
+                        self.exchange.apply(place, herds, trade)?;
                         book.settle(trade);
                         if rules.goods[give_good].category_supplied("fuel", 1) > 0
                             || rules.goods[self.get_good].category_supplied("fuel", 1) > 0
@@ -1026,7 +1275,7 @@ mod share_tests {
         };
         let people = Exchange::people(&place, 0).unwrap();
         let (cap, capacity) = pop_store_limits(&rules, people, wood).unwrap();
-        let ordinary = crate::room_by_cap_and_volume(
+        let ordinary = room_by_cap_and_volume(
             &rules,
             &place.pops[0].stock,
             wood,
@@ -1064,8 +1313,7 @@ mod share_tests {
             let (cap, capacity) = pop_store_limits(&rules, 1, wood).unwrap();
             let stock = &place.pops[0].stock;
             let ordinary =
-                crate::room_by_cap_and_volume(&rules, stock, wood, cap, capacity, None, u64::MAX)
-                    .unwrap();
+                room_by_cap_and_volume(&rules, stock, wood, cap, capacity, None, u64::MAX).unwrap();
             assert_eq!(
                 exchange.room(&place, 0, wood).unwrap(),
                 u128::from(ordinary)

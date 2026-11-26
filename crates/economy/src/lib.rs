@@ -304,6 +304,9 @@ impl Default for HerdOpening {
 pub struct Rules {
     /// Opening share of each herd maximum, numerator and denominator.
     pub herd_start_share: [u64; 2],
+    /// A herd's standard level in per-mille of its maximum (CK-430, r163): owners offer the animals above it and want the animals
+    /// below it. It is not the opening share.
+    pub herd_standard_pm: u64,
     /// Parameters for the opening distribution.
     #[serde(default)]
     pub herd_opening: HerdOpening,
@@ -514,6 +517,12 @@ impl Rules {
             return Err(refuse(
                 "herd_start_share".to_owned(),
                 "invalid share".to_owned(),
+            ));
+        }
+        if self.herd_standard_pm == 0 || self.herd_standard_pm > 1000 {
+            return Err(refuse(
+                "herd_standard_pm".to_owned(),
+                "must be from 1 to 1000".to_owned(),
             ));
         }
         let opening = &self.herd_opening;
@@ -3803,6 +3812,19 @@ fn daily_market_orders(rules: &Rules, place: &PlaceState) -> Result<DailyMarketO
                 .ok_or_else(|| missing_data("market.sell".to_owned(), "sell order overflow"))?;
         }
     }
+    // Owners of a herd below its standard level want animals; the want is a buy order like a good's (CK-430, r163).
+    let live = live_species(rules);
+    let wants = herd_wants(rules, place)?;
+    for (good, species) in live.iter().enumerate() {
+        let Some(species) = *species else { continue };
+        for building in &wants {
+            for pop in building {
+                orders.buy_units[good] = orders.buy_units[good]
+                    .checked_add(u128::from(pop[species]))
+                    .ok_or_else(|| missing_data("market.buy".to_owned(), "buy order overflow"))?;
+            }
+        }
+    }
     for building in building_market_sells(rules, place, &place.prices_milli)? {
         for (good, sell) in building.into_iter().enumerate() {
             orders.sell_units[good] = orders.sell_units[good]
@@ -3811,6 +3833,111 @@ fn daily_market_orders(rules: &Rules, place: &PlaceState) -> Result<DailyMarketO
         }
     }
     Ok(orders)
+}
+
+/// The herd species each good is the live animal of (CK-430), by good index: a species' animal is a good of the same id.
+pub(crate) fn live_species(rules: &Rules) -> Vec<Option<usize>> {
+    rules
+        .goods
+        .iter()
+        .map(|good| {
+            rules
+                .herd_species
+                .iter()
+                .position(|species| species.animal == good.id)
+        })
+        .collect()
+}
+
+/// A herd's standard level (r163): its maximum times the standard per-mille, rounded down.
+pub(crate) fn herd_standard_level(rules: &Rules, maximum: u64) -> u64 {
+    u64::try_from(u128::from(maximum) * u128::from(rules.herd_standard_pm) / 1000)
+        .expect("a share of a u64 fits a u64")
+}
+
+/// The animals a building's herds offer above their standard levels and want below them, by species: `(offer, want)`, both zero where
+/// the building keeps no such herd. This is the one place that reads the standard level.
+pub(crate) fn herd_levels(
+    rules: &Rules,
+    building: &BuildingState,
+) -> Result<Vec<(u64, u64)>, DataError> {
+    let definition = rules
+        .buildings
+        .iter()
+        .find(|item| item.id == building.kind)
+        .ok_or_else(|| {
+            missing_data(
+                format!("buildings.{}", building.kind),
+                "definition is missing",
+            )
+        })?;
+    let farming_levels = definition
+        .methods
+        .iter()
+        .zip(&building.method_levels)
+        .filter(|(method, _)| method.resource != "sea")
+        .try_fold(0_u64, |sum, (_, levels)| {
+            sum.checked_add(u64::from(*levels))
+        })
+        .ok_or_else(|| missing_data("herds".to_owned(), "farming level sum overflow"))?;
+    rules
+        .herd_species
+        .iter()
+        .enumerate()
+        .map(|(species, species_rules)| {
+            let Some(capacity) = definition.herds.get(&species_rules.animal) else {
+                return Ok((0, 0));
+            };
+            let maximum = farming_levels
+                .checked_mul(capacity.maximum)
+                .ok_or_else(|| missing_data("herds".to_owned(), "herd maximum overflow"))?;
+            let standard = herd_standard_level(rules, maximum);
+            let count = building.herds.get(species).copied().unwrap_or(0);
+            Ok((
+                count.saturating_sub(standard),
+                standard.saturating_sub(count),
+            ))
+        })
+        .collect()
+}
+
+/// What each owner pop wants of each building's herds below standard (r163): a herd's shortfall split by the owners' positions as a
+/// building's spare stock is, indexed `[building][pop][species]`.
+pub(crate) fn herd_wants(
+    rules: &Rules,
+    place: &PlaceState,
+) -> Result<Vec<Vec<Vec<u64>>>, DataError> {
+    let species = rules.herd_species.len();
+    let mut wants = vec![vec![vec![0_u64; species]; place.pops.len()]; place.buildings.len()];
+    for (b, building) in place.buildings.iter().enumerate() {
+        if building.herds.is_empty() {
+            continue;
+        }
+        if building.employment.len() != place.pops.len() {
+            return Err(missing_data(
+                format!("places.{}.buildings.{}.employment", place.id, building.kind),
+                "employment dimensions do not match place pops",
+            ));
+        }
+        let weights = building
+            .employment
+            .iter()
+            .map(|job| job.owners)
+            .collect::<Vec<_>>();
+        for (s, (_, shortfall)) in herd_levels(rules, building)?.into_iter().enumerate() {
+            if shortfall == 0 {
+                continue;
+            }
+            let shares = swap::wide_shares(u128::from(shortfall), &weights)
+                .map_err(|problem| missing_data("market.herd_want".to_owned(), problem))?;
+            for (pop, share) in shares.into_iter().enumerate() {
+                wants[b][pop][s] = u64::try_from(share).map_err(|_| {
+                    missing_data("market.herd_want".to_owned(), "share exceeds u64")
+                })?;
+            }
+        }
+    }
+    Ok(wants)
 }
 
 /// Each building's offer above its owners' food reserve, also used by the exchange.
@@ -3850,6 +3977,7 @@ fn building_market_sells(
         }
     }
     let mut sells = vec![vec![0_u128; rules.goods.len()]; place.buildings.len()];
+    let live = live_species(rules);
     for (building_index, building) in place.buildings.iter().enumerate() {
         let mut reserve = 0_u128;
         for (pop_index, people) in owner_people_by_building[building_index]
@@ -3876,8 +4004,14 @@ fn building_market_sells(
                 .checked_add(u128::from(units))
                 .ok_or_else(|| missing_data("fuel.sell".to_owned(), "sell overflow"))?;
         }
+        let herd_offers = herd_levels(rules, building)?;
         for (good_index, good) in rules.goods.iter().enumerate() {
             if good.category_supplied("fuel", 1) > 0 {
+                continue;
+            }
+            if let Some(species) = live[good_index] {
+                // A live animal is offered from the herd above its standard level, never from the stock (CK-430).
+                sells[building_index][good_index] = u128::from(herd_offers[species].0);
                 continue;
             }
             let holding = building_market_holding(rules, place, building, good_index)?;
@@ -10894,6 +11028,7 @@ pub(crate) mod tests {
     pub(crate) fn tiny_rules() -> Rules {
         Rules {
             herd_start_share: [2, 3],
+            herd_standard_pm: 700,
             herd_opening: HerdOpening::default(),
             herd_species: Vec::new(),
             goods: vec![Good {
@@ -18084,6 +18219,12 @@ pub(crate) mod tests {
         let mut bad = rules.clone();
         bad.herd_start_share = [0, 3];
         cases.push(("herd_start_share", bad));
+        let mut bad = rules.clone();
+        bad.herd_standard_pm = 0;
+        cases.push(("herd_standard_pm", bad));
+        let mut bad = rules.clone();
+        bad.herd_standard_pm = 1001;
+        cases.push(("herd_standard_pm", bad));
         let mut bad = rules.clone();
         bad.herd_species[0].yields[0].good = "unknown".into();
         cases.push(("herd_species.cattle.yields.unknown", bad));
