@@ -35,9 +35,19 @@ pub(crate) struct PriceView {
     pub(crate) offered: Option<u128>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct StockView {
+    pub(crate) good: String,
+    pub(crate) amount: u64,
+    pub(crate) charged_ml: u64,
+    pub(crate) outside: bool,
+}
+
 /// One pop, as the Pops tab shows it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PopView {
+    pub(crate) stock: Vec<StockView>,
+    pub(crate) room_ml: u64,
     pub(crate) kind: String,
     pub(crate) culture: String,
     pub(crate) religion: String,
@@ -97,6 +107,8 @@ pub(crate) struct HerdView {
 /// One building, as the Buildings tab shows it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct BuildingView {
+    pub(crate) stock: Vec<StockView>,
+    pub(crate) made: Vec<(String, u64)>,
     pub(crate) kind: String,
     pub(crate) levels: u64,
     /// The levels of each method that has any, in method order.
@@ -302,6 +314,25 @@ fn volume_ml(rules: &Rules, stock: &[u64]) -> u64 {
         })
 }
 
+fn stock_view(rules: &Rules, stock: &[u64]) -> Vec<StockView> {
+    rules
+        .goods
+        .iter()
+        .zip(stock)
+        .filter(|(_, amount)| **amount > 0)
+        .map(|(good, amount)| StockView {
+            good: good.id.clone(),
+            amount: *amount,
+            charged_ml: if good.stacked_outside {
+                0
+            } else {
+                amount.saturating_mul(good.volume_ml)
+            },
+            outside: good.stacked_outside,
+        })
+        .collect()
+}
+
 fn pop_view(
     rules: &Rules,
     place: &PlaceState,
@@ -318,6 +349,8 @@ fn pop_view(
                 .saturating_add(employment.workers)
         });
     PopView {
+        stock: stock_view(rules, &pop.stock),
+        room_ml: size_of(pop).saturating_mul(POP_STORE_ML_PER_PERSON),
         kind: pop.kind.clone(),
         culture: pop.culture.clone(),
         religion: pop.religion.clone(),
@@ -507,6 +540,14 @@ fn building_view(
         })
         .collect();
     BuildingView {
+        stock: stock_view(rules, &building.stock),
+        made: rules
+            .goods
+            .iter()
+            .zip(&building.last_made)
+            .filter(|(_, n)| **n > 0)
+            .map(|(good, n)| (good.id.clone(), *n))
+            .collect(),
         kind: building.kind.clone(),
         levels: u64::from(building.levels),
         methods,
@@ -790,6 +831,10 @@ mod tests {
 
     /// One place: a peasant pop of 80 workers and 40 dependents with 1,000 oats (1,800 hundredths of a person-day each) and
     /// 10 ale, a farm of 3 levels with 10 owners and 25 workers employed, and a storehouse level holding 5 oats for the pop's account.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the fixture keeps its full state together"
+    )]
     fn fixture(rules: &Rules) -> PlaceState {
         let goods = rules.goods.len();
         let mut stock = vec![0; goods];
@@ -852,6 +897,7 @@ mod tests {
                     herd_grazing_sums: vec![0; 4],
                     wage_carries: vec![0; goods],
                     pay_carries: vec![0; goods],
+                    last_made: Vec::new(),
                     fee_carries: Vec::new(),
                     wage_history: vec![1_234; 12],
                     paid_history: vec![0; 12],
@@ -874,6 +920,7 @@ mod tests {
                     herd_grazing_sums: Vec::new(),
                     wage_carries: vec![0; goods],
                     pay_carries: vec![0; goods],
+                    last_made: Vec::new(),
                     fee_carries: vec![vec![0; goods]; 2],
                     wage_history: vec![0; 12],
                     paid_history: vec![0; 12],
@@ -935,6 +982,52 @@ mod tests {
         view.place("fixture")
             .expect("the fixture is in the view")
             .clone()
+    }
+
+    #[test]
+    fn stock_and_made_are_per_owner_in_goods_order_and_use_exact_volume() {
+        let mut rules = shipped_rules();
+        let honey = index_of(&rules, "honey");
+        let peat = index_of(&rules, "peat");
+        rules.goods[honey].volume_ml = 350;
+        rules.goods[peat].stacked_outside = true;
+        let mut place = fixture(&rules);
+        place.pops[0].stock[index_of(&rules, "oats")] = 25;
+        place.buildings[0].stock.fill(0);
+        place.buildings[0].stock[honey] = 10;
+        place.buildings[0].stock[peat] = 1;
+        place.buildings[0].last_made = vec![0; rules.goods.len()];
+        place.buildings[0].last_made[honey] = 17;
+        let view = view_for_place(&rules, place);
+        let farm = &view.buildings[0];
+        let honey = farm.stock.iter().find(|good| good.good == "honey").unwrap();
+        assert_eq!(
+            (honey.amount, honey.charged_ml, honey.outside),
+            (10, 3500, false)
+        );
+        let peat = farm.stock.iter().find(|good| good.good == "peat").unwrap();
+        assert_eq!((peat.amount, peat.charged_ml, peat.outside), (1, 0, true));
+        assert_eq!(farm.made, [("honey".to_owned(), 17)]);
+        assert_eq!(farm.store_used_ml, 3500);
+        assert_eq!(view.pops[0].room_ml, 120 * 720_000);
+        assert_eq!(
+            view.pops[0]
+                .stock
+                .iter()
+                .find(|good| good.good == "oats")
+                .unwrap()
+                .amount,
+            25
+        );
+        assert_eq!(
+            view.buildings[1]
+                .stock
+                .iter()
+                .find(|good| good.good == "oats")
+                .unwrap()
+                .amount,
+            5
+        );
     }
 
     #[test]

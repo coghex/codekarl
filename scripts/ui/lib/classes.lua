@@ -276,7 +276,7 @@ tooltip.define("pop_crowding", function(args)
 end)
 
 local function building_view(args)
-  local place = place_view(args.place)
+  local place = place_view(args.place, args.revision)
   return place ~= nil and place.buildings[args.building] or nil
 end
 

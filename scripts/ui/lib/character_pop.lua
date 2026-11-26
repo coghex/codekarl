@@ -68,7 +68,7 @@ local function identity_section(data, inner, kit)
     local kind = pop.kind
     local used = draw.text(result, group, 0, y + 1, kind, kind_colour(kind))
     local at = draw.text(result, group, used + 4, y + 1, "at", theme.colour("dim"))
-    local room = inner - button_width - 4 - used - at - 8
+    local room = inner - (kit.standalone and 0 or button_width + 4) - used - at - 8
     draw.text(result, group, used + at + 8, y + 1, draw.clip(place_name, room), theme.colour("term"))
     hits[#hits + 1] = {part = "kind", x = 0, y = 0, width = used, height = 12, content = tooltip.explanation(kind)}
     local culture_used = draw.text(result, group, 0, y + 13, title_of(pop.culture), theme.colour("term"), "small")
@@ -80,6 +80,7 @@ local function identity_section(data, inner, kit)
       part = "religion", x = culture_used + dot, y = 12, width = draw.width(title_of(pop.religion), "small"), height = 11,
       content = tooltip.explanation(pop.religion),
     }
+    if kit.standalone then return end
     -- The button: a frame, the ledger's location icon and the words.
     local left = inner - button_width
     draw.frame(result, group, left, y, button_width, 13, theme.colour("tile"), theme.kind("social").outline)
@@ -175,7 +176,7 @@ local function characters_section(data, inner, kit)
     -- Past two rows the last place is the "+N" chip. The viewed character always has a portrait: the first places go to the most important, but when the
     -- viewed one is not among them it takes the last of them, and the portraits keep their importance order.
     local places = capacity - 1
-    local viewed = kit.subject.id
+    local viewed = kit.subject and kit.subject.id
     local viewed_at
     for index, card in ipairs(people) do
       if card.id == viewed then viewed_at = index end
@@ -193,7 +194,7 @@ local function characters_section(data, inner, kit)
     for index, card in ipairs(shown) do
       local column, row = (index - 1) % columns, (index - 1) // columns
       local x, top = column * pitch, y + 10 + row * (CELL + UNDER)
-      local current = card.id == kit.subject.id
+      local current = kit.subject ~= nil and card.id == kit.subject.id
       if current then
         draw.frame(result, group, x - 1, top - 1, CELL + 2, CELL + 2, theme.colour("tile"), theme.kind("social").hot)
       end

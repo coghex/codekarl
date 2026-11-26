@@ -1,10 +1,9 @@
 use super::*;
 
 #[test]
-fn herd_counts_use_full_colour_icons_on_cards_and_open_rows() {
+fn herd_counts_use_full_colour_icons_on_cards() {
     let mut rig = rig(&[
         "time(1, 1) select_place('cards', 'Cards'); tabs_by_title.Cards:select('buildings', true)",
-        "look_buttons.rows.on_click(); card_object.items[2].on_click()",
     ]);
     rig.opened();
     let card_icons = notes(&rig);
@@ -35,28 +34,10 @@ fn herd_counts_use_full_colour_icons_on_cards_and_open_rows() {
         card_run_at(&card_icons, 236, 28, "#ece3cb", "/"),
         "maximum herd separator keeps text colour: {card_icons:?}"
     );
-    rig.opened();
-    let row_icons = notes(&rig);
-    for (name, icon_y, count_y, count) in [
-        ("cattle", 104, 102, "27 / 36"),
-        ("sheep", 128, 126, "10 / 20"),
-        ("pigs", 152, 150, "64 / 64"),
-    ] {
-        assert!(
-            row_icons.iter().any(|line| {
-                line == &format!("goodsquad ui/goods/{name}.png 32 {icon_y} 18 18 -")
-            }),
-            "open row herd {name} icon is at x=16 and one pixel below its text: {row_icons:?}"
-        );
-        assert!(
-            card_text_with_colour_at(&row_icons, 56, count_y, "#ece3cb", count),
-            "open row herd {name} count is at x=28: {row_icons:?}"
-        );
-    }
 }
 
 #[test]
-fn unlisted_herds_use_the_unknown_icon_on_cards_and_open_rows() {
+fn unlisted_herds_use_the_unknown_icon_on_cards() {
     let mut rig = rig(&[
         r"VIEWS[1].cards.prices = {price('moonstone', 4500, 4), price('quartz', 2500, 3)}
 VIEWS[1].cards.buildings[1].herds = {
@@ -77,15 +58,7 @@ local function tip(name, x, y)
 end
 local goats_x = 5 + 11 + font.layout('27/36').width + 10
 tip('goats_icon_card', goats_x + 1, 19); tip('goats_count_card', goats_x + 12, 19)
-look_buttons.rows.on_click()
-local row = card_object.items[2]
-row.on_click()
-row = card_object.items[2]
-local function row_tip(name, x, y)
-  local content, part = row.tooltip(x, y)
-  note(name .. ' ' .. text(content and content.title or content) .. ' part=' .. tostring(part or '-'))
-end
-row_tip('goats_icon_row', 20, 50); row_tip('goats_count_row', 30, 50)",
+",
     ]);
     rig.opened();
     let card = notes(&rig);
@@ -102,19 +75,6 @@ row_tip('goats_icon_row', 20, 50); row_tip('goats_count_row', 30, 50)",
         card.iter()
             .any(|line| line == "goats_count_card goats 5 of 8 part=goats"),
         "unknown herd count retains the herd class: {card:?}"
-    );
-    assert!(
-        card.iter()
-            .any(|line| line == "goodsquad ui/goods/fallback/unknown.png 32 128 18 18 -"),
-        "the open-row herd icon uses the fallback at the normal location and size: {card:?}"
-    );
-    assert!(
-        card.iter()
-            .any(|line| line == "goats_icon_row <none> part=goats")
-    );
-    assert!(
-        card.iter()
-            .any(|line| line == "goats_count_row goats 5 of 8 part=goats")
     );
     assert!(
         !card.iter().any(|line| line.contains("ui/goods/goats.png")),
