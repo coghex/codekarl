@@ -1191,10 +1191,12 @@ herd stays. These are counts, not individual animals, so livestock stays abstrac
 - **Expeditions** (CK-432, trade part C; spec `trade4-spec-r4`, section 7): a trade job (a plan's vehicles, cargo, animals and supplies)
   starts when its goods are gathered, its people are at home and willing and every leg of both ways assigns; its stockpile then
   becomes an expedition, saved in its home place's trade state. The plan is given (part D will choose it).
-  - **Legs.** Each leg of the way out and the way back is a mode (land or water), the work and speed of each stretch and the fixed
-    delays; a leg takes the sum of work over speed plus the delays, where each profile speed is scaled by the pace over 1000, rounded
-    down, at least 1 (rule 6). Position is the leg and the exact fraction of it done, so the part of an hour a leg leaves over is carried
-    to the next. `travel_network`'s `expedition_route` builds the legs from CK-402's quickest itinerary, clipped at 2 km from each
+  - **Legs.** Each leg of the way out and the way back is a mode (land or water), the work and speed of each stretch in the order the
+    stretches are travelled, and the fixed delays with where they lie; a leg takes the sum of work over speed plus the delays, where each
+    profile speed is scaled by the pace over 1000, rounded down, at least 1 (rule 6). Position is the leg and the exact fraction of its
+    time done, so the part of an hour a leg leaves over is carried to the next; the point on the map follows the movement, not the time:
+    the stretches are walked in order at the pace held, a landing's or a boarding's delay is waited out at the shore (the start or the end
+    of its leg), and a ford, wade or tide is spread along its stretch, so a leg of two speeds is not placed by the share of its hours. `travel_network`'s `expedition_route` builds the legs from CK-402's quickest itinerary, clipped at 2 km from each
     centre by an exact search (the samples, the path's bends and the nearest point of each straight piece, so a shallow crossing
     between samples is found); at pace 1000 they take exactly CK-402's hours (a test). A clip keeps what lies on the kept journey: a
     water leg's work step by step at each step's own speed, a landing's delay at the shore. The one approximation is a land stretch's
@@ -1207,7 +1209,9 @@ herd stays. These are counts, not individual animals, so livestock stays abstrac
     (one for each 20 driven animals or part, land only), then spare people up to the full crews; anyone left walks. The pace is the
     least of each moving vehicle's (base, lowered by its own load by up to 250‰ and by its own crew down to 700‰, each rounded down), the
     walkers' and the driven species'; half of that when the supplies are gone. It is reckoned at leaving, at a change of what moves, at
-    turning back and when the supplies run out.
+    turning back and when the supplies run out. A load is packed when it is loaded (leaving home, and turning back with the return
+    load); as supplies are eaten or worn their units come out of the last carriers holding them, so a transfer never packs the smaller
+    load afresh, which first-fit does not promise to fit, and a load that packed makes every leg ahead.
   - **The hour.** Each trade hour, after builds complete and before jobs start, expeditions move one hour, arrive and unload (11c.1).
     One that arrives by 11:00 takes part in that noon's exchange and starts back in the same noon; one arriving in the noon hour waits
     for the next. At home it unloads in the hour it arrives: receipt, then the general overflow rule, live animals by 11b.1 rule 1 (an
@@ -1228,7 +1232,10 @@ herd stays. These are counts, not individual animals, so livestock stays abstrac
     tick its outbound travel ends, trades at the first noon whose 11:00 cutoff it met, and is home at the tick its return ends; the
     days are the hours from the start to then, rounded up, at least one. Times are checked and a trip longer than the calendar holds
     is refused at the order and in a save; no plan holds more than 4,194,304 units of a good.
-  - **Saves.** The expeditions, their plans and positions are saved and checked against what a reachable game can hold (the pace against the supplies aboard when it was last reckoned, which are saved with it;
+  - **Saves.** The expeditions, their plans and positions are saved and checked against what a reachable game can hold, each checked
+    quantity derived by the functions the simulation runs (the pace by its own reckoning from the load as packed and the supplies aboard
+    when it was last reckoned, which are saved with it; the noons it has been fed at by the noon the daily step runs and whether it left
+    in that step, which is saved; its supplies gone as the feeding sets them;
     a head on offer and the yield of its slaughter against the heads put on offer and the clock, a saved state's clock being the
     hour whose systems have not yet run, so a head is still on offer at the due hour's own clock); the next
     expedition number is saved with the others.
