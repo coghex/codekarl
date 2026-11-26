@@ -811,3 +811,25 @@ crew_full = 4
 crew_fewest = 2
 water = "currach"
 wear = { good = "hides", units = 1 }
+
+# Expeditions (CK-432, trade spec sections 3.2 and 3.3; every number is a placeholder the owner approved, r160). Weights and spaces
+# are grams and millilitres, paces per-mille of walking pace. A person's pack and the drovers' ratio are section 3.2's; the slowings are
+# section 3.3's (a vehicle with its full weight aboard goes 250 per-mille slower, one at its fewest crew 300 per-mille slower, and an
+# expedition out of supplies at half pace). A herd animal driven on land goes at `pace_pm`; on a boat it takes `aboard_ml` of room
+# and the weight of its good.
+[expedition]
+pack_g = 25000
+pack_ml = 50000
+walking_pace_pm = 1000
+animals_per_drover = 20
+full_load_slowing_pm = 250
+short_crew_slowing_pm = 300
+no_supplies_pace_pm = 500
+wear_hours = 720
+daily_hunger_centi = 100
+animals = [
+    { animal = "cattle", pace_pm = 800, aboard_ml = 2000000 },
+    { animal = "pigs", pace_pm = 600, aboard_ml = 500000 },
+    { animal = "sheep", pace_pm = 800, aboard_ml = 500000 },
+    { animal = "horses", pace_pm = 800, aboard_ml = 3000000 },
+]

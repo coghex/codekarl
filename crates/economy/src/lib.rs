@@ -14,6 +14,7 @@ use start_levels::{Candidate, StartDemand};
 
 pub mod bigint;
 pub mod events;
+mod expedition;
 mod fuel;
 pub mod genetics;
 pub mod lifecycle;
@@ -25,13 +26,17 @@ mod swap;
 pub mod switching;
 mod trade;
 pub use events::{Epithet, EpithetScope, EpithetTrigger, EventRules};
+pub use expedition::{
+    Delays, DrivenAnimal, Expedition, ExpeditionRules, ExpeditionVehicle, Group, Hours, Leg,
+    Limiter, MOST_LEG_PATH, Mode, Phase, Plan, Speed, Term,
+};
 pub use genetics::{Genetics, PopGenetics};
 pub use lifecycle::LifeCycle;
 pub use peoples::Peoples;
 pub use personality::Personality;
 pub use trade::{
     Hands, Job, JobKind, PlaceTrade, TradeCounters, Vehicle, VehicleAnimal, VehicleInput,
-    VehicleKind, VehicleWear, run_trade_hour, validate_trade_state,
+    VehicleKind, VehicleWear, run_trade_hour, validate_trade_state, validate_trade_state_at,
 };
 
 const WAGE_HISTORY_MONTHS: usize = 12;
@@ -406,6 +411,9 @@ pub struct Rules {
     /// The kinds of vehicle, in canonical order (CK-431).
     #[serde(default)]
     pub vehicles: Vec<VehicleKind>,
+    /// The numbers of an expedition that are not a vehicle's (CK-432).
+    #[serde(default)]
+    pub expedition: ExpeditionRules,
 }
 
 const fn default_job_giveup_hours() -> u64 {
@@ -1266,6 +1274,7 @@ impl Rules {
         for vehicle in &self.vehicles {
             vehicle.validate(self, file)?;
         }
+        self.expedition.validate(file)?;
         if self.job_giveup_hours == 0 || self.held_animal_hours == 0 {
             return Err(refuse(
                 "job_giveup_hours".to_owned(),
@@ -7215,10 +7224,12 @@ fn consume_pop_tracked(
             "a non-food good has a hunger pantry",
         ));
     }
+    // The people away with an expedition eat from its supplies, so the pop's ration is for the people at home (r5 3.6).
     let size = place.pops[pop_index]
         .workers
         .checked_add(place.pops[pop_index].dependents)
-        .ok_or_else(|| missing_data("pop.size".to_owned(), "population size overflow"))?;
+        .ok_or_else(|| missing_data("pop.size".to_owned(), "population size overflow"))?
+        .saturating_sub(place.trade.away(pop_index));
     if size == 0 {
         place.pops[pop_index].consumption.necessities_pm = 1000;
         place.pops[pop_index].consumption.niceties_pm = 1000;
@@ -8502,12 +8513,14 @@ pub fn run_daily_economy_with_trade_neighbours(
         trade::take_waiting(rules, place, prices)?;
     }
     // The exchange uses moved prices; fuel uses the price as the day began.
-    swap::run_neighbour_swaps_at_prices(rules, &mut next, &day_prices, trade_by_place)?;
+    swap::run_noon_exchange(rules, &mut next, &day_prices, trade_by_place, now)?;
     // Jobs start after the exchange and before the day's eating, in the order of their numbers; the noon just spent counts as a day
     // away for the hands of every build under way (11c.1 rule 1, r5 3.6).
     for place in &mut next.places {
-        trade::start_ready(rules, place, now)?;
+        trade::start_ready(rules, place, &mut next.trade, now, true)?;
         trade::count_days_away(place);
+        // The people of an expedition eat from its supplies, not at home (3.8 step 8).
+        expedition::feed(rules, place, now)?;
     }
     let (intake_pm, daily_consumption) =
         run_daily_consumption_at_prices(rules, &mut next, date, &day_prices)?;
@@ -9489,14 +9502,18 @@ fn move_open_positions_with_floors(
             place
                 .pops
                 .iter()
-                .map(|pop| {
-                    u64::try_from(u128::from(pop.workers) * u128::from(rules.leave_pm) / 1000)
-                        .map_err(|_| {
+                .enumerate()
+                .map(|(pop_index, pop)| {
+                    // Workers away with an expedition are unavailable for movement (r5 3.6): only those at home may leave.
+                    let at_home = pop.workers.saturating_sub(place.trade.away(pop_index));
+                    u64::try_from(u128::from(at_home) * u128::from(rules.leave_pm) / 1000).map_err(
+                        |_| {
                             missing_data(
                                 "employment.leave_pm".to_owned(),
                                 "leave budget exceeds u64",
                             )
-                        })
+                        },
+                    )
                 })
                 .collect::<Result<Vec<_>, _>>()
         })
@@ -9586,10 +9603,13 @@ fn move_open_positions_with_floors(
                             .get(&(places[destination_place].id.clone(), source_pop))
                             .copied()
                             .unwrap_or(0);
-                        let removable = source
+                        let at_home = source
                             .workers
+                            .saturating_sub(places[destination_place].trade.away(source_pop));
+                        let removable = at_home
                             .saturating_add(source.dependents)
                             .saturating_sub(floor);
+                        let count = count.min(at_home);
                         let count = if same_pop {
                             count
                         } else if position_kind == "monk" {
@@ -9769,6 +9789,9 @@ fn run_monthly_demography_with_floors(
             collect_monthly_rent(rules, place, &fill, u64::from(days), place_ledger)?;
         }
         for (pop_index, pop) in place.pops.iter_mut().enumerate() {
+            // Births and deaths are reckoned on the people at home: the workers away with an expedition neither breed nor die until
+            // they are back, and rejoin their pop then (r5 3.6).
+            let at_home = pop.workers.saturating_sub(place.trade.away(pop_index));
             let pop_type = rules
                 .pop_types
                 .iter()
@@ -9804,7 +9827,7 @@ fn run_monthly_demography_with_floors(
                 )?,
             ];
             let requested_births = exact_monthly_rate(
-                pop.workers,
+                at_home,
                 pop_type.births_pm_year,
                 &birth_factors,
                 &mut pop.consumption.birth_carry,
@@ -9838,13 +9861,13 @@ fn run_monthly_demography_with_floors(
 
             let worker_death_factors = death_multipliers_of(rules, pop, crowding)?;
             let worker_deaths = exact_monthly_rate(
-                pop.workers,
+                at_home,
                 pop_type.worker_deaths_pm_year,
                 &worker_death_factors,
                 &mut pop.consumption.worker_death_carry,
                 "demography.worker_deaths",
             )?
-            .min(pop.workers);
+            .min(at_home);
             let dependent_death_factors = [
                 worker_death_factors[0],
                 worker_death_factors[1],
@@ -9891,12 +9914,11 @@ fn run_monthly_demography_with_floors(
                 .get(&(place.id.clone(), pop_index))
                 .copied()
                 .unwrap_or(0);
-            let removable = pop
-                .workers
-                .saturating_add(pop.dependents)
-                .saturating_sub(floor);
+            let removable = at_home.saturating_add(pop.dependents).saturating_sub(floor);
             let (worker_deaths, dependent_deaths) =
                 clip_deaths(worker_deaths, dependent_deaths, removable);
+            // Whatever the characters committed, the workers away are not among the dead.
+            let worker_deaths = worker_deaths.min(at_home);
             pop.workers -= worker_deaths;
             pop.dependents -= dependent_deaths;
             let deaths = worker_deaths
@@ -11078,6 +11100,8 @@ fn decode_employment(input: &mut Reader<'_>) -> Result<Vec<Employment>, Canonica
 #[cfg(test)]
 mod events_tests;
 #[cfg(test)]
+mod expedition_tests;
+#[cfg(test)]
 mod genetics_tests;
 #[cfg(test)]
 mod lifecycle_tests;
@@ -11381,6 +11405,7 @@ pub(crate) mod tests {
             job_giveup_hours: 720,
             held_animal_hours: 720,
             vehicles: Vec::new(),
+            expedition: ExpeditionRules::default(),
         }
     }
 

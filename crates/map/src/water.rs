@@ -783,6 +783,49 @@ impl Water {
         result
     }
 
+    /// The distances along a reach, in millimetres, strictly between its two ends, at which its surveyed line bends: the vertices of the
+    /// line that lie between the reach's stored beginning and end, placed as [`Self::position_along`] places them. Between two of them
+    /// (and the ends) the reach is a straight line. Empty for a reach whose line is unknown or straight.
+    #[must_use]
+    pub fn bends_along(&self, reach: &Reach) -> Vec<u64> {
+        let Some(line) = self.survey.get(&reach.stretch) else {
+            return Vec::new();
+        };
+        let length = u128::from(reach.length_mm);
+        let (begin, end) = (u128::from(reach.begin), u128::from(reach.end));
+        let Some(span) = end.checked_sub(begin).filter(|span| *span > 0) else {
+            return Vec::new();
+        };
+        let mut lengths = Vec::new();
+        for pair in line.windows(2) {
+            let dx = i128::from(pair[1].x) - i128::from(pair[0].x);
+            let dy = i128::from(pair[1].y) - i128::from(pair[0].y);
+            let Ok(squared) = u128::try_from(dx * dx + dy * dy) else {
+                return Vec::new();
+            };
+            lengths.push(isqrt(squared));
+        }
+        let total: u128 = lengths.iter().sum();
+        let mut bends = Vec::new();
+        let mut before = 0_u128;
+        for segment in lengths.iter().take(lengths.len().saturating_sub(1)) {
+            before += segment;
+            // The vertex lies at `before / total` of the line, a millionth-scaled position; the reach covers `begin..end` of it.
+            let at = before * MICRO;
+            if total > 0 && at > begin * total && at < end * total {
+                let along = (at - begin * total) * length / (span * total);
+                if let Ok(along) = u64::try_from(along)
+                    && along > 0
+                    && u128::from(along) < length
+                {
+                    bends.push(along);
+                }
+            }
+        }
+        bends.dedup();
+        bends
+    }
+
     /// The point of the surveyed line a distance along a reach, in proportion between its stored beginning and end.
     #[must_use]
     pub fn position_along(&self, reach: &Reach, distance_mm: u64) -> Option<FixedPoint> {

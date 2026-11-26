@@ -366,6 +366,79 @@ impl Routes {
     }
 }
 
+impl Routes {
+    /// The distances along a leg **in the direction it is travelled**, in millimetres, where its path bends: the cell centres of a land
+    /// stretch, the boundaries of the water steps of a water leg and the surveyed bends inside each river reach. Between two of them the
+    /// path is a straight line, which lets a search for where the path comes within a distance of a point test each straight piece
+    /// exactly. Empty for a leg that is one straight line.
+    #[must_use]
+    pub(super) fn breakpoints(
+        &self,
+        scenario: &ck_map::Scenario,
+        ways: &[LandWay],
+        leg: &TripLeg,
+    ) -> Vec<BigRational> {
+        let mut at = Vec::new();
+        let zero = BigRational::from_integer(0.into());
+        let Some(n) = scenario.network.as_ref() else {
+            return at;
+        };
+        match &leg.kind {
+            TripKind::Land { way, backward } => {
+                let Some(stretch) = ways.get(*way).and_then(|measured| {
+                    n.stretches.iter().find(|stretch| stretch.id == measured.id)
+                }) else {
+                    return at;
+                };
+                // The same order of cells `position` walks.
+                let mut cells = stretch.cells.clone();
+                if *backward {
+                    cells.reverse();
+                }
+                let mut total = zero;
+                for pair in cells.windows(2) {
+                    let Some(length) = land_step_length(scenario, pair[0], pair[1]) else {
+                        return Vec::new();
+                    };
+                    total += length;
+                    at.push(total.clone());
+                }
+            }
+            TripKind::Water { pieces, .. } => {
+                let mut cursor = zero;
+                for index in pieces {
+                    let Some(step) = self.water_steps.get(*index) else {
+                        return Vec::new();
+                    };
+                    let Some(length) = step.length(scenario) else {
+                        return Vec::new();
+                    };
+                    // A river reach bends where its survey does; the bends are placed from the end the step is travelled from.
+                    if let WaterStep::Reach { reach, downstream } = step
+                        && let Some(entry) = n.reaches.get(*reach)
+                    {
+                        let mut inside: Vec<BigRational> = n
+                            .water()
+                            .bends_along(entry)
+                            .into_iter()
+                            .map(|bend| BigRational::from_integer(bend.into()))
+                            .collect();
+                        if !*downstream {
+                            inside = inside.into_iter().map(|bend| &length - bend).collect();
+                        }
+                        inside.sort();
+                        at.extend(inside.into_iter().map(|bend| &cursor + bend));
+                    }
+                    cursor += length;
+                    at.push(cursor.clone());
+                }
+            }
+            TripKind::Tidal { .. } | TripKind::Transfer { .. } | TripKind::Strait { .. } => {}
+        }
+        at
+    }
+}
+
 /// An itinerary leg with its exact length and time.
 #[derive(Clone, Debug)]
 pub struct TripLeg {
@@ -469,7 +542,7 @@ pub enum TripKind {
     },
 }
 
-fn thousandths(value: &BigRational) -> String {
+pub(super) fn thousandths(value: &BigRational) -> String {
     let scaled = (value.numer() * 2000 + value.denom()) / (value.denom() * 2);
     let whole = &scaled / 1000;
     let part = &scaled % 1000;
@@ -605,6 +678,23 @@ pub(crate) fn command(arguments: impl IntoIterator<Item = String>) -> Result<Str
             .map(|node| node.id)
             .ok_or_else(|| format!("unknown place {name}"))
     };
+    if let [_, from, to, flag, rest @ ..] = args.as_slice()
+        && flag == "--expedition"
+    {
+        let pace: u32 = rest
+            .first()
+            .map_or(Ok(1000), |pace| pace.parse())
+            .map_err(|_| "pace must be a whole number of per-mille")?;
+        let (from, to) = (find(from)?, find(to)?);
+        return super::expedition_route::report(
+            &scenario,
+            &rules,
+            profile,
+            &states,
+            [(from, to), (to, from)],
+            pace,
+        );
+    }
     if args.len() == 1 || args.is_empty() {
         let mut output = String::new();
         for (from, to) in [
@@ -641,7 +731,10 @@ pub(crate) fn command(arguments: impl IntoIterator<Item = String>) -> Result<Str
             }
             Ok(output)
         }
-        _ => Err("usage: travel-times [PROFILE [FROM [TO | --within HOURS]]]".into()),
+        _ => Err(
+            "usage: travel-times [PROFILE [FROM [TO [--expedition [PACE]] | --within HOURS]]]"
+                .into(),
+        ),
     }
 }
 
@@ -981,7 +1074,7 @@ struct WaterGraph {
 }
 
 impl WaterStep {
-    fn length(&self, scenario: &ck_map::Scenario) -> Option<BigRational> {
+    pub(super) fn length(&self, scenario: &ck_map::Scenario) -> Option<BigRational> {
         let n = scenario.network.as_ref()?;
         match self {
             Self::Reach { reach, .. } => Some(BigRational::from_integer(

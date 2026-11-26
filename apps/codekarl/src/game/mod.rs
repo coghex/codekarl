@@ -26,6 +26,7 @@ pub(crate) mod controls;
 pub(crate) mod core;
 pub(crate) mod economy;
 pub(crate) mod events;
+pub(crate) mod expedition_route;
 pub(crate) mod gameplay;
 pub(crate) mod hashes;
 mod lows;

@@ -190,7 +190,8 @@ fn a_hand_cart_is_built_from_the_pops_own_wood_and_people_in_four_hours_and_it_o
         state.trade,
         TradeCounters {
             vehicles: 1,
-            jobs: 1
+            jobs: 1,
+            expeditions: 0
         }
     );
     assert_eq!(

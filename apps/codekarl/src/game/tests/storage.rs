@@ -618,6 +618,37 @@ fn a_save_from_before_the_vehicles_and_jobs_slice_is_refused_by_its_build_id_bef
     ));
 }
 
+/// CK-432 (trade spec 11c.8): a save from before the slice that added the expeditions the economy saves is refused by its build id
+/// before any state of it is read, as the vehicles' and jobs' slice's was.
+#[test]
+fn a_save_from_before_the_expeditions_slice_is_refused_by_its_build_id_before_its_state_is_read() {
+    let scenario_hash = "ab".repeat(32);
+    let simulation = Simulation::<crate::game::GameState, crate::game::GameCommand>::new(
+        start(),
+        42,
+        crate::game::GameState {
+            economy: ck_economy::EconomyState::default(),
+            characters: ck_characters::CharacterStore::default(),
+            stretches: std::collections::BTreeMap::new(),
+            lows: crate::game::lows::Lows::default(),
+        },
+        Scheduler::new(),
+        crate::game::apply,
+    );
+    let mut older = identity(&scenario_hash);
+    older.build = format!("{}+1111111111111111", env!("CARGO_PKG_VERSION"));
+    assert_ne!(older.build, identity(&scenario_hash).build);
+    let bytes = simulation.save(older.meta(42)).to_bytes().unwrap();
+    let refused = ck_sim::Save::<crate::game::GameState>::from_bytes(
+        &bytes,
+        &identity(&scenario_hash).expected(),
+    );
+    assert!(matches!(
+        refused,
+        Err(ck_sim::SaveError::BuildMismatch { .. })
+    ));
+}
+
 #[test]
 fn a_quicksave_while_paused_stays_paused_and_a_second_one_replaces_the_first() {
     let mut harness = Harness::new(7);

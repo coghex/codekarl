@@ -250,7 +250,7 @@ pub(crate) fn prepare(
         if let Some(rules) = economy_rules.as_deref() {
             ck_economy::validate_fuel_state(rules, &save.state.economy)
                 .map_err(|e| e.to_string())?;
-            ck_economy::validate_trade_state(rules, &save.state.economy)
+            ck_economy::validate_trade_state_at(rules, &save.state.economy, save.time.hours())
                 .map_err(|e| e.to_string())?;
         }
         let expected = super::stretch::starting(scenario.network.as_ref())
@@ -774,7 +774,8 @@ fn core_over(
         level_validation(state, date)?;
         if let Some(rules) = fuel_rules.as_deref() {
             ck_economy::validate_fuel_state(rules, &state.economy).map_err(|e| e.to_string())?;
-            ck_economy::validate_trade_state(rules, &state.economy).map_err(|e| e.to_string())?;
+            ck_economy::validate_trade_state_at(rules, &state.economy, hours_of(date)?)
+                .map_err(|e| e.to_string())?;
         }
         Ok(())
     })
@@ -936,7 +937,7 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
                 if let Some(rules) = fuel_rules.as_deref() {
                     ck_economy::validate_fuel_state(rules, &state.economy)
                         .map_err(|e| e.to_string())?;
-                    ck_economy::validate_trade_state(rules, &state.economy)
+                    ck_economy::validate_trade_state_at(rules, &state.economy, hours_of(date)?)
                         .map_err(|e| e.to_string())?;
                 }
                 Ok(())
@@ -957,6 +958,13 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
         spawn,
         gameplay: wiring_gameplay,
     }
+}
+
+/// The game hour of a date the state validation is given, for checks of what the clock has already passed.
+fn hours_of(date: Date) -> Result<u64, String> {
+    GameTime::from_date(date)
+        .map(GameTime::hours)
+        .map_err(|_| "the date is outside the calendar".to_owned())
 }
 
 #[expect(
@@ -3535,7 +3543,7 @@ mod stretch_save_tests {
         assert_eq!(
             hashes::rules_hash(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets"))
                 .unwrap(),
-            "648577fde0726879"
+            "8b75301c710f28e7"
         );
         let mut save = source.simulation.save(source.identity.meta(42));
         let weather = source.weather.as_ref().unwrap();
@@ -4744,5 +4752,249 @@ mod switch_replay_tests {
                 branch.label
             );
         }
+    }
+
+    /// CK-432 (trade spec 11b.9 rule 35): an expedition of the peasants' ox-cart leaves at 08:00 on 31 January with its goods, is away at that
+    /// noon, waits at its destination, trades at the noon of the payday of 1 February, starts back and comes home. It is saved before the
+    /// first noon, after it, at the destination and after the trade, and each save is loaded both ways in lockstep with the unbroken game,
+    /// through the next noon and the payday.
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "One replay is saved at named points, each loaded both ways and compared tick by tick."
+    )]
+    fn an_expedition_under_way_saved_and_loaded_follows_the_unbroken_game_through_noon_and_payday()
+    {
+        let rules = Arc::new(rules());
+        let make = scheduler_source(&rules);
+        let start = Date {
+            year: 768,
+            month: 1,
+            day: 31,
+            hour: 8,
+        };
+        let start_hour = GameTime::from_date(start).unwrap();
+        let mut economy = fort(&rules);
+        let good = |id: &str| rules.goods.iter().position(|g| g.id == id).unwrap();
+        // A second place for the trip to go to, of the same make, and an ox-cart of the peasants' own.
+        let mut destination = economy.places[0].clone();
+        destination.id = "elsewhere".to_owned();
+        destination.trade = ck_economy::PlaceTrade::default();
+        economy.places.push(destination);
+        economy.trade.vehicles = 1;
+        economy.places[0].trade.vehicles.push(ck_economy::Vehicle {
+            number: 1,
+            kind: u32::try_from(
+                rules
+                    .vehicles
+                    .iter()
+                    .position(|v| v.id == "ox_cart")
+                    .unwrap(),
+            )
+            .unwrap(),
+            pop: 0,
+            free: true,
+        });
+        economy.places[0].pops[0].stock[good("oats")] += 20;
+        economy.places[0].pops[0].stock[good("barley")] += 10;
+        let leg = |hours: u128| ck_economy::Leg {
+            mode: ck_economy::Mode::Land,
+            terms: Vec::new(),
+            fixed: ck_economy::Hours::new(hours.into(), 1u8.into()),
+            delays: ck_economy::Delays::Along,
+            key: [0; 4],
+            along: Vec::new(),
+            path: Vec::new(),
+        };
+        let goods = rules.goods.len();
+        let mut plan = ck_economy::Plan {
+            destination: 1,
+            out: vec![leg(20)],
+            back: vec![leg(5)],
+            vehicles: vec![1],
+            people: vec![(0, 2)],
+            cargo: vec![0; goods],
+            wanted: vec![0; goods],
+            supplies: vec![0; goods],
+            arrival: None,
+        };
+        plan.cargo[good("barley")] = 10;
+        plan.supplies[good("oats")] = 8;
+        economy
+            .order_trade(&rules, 0, 0, plan, start_hour.hours())
+            .unwrap();
+        let mut unbroken = Simulation::new(
+            start_hour,
+            42,
+            GameState {
+                economy,
+                characters: ck_characters::CharacterStore::default(),
+                stretches: BTreeMap::new(),
+                lows: crate::game::lows::Lows::default(),
+            },
+            make(),
+            apply,
+        );
+        let save = |game: &Simulation<GameState, GameCommand>| {
+            game.save(identity("aa").meta(42)).to_bytes().unwrap()
+        };
+        let end = GameTime::from_date(Date {
+            year: 768,
+            month: 2,
+            day: 2,
+            hour: 0,
+        })
+        .unwrap();
+        let mut branches: Vec<Branch> = Vec::new();
+        let (mut saw_out, mut saw_waiting, mut saw_home) = (false, false, false);
+        while unbroken.time() < end {
+            let now = unbroken.date().unwrap();
+            let named = match (now.month, now.day, now.hour) {
+                (1, 31, 11) => Some("11:00 on the 31st, before the first noon"),
+                (1, 31, 13) => Some("13:00 on the 31st, after the first noon"),
+                (2, 1, 9) => Some("09:00 on the 1st, waiting at the destination"),
+                (2, 1, 13) => Some("13:00 on the 1st, after the trade and the payday"),
+                _ => None,
+            };
+            if let Some(label) = named {
+                let bytes = save(&unbroken);
+                branches.push(Branch {
+                    label: label.to_owned(),
+                    started: started(&rules, &make, &bytes),
+                    playing: playing(&rules, &make, &bytes),
+                });
+            }
+            let errors = unbroken.step().unwrap();
+            assert!(errors.is_empty(), "{errors:?}");
+            let after = unbroken.date().unwrap();
+            for branch in &mut branches {
+                let errors = branch.started.step().unwrap();
+                assert!(errors.is_empty(), "{errors:?}");
+                branch.playing.step_for_tests();
+                let digest = unbroken.digest().unwrap();
+                assert_eq!(
+                    branch.started.digest().unwrap(),
+                    digest,
+                    "{}: a start from the save, at {after:?}",
+                    branch.label
+                );
+                assert_eq!(
+                    branch.playing.digest(),
+                    digest,
+                    "{}: a load during play, at {after:?}",
+                    branch.label
+                );
+            }
+            let trade = &unbroken.state().economy.places[0].trade;
+            if let Some(expedition) = trade.expeditions.first() {
+                saw_out |= expedition.phase == ck_economy::Phase::Outbound;
+                saw_waiting |= expedition.phase == ck_economy::Phase::Waiting;
+            } else if saw_waiting {
+                saw_home = true;
+            }
+        }
+        assert!(saw_out && saw_waiting, "it travelled out and waited");
+        assert!(saw_home, "and came home, unloaded");
+        let economy = &unbroken.state().economy;
+        assert!(economy.places[0].trade.expeditions.is_empty());
+        assert!(economy.places[0].trade.vehicles[0].free);
+        assert_eq!(branches.len(), 4);
+        for branch in &branches {
+            // The saved trade state is the same; what the economy derives for display is not saved, so it is not compared.
+            let loaded = &branch.started.state().economy;
+            assert_eq!(loaded.trade, economy.trade, "{}", branch.label);
+            for (place, expected) in loaded.places.iter().zip(&economy.places) {
+                assert_eq!(place.trade, expected.trade, "{}", branch.label);
+            }
+        }
+    }
+
+    /// CK-432 (review 3): a head on offer is slaughtered at the due hour's tick, and a saved state's clock is the hour whose systems have
+    /// not yet run. A save made at the clock before the due hour and at the due hour itself still holds the head; one made after the
+    /// slaughter ran holds its result. Each loads both ways and follows the unbroken game tick by tick.
+    #[test]
+    fn a_head_on_offer_saved_either_side_of_its_due_hour_loads_both_ways() {
+        let mut shipped = rules();
+        shipped.held_animal_hours = 3;
+        let rules = Arc::new(shipped);
+        let make = scheduler_source(&rules);
+        let start = Date {
+            year: 768,
+            month: 1,
+            day: 10,
+            hour: 8,
+        };
+        let start_hour = GameTime::from_date(start).unwrap();
+        let mut economy = fort(&rules);
+        let goods = rules.goods.len();
+        let species = rules.herd_species.len();
+        let mut origin = vec![0; species];
+        origin[0] = 1;
+        let mut animals = vec![0; species];
+        animals[0] = 1;
+        economy.trade.jobs = 1;
+        economy.places[0].trade.jobs.push(ck_economy::Job {
+            number: 1,
+            pop: 0,
+            kind: ck_economy::JobKind::Held { origin },
+            made: start_hour.hours(),
+            need_goods: vec![0; goods],
+            need_animals: vec![0; species],
+            stock: vec![0; goods],
+            animals,
+            hands: None,
+            given_up: Some(start_hour.hours()),
+        });
+        let mut unbroken = Simulation::new(
+            start_hour,
+            42,
+            GameState {
+                economy,
+                characters: ck_characters::CharacterStore::default(),
+                stretches: BTreeMap::new(),
+                lows: crate::game::lows::Lows::default(),
+            },
+            make(),
+            apply,
+        );
+        let due = start_hour.hours() + rules.held_animal_hours;
+        let mut branches: Vec<Branch> = Vec::new();
+        while unbroken.time().hours() < due + 3 {
+            let clock = unbroken.time().hours();
+            let label = if clock == due - 1 {
+                Some("the clock before the due hour")
+            } else if clock == due {
+                Some("the due hour's clock, its work still to run")
+            } else if clock == due + 1 {
+                Some("the clock after the slaughter ran")
+            } else {
+                None
+            };
+            if let Some(label) = label {
+                let bytes = unbroken.save(identity("aa").meta(42)).to_bytes().unwrap();
+                branches.push(Branch {
+                    label: label.to_owned(),
+                    started: started(&rules, &make, &bytes),
+                    playing: playing(&rules, &make, &bytes),
+                });
+                let on_offer = !unbroken.state().economy.places[0]
+                    .trade
+                    .jobs
+                    .iter()
+                    .all(|job| job.animals.iter().all(|head| *head == 0));
+                assert_eq!(on_offer, clock <= due, "{label}");
+            }
+            let errors = unbroken.step().unwrap();
+            assert!(errors.is_empty(), "{errors:?}");
+            for branch in &mut branches {
+                let errors = branch.started.step().unwrap();
+                assert!(errors.is_empty(), "{errors:?}");
+                branch.playing.step_for_tests();
+                let digest = unbroken.digest().unwrap();
+                assert_eq!(branch.started.digest().unwrap(), digest, "{}", branch.label);
+                assert_eq!(branch.playing.digest(), digest, "{}", branch.label);
+            }
+        }
+        assert_eq!(branches.len(), 3);
     }
 }
