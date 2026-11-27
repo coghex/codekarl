@@ -4,6 +4,7 @@
 //! uses run over [`FakeStack`]; the notice and first-frame records are read from a process logger installed for
 //! these tests (see [`super::logging`]).
 
+use std::process::Command;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -13,10 +14,14 @@ use ck_runtime::RunEnd;
 use ck_window::{Backend, CleanupResult, Presenter, PresenterReport};
 
 use super::fake::{FakeStack, Scene, Script};
-use super::logging::{hold_sink_and_fill_the_queue, scenario};
+use super::logging::{
+    CAPACITY, await_parked, close_sink, counts, hold_sink_and_fill_the_queue, park_the_writer,
+    scenario,
+};
 use super::tests::{at, desc, events, parts, run_over, start_on};
 use super::{BindingNote, TOLERATED_MARKER};
 use super::{VulkanAdapter, VulkanBackend};
+use crate::boundary::supervisor::Supervised;
 use crate::fakes::{End, PresenterScript};
 use crate::lifecycle::ResourceLatch;
 use crate::testing::{Extras, Harness, WINDOW};
@@ -351,55 +356,290 @@ fn end_of(run: &mut Started, within: Duration) -> Option<CleanupResult> {
     run.adapter.poll_end(within)
 }
 
-#[test]
-fn a_notice_that_becomes_available_during_poll_end_is_logged_before_the_handle_is_released_proven()
-{
-    let scenario = scenario();
-    let mut run = started(Script {
+// The two end-of-run notice tests assert an exact count of one record. A refused record is dropped without waiting (design §7.3), and
+// this process's one logger is shared with every test that runs a window (their records fill its queue, and their writes contend for
+// its lock), so each of those tests runs in a process of its own, where the logger it installs has no other writer. Even there the
+// logger's own writer thread looks at the queue under its lock whenever it wakes, which can refuse the one non-waiting attempt, so the
+// case parks that thread first: it is seen blocked inside the held sink, holds no lock of the queue, and the empty queue has room
+// for the notice (CK-444).
+
+/// The case the child runs; absent in the parent and in an ordinary `cargo test`.
+const ISOLATED_CASE: &str = "CK_QUAD_ISOLATED_CASE";
+/// The longest a child may run.
+const ISOLATED_DEADLINE: Duration = Duration::from_secs(60);
+
+/// A script whose presenter has its notice only inside the end observation, and ends as asked.
+fn notice_at_end_script(proven: bool) -> Script {
+    Script {
         notice_at_end: Some("R16G16B16A16_SFLOAT".to_owned()),
+        presenter: if proven {
+            PresenterScript::default()
+        } else {
+            PresenterScript {
+                end: End::Unproven("no cleanup result".to_owned()),
+                ..PresenterScript::default()
+            }
+        },
         ..Script::default()
-    });
+    }
+}
+
+/// What a notice that becomes available inside `poll_end` must do, whether the end is proven or not: it is admitted (the one thing the
+/// logger counts for it) and logged once.
+fn notice_at_end(proven: bool) {
+    let scenario = scenario();
+    let mut run = started(notice_at_end_script(proven));
+    let hold = park_the_writer(&scenario);
+    let before = counts();
+    assert_eq!(
+        before.queued, 0,
+        "the parked writer left an empty queue with room"
+    );
+    let ended = end_of(&mut run, Duration::from_millis(50));
+    if proven {
+        assert_eq!(ended, Some(CleanupResult::Proven));
+    } else {
+        assert!(
+            matches!(ended, Some(CleanupResult::Unproven { .. })),
+            "{ended:?}"
+        );
+    }
+    let after = counts();
+    assert_eq!(
+        (after.queued, after.dropped),
+        (1, before.dropped),
+        "the notice was admitted and nothing was dropped"
+    );
+    drop(hold);
+    let records = scenario.records();
+    assert_eq!(count(&records, NOTICE), 1, "{records:?}");
+    let log = events(&run.log);
+    assert!(log.contains(&"notice taken".to_owned()), "{log:?}");
+    if proven {
+        assert!(
+            at(&log, "notice taken") < at(&log, "presenter dropped"),
+            "the notice was taken before the handle was released: {log:?}"
+        );
+    } else {
+        assert!(
+            !log.contains(&"presenter dropped".to_owned()),
+            "an unproven end keeps the handle: {log:?}"
+        );
+    }
+}
+
+/// The reproduction: the logger full behind its parked writer when `poll_end` takes the notice. The one non-waiting attempt is refused
+/// and the end gives the record up with the handle released all the same: the drop the logger counts is the notice's (nothing else
+/// writes here), and the queue still holds exactly the filler.
+fn notice_given_up_when_the_logger_is_full() {
+    let scenario = scenario();
+    let mut run = started(notice_at_end_script(true));
+    let hold = park_the_writer(&scenario);
+    for _ in 0..CAPACITY {
+        assert_eq!(
+            ck_log::log_within!(
+                ck_log::Level::Info,
+                Instant::now() + Duration::from_secs(5),
+                "test",
+                "filler"
+            ),
+            ck_log::Admission::Queued,
+            "room is made for it by nothing but the queue's own capacity"
+        );
+    }
+    let full = counts();
+    assert_eq!(full.queued, CAPACITY);
     assert_eq!(
         end_of(&mut run, Duration::from_millis(50)),
         Some(CleanupResult::Proven)
     );
+    let after = counts();
+    assert_eq!(after.queued, CAPACITY, "the notice was not admitted");
+    assert_eq!(after.dropped, full.dropped + 1, "the notice was the drop");
+    drop(hold);
     let records = scenario.records();
-    assert_eq!(count(&records, NOTICE), 1, "{records:?}");
+    assert_eq!(
+        count(&records, NOTICE),
+        0,
+        "dropped, not delayed: {records:?}"
+    );
     let log = events(&run.log);
     assert!(
         at(&log, "notice taken") < at(&log, "presenter dropped"),
-        "the notice was taken before the handle was released: {log:?}"
+        "the handle was released all the same: {log:?}"
     );
+}
+
+/// Traffic between the sink closing and the marker: a record of someone else's was taken by the writer, which parked on it, and the
+/// ordinary queue then filled behind it, so the marker cannot be admitted. The shared set-up must recognise the parked writer and go on
+/// (it used to wait out its marker and panic with the sink held).
+fn the_writer_parked_on_traffic_before_the_marker() {
+    let scenario = scenario();
+    let hold = close_sink();
+    // A record of someone else's, admitted with a deadline (the writer may be looking at the queue as the sink closes).
+    assert_eq!(
+        ck_log::log_within!(
+            ck_log::Level::Info,
+            Instant::now() + Duration::from_secs(5),
+            "test",
+            "someone else's"
+        ),
+        ck_log::Admission::Queued
+    );
+    await_parked(Duration::from_secs(10));
+    for _ in 0..CAPACITY {
+        assert_eq!(
+            ck_log::try_log!(ck_log::Level::Info, "test", "filler"),
+            ck_log::Admission::Queued,
+            "no lock is held against it"
+        );
+    }
+    let parked = park_the_writer(&scenario);
+    assert_eq!(counts().queued, CAPACITY, "the queue is as it was left");
+    drop((parked, hold));
+}
+
+/// The handshake on a clean logger: the writer is parked by one admitted marker, which the writer then holds in its batch, so the queue
+/// is empty and nothing was dropped (a dropped marker would leave a drop summary for the writer to park on, and its retry queued).
+fn the_writer_parks_on_one_admitted_marker_with_nothing_dropped() {
+    let scenario = scenario();
+    let before = counts();
+    let hold = park_the_writer(&scenario);
+    let after = counts();
+    assert_eq!(
+        (after.queued, after.dropped),
+        (0, before.dropped),
+        "an empty queue and no drop behind the parked writer"
+    );
+    drop(hold);
+}
+
+/// Full means that an ordinary record willing to wait for room is refused at its deadline, not that the logger's count of queued records
+/// has reached the capacity (it counts a reserved error too): seven ordinary records leave room, eight do not.
+fn full_is_an_ordinary_record_refused_after_waiting() {
+    let scenario = scenario();
+    let hold = park_the_writer(&scenario);
+    let wait = || Instant::now() + Duration::from_millis(20);
+    for _ in 0..CAPACITY - 1 {
+        assert_eq!(
+            ck_log::log_within!(ck_log::Level::Info, wait(), "test", "filler"),
+            ck_log::Admission::Queued
+        );
+    }
+    assert_eq!(counts().queued, CAPACITY - 1);
+    assert_eq!(
+        ck_log::log_within!(ck_log::Level::Warn, wait(), "test", "probe"),
+        ck_log::Admission::Queued,
+        "with seven there is room for a record that waits for it"
+    );
+    assert_eq!(
+        ck_log::log_within!(ck_log::Level::Warn, wait(), "test", "probe"),
+        ck_log::Admission::Dropped,
+        "with eight there is none, however long it waits"
+    );
+    assert_eq!(counts().queued, CAPACITY, "and the logger counts the eight");
+    drop(hold);
+}
+
+/// The child's entry: a no-op in an ordinary test run, the whole case when the parent asks for one.
+#[test]
+fn isolated_notice_child() {
+    let Some(case) = std::env::var_os(ISOLATED_CASE) else {
+        return;
+    };
+    match case.to_string_lossy().as_ref() {
+        "proven" => notice_at_end(true),
+        "unproven" => notice_at_end(false),
+        "full" => notice_given_up_when_the_logger_is_full(),
+        "traffic" => the_writer_parked_on_traffic_before_the_marker(),
+        "clean" => the_writer_parks_on_one_admitted_marker_with_nothing_dropped(),
+        "ordinary" => full_is_an_ordinary_record_refused_after_waiting(),
+        "a_saturated_logger_in_this_process_does_not_reach_the_notice_cases_case" => a_saturated_logger_in_this_process_does_not_reach_the_notice_cases_case(),
+        "a_saturated_logger_refuses_the_record_which_is_retried_while_the_run_is_active_case" => a_saturated_logger_refuses_the_record_which_is_retried_while_the_run_is_active_case(),
+        "a_saturated_logger_makes_an_end_path_give_the_record_up_without_waiting_case" => a_saturated_logger_makes_an_end_path_give_the_record_up_without_waiting_case(),
+        "a_stalled_logger_costs_the_end_drain_one_bounded_wait_not_one_per_record_case" => a_stalled_logger_costs_the_end_drain_one_bounded_wait_not_one_per_record_case(),
+        "the_end_drain_waits_no_longer_than_the_callers_remaining_budget_case" => the_end_drain_waits_no_longer_than_the_callers_remaining_budget_case(),
+        "a_refused_destruction_retains_without_a_second_wait_beyond_the_callers_budget_case" => a_refused_destruction_retains_without_a_second_wait_beyond_the_callers_budget_case(),
+        "the_loops_teardown_shares_one_deadline_between_the_destruction_drain_and_the_retention_case" => the_loops_teardown_shares_one_deadline_between_the_destruction_drain_and_the_retention_case(),
+        "a_render_record_outlasts_a_moments_contention_where_try_log_drops_and_counts_it_case" => a_render_record_outlasts_a_moments_contention_where_try_log_drops_and_counts_it_case(),
+        "a_render_record_still_drops_and_counts_when_the_logger_stays_held_past_its_bound_case" => a_render_record_still_drops_and_counts_when_the_logger_stays_held_past_its_bound_case(),
+        "an_end_paths_announcement_takes_no_wait_even_when_the_logger_is_saturated_case" => an_end_paths_announcement_takes_no_wait_even_when_the_logger_is_saturated_case(),
+        "a_late_report_after_the_stop_request_takes_no_wait_even_when_the_logger_is_saturated_case" => a_late_report_after_the_stop_request_takes_no_wait_even_when_the_logger_is_saturated_case(),
+        other => panic!("no such notice case: {other}"),
+    }
+}
+
+/// Runs the notice case `case` in a fresh child of this executable, under the supervisor, and requires that it ran
+/// (a filter that selects no test also exits 0) and passed.
+fn in_a_process_of_its_own(case: &str) {
+    let mut command = Command::new(std::env::current_exe().expect("this executable"));
+    command
+        .args([
+            "--exact",
+            "vulkan::quad_tests::isolated_notice_child",
+            "--test-threads=1",
+        ])
+        .env(ISOLATED_CASE, case);
+    let seen = Supervised::spawn(command, ISOLATED_DEADLINE)
+        .and_then(Supervised::finish)
+        .unwrap_or_else(|error| panic!("{case}: {error}"));
+    assert_eq!(seen.code, Some(0), "{case}: {}", seen.stdout);
+    assert!(
+        seen.stdout.contains("test result: ok. 1 passed;"),
+        "{case}: the child ran its case: {}",
+        seen.stdout
+    );
+}
+
+#[test]
+fn a_notice_that_becomes_available_during_poll_end_is_logged_before_the_handle_is_released_proven()
+{
+    in_a_process_of_its_own("proven");
 }
 
 #[test]
 fn a_notice_that_becomes_available_during_poll_end_is_logged_before_the_handle_is_retained_unproven()
  {
+    in_a_process_of_its_own("unproven");
+}
+
+/// CK-444, the reproduction: a logger that is full when `poll_end` takes the notice refuses it, the end gives it up counted, and the
+/// handle is released all the same. This is what the two tests above lost when another test of the process held the queue full at that
+/// moment; here the case holds it, in a process of its own, so it happens every time and the one new drop is the notice's.
+#[test]
+fn a_saturated_logger_makes_poll_end_give_up_the_notice_it_takes_at_the_end() {
+    in_a_process_of_its_own("full");
+}
+
+/// The shared set-up, in a process of its own: the writer parked on someone else's record before the marker, and what "full" means.
+#[test]
+fn the_shared_pressure_set_up_parks_a_writer_that_traffic_parked_and_calls_a_queue_full_by_its_refusals()
+ {
+    in_a_process_of_its_own("traffic");
+    in_a_process_of_its_own("clean");
+    in_a_process_of_its_own("ordinary");
+}
+
+/// The logger of this process full and held shut, as another test's records leave it, changes nothing for the cases that have a
+/// process of their own.
+fn a_saturated_logger_in_this_process_does_not_reach_the_notice_cases_case() {
     let scenario = scenario();
-    let mut run = started(Script {
-        notice_at_end: Some("R16G16B16A16_SFLOAT".to_owned()),
-        presenter: PresenterScript {
-            end: End::Unproven("no cleanup result".to_owned()),
-            ..PresenterScript::default()
-        },
-        ..Script::default()
-    });
-    assert!(matches!(
-        end_of(&mut run, Duration::from_millis(50)),
-        Some(CleanupResult::Unproven { .. })
-    ));
-    let records = scenario.records();
-    assert_eq!(count(&records, NOTICE), 1, "{records:?}");
-    let log = events(&run.log);
-    assert!(log.contains(&"notice taken".to_owned()), "{log:?}");
-    assert!(
-        !log.contains(&"presenter dropped".to_owned()),
-        "an unproven end keeps the handle: {log:?}"
+    let _hold = hold_sink_and_fill_the_queue(&scenario);
+    in_a_process_of_its_own("proven");
+    in_a_process_of_its_own("unproven");
+    in_a_process_of_its_own("full");
+}
+
+/// The logger of this process full and held shut, as another test's records leave it, changes nothing for the cases that have a
+/// process of their own.
+#[test]
+fn a_saturated_logger_in_this_process_does_not_reach_the_notice_cases() {
+    in_a_process_of_its_own(
+        "a_saturated_logger_in_this_process_does_not_reach_the_notice_cases_case",
     );
 }
 
-#[test]
-fn a_saturated_logger_refuses_the_record_which_is_retried_while_the_run_is_active() {
+fn a_saturated_logger_refuses_the_record_which_is_retried_while_the_run_is_active_case() {
     let scenario = scenario();
     let mut run = started(with_notice());
     {
@@ -429,7 +669,13 @@ fn a_saturated_logger_refuses_the_record_which_is_retried_while_the_run_is_activ
 }
 
 #[test]
-fn a_saturated_logger_makes_an_end_path_give_the_record_up_without_waiting() {
+fn a_saturated_logger_refuses_the_record_which_is_retried_while_the_run_is_active() {
+    in_a_process_of_its_own(
+        "a_saturated_logger_refuses_the_record_which_is_retried_while_the_run_is_active_case",
+    );
+}
+
+fn a_saturated_logger_makes_an_end_path_give_the_record_up_without_waiting_case() {
     let scenario = scenario();
     let mut run = started(with_notice());
     let began = Instant::now();
@@ -453,6 +699,13 @@ fn a_saturated_logger_makes_an_end_path_give_the_record_up_without_waiting() {
         count(&records, NOTICE),
         0,
         "the record was dropped, not delayed: {records:?}"
+    );
+}
+
+#[test]
+fn a_saturated_logger_makes_an_end_path_give_the_record_up_without_waiting() {
+    in_a_process_of_its_own(
+        "a_saturated_logger_makes_an_end_path_give_the_record_up_without_waiting_case",
     );
 }
 
@@ -708,8 +961,7 @@ fn the_tolerated_entry_is_one_marked_info_record_every_other_is_a_warn_record_an
 /// Many validation messages are pending while the logger is stalled: the end drain costs one bounded wait for the whole batch (the
 /// control path's deadline, taken once), not one wait per record, and the run still ends `Proven`. Negative control: waiting per
 /// record would take 50 x 100 ms.
-#[test]
-fn a_stalled_logger_costs_the_end_drain_one_bounded_wait_not_one_per_record() {
+fn a_stalled_logger_costs_the_end_drain_one_bounded_wait_not_one_per_record_case() {
     let scenario = scenario();
     let _hold = hold_sink_and_fill_the_queue(&scenario);
     let mut run = started(Script {
@@ -728,10 +980,19 @@ fn a_stalled_logger_costs_the_end_drain_one_bounded_wait_not_one_per_record() {
     );
 }
 
+/// Many validation messages are pending while the logger is stalled: the end drain costs one bounded wait for the whole batch (the
+/// control path's deadline, taken once), not one wait per record, and the run still ends `Proven`. Negative control: waiting per
+/// record would take 50 x 100 ms.
+#[test]
+fn a_stalled_logger_costs_the_end_drain_one_bounded_wait_not_one_per_record() {
+    in_a_process_of_its_own(
+        "a_stalled_logger_costs_the_end_drain_one_bounded_wait_not_one_per_record_case",
+    );
+}
+
 /// The end drains come out of the caller's own budget (`poll_end`'s `within`), never on top of it: with none left (`within` zero) and
 /// the sink shut, the drain adds no wait at all (the control path's 100 ms would otherwise be added).
-#[test]
-fn the_end_drain_waits_no_longer_than_the_callers_remaining_budget() {
+fn the_end_drain_waits_no_longer_than_the_callers_remaining_budget_case() {
     let scenario = scenario();
     let _hold = hold_sink_and_fill_the_queue(&scenario);
     let mut run = started(Script {
@@ -750,10 +1011,16 @@ fn the_end_drain_waits_no_longer_than_the_callers_remaining_budget() {
     );
 }
 
+/// The end drains come out of the caller's own budget (`poll_end`'s `within`), never on top of it: with none left (`within` zero) and
+/// the sink shut, the drain adds no wait at all (the control path's 100 ms would otherwise be added).
+#[test]
+fn the_end_drain_waits_no_longer_than_the_callers_remaining_budget() {
+    in_a_process_of_its_own("the_end_drain_waits_no_longer_than_the_callers_remaining_budget_case");
+}
+
 /// A refused destruction retains the instance, so a late callback can still add entries between the drain after the destruction and
 /// the retention's own: that second closing drain is under the same caller budget, not a fresh wait after it.
-#[test]
-fn a_refused_destruction_retains_without_a_second_wait_beyond_the_callers_budget() {
+fn a_refused_destruction_retains_without_a_second_wait_beyond_the_callers_budget_case() {
     let scenario = scenario();
     let _hold = hold_sink_and_fill_the_queue(&scenario);
     let mut run = started(Script {
@@ -781,10 +1048,18 @@ fn a_refused_destruction_retains_without_a_second_wait_beyond_the_callers_budget
     );
 }
 
+/// A refused destruction retains the instance, so a late callback can still add entries between the drain after the destruction and
+/// the retention's own: that second closing drain is under the same caller budget, not a fresh wait after it.
+#[test]
+fn a_refused_destruction_retains_without_a_second_wait_beyond_the_callers_budget() {
+    in_a_process_of_its_own(
+        "a_refused_destruction_retains_without_a_second_wait_beyond_the_callers_budget_case",
+    );
+}
+
 /// The loop's teardown has no caller budget: its destruction drain and, on a refusal, the retention's share one control-path deadline
 /// (one wait of about 100 ms), not one each.
-#[test]
-fn the_loops_teardown_shares_one_deadline_between_the_destruction_drain_and_the_retention() {
+fn the_loops_teardown_shares_one_deadline_between_the_destruction_drain_and_the_retention_case() {
     let scenario = scenario();
     let _hold = hold_sink_and_fill_the_queue(&scenario);
     let (run, _log) = run_over(Script {
@@ -812,6 +1087,15 @@ fn the_loops_teardown_shares_one_deadline_between_the_destruction_drain_and_the_
     assert!(
         took < Duration::from_millis(160),
         "one shared deadline, not one wait for each drain: {took:?}"
+    );
+}
+
+/// The loop's teardown has no caller budget: its destruction drain and, on a refusal, the retention's share one control-path deadline
+/// (one wait of about 100 ms), not one each.
+#[test]
+fn the_loops_teardown_shares_one_deadline_between_the_destruction_drain_and_the_retention() {
+    in_a_process_of_its_own(
+        "the_loops_teardown_shares_one_deadline_between_the_destruction_drain_and_the_retention_case",
     );
 }
 
@@ -1042,8 +1326,7 @@ fn dropped_so_far() -> u64 {
 /// witnesses are structural: the record is `Queued`, exactly one wait was taken, and the process-wide drop counter includes the
 /// negative-control `try_log` drop. (Proving that the emitter is blocked *inside* `log_within` at the moment of the release would
 /// need a hook inside `ck-log`, which is out of scope.)
-#[test]
-fn a_render_record_outlasts_a_moments_contention_where_try_log_drops_and_counts_it() {
+fn a_render_record_outlasts_a_moments_contention_where_try_log_drops_and_counts_it_case() {
     use crate::lifecycle::wait_seam::waits_taken;
     let scenario = scenario();
     let hold = hold_sink_and_fill_the_queue(&scenario);
@@ -1082,11 +1365,27 @@ fn a_render_record_outlasts_a_moments_contention_where_try_log_drops_and_counts_
     assert_eq!(count(&records, "ck220 try"), 0, "{records:?}");
 }
 
+/// The logger refuses for a moment (its queue is full behind a held sink) and then makes room, as when the writer holds the queue
+/// for a moment under load: a render record that may wait is admitted and written, and nothing more is counted dropped. This is the
+/// condition that ended a correct run with status 3 (CK-220): a record sent through `try_log` is dropped and counted at once.
+/// Negative control: the same moment, with the record on an end path (`try_log`), drops and counts it, and takes no wait.
+///
+/// No sleep and no clock. The seam reports when the emitter enters the waiting branch (it fires when the logger formats the record,
+/// just before its first admission attempt); the test, holding the sink, waits for that event and only then releases the sink. The
+/// witnesses are structural: the record is `Queued`, exactly one wait was taken, and the process-wide drop counter includes the
+/// negative-control `try_log` drop. (Proving that the emitter is blocked *inside* `log_within` at the moment of the release would
+/// need a hook inside `ck-log`, which is out of scope.)
+#[test]
+fn a_render_record_outlasts_a_moments_contention_where_try_log_drops_and_counts_it() {
+    in_a_process_of_its_own(
+        "a_render_record_outlasts_a_moments_contention_where_try_log_drops_and_counts_it_case",
+    );
+}
+
 /// A writer that stays held past the bound still drops the record and the logger counts it: a genuinely stalled logger still ends the
 /// run with status 3. The bound here is already past (no wait is left to spend), so the record is refused at once; and with a bound
 /// that is still ahead, the held logger is what ends the wait, by the deadline, with the drop counted.
-#[test]
-fn a_render_record_still_drops_and_counts_when_the_logger_stays_held_past_its_bound() {
+fn a_render_record_still_drops_and_counts_when_the_logger_stays_held_past_its_bound_case() {
     use crate::lifecycle::wait_seam::waits_taken;
     let scenario = scenario();
     let _hold = hold_sink_and_fill_the_queue(&scenario);
@@ -1118,6 +1417,16 @@ fn a_render_record_still_drops_and_counts_when_the_logger_stays_held_past_its_bo
     assert!(
         dropped_so_far() > before + 1,
         "the second drop was counted too"
+    );
+}
+
+/// A writer that stays held past the bound still drops the record and the logger counts it: a genuinely stalled logger still ends the
+/// run with status 3. The bound here is already past (no wait is left to spend), so the record is refused at once; and with a bound
+/// that is still ahead, the held logger is what ends the wait, by the deadline, with the drop counted.
+#[test]
+fn a_render_record_still_drops_and_counts_when_the_logger_stays_held_past_its_bound() {
+    in_a_process_of_its_own(
+        "a_render_record_still_drops_and_counts_when_the_logger_stays_held_past_its_bound_case",
     );
 }
 
@@ -1157,8 +1466,7 @@ fn the_progress_bound_is_a_few_milliseconds_and_clamps_to_a_shutdown_deadline() 
 /// An end path's announcement never takes the wait, whatever the logger's state: with the sink held and validation messages pending,
 /// `announce(true)` (what `request_stop` and `poll_end` call) takes no wait. Structural, no clock: the waiting branch's count does not
 /// move; the positive control is the same call off the end paths, which takes it.
-#[test]
-fn an_end_paths_announcement_takes_no_wait_even_when_the_logger_is_saturated() {
+fn an_end_paths_announcement_takes_no_wait_even_when_the_logger_is_saturated_case() {
     use crate::lifecycle::wait_seam::waits_taken;
     let scenario = scenario();
     let _hold = hold_sink_and_fill_the_queue(&scenario);
@@ -1181,11 +1489,20 @@ fn an_end_paths_announcement_takes_no_wait_even_when_the_logger_is_saturated() {
     );
 }
 
+/// An end path's announcement never takes the wait, whatever the logger's state: with the sink held and validation messages pending,
+/// `announce(true)` (what `request_stop` and `poll_end` call) takes no wait. Structural, no clock: the waiting branch's count does not
+/// move; the positive control is the same call off the end paths, which takes it.
+#[test]
+fn an_end_paths_announcement_takes_no_wait_even_when_the_logger_is_saturated() {
+    in_a_process_of_its_own(
+        "an_end_paths_announcement_takes_no_wait_even_when_the_logger_is_saturated_case",
+    );
+}
+
 /// Once the stop was requested, the teardown's late `take_report` calls (which `ck-window` makes after `request_stop` and `poll_end`)
 /// take no wait either, even over a saturated logger with validation messages pending and the first-frame record due. Before the
 /// stop request the same calls do take it.
-#[test]
-fn a_late_report_after_the_stop_request_takes_no_wait_even_when_the_logger_is_saturated() {
+fn a_late_report_after_the_stop_request_takes_no_wait_even_when_the_logger_is_saturated_case() {
     use crate::lifecycle::wait_seam::waits_taken;
     let scenario = scenario();
     let _hold = hold_sink_and_fill_the_queue(&scenario);
@@ -1208,4 +1525,14 @@ fn a_late_report_after_the_stop_request_takes_no_wait_even_when_the_logger_is_sa
         let _ = run.adapter.take_report();
     }
     assert_eq!(waits_taken(), waits, "no late report call took a wait");
+}
+
+/// Once the stop was requested, the teardown's late `take_report` calls (which `ck-window` makes after `request_stop` and `poll_end`)
+/// take no wait either, even over a saturated logger with validation messages pending and the first-frame record due. Before the
+/// stop request the same calls do take it.
+#[test]
+fn a_late_report_after_the_stop_request_takes_no_wait_even_when_the_logger_is_saturated() {
+    in_a_process_of_its_own(
+        "a_late_report_after_the_stop_request_takes_no_wait_even_when_the_logger_is_saturated_case",
+    );
 }
