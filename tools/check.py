@@ -1628,6 +1628,7 @@ STEPS = [
             "assets/game/lifecycle/",
             # shipped_economy_and_ireland_start_data_are_strictly_valid loads these rules and start.
             "assets/game/economy.toml",
+            "assets/game/weather.toml",  # CK-446: the bog-only fuel witness reads hourly weather rules.
             "assets/scenarios/ireland-768/economy.toml",
         ),
     ),

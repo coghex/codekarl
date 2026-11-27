@@ -165,6 +165,8 @@ fn pop_type(id: &str, fuel_need_milli_day: u64) -> PopType {
         niceties_expectation_pm: 0,
         luxuries_expectation_pm: 0,
         fuel_need_milli_day,
+        fuel_heat_micro_per_degree_day: 0,
+        fuel_comfort_niceties_pm: 0,
     }
 }
 

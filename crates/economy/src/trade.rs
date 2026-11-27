@@ -540,6 +540,7 @@ fn take(
     let mut head = vec![0_u64; animals.len()];
     for (good, lack) in goods.iter().enumerate() {
         let moved = (*lack).min(place.pops[pop].stock[good]);
+        super::fuel::debit_comfort_first(rules, &mut place.pops[pop], good, moved);
         place.pops[pop].stock[good] -= moved;
         got[good] += moved;
     }
@@ -950,6 +951,7 @@ pub(crate) fn wage_goods(
 
 /// Takes `units` of a good from a pop: its store first, then its storehouse account.
 pub(crate) fn pay_from(
+    rules: &Rules,
     place: &mut PlaceState,
     pop: usize,
     good: usize,
@@ -975,6 +977,7 @@ pub(crate) fn pay_from(
             .ok_or_else(|| missing_data("trade.wage".to_owned(), "the payer holds too little"))?;
         building.stock[good] -= from_account;
     }
+    super::fuel::debit_comfort_first(rules, &mut place.pops[pop], good, from_store);
     place.pops[pop].stock[good] -= from_store;
     Ok(())
 }
@@ -1030,7 +1033,7 @@ fn try_start(
             let Some((good, units)) = wage_goods(rules, place, trader, pop, wage)? else {
                 continue;
             };
-            pay_from(place, trader, good, units)?;
+            pay_from(rules, place, trader, good, units)?;
             let unaccepted = receive_pop(rules, &mut place.pops[pop], good, units)?;
             if unaccepted != 0 {
                 return Err(missing_data(

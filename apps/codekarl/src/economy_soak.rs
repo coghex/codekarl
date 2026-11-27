@@ -842,7 +842,7 @@ mod tests {
             [
                 "building0.holdings=21035",
                 "building1.demesne=58825",
-                "building2.farm=10218",
+                "building2.farm=13090",
                 "building3.storehouse=0",
             ],
             "Armagh day-1 posted-wage golden values"
@@ -856,7 +856,7 @@ mod tests {
         assert!(row_fields[17].contains("oats=95000"));
         assert_eq!(
             row_fields[18],
-            "apples=83;dairy=1426;ale=373;mead=38;linen=127;hardwood=1500"
+            "apples=83;dairy=1394;ale=373;mead=38;linen=111;hardwood=3750"
         );
         assert!(row_fields[19].contains("pop0:"));
         let herds = row_fields[20].split(';').collect::<Vec<_>>();

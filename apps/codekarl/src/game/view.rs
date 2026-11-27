@@ -980,6 +980,10 @@ mod tests {
             prepared_m2: 24_200,
             development_pm: 1000,
             price_drift_carries: vec![0; rules.goods.len()],
+            dh_months: vec![0; 12],
+            dh_month_days: vec![31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31],
+            dh_month_now: 0,
+            dh_days_now: 0,
             last_market_orders: None,
             trade: PlaceTrade::default(),
         }

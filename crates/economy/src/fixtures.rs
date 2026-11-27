@@ -105,6 +105,10 @@ pub fn place(rules: &Rules, pops: usize) -> PlaceState {
         prepared_m2: 0,
         development_pm: 0,
         price_drift_carries: vec![0; goods],
+        dh_months: vec![0; 12],
+        dh_month_days: vec![31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31],
+        dh_month_now: 0,
+        dh_days_now: 0,
         last_market_orders: None,
         counters: CounterBuckets::for_place(goods),
         trade: PlaceTrade::default(),
@@ -149,7 +153,7 @@ pub fn settle_the_rest(rules: &Rules, place: &mut PlaceState, set: &[&str]) {
             }
         }
         if !fuel_is_set {
-            let heat = fuel::fuel_daily_need(rules, &place.pops[pop]).unwrap() * 240;
+            let heat = fuel::fuel_year_target(rules, place, &place.pops[pop]).unwrap();
             let (index, supply) = rules
                 .goods
                 .iter()

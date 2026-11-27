@@ -429,6 +429,7 @@ class Levels(CheckFixture):
                 "assets/game/events/",
                 "assets/game/lifecycle/",
                 "assets/game/economy.toml",
+                "assets/game/weather.toml",
                 "assets/scenarios/ireland-768/economy.toml",
             ),
         )

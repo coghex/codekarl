@@ -465,6 +465,9 @@ fn the_rules_hash_changes_when_a_building_footprint_changes() {
     let before = hashes::rules_hash(&dir.0).unwrap();
     fs::write(&game_rules, "[footprint_m2]\nfarm = 2001\n").unwrap();
     assert_ne!(hashes::rules_hash(&dir.0).unwrap(), before);
+    let with_weather = hashes::rules_hash(&dir.0).unwrap();
+    fs::remove_file(dir.0.join("game/weather.toml")).unwrap();
+    assert_ne!(hashes::rules_hash(&dir.0).unwrap(), with_weather);
 }
 
 fn write_genetics(root: &Path, haplogroups: &str, traits: &str) {

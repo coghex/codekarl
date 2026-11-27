@@ -12,7 +12,9 @@ held_animal_hours = 720
 # Near-term shares of the 240-day food, comfort and fuel targets.
 food_near_pm = 125
 comfort_near_pm = 125
-fuel_near_pm = 125
+fuel_near_pm = 83
+fuel_heat_base_tenths = 140
+comfort_heat_pm = 500
 price_k_pm = 500
 method_switch_margin_pm = 200
 swap_loss_limit_pm = 100
@@ -410,7 +412,7 @@ necessities_centi=0
 niceties_centi=0
 luxuries_centi=0
 base_price=10
-pop_limit_milli=30000
+pop_limit_milli=45000
 [[goods]]
 id="peat"
 tags=["fuel"]
@@ -424,7 +426,7 @@ necessities_centi=0
 niceties_centi=0
 luxuries_centi=0
 base_price=6
-pop_limit_milli=40000
+pop_limit_milli=60000
 
 [[goods]]
 id="horses"
@@ -441,6 +443,8 @@ pop_limit_milli=0
 
 [[pop_types]]
 fuel_need_milli_day=20
+fuel_heat_micro_per_degree_day=9400
+fuel_comfort_niceties_pm=50
 id="peasant"
 dependent_pm=400
 births_pm_year=67
@@ -451,6 +455,8 @@ niceties_expectation_pm=0
 luxuries_expectation_pm=0
 [[pop_types]]
 fuel_need_milli_day=20
+fuel_heat_micro_per_degree_day=9400
+fuel_comfort_niceties_pm=50
 id="labourer"
 dependent_pm=400
 births_pm_year=67
@@ -461,6 +467,8 @@ niceties_expectation_pm=300
 luxuries_expectation_pm=0
 [[pop_types]]
 fuel_need_milli_day=20
+fuel_heat_micro_per_degree_day=9400
+fuel_comfort_niceties_pm=50
 id="monk"
 dependent_pm=120
 births_pm_year=0
@@ -473,6 +481,8 @@ luxuries_expectation_pm=100
 # Source: p1-noble-economy-r1.toml (ck-designer-1, 2026-11-19), approved by the owner (r190).
 [[pop_types]]
 fuel_need_milli_day=20
+fuel_heat_micro_per_degree_day=9400
+fuel_comfort_niceties_pm=50
 id="noble"
 dependent_pm=400
 births_pm_year=67

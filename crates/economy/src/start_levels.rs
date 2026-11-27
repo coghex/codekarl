@@ -63,30 +63,26 @@ fn need_index(serves: &str) -> Option<usize> {
 impl StartDemand {
     /// The needs and orders of `pops`, the people the start counts when it places levels.
     pub(super) fn new(rules: &Rules, pops: &[PopState]) -> Result<Self, DataError> {
+        Self::with_fuel_climate(rules, pops, 365, 0)
+    }
+
+    pub(super) fn with_fuel_climate(
+        rules: &Rules,
+        pops: &[PopState],
+        days: u64,
+        degree_hours: u64,
+    ) -> Result<Self, DataError> {
         let mut need = [0_u128; 2];
         let mut order = vec![0_u128; rules.goods.len()];
         for pop in pops {
             let people = u128::from(pop.workers)
                 .checked_add(u128::from(pop.dependents))
                 .ok_or_else(|| missing_data("projection".to_owned(), "population sum overflow"))?;
-            let fuel_milli_day = rules
-                .pop_types
-                .iter()
-                .find(|item| item.id == pop.kind)
-                .ok_or_else(|| {
-                    missing_data(
-                        format!("pop_types.{}", pop.kind),
-                        "population type is missing",
-                    )
-                })?
-                .fuel_need_milli_day;
             let year_days = YEAR_DAYS;
             let food = people
                 .checked_mul(year_days * 100)
                 .ok_or_else(|| missing_data("projection".to_owned(), "food need overflow"))?;
-            let fuel = people
-                .checked_mul(year_days * u128::from(fuel_milli_day))
-                .ok_or_else(|| missing_data("projection".to_owned(), "fuel need overflow"))?;
+            let fuel = super::fuel::fuel_year_need(rules, pop, days, degree_hours)?;
             need[FOOD] = need[FOOD]
                 .checked_add(food)
                 .ok_or_else(|| missing_data("projection".to_owned(), "food need sum overflow"))?;

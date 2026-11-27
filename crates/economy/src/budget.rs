@@ -9,6 +9,7 @@ use crate::{
 pub(super) enum Destination {
     Household(usize),
     Fuel,
+    ComfortFuel,
     Herd {
         building: usize,
         species: usize,
@@ -111,6 +112,7 @@ pub(super) fn route<F>(
     limit: u128,
     household_room: u128,
     building_payment: bool,
+    fuel_round: u8,
     mut room: F,
 ) -> Result<Route, DataError>
 where
@@ -120,7 +122,7 @@ where
     let mut deliveries = Vec::new();
     let mut left = limit;
     let mut house = household_room;
-    let mut fuel_done = false;
+    let mut fuel_done = [false; 2];
     for tier in 0..6 {
         for index in 0..rows.len() {
             if left == 0 {
@@ -130,17 +132,18 @@ where
             if rows[index].tier != tier {
                 continue;
             }
-            if destination == Destination::Fuel {
-                if fuel_done || supply == 0 {
+            if matches!(destination, Destination::Fuel | Destination::ComfortFuel) {
+                if fuel_round == 1 && destination == Destination::ComfortFuel {
                     continue;
                 }
-                fuel_done = true;
+                let fuel_kind = usize::from(destination == Destination::ComfortFuel);
+                if fuel_done[fuel_kind] || supply == 0 {
+                    continue;
+                }
+                fuel_done[fuel_kind] = true;
                 let mut heat = 0_u128;
                 let mut value = 0_u128;
-                for row in rows
-                    .iter()
-                    .filter(|row| row.destination == Destination::Fuel)
-                {
+                for row in rows.iter().filter(|row| row.destination == destination) {
                     heat = heat.checked_add(row.funded).ok_or_else(overflow)?;
                     value = value.checked_add(row.funded_value).ok_or_else(overflow)?;
                 }
@@ -153,10 +156,7 @@ where
                     .checked_mul(u128::from(base))
                     .and_then(|v| v.checked_mul(1000))
                     .ok_or_else(overflow)?;
-                for row in rows
-                    .iter_mut()
-                    .filter(|row| row.destination == Destination::Fuel)
-                {
+                for row in rows.iter_mut().filter(|row| row.destination == destination) {
                     let h = row.funded.min(heat_spent);
                     row.funded -= h;
                     heat_spent -= h;
@@ -164,7 +164,7 @@ where
                     row.funded_value -= v;
                     value_spent -= v;
                 }
-                deliveries.push((Destination::Fuel, take));
+                deliveries.push((destination, take));
                 left -= take;
                 house -= take;
                 continue;
@@ -174,7 +174,7 @@ where
                 Destination::Herd { good: g, .. } | Destination::Job { good: g, .. } => {
                     g == good && !building_payment
                 }
-                Destination::Fuel => false,
+                Destination::Fuel | Destination::ComfortFuel => false,
             };
             if !matching {
                 continue;
@@ -252,14 +252,14 @@ fn surplus_value(
         .workers
         .checked_add(pop.dependents)
         .ok_or_else(overflow)?;
-    let target_heat = fuel::fuel_daily_need(rules, pop)?
-        .checked_mul(240)
-        .ok_or_else(overflow)?;
+    let target_heat = fuel::fuel_year_target(rules, place, pop)?;
     let fuel_spare = fuel::fuel_spare(
         rules,
         &pop.stock,
         pop.consumption.hearth_milli,
-        target_heat,
+        target_heat
+            .checked_add(u128::from(pop.consumption.comfort_milli))
+            .ok_or_else(overflow)?,
         prices,
     )?;
     let live = live_species(rules);
@@ -320,10 +320,9 @@ pub(super) fn orders(
             .workers
             .checked_add(pop.dependents)
             .ok_or_else(overflow)?;
-        let heat_target = fuel::fuel_daily_need(rules, pop)?
-            .checked_mul(240)
-            .ok_or_else(overflow)?;
-        let heat = fuel::fuel_holding(rules, &pop.stock, pop.consumption.hearth_milli)?;
+        let heat_target = fuel::fuel_year_target(rules, place, pop)?;
+        let heat = fuel::fuel_holding(rules, &pop.stock, pop.consumption.hearth_milli)?
+            .saturating_sub(u128::from(pop.consumption.comfort_milli));
         let budget = surplus_value(rules, place, pop_index, prices, &parts[pop_index])?;
         let mut rows = Vec::new();
         for (g, good) in rules.goods.iter().enumerate() {
@@ -375,6 +374,29 @@ pub(super) fn orders(
                     funded: 0,
                     funded_value: 0,
                     destination: Destination::Fuel,
+                });
+            }
+            let comfort_target = fuel::comfort_target(rules, place, pop)?;
+            let held = u128::from(pop.consumption.comfort_milli);
+            let near = mul_div_floor(comfort_target, u128::from(rules.fuel_near_pm), 1000)
+                .ok_or_else(overflow)?
+                .saturating_sub(held);
+            let short = comfort_target.saturating_sub(held);
+            for (tier, units) in [(4, near), (5, short.saturating_sub(near))] {
+                if units == 0 {
+                    continue;
+                }
+                let numerator = units
+                    .checked_mul(u128::from(rules.goods[reference_good].base_price))
+                    .and_then(|v| v.checked_mul(1000))
+                    .ok_or_else(overflow)?;
+                rows.push(Want {
+                    tier,
+                    units,
+                    value: numerator.div_ceil(supply),
+                    funded: 0,
+                    funded_value: 0,
+                    destination: Destination::ComfortFuel,
                 });
             }
         }
@@ -456,10 +478,10 @@ mod tests {
                 destination: job,
             },
         ];
-        let full = route(&rows, 0, 0, 1, 10, 0, false, |_| 4).unwrap();
+        let full = route(&rows, 0, 0, 1, 10, 0, false, 0, |_| 4).unwrap();
         assert_eq!(full.units, 2);
         assert_eq!(full.deliveries, [(job, 2)]);
-        let partial = route(&rows, 0, 0, 1, 10, 1, false, |_| 4).unwrap();
+        let partial = route(&rows, 0, 0, 1, 10, 1, false, 0, |_| 4).unwrap();
         assert_eq!(partial.units, 3);
         assert_eq!(
             partial.deliveries,
@@ -502,10 +524,44 @@ mod tests {
                 destination: job,
             },
         ];
-        let plan = route(&rows, 0, 700, 6, 1, 10, false, |_| 1).unwrap();
+        let plan = route(&rows, 0, 700, 6, 1, 10, false, 0, |_| 1).unwrap();
         assert_eq!(plan.deliveries, [(Destination::Fuel, 1)]);
         assert_eq!(plan.rows[0].funded + plan.rows[1].funded, 0);
         assert_eq!(plan.rows[2].funded, 1);
+    }
+
+    #[test]
+    fn fuel_orders_spend_survival_before_comfort_without_sharing_their_budgets() {
+        let rows = [
+            Want {
+                tier: 1,
+                units: 1000,
+                value: 10_000,
+                funded: 1000,
+                funded_value: 10_000,
+                destination: Destination::Fuel,
+            },
+            Want {
+                tier: 5,
+                units: 700,
+                value: 6000,
+                funded: 700,
+                funded_value: 6000,
+                destination: Destination::ComfortFuel,
+            },
+        ];
+        let first = route(&rows, 0, 1000, 10, 1, 2, false, 0, |_| 0).unwrap();
+        assert_eq!(first.deliveries, [(Destination::Fuel, 1)]);
+        assert_eq!((first.rows[0].funded, first.rows[1].funded), (0, 700));
+        let second = route(&first.rows, 1, 700, 6, 1, 2, false, 0, |_| 0).unwrap();
+        assert_eq!(second.deliveries, [(Destination::ComfortFuel, 1)]);
+        assert_eq!((second.rows[1].funded, second.rows[1].funded_value), (0, 0));
+        assert_eq!(
+            route(&rows, 1, 700, 6, 2, 2, false, 1, |_| 0)
+                .unwrap()
+                .deliveries,
+            [(Destination::Fuel, 1)]
+        );
     }
 
     #[test]
@@ -538,10 +594,13 @@ mod tests {
                 destination: job,
             },
         ];
-        let plan = route(&rows, 1, 0, 1, 1, 10, false, |_| 1).unwrap();
+        let plan = route(&rows, 1, 0, 1, 1, 10, false, 0, |_| 1).unwrap();
         assert_eq!(plan.deliveries, [(herd, 1)]);
         assert_eq!(plan.rows[1].funded, 1);
-        assert_eq!(route(&rows, 1, 0, 1, 2, 10, true, |_| 1).unwrap().units, 0);
+        assert_eq!(
+            route(&rows, 1, 0, 1, 2, 10, true, 0, |_| 1).unwrap().units,
+            0
+        );
     }
 
     #[test]

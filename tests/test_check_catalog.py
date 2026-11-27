@@ -838,7 +838,11 @@ class CK263Links(unittest.TestCase):
         )
 
     def test_economy_data_changes_select_economy_core(self) -> None:
-        for path in ("assets/game/economy.toml", "assets/scenarios/ireland-768/economy.toml"):
+        for path in (
+            "assets/game/economy.toml",
+            "assets/game/weather.toml",
+            "assets/scenarios/ireland-768/economy.toml",
+        ):
             with self.subTest(path=path):
                 choices = self.choices([path])
                 self.assertTrue(choices["economy.core"].selected)
@@ -2770,7 +2774,11 @@ GUARDS: tuple[Guard, ...] = (
     Guard(
         "crates/economy/src/lib.rs",
         "economy.core",
-        ("assets/game/economy.toml", "assets/scenarios/ireland-768/economy.toml"),
+        (
+            "assets/game/economy.toml",
+            "assets/game/weather.toml",
+            "assets/scenarios/ireland-768/economy.toml",
+        ),
     ),
     # CK-361: the genetic data tests load the shipped rules and both genetic files, and the characters crate's tests read
     # the economy crate's genetic source for the no-floating-point check.
