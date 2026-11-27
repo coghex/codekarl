@@ -72,6 +72,7 @@ fn method(id: &str, resource: &str, serves: &str, outputs: &[(&str, u64)]) -> Me
         })
         .collect();
     Method {
+        grows: false,
         jobs: Vec::new(),
         made_by: BTreeMap::new(),
         id: id.to_owned(),

@@ -38,7 +38,9 @@ pub(super) struct Run {
 
 type Key = (String, usize, u32);
 
-fn snapshot(rules: &Rules, state: &EconomyState) -> BTreeMap<Key, (String, String, Option<u16>)> {
+type SnapshotValue = (String, String, Option<(u16, u8)>);
+
+fn snapshot(rules: &Rules, state: &EconomyState) -> BTreeMap<Key, SnapshotValue> {
     let mut seen = BTreeMap::new();
     for place in &state.places {
         for (index, building) in place.buildings.iter().enumerate() {
@@ -51,7 +53,7 @@ fn snapshot(rules: &Rules, state: &EconomyState) -> BTreeMap<Key, (String, Strin
                     (
                         building.kind.clone(),
                         definition.methods[record.method as usize].id.clone(),
-                        record.last_switch_year,
+                        record.last_switch,
                     ),
                 );
             }
@@ -149,7 +151,7 @@ pub(super) fn run_shipped(years: u16) -> Run {
     let mut moves = Vec::new();
     let mut arrivals = Vec::new();
     let mut levels = vec![("start".to_owned(), levels_by_method(&rules, &state))];
-    let mut moved_in = BTreeMap::<Key, u16>::new();
+    let mut moved_in = BTreeMap::<Key, (u16, u8)>::new();
     loop {
         let before = (date.day == 1).then(|| snapshot(&rules, &state));
         let ledger = ck_economy::run_daily_economy_with_land(
@@ -175,10 +177,11 @@ pub(super) fn run_shipped(years: u16) -> Run {
                 let (_, was, _) = &before[key];
                 if was != method {
                     assert_ne!(
-                        moved_in.insert(key.clone(), date.year),
-                        Some(date.year),
-                        "{key:?} moved twice in {}",
-                        date.year
+                        moved_in.insert(key.clone(), (date.year, date.month)),
+                        Some((date.year, date.month)),
+                        "{key:?} moved twice in {}-{}",
+                        date.year,
+                        date.month
                     );
                     moves.push(Move {
                         date,
@@ -414,7 +417,7 @@ fn the_shipped_game_runs_ten_years_without_an_error() {
                 for level in &building.level_records {
                     methods.insert(
                         (place.id.clone(), index, level.number),
-                        (level.method, level.last_switch_year),
+                        (level.method, level.last_switch),
                     );
                 }
             }
@@ -433,11 +436,16 @@ fn the_shipped_game_runs_ten_years_without_an_error() {
             for (key, (method, year)) in &now {
                 if snapshot[key].0 != *method {
                     moves += 1;
-                    assert_eq!(*year, Some(date.year), "{key:?} moved without its lock");
+                    assert_eq!(
+                        *year,
+                        Some((date.year, date.month)),
+                        "{key:?} moved without its lock"
+                    );
                     assert!(
-                        moved_in.insert((key.clone(), date.year)),
-                        "{key:?} moved twice in {}",
-                        date.year
+                        moved_in.insert((key.clone(), date.year, date.month)),
+                        "{key:?} moved twice in {}-{}",
+                        date.year,
+                        date.month
                     );
                 }
             }
