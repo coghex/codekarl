@@ -53,6 +53,7 @@ pub(crate) fn building_state(rules: &Rules, kind: &str, levels: u32, pops: usize
         .methods
         .len();
     BuildingState {
+        paused_owners: std::collections::BTreeMap::new(),
         heir: None,
         abandoned: false,
         kind: kind.to_owned(),
@@ -3035,6 +3036,14 @@ fn all_cattle(rules: &Rules, place: &PlaceState) -> u64 {
 /// One buyer (THIRD, with a day's capacity) of a cow for 24 bushels (cattle 24, oats 1) from the seller herd's owners, who want oats.
 fn cattle_case(seller_head: u64, seller_owners: &[(usize, u64)]) -> (Rules, PlaceState, usize) {
     let mut rules = herd_rules();
+    rules
+        .buildings
+        .iter_mut()
+        .find(|building| building.id == "farm")
+        .unwrap()
+        .methods[0]
+        .jobs[0]
+        .places = 100;
     let mut place = place(&rules, 3);
     set_price(&rules, &mut place, "cattle", 24);
     set_price(&rules, &mut place, "oats", 1);

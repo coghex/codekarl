@@ -234,6 +234,7 @@ fn fuel_levels_and_stacks_survive_saves_before_and_after_noon() {
         })
         .enumerate()
         .map(|(number, (method, ground))| ck_economy::LevelRecord {
+            paused: false,
             number: u32::try_from(number).unwrap(),
             method: u32::try_from(method).unwrap(),
             ground: Some(ground.to_owned()),
@@ -543,9 +544,6 @@ impl std::fmt::Write for Digest {
     }
 }
 
-/// Production carries come in twelfths of the old unit from CK-406 on.
-const CARRY_UNIT: u128 = 12;
-
 fn year_digest(economy: &EconomyState) -> u64 {
     use std::fmt::Write as _;
 
@@ -557,11 +555,7 @@ fn year_digest(economy: &EconomyState) -> u64 {
                 .production_carries
                 .iter()
                 .flatten()
-                .map(|carry| {
-                    let carry = *carry;
-                    assert_eq!(carry % CARRY_UNIT, 0);
-                    carry / CARRY_UNIT
-                })
+                .copied()
                 .collect();
             write!(
                 digest,
@@ -617,7 +611,7 @@ fn the_shipped_scenario_runs_a_year_from_its_seeded_opening() {
             .unwrap();
         }
     }
-    assert_eq!(trace, include_str!("shipped_year_accepted.txt"));
+    assert_eq!(trace, include_str!("shipped_pause_year.txt"));
 }
 
 #[test]

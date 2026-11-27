@@ -1204,6 +1204,22 @@ fn pop_table(pop: &PopView) -> ConfigValue {
     ])
 }
 
+fn building_methods_table(building: &BuildingView) -> ConfigValue {
+    ConfigValue::Array(
+        building
+            .methods
+            .iter()
+            .map(|(id, levels, paused)| {
+                table([
+                    ("id", text(id)),
+                    ("levels", integer(*levels)),
+                    ("paused", integer(*paused)),
+                ])
+            })
+            .collect(),
+    )
+}
+
 fn building_table(building: &BuildingView) -> ConfigValue {
     table([
         ("stock", stock_table(&building.stock)),
@@ -1225,16 +1241,7 @@ fn building_table(building: &BuildingView) -> ConfigValue {
         ("has_methods", ConfigValue::Bool(building.has_methods)),
         ("units", integer(building.units)),
         ("free_units", integer(building.free_units)),
-        (
-            "methods",
-            ConfigValue::Array(
-                building
-                    .methods
-                    .iter()
-                    .map(|(id, levels)| table([("id", text(id)), ("levels", integer(*levels))]))
-                    .collect(),
-            ),
-        ),
+        ("methods", building_methods_table(building)),
         ("filled", integer(building.filled)),
         (
             "jobs",
@@ -1254,6 +1261,7 @@ fn building_table(building: &BuildingView) -> ConfigValue {
         ),
         ("offers", offer_rows(building)),
         ("abandoned", ConfigValue::Bool(building.abandoned)),
+        ("paused", ConfigValue::Bool(building.paused)),
         ("open", integer(building.open)),
         (
             "herds",
@@ -2882,6 +2890,7 @@ mod tests {
                 jobs: Vec::new(),
                 offers: vec![("field_hands".into(), 4_200)],
                 abandoned: false,
+                paused: false,
                 stock: Vec::new(),
                 made: Vec::new(),
                 kind: "farm".to_owned(),
@@ -2889,7 +2898,7 @@ mod tests {
                 has_methods: true,
                 units: 15,
                 free_units: 0,
-                methods: vec![("mixed_farming".to_owned(), 3)],
+                methods: vec![("mixed_farming".to_owned(), 3, 0)],
                 filled: 25,
                 open: 5,
                 herds: vec![crate::game::view::HerdView {

@@ -175,6 +175,7 @@ local function building_items(self, building, width)
   for _, method in ipairs(building.methods) do
     local name = method.id:gsub("_", " ")
     local level = "level " .. method.levels
+    if (method.paused or 0) > 0 then level = level .. " (" .. method.paused .. " paused)" end
     local split = 11 + draw.width(name) + 4 + draw.width(level) > width
     method_rows[#method_rows + 1] = {method = method, name = name, level = level, y = method_height, split = split}
     method_height = method_height + (split and 22 or 11)

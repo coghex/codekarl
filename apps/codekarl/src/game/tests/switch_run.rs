@@ -384,7 +384,12 @@ fn a_card_lists_a_moved_level_under_its_new_method_from_that_day() {
                     .filter(|record| record.method as usize == method_index)
                     .count() as u64;
                 if count > 0 {
-                    expected.push((method.id.clone(), count));
+                    let paused = building
+                        .level_records
+                        .iter()
+                        .filter(|record| record.method as usize == method_index && record.paused)
+                        .count() as u64;
+                    expected.push((method.id.clone(), count, paused));
                 }
             }
             let shown = &now.place(&place.id).unwrap().buildings[index].methods;

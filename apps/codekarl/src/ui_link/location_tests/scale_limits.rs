@@ -1,6 +1,29 @@
 use super::*;
 
 #[test]
+fn building_text_shows_paused_building_and_method_counts() {
+    let mut rig = rig(&[r"local location = require('lib.location')
+local place = VIEWS[1].cards
+local farm = place.buildings[1]
+farm.paused, farm.units, farm.free_units = true, 20, 0
+farm.methods = {{id='mixed_farming', levels=4, paused=1}}
+local lines = location.lines('buildings', place)
+note(lines[1]); note(lines[2])"]);
+    rig.opened();
+    let recorded = notes(&rig);
+    assert!(
+        recorded.iter().any(|line| line == "paused farm"),
+        "{recorded:?}"
+    );
+    assert!(
+        recorded
+            .iter()
+            .any(|line| line.contains("mixed_farming 4 (1 paused)")),
+        "{recorded:?}"
+    );
+}
+
+#[test]
 fn building_text_shows_units_and_free_units_for_producing_buildings() {
     let mut rig = rig(&[r"local location = require('lib.location')
 local place = VIEWS[1].cards

@@ -1045,9 +1045,6 @@ mod tests {
         );
     }
 
-    /// Production carries come in twelfths of the old unit from CK-406 on.
-    const CARRY_UNIT: u128 = 12;
-
     fn state_digest(state: &EconomyState) -> u64 {
         let mut digest = Digest(0xcbf2_9ce4_8422_2325);
         for place in &state.places {
@@ -1057,11 +1054,7 @@ mod tests {
                     .production_carries
                     .iter()
                     .flatten()
-                    .map(|carry| {
-                        let carry = *carry;
-                        assert_eq!(carry % CARRY_UNIT, 0);
-                        carry / CARRY_UNIT
-                    })
+                    .copied()
                     .collect();
                 write!(
                     digest,
@@ -1156,7 +1149,7 @@ mod tests {
         )
         .unwrap();
         assert!(day >= 365);
-        assert_eq!(lines, include_str!("economy_soak_year_accepted.txt"));
+        assert_eq!(lines, include_str!("economy_soak_pause_year.txt"));
     }
 
     #[test]

@@ -1624,7 +1624,7 @@ impl Exchange<'_> {
             &building.stock,
             good_index,
             building_good_cap(self.rules, building, good_index)?,
-            store_capacity_ml(building)?,
+            store_capacity_ml(self.rules, building)?,
             None,
             u64::MAX,
         )?;
@@ -3282,6 +3282,7 @@ mod share_tests {
         let mut place = swap_tests::place(&rules, 1);
         swap_tests::small(&mut place, 1);
         let building = swap_tests::add_building(&rules, &mut place, "farm", 1);
+        place.buildings[building].method_levels[0] = 1;
         place.buildings[building].employment[0].workers = 1;
         place.pops[0].employment[building].workers = 1;
         place.dh_months = vec![10_000; 12];
