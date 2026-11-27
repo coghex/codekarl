@@ -82,8 +82,8 @@ fn the_demesne_loads_at_exactly_the_approved_values_and_the_old_buildings_are_un
     assert_eq!(demesne.penalty_pm, 500);
     assert_eq!(demesne.overhead_pm, 300);
     assert_eq!(demesne.recruit_range_m, Some(30_000));
-    assert_eq!(rules.footprint_m2["demesne"], 4000);
-    assert_eq!(rules.housing_per_level["demesne"], 37);
+    assert_eq!(rules.footprint_m2_per_unit["demesne"], 800);
+    assert_eq!(rules.housing_milli_per_unit["demesne"], 7400);
     assert_eq!(rules.housing_class["demesne"], "basic");
     assert_eq!(demesne.methods.len(), 1);
     let method = &demesne.methods[0];
@@ -913,8 +913,10 @@ fn the_table_balances_for_every_small_set_of_totals_in_either_order() {
 /// A rules set where the housing of the demesne and the farm is a single place a level.
 fn rules_with_small_housing() -> Rules {
     let mut rules = rent_rules();
-    rules.housing_per_level.insert("demesne".to_owned(), 1);
-    rules.housing_per_level.insert("farm".to_owned(), 1);
+    rules
+        .housing_milli_per_unit
+        .insert("demesne".to_owned(), 200);
+    rules.housing_milli_per_unit.insert("farm".to_owned(), 200);
     rules
 }
 
@@ -971,6 +973,7 @@ fn building_state(rules: &Rules, kind: &str, levels: u32, pops: usize) -> Buildi
         abandoned: false,
         kind: kind.to_owned(),
         levels,
+        units: if methods == 0 { 0 } else { levels * 5 },
         method_levels: vec![0; methods],
         level_records: Vec::new(),
         herds: Vec::new(),
@@ -1306,7 +1309,7 @@ fn two_labourers_with_a_basket_of_39_owe_three() {
 #[test]
 fn peasants_in_a_farm_and_nobles_in_their_own_demesne_pay_nothing() {
     let mut rules = rent_rules();
-    rules.housing_per_level.insert("farm".to_owned(), 16);
+    rules.housing_milli_per_unit.insert("farm".to_owned(), 3200);
     let peasants = Tenant::new("peasant", "a", 10)
         .dependents(6)
         .with_stock(&[("barley", 50)])
@@ -1491,7 +1494,9 @@ fn a_due_of_7_against_two_goods_worth_5_pays_one_unit_forgives_2_and_does_not_fl
 fn a_pop_that_cannot_pay_pays_what_it_has_is_flagged_and_housed_last_until_a_clean_month() {
     let rules = {
         let mut rules = rent_rules();
-        rules.housing_per_level.insert("demesne".to_owned(), 1);
+        rules
+            .housing_milli_per_unit
+            .insert("demesne".to_owned(), 200);
         rules
     };
     let prices = [("oats", 2000)];
@@ -1552,6 +1557,8 @@ fn the_rent_counters_roll_with_the_existing_counters_on_the_first_and_are_saved(
         .with_stock(&[("oats", 1)])
         .job(0, 0, 2);
     let mut place = place_of(&rules, &[("demesne", 1)], vec![tenant], &[("oats", 1300)]);
+    place.buildings[0].method_levels[0] = 1;
+    place.buildings[0].level_records = vec![tests::level(0, 0, Some("pasture"), 13)];
     pay_rent(&rules, &mut place, 0, 30);
     // 3 due, one 1.3 unit held: paid 1.3, short 1.7 (the whole store is paid; the rest is unpaid).
     assert_eq!(paid_and_short(&place.pops[0]), (1300, 1700));
@@ -1702,7 +1709,9 @@ fn the_live_housing_read_keeps_the_months_priority_until_the_next_first_and_surv
     let mut rules = rent_rules();
     // The demesne has one paid position, held by a third household, and room for two: a workers-first
     // place for the worker and one spare place, so no one else is hired into it.
-    rules.housing_per_level.insert("demesne".to_owned(), 2);
+    rules
+        .housing_milli_per_unit
+        .insert("demesne".to_owned(), 400);
     let index = rules
         .buildings
         .iter()
@@ -1712,6 +1721,9 @@ fn the_live_housing_read_keeps_the_months_priority_until_the_next_first_and_surv
         .jobs
         .retain(|job| job.id == "field_hands");
     rules.buildings[index].methods[0].jobs[0].places = 1;
+    for output in rules.buildings[index].methods[0].annual_output.values_mut() {
+        *output = 0;
+    }
     rules.buildings[index].methods[0]
         .made_by
         .retain(|_, job| job == "field_hands");
@@ -1722,7 +1734,9 @@ fn the_live_housing_read_keeps_the_months_priority_until_the_next_first_and_surv
     let worker = Tenant::new("labourer", "c", 1)
         .with_stock(&[("oats", 20)])
         .job(0, 0, 1);
-    let place = place_of(&rules, &[("demesne", 1)], vec![first, second, worker], &[]);
+    let mut place = place_of(&rules, &[("demesne", 1)], vec![first, second, worker], &[]);
+    place.buildings[0].method_levels[0] = 1;
+    place.buildings[0].level_records = vec![tests::level(0, 0, Some("pasture"), 13)];
     let mut state = EconomyState {
         next_pop_serial: 1,
         places: vec![place],

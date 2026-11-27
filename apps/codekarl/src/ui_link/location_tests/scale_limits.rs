@@ -1,6 +1,47 @@
 use super::*;
 
 #[test]
+fn building_text_shows_units_and_free_units_for_producing_buildings() {
+    let mut rig = rig(&[r"local location = require('lib.location')
+local place = VIEWS[1].cards
+local farm = place.buildings[1]
+farm.has_methods, farm.units, farm.free_units = true, 47, 2
+note('filled ' .. location.lines('buildings', place)[2])
+farm.units, farm.free_units = 45, 0
+note('full ' .. location.lines('buildings', place)[2])
+farm.methods = {}; farm.units, farm.free_units = 2, 2
+note('empty ' .. location.lines('buildings', place)[2])
+local store = {buildings = {place.buildings[3]}}
+store.buildings[1].has_methods = false
+note('store ' .. location.lines('buildings', store)[2])"]);
+    rig.opened();
+    let recorded = notes(&rig);
+    assert!(
+        recorded.iter().any(|line| line.contains(
+            "filled   units: 47, free: 2, levels: mixed_farming 8, coastal_subsistence 1"
+        )),
+        "{recorded:?}"
+    );
+    assert!(
+        recorded.iter().any(|line| line
+            .contains("full   units: 45, levels: mixed_farming 8, coastal_subsistence 1")),
+        "{recorded:?}"
+    );
+    assert!(
+        recorded
+            .iter()
+            .any(|line| line.contains("empty   units: 2, free: 2")),
+        "{recorded:?}"
+    );
+    assert!(
+        recorded
+            .iter()
+            .any(|line| line.contains("store   levels: 1")),
+        "{recorded:?}"
+    );
+}
+
+#[test]
 fn card_scrolling_keeps_fractional_points_and_snaps_only_the_drawn_offset() {
     let mut rig = rig(&[
         "time(1, 1) select_place('scrolling', 'Scrolling')",

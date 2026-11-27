@@ -191,6 +191,8 @@ pub struct Method {
     pub made_by: BTreeMap<String, String>,
     /// Stable key.
     pub id: String,
+    /// Capacity units consumed by one method level.
+    pub size_units: u32,
     /// Maximum levels allowed by the resource this method consumes.
     pub resource: String,
     /// Terrain cells required for a forest or bog level.
@@ -293,9 +295,9 @@ pub struct BuildingType {
     /// Maximum ground-distance in metres for recruiting into this building.
     /// `None` is retained during deserialization so validation can name a missing key.
     pub recruit_range_m: Option<u32>,
-    /// Market capacity one level gives to the building's owners, in millilitres a day (CK-391). Nothing when left out.
+    /// Market capacity one unit gives to owners, in millilitres a day. Nothing when left out.
     #[serde(default)]
-    pub market_capacity_ml_per_level: u64,
+    pub market_capacity_ml_per_unit: u64,
     /// Whether this building receives local surplus as a church building.
     #[serde(default)]
     pub church: bool,
@@ -397,8 +399,12 @@ pub struct Rules {
     pub terrain_order: Vec<String>,
     /// Footprint per building level, in square metres.
     pub footprint_m2: BTreeMap<String, i64>,
+    /// Developed footprint per capacity unit of a producing building.
+    pub footprint_m2_per_unit: BTreeMap<String, i64>,
     /// Housing capacity per building level.
     pub housing_per_level: BTreeMap<String, u32>,
+    /// Thousandths of a housing place per capacity unit.
+    pub housing_milli_per_unit: BTreeMap<String, u32>,
     /// Housing quality class per building type.
     pub housing_class: BTreeMap<String, String>,
     /// Housing classes ordered from lowest to highest quality.
@@ -725,15 +731,20 @@ impl Rules {
                     "entry is missing".to_owned(),
                 ));
             }
-            let Some(capacity) = self.housing_per_level.get(&building.id) else {
+            let (table, key) = if building.methods.is_empty() {
+                (&self.housing_per_level, "housing_per_level")
+            } else {
+                (&self.housing_milli_per_unit, "housing_milli_per_unit")
+            };
+            let Some(capacity) = table.get(&building.id) else {
                 return Err(refuse(
-                    format!("housing_per_level.{}", building.id),
+                    format!("{key}.{}", building.id),
                     "entry is missing".to_owned(),
                 ));
             };
             if *capacity == 0 {
                 return Err(refuse(
-                    format!("housing_per_level.{}", building.id),
+                    format!("{key}.{}", building.id),
                     "must be positive".to_owned(),
                 ));
             }
@@ -753,6 +764,7 @@ impl Rules {
         for building in self
             .housing_per_level
             .keys()
+            .chain(self.housing_milli_per_unit.keys())
             .chain(self.housing_class.keys())
         {
             if !self.buildings.iter().any(|item| item.id == *building) {
@@ -824,20 +836,29 @@ impl Rules {
             ));
         }
         for building in &self.buildings {
-            let Some(value) = self.footprint_m2.get(&building.id) else {
+            let (table, key) = if building.methods.is_empty() {
+                (&self.footprint_m2, "footprint_m2")
+            } else {
+                (&self.footprint_m2_per_unit, "footprint_m2_per_unit")
+            };
+            let Some(value) = table.get(&building.id) else {
                 return Err(refuse(
-                    format!("footprint_m2.{}", building.id),
+                    format!("{key}.{}", building.id),
                     "entry is missing".to_owned(),
                 ));
             };
             if *value <= 0 {
                 return Err(refuse(
-                    format!("footprint_m2.{}", building.id),
+                    format!("{key}.{}", building.id),
                     "must be positive".to_owned(),
                 ));
             }
         }
-        for building in self.footprint_m2.keys() {
+        for building in self
+            .footprint_m2
+            .keys()
+            .chain(self.footprint_m2_per_unit.keys())
+        {
             if !self.buildings.iter().any(|item| item.id == *building) {
                 return Err(refuse(
                     format!("footprint_m2.{building}"),
@@ -1026,10 +1047,18 @@ impl Rules {
                         "a method may make at most one fuel".to_owned(),
                     ));
                 }
-                if !["usable_land", "sea", "forest", "bog"].contains(&method.resource.as_str()) {
+                if method.size_units == 0 {
+                    return Err(refuse(
+                        format!("buildings[{index}].methods.{}.size_units", method.id),
+                        "must be positive".to_owned(),
+                    ));
+                }
+                if !["usable_land", "sea", "forest", "bog", "none"]
+                    .contains(&method.resource.as_str())
+                {
                     return Err(refuse(
                         format!("buildings[{index}].methods.{}.resource", method.id),
-                        "must be `usable_land`, `sea`, `forest` or `bog`".to_owned(),
+                        "must be `usable_land`, `sea`, `forest`, `bog` or `none`".to_owned(),
                     ));
                 }
                 let terrain_resource = ["forest", "bog"].contains(&method.resource.as_str());
@@ -2172,6 +2201,9 @@ fn starting_state_with_payday(
                 abandoned: false,
                 kind: kind.to_owned(),
                 levels: actual,
+                units: actual.checked_mul(5).ok_or_else(|| {
+                    missing_data("projection".into(), "building capacity overflow")
+                })?,
                 method_levels: assignment.method_levels,
                 level_records: assignment.level_records,
                 herds,
@@ -2247,6 +2279,7 @@ fn starting_state_with_payday(
                 abandoned: false,
                 kind: "storehouse".to_owned(),
                 levels: store_levels,
+                units: 0,
                 method_levels: kinds,
                 level_records: Vec::new(),
                 herds: Vec::new(),
@@ -2546,29 +2579,38 @@ pub fn max_buildable_m2(
     u64::try_from(area).map_err(|_| missing_data("max_buildable".to_owned(), "area exceeds u64"))
 }
 
-fn building_footprint(rules: &Rules, buildings: &[BuildingState]) -> Result<u64, DataError> {
+/// Sum developed building footprints in square metres.
+///
+/// # Errors
+/// Refuses missing or overflowing footprint data.
+pub fn building_footprint(rules: &Rules, buildings: &[BuildingState]) -> Result<u64, DataError> {
     buildings.iter().try_fold(0_u64, |sum, building| {
-        let per_level = rules
-            .footprint_m2
-            .get(&building.kind)
-            .copied()
+        let definition = rules
+            .buildings
+            .iter()
+            .find(|item| item.id == building.kind)
             .ok_or_else(|| {
-                missing_data(
-                    format!("footprint_m2.{}", building.kind),
-                    "entry is missing",
-                )
+                missing_data(format!("buildings.{}", building.kind), "definition missing")
             })?;
-        let area = u64::try_from(per_level)
+        let (table, count) = if definition.methods.is_empty() {
+            (&rules.footprint_m2, building.levels)
+        } else {
+            (&rules.footprint_m2_per_unit, building.units)
+        };
+        let per = table.get(&building.kind).copied().ok_or_else(|| {
+            missing_data(
+                format!("footprint_m2.{}", building.kind),
+                "entry is missing",
+            )
+        })?;
+        let area = u64::try_from(per)
             .ok()
-            .and_then(|value| value.checked_mul(u64::from(building.levels)))
+            .and_then(|v| v.checked_mul(u64::from(count)))
             .ok_or_else(|| {
-                missing_data(
-                    format!("footprint_m2.{}", building.kind),
-                    "footprint overflow or negative value",
-                )
+                missing_data("footprint".into(), "footprint overflow or negative value")
             })?;
         sum.checked_add(area)
-            .ok_or_else(|| missing_data("footprint".to_owned(), "footprint sum overflow"))
+            .ok_or_else(|| missing_data("footprint".into(), "footprint sum overflow"))
     })
 }
 
@@ -2705,7 +2747,12 @@ fn level_candidates(
 ) -> Result<Vec<Candidate>, DataError> {
     let mut candidates = Vec::new();
     for (index, method) in building.methods.iter().enumerate() {
-        let terrain = if method.resource == "sea" {
+        if method.size_units != 5 {
+            continue;
+        }
+        let terrain = if method.resource == "none" {
+            None
+        } else if method.resource == "sea" {
             if remaining_sea == 0 {
                 continue;
             }
@@ -3049,6 +3096,10 @@ fn check_unpaid_accounts(
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "The record checks report each invariant in validation order."
+)]
 fn check_level_records(
     rules: &Rules,
     definition: &BuildingType,
@@ -3075,7 +3126,7 @@ fn check_level_records(
             }
             "forest" => ground == Some("forest"),
             "bog" => ground == Some("bog"),
-            "sea" => ground.is_none(),
+            "sea" | "none" => ground.is_none(),
             _ => false,
         };
         if !fits {
@@ -3110,6 +3161,20 @@ fn check_level_records(
             "{name}: {} level records for {} levels",
             building.level_records.len(),
             building.levels
+        ));
+    }
+    let used = definition
+        .methods
+        .iter()
+        .zip(&counts)
+        .try_fold(0_u64, |sum, (method, count)| {
+            sum.checked_add(u64::from(method.size_units) * u64::from(*count))
+        })
+        .ok_or_else(|| format!("{name}: capacity use overflow"))?;
+    if used > u64::from(building.units) {
+        return Err(format!(
+            "{name}: used capacity {used} exceeds {} units",
+            building.units
         ));
     }
     if counts != building.method_levels {
@@ -3573,7 +3638,9 @@ fn method_suitability_pm(
     good_id: &str,
     terrain: Option<&str>,
 ) -> u16 {
-    let suitability = if herd_supplies(rules, building, good_id) {
+    let suitability = if method.resource == "none" {
+        1000_u128
+    } else if herd_supplies(rules, building, good_id) {
         // Preserve the authored startup estimate for outputs supplied by this herd.
         750_u128
     } else if method.resource == "sea" {
@@ -4021,7 +4088,7 @@ pub fn herd_maximums(
         .methods
         .iter()
         .zip(&building.method_levels)
-        .filter(|(method, _)| method.resource != "sea")
+        .filter(|(method, _)| ["usable_land", "forest", "bog"].contains(&method.resource.as_str()))
         .try_fold(0_u64, |sum, (_, levels)| {
             sum.checked_add(u64::from(*levels))
         })
@@ -4406,7 +4473,7 @@ fn opening_herds(
         .methods
         .iter()
         .zip(levels)
-        .filter(|(m, _)| m.resource != "sea")
+        .filter(|(m, _)| ["usable_land", "forest", "bog"].contains(&m.resource.as_str()))
         .map(|(_, n)| u64::from(*n))
         .sum();
     let o = &rules.herd_opening;
@@ -4474,7 +4541,7 @@ fn herd_counts(
         .methods
         .iter()
         .zip(method_levels)
-        .filter(|(method, _)| method.resource != "sea")
+        .filter(|(method, _)| ["usable_land", "forest", "bog"].contains(&method.resource.as_str()))
         .try_fold(0_u64, |total, (_, levels)| {
             total.checked_add(u64::from(*levels))
         })
@@ -4990,6 +5057,8 @@ pub struct BuildingState {
     pub kind: String,
     /// Total authored levels after resource cuts.
     pub levels: u32,
+    /// Capacity units available to producing methods.
+    pub units: u32,
     /// Levels per method in method order. For a producing building these are the counts of [`Self::level_records`] by method (a load
     /// refuses a save where they differ); a storehouse's are its kinds of storage.
     pub method_levels: Vec<u32>,
@@ -5981,15 +6050,33 @@ pub fn housing_fill(
                 "this slice supports only basic building housing",
             ));
         }
-        let per_level = *rules.housing_per_level.get(&building.kind).ok_or_else(|| {
-            missing_data(
-                format!("housing_per_level.{}", building.kind),
-                "housing capacity is missing",
-            )
-        })?;
-        let capacity = u64::from(building.levels)
-            .checked_mul(u64::from(per_level))
-            .ok_or_else(|| missing_data("housing.capacity".to_owned(), "capacity overflow"))?;
+        let definition = rules
+            .buildings
+            .iter()
+            .find(|item| item.id == building.kind)
+            .ok_or_else(|| {
+                missing_data(format!("buildings.{}", building.kind), "definition missing")
+            })?;
+        let capacity = if definition.methods.is_empty() {
+            let per_level = rules.housing_per_level.get(&building.kind).ok_or_else(|| {
+                missing_data(
+                    format!("housing_per_level.{}", building.kind),
+                    "housing capacity is missing",
+                )
+            })?;
+            u64::from(building.levels) * u64::from(*per_level)
+        } else {
+            let per_unit = rules
+                .housing_milli_per_unit
+                .get(&building.kind)
+                .ok_or_else(|| {
+                    missing_data(
+                        format!("housing_milli_per_unit.{}", building.kind),
+                        "housing capacity is missing",
+                    )
+                })?;
+            u64::from(building.units) * u64::from(*per_unit) / 1000
+        };
         capacities[0] = capacities[0]
             .checked_add(capacity)
             .ok_or_else(|| missing_data("housing.basic".to_owned(), "capacity overflow"))?;
@@ -7109,7 +7196,9 @@ fn butcher_emergency(
             .methods
             .iter()
             .zip(&building.method_levels)
-            .filter(|(method, _)| method.resource != "sea")
+            .filter(|(method, _)| {
+                ["usable_land", "forest", "bog"].contains(&method.resource.as_str())
+            })
             .map(|(_, levels)| *levels)
             .sum::<u32>();
         for &species in &species_order {
@@ -8313,7 +8402,9 @@ fn monthly_production(
                     .methods
                     .iter()
                     .zip(&building.method_levels)
-                    .filter(|(method, _)| method.resource != "sea")
+                    .filter(|(method, _)| {
+                        ["usable_land", "forest", "bog"].contains(&method.resource.as_str())
+                    })
                     .try_fold(0_u64, |sum, (_, levels)| {
                         sum.checked_add(u64::from(*levels))
                     })
@@ -11398,7 +11489,14 @@ impl Canonical for EconomyState {
                 building.heir.encode(out)?;
                 building.abandoned.encode(out)?;
                 building.kind.encode(out)?;
-                building.levels.encode(out)?;
+                let producing = building.storehouse_accounts.is_none();
+                producing.encode(out)?;
+                if producing {
+                    building.units
+                } else {
+                    building.levels
+                }
+                .encode(out)?;
                 building.method_levels.encode(out)?;
                 encode_level_records(&building.level_records, out)?;
                 building.herds.encode(out)?;
@@ -11436,6 +11534,10 @@ impl Canonical for EconomyState {
         self.trade.encode(out)?;
         self.next_pop_serial.encode(out)
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "The decoder follows the canonical economy field order."
+    )]
     fn decode(input: &mut Reader<'_>) -> Result<Self, CanonicalError> {
         let place_count = input.length()?;
         let mut places = Vec::with_capacity(place_count);
@@ -11466,11 +11568,17 @@ impl Canonical for EconomyState {
             let count = input.length()?;
             let mut buildings = Vec::with_capacity(count);
             for _ in 0..count {
-                buildings.push(BuildingState {
-                    heir: Option::<u32>::decode(input)?,
-                    abandoned: bool::decode(input)?,
-                    kind: String::decode(input)?,
-                    levels: u32::decode(input)?,
+                let heir = Option::<u32>::decode(input)?;
+                let abandoned = bool::decode(input)?;
+                let kind = String::decode(input)?;
+                let producing = bool::decode(input)?;
+                let capacity = u32::decode(input)?;
+                let mut building = BuildingState {
+                    heir,
+                    abandoned,
+                    kind,
+                    levels: if producing { 0 } else { capacity },
+                    units: if producing { capacity } else { 0 },
                     method_levels: Vec::<u32>::decode(input)?,
                     level_records: decode_level_records(input)?,
                     herds: Vec::<u64>::decode(input)?,
@@ -11497,7 +11605,22 @@ impl Canonical for EconomyState {
                     wage_history: Vec::<u64>::decode(input)?,
                     paid_history: Vec::<u64>::decode(input)?,
                     paid_years: Vec::<u16>::decode(input)?,
-                });
+                };
+                if producing == building.storehouse_accounts.is_some() {
+                    return Err(CanonicalError::BadTag {
+                        ty: "building capacity",
+                        tag: u8::from(producing),
+                    });
+                }
+                if producing {
+                    building.levels =
+                        u32::try_from(building.level_records.len()).map_err(|_| {
+                            CanonicalError::TooLong {
+                                len: building.level_records.len(),
+                            }
+                        })?;
+                }
+                buildings.push(building);
             }
             places.push(PlaceState {
                 id,
@@ -11777,8 +11900,8 @@ pub(crate) mod tests {
 
         let mut overbuilt_rules = rules;
         overbuilt_rules
-            .footprint_m2
-            .insert("farm".to_owned(), 30_000);
+            .footprint_m2_per_unit
+            .insert("farm".to_owned(), 6_000);
         let (overbuilt, report) =
             starting_state(&overbuilt_rules, &data, std::slice::from_ref(&location), 10).unwrap();
         assert_eq!(
@@ -11852,14 +11975,10 @@ pub(crate) mod tests {
             lifecycle: LifeCycle::default(),
             religions: vec!["christianity".to_owned()],
             terrain_order: vec!["pasture".to_owned(), "bog".to_owned()],
-            footprint_m2: BTreeMap::from([
-                ("farm".to_owned(), 2000),
-                ("storehouse".to_owned(), 200),
-            ]),
-            housing_per_level: BTreeMap::from([
-                ("farm".to_owned(), 17),
-                ("storehouse".to_owned(), 3),
-            ]),
+            footprint_m2: BTreeMap::from([("storehouse".to_owned(), 200)]),
+            footprint_m2_per_unit: BTreeMap::from([("farm".to_owned(), 400)]),
+            housing_per_level: BTreeMap::from([("storehouse".to_owned(), 3)]),
+            housing_milli_per_unit: BTreeMap::from([("farm".to_owned(), 3400)]),
             housing_class: BTreeMap::from([
                 ("farm".to_owned(), "basic".to_owned()),
                 ("storehouse".to_owned(), "basic".to_owned()),
@@ -11888,7 +12007,7 @@ pub(crate) mod tests {
                     penalty_pm: 500,
                     overhead_pm: 100,
                     recruit_range_m: Some(30_000),
-                    market_capacity_ml_per_level: 0,
+                    market_capacity_ml_per_unit: 0,
                     methods: vec![Method {
                         grows: false,
                         jobs: vec![ProductionJob {
@@ -11900,6 +12019,7 @@ pub(crate) mod tests {
                         }],
                         made_by: BTreeMap::new(),
                         id: "mixed".to_owned(),
+                        size_units: 5,
                         resource: "usable_land".to_owned(),
                         cells_per_level: None,
                         annual_output: BTreeMap::from([("food".to_owned(), 1)]),
@@ -11925,7 +12045,7 @@ pub(crate) mod tests {
                     penalty_pm: 0,
                     overhead_pm: 0,
                     recruit_range_m: Some(0),
-                    market_capacity_ml_per_level: 0,
+                    market_capacity_ml_per_unit: 0,
                     methods: Vec::new(),
                 },
             ],
@@ -12111,6 +12231,7 @@ pub(crate) mod tests {
             abandoned: false,
             kind: "storehouse".to_owned(),
             levels: 1,
+            units: 0,
             method_levels: vec![1, 0, 0],
             level_records: Vec::new(),
             herds: Vec::new(),
@@ -12139,6 +12260,7 @@ pub(crate) mod tests {
             abandoned: false,
             kind: "farm".to_owned(),
             levels: 1,
+            units: 5,
             method_levels: vec![1],
             level_records: vec![LevelRecord {
                 number: 0,
@@ -12361,6 +12483,7 @@ pub(crate) mod tests {
                         abandoned: false,
                         kind: "farm".to_owned(),
                         levels: 1,
+                        units: 5,
                         method_levels: vec![1, 0, 0, 0],
                         level_records: vec![LevelRecord {
                             number: 0,
@@ -12412,6 +12535,7 @@ pub(crate) mod tests {
                         abandoned: false,
                         kind: "holdings".to_owned(),
                         levels: 1,
+                        units: 5,
                         method_levels: vec![0, 1],
                         level_records: Vec::new(),
                         herds: Vec::new(),
@@ -12449,6 +12573,7 @@ pub(crate) mod tests {
                         abandoned: false,
                         kind: "storehouse".to_owned(),
                         levels: 1,
+                        units: 0,
                         method_levels: vec![1, 1, 1],
                         level_records: Vec::new(),
                         herds: Vec::new(),
@@ -12909,6 +13034,7 @@ pub(crate) mod tests {
             abandoned: false,
             kind: "farm".to_owned(),
             levels: 1,
+            units: 5,
             method_levels: vec![1],
             level_records: vec![LevelRecord {
                 number: 0,
@@ -12952,6 +13078,7 @@ pub(crate) mod tests {
             abandoned: false,
             kind: "storehouse".to_owned(),
             levels: 1,
+            units: 0,
             method_levels: vec![1, 0, 0],
             level_records: Vec::new(),
             herds: Vec::new(),
@@ -12997,6 +13124,7 @@ pub(crate) mod tests {
             abandoned: false,
             kind: "holdings".to_owned(),
             levels: 1,
+            units: 5,
             method_levels: vec![1],
             level_records: Vec::new(),
             herds: Vec::new(),
@@ -13065,6 +13193,7 @@ pub(crate) mod tests {
             abandoned: false,
             kind: "farm".to_owned(),
             levels: 1,
+            units: 5,
             method_levels: vec![1],
             level_records: vec![LevelRecord {
                 number: 0,
@@ -13104,6 +13233,7 @@ pub(crate) mod tests {
             abandoned: false,
             kind: "storehouse".to_owned(),
             levels: 1,
+            units: 0,
             method_levels: vec![1, 0, 0],
             level_records: Vec::new(),
             herds: Vec::new(),
@@ -13490,6 +13620,7 @@ pub(crate) mod tests {
             abandoned: false,
             kind: "farm".to_owned(),
             levels: 1,
+            units: 5,
             method_levels: vec![0],
             level_records: Vec::new(),
             herds: Vec::new(),
@@ -13663,6 +13794,7 @@ pub(crate) mod tests {
             abandoned: false,
             kind: "storehouse".to_owned(),
             levels: 1,
+            units: 0,
             method_levels: vec![1, 0, 0],
             level_records: Vec::new(),
             herds: Vec::new(),
@@ -13690,6 +13822,7 @@ pub(crate) mod tests {
             abandoned: false,
             kind: "farm".to_owned(),
             levels: 1,
+            units: 5,
             method_levels: vec![1, 0, 0, 0],
             level_records: vec![LevelRecord {
                 number: 0,
@@ -14879,15 +15012,15 @@ pub(crate) mod tests {
                 Box::new(|rules| rules.fertility_reference_pm = 0),
             ),
             (
-                "footprint_m2.farm",
+                "footprint_m2_per_unit.farm",
                 Box::new(|rules| {
-                    rules.footprint_m2.insert("farm".to_owned(), -1);
+                    rules.footprint_m2_per_unit.insert("farm".to_owned(), -1);
                 }),
             ),
             (
-                "footprint_m2.farm",
+                "footprint_m2_per_unit.farm",
                 Box::new(|rules| {
-                    rules.footprint_m2.remove("farm");
+                    rules.footprint_m2_per_unit.remove("farm");
                 }),
             ),
             (
@@ -15354,6 +15487,7 @@ pub(crate) mod tests {
                         abandoned: false,
                         kind: "farm".to_owned(),
                         levels: 1,
+                        units: 5,
                         method_levels: vec![1],
                         level_records: vec![LevelRecord {
                             number: 0,
@@ -15393,6 +15527,7 @@ pub(crate) mod tests {
                         abandoned: false,
                         kind: "storehouse".to_owned(),
                         levels: 1,
+                        units: 0,
                         method_levels: vec![1, 0, 0],
                         level_records: Vec::new(),
                         herds: Vec::new(),
@@ -16997,7 +17132,7 @@ pub(crate) mod tests {
                 penalty_pm: 500,
                 overhead_pm: 300,
                 recruit_range_m: Some(100_000),
-                market_capacity_ml_per_level: 0,
+                market_capacity_ml_per_unit: 0,
                 methods: vec![rules.buildings[0].methods[0].clone()],
             },
         );
@@ -17024,8 +17159,12 @@ pub(crate) mod tests {
                 manager: false,
             },
         ];
-        rules.footprint_m2.insert("holdings".to_owned(), 4000);
-        rules.housing_per_level.insert("holdings".to_owned(), 14);
+        rules
+            .footprint_m2_per_unit
+            .insert("holdings".to_owned(), 800);
+        rules
+            .housing_milli_per_unit
+            .insert("holdings".to_owned(), 2800);
         rules
             .housing_class
             .insert("holdings".to_owned(), "basic".to_owned());
@@ -17255,6 +17394,7 @@ pub(crate) mod tests {
             state.places[0].buildings[0].levels, 0,
             "the farm was cut to its zero land maximum"
         );
+        assert_eq!(state.places[0].buildings[0].units, 0);
         assert_eq!(
             state.places[0].buildings[1].levels, 1,
             "the storehouse's authored level remains"
@@ -17383,6 +17523,7 @@ pub(crate) mod tests {
             jobs: Vec::new(),
             made_by: BTreeMap::new(),
             id: "coastal".to_owned(),
+            size_units: 5,
             resource: "sea".to_owned(),
             cells_per_level: None,
             annual_output: BTreeMap::from([("fish".to_owned(), 1000)]),
@@ -20753,6 +20894,7 @@ pub(crate) mod tests {
             jobs: Vec::new(),
             made_by: BTreeMap::new(),
             id: "coastal".to_owned(),
+            size_units: 5,
             resource: "sea".to_owned(),
             cells_per_level: None,
             annual_output: BTreeMap::from([("fish".to_owned(), 1000)]),
@@ -20821,12 +20963,16 @@ pub(crate) mod tests {
                 penalty_pm: 500,
                 overhead_pm: 300,
                 recruit_range_m: Some(100_000),
-                market_capacity_ml_per_level: 0,
+                market_capacity_ml_per_unit: 0,
                 methods: vec![farm_method],
             },
         );
-        rules.footprint_m2.insert("holdings".to_owned(), 4000);
-        rules.housing_per_level.insert("holdings".to_owned(), 14);
+        rules
+            .footprint_m2_per_unit
+            .insert("holdings".to_owned(), 800);
+        rules
+            .housing_milli_per_unit
+            .insert("holdings".to_owned(), 2800);
         rules
             .housing_class
             .insert("holdings".to_owned(), "basic".to_owned());
@@ -21051,6 +21197,7 @@ pub(crate) mod tests {
                         abandoned: false,
                         kind: "farm".to_owned(),
                         levels: 1,
+                        units: 5,
                         method_levels: vec![1],
                         level_records: vec![LevelRecord {
                             number: 0,
@@ -21087,6 +21234,7 @@ pub(crate) mod tests {
                         abandoned: false,
                         kind: "storehouse".to_owned(),
                         levels: 1,
+                        units: 0,
                         method_levels: vec![1, 0, 0],
                         level_records: Vec::new(),
                         herds: Vec::new(),
@@ -21441,10 +21589,12 @@ pub(crate) mod tests {
         holdings_type.overhead_pm = 300;
         holdings_type.methods[0].jobs[0].pop_types = vec!["monk".into(), "labourer".into()];
         rules.buildings = vec![farm_type.clone(), holdings_type.clone()];
-        rules.footprint_m2 =
-            BTreeMap::from([("farm".to_owned(), 2000), ("holdings".to_owned(), 4000)]);
-        rules.housing_per_level =
-            BTreeMap::from([("farm".to_owned(), 17), ("holdings".to_owned(), 14)]);
+        rules.footprint_m2_per_unit =
+            BTreeMap::from([("farm".to_owned(), 400), ("holdings".to_owned(), 800)]);
+        rules.footprint_m2.clear();
+        rules.housing_per_level.clear();
+        rules.housing_milli_per_unit =
+            BTreeMap::from([("farm".to_owned(), 3400), ("holdings".to_owned(), 2800)]);
         rules.housing_class = BTreeMap::from([
             ("farm".to_owned(), "basic".to_owned()),
             ("holdings".to_owned(), "basic".to_owned()),
@@ -21473,6 +21623,7 @@ pub(crate) mod tests {
             abandoned: false,
             kind: kind.to_owned(),
             levels: 1,
+            units: 5,
             method_levels: vec![1],
             level_records: vec![LevelRecord {
                 number: 0,
@@ -21630,6 +21781,7 @@ pub(crate) mod tests {
                     abandoned: false,
                     kind: "farm".to_owned(),
                     levels: 1,
+                    units: 5,
                     method_levels: vec![1],
                     level_records: vec![LevelRecord {
                         number: 0,
@@ -21802,6 +21954,7 @@ pub(crate) mod tests {
             abandoned: false,
             kind: "farm".to_owned(),
             levels: 1,
+            units: 5,
             method_levels: vec![1],
             level_records: vec![LevelRecord {
                 number: 0,
@@ -21840,6 +21993,7 @@ pub(crate) mod tests {
             abandoned: false,
             kind: "storehouse".to_owned(),
             levels: 1,
+            units: 0,
             method_levels: vec![1, 0, 0],
             level_records: Vec::new(),
             herds: Vec::new(),
@@ -22726,6 +22880,7 @@ pub(crate) mod tests {
             abandoned: false,
             kind: "storehouse".to_owned(),
             levels: 1,
+            units: 0,
             method_levels: vec![1, 0, 0],
             level_records: Vec::new(),
             herds: Vec::new(),
@@ -22754,6 +22909,7 @@ pub(crate) mod tests {
             abandoned: false,
             kind: "farm".to_owned(),
             levels: 1,
+            units: 5,
             method_levels: vec![1],
             level_records: vec![LevelRecord {
                 number: 0,
@@ -23067,6 +23223,7 @@ pub(crate) mod tests {
                 abandoned: false,
                 kind: "farm".to_owned(),
                 levels: 1,
+                units: 5,
                 method_levels: vec![1],
                 level_records: vec![LevelRecord {
                     number: 0,
@@ -23329,6 +23486,7 @@ pub(crate) mod tests {
             abandoned: false,
             kind: "farm".to_owned(),
             levels: 1,
+            units: 5,
             method_levels: vec![1],
             level_records: vec![LevelRecord {
                 number: 0,
@@ -23411,6 +23569,7 @@ pub(crate) mod tests {
             abandoned: false,
             kind: "farm".to_owned(),
             levels: 1,
+            units: 5,
             method_levels: vec![1],
             level_records: vec![LevelRecord {
                 number: 0,
@@ -23469,7 +23628,9 @@ pub(crate) mod tests {
         populations: &[(u64, u64)],
         employment_by_pop: &[Vec<Employment>],
     ) -> PlaceState {
-        rules.housing_per_level.insert("farm".to_owned(), per_level);
+        rules
+            .housing_milli_per_unit
+            .insert("farm".to_owned(), per_level * 200);
         let buildings = levels
             .iter()
             .enumerate()
@@ -23478,6 +23639,7 @@ pub(crate) mod tests {
                 abandoned: false,
                 kind: "farm".to_owned(),
                 levels: *level,
+                units: (*level) * 5,
                 method_levels: vec![1],
                 level_records: Vec::new(),
                 herds: Vec::new(),
@@ -23536,6 +23698,16 @@ pub(crate) mod tests {
             counters: CounterBuckets::default(),
             trade: PlaceTrade::default(),
         }
+    }
+
+    #[test]
+    fn housing_rounds_once_per_building_from_capacity_units() {
+        let mut rules = tiny_rules();
+        let mut place = housing_test_place(&mut rules, 17, &[1], &[], &[]);
+        place.buildings[0].units = 7;
+        assert_eq!(housing_fill(&rules, &place, 0).unwrap().basic_capacity, 23);
+        place.buildings[0].levels = 0;
+        assert_eq!(housing_fill(&rules, &place, 0).unwrap().basic_capacity, 23);
     }
 
     #[test]
@@ -23836,7 +24008,7 @@ pub(crate) mod tests {
     #[test]
     fn monastery_owners_use_basic_first_and_shelter_only_after_basic_is_full() {
         let mut rules = tiny_rules();
-        rules.housing_per_level.insert("farm".to_owned(), 14);
+        rules.housing_milli_per_unit.insert("farm".to_owned(), 2800);
         let mut place = housing_test_place(
             &mut rules,
             14,
@@ -23908,6 +24080,7 @@ pub(crate) mod tests {
             abandoned: false,
             kind: "farm".to_owned(),
             levels: 1,
+            units: 5,
             method_levels: vec![1],
             level_records: vec![LevelRecord {
                 number: 0,
@@ -24953,7 +25126,7 @@ pub(crate) mod tests {
             penalty_pm: 0,
             overhead_pm: 0,
             recruit_range_m: Some(100_000),
-            market_capacity_ml_per_level: 0,
+            market_capacity_ml_per_unit: 0,
             methods: Vec::new(),
         });
         let pop = |kind: &str, workers: u64, job: Employment| PopState {
@@ -24983,6 +25156,7 @@ pub(crate) mod tests {
             abandoned: false,
             kind: "holdings".to_owned(),
             levels: 1,
+            units: 5,
             method_levels: Vec::new(),
             level_records: Vec::new(),
             herds: Vec::new(),
@@ -25360,6 +25534,7 @@ pub(crate) mod tests {
             abandoned: false,
             kind: "farm".to_owned(),
             levels: 1,
+            units: 5,
             method_levels: vec![1],
             level_records: vec![LevelRecord {
                 number: 0,
@@ -25652,6 +25827,7 @@ pub(crate) mod tests {
         let farm = &mut state.places[0].buildings[0];
         let definition = rules.buildings.iter().find(|b| b.id == "farm").unwrap();
         farm.levels = u32::try_from(records.len()).unwrap();
+        farm.units = farm.levels * 5;
         farm.method_levels = vec![0; definition.methods.len()];
         for record in &records {
             farm.method_levels[record.method as usize] += 1;
@@ -27200,6 +27376,113 @@ pub(crate) mod tests {
         let mut reader = Reader::new(&bytes);
         assert_eq!(decode_level_records(&mut reader).unwrap(), vec![record]);
         reader.finish().unwrap();
+    }
+
+    #[test]
+    fn resource_free_levels_have_no_ground_or_herd_room_or_breeding_floor() {
+        let mut rules = level_rules();
+        for good in &mut rules.goods {
+            good.pop_limit_milli = 1_000_000;
+        }
+        let farm = rules
+            .buildings
+            .iter_mut()
+            .find(|item| item.id == "farm")
+            .unwrap();
+        let mut processor = farm.methods[0].clone();
+        processor.id = "processor".into();
+        processor.resource = "none".into();
+        processor.size_units = 1;
+        farm.methods.push(processor);
+        let mut state = shipped_production_fixture(&rules);
+        let mut records = vec![level(0, 0, Some("pasture"), 13)];
+        records.extend((1..=5).map(|number| level(number, 4, None, 13)));
+        farm_with(&rules, &mut state, records);
+        let farm = &mut state.places[0].buildings[0];
+        farm.units = 10;
+        farm.production_carries
+            .resize(5, vec![0; rules.goods.len()]);
+        farm.herds.fill(0);
+        farm.herds[0] = 8;
+        assert_eq!(herd_maximums(&rules, farm).unwrap()[0], Some(12));
+        validate_level_records(&rules, &BTreeMap::new(), &state).unwrap();
+        let mut bytes = Vec::new();
+        state.encode(&mut bytes).unwrap();
+        let mut reader = Reader::new(&bytes);
+        let restored = EconomyState::decode(&mut reader).unwrap();
+        assert_eq!(restored, state);
+        let mut bad = restored.clone();
+        bad.places[0].buildings[0].level_records[1].ground = Some("pasture".into());
+        assert!(
+            validate_level_records(&rules, &BTreeMap::new(), &bad)
+                .unwrap_err()
+                .contains("does not fit")
+        );
+        let mut next_month = restored.clone();
+        next_month.places[0].buildings[0].herds[0] = 24;
+        run_monthly_production(
+            &rules,
+            &mut next_month,
+            Date {
+                year: 768,
+                month: 10,
+                day: 1,
+                hour: 12,
+            },
+        )
+        .unwrap();
+        assert!(next_month.places[0].buildings[0].herds[0] <= 12);
+        let place = &mut state.places[0];
+        place.pops[0].consumption.necessities_pm = 400;
+        place.pops[0].consumption.pantry_hunger_centi = vec![0; rules.goods.len()];
+        place.pops[0].stock.fill(0);
+        let mut ledger = DailyConsumptionLedger {
+            butchered: vec![0; rules.goods.len()],
+            lost: vec![0; rules.goods.len()],
+            herd_slaughter: vec![0; rules.herd_species.len()],
+            ..DailyConsumptionLedger::default()
+        };
+        butcher_emergency(&rules, place, 0, u128::MAX, &mut ledger).unwrap();
+        assert_eq!(place.buildings[0].herds[0], 2);
+    }
+
+    #[test]
+    fn footprint_uses_building_units_not_method_levels() {
+        let rules = level_rules();
+        let mut state = shipped_production_fixture(&rules);
+        farm_with(&rules, &mut state, vec![level(0, 0, Some("pasture"), 13)]);
+        let farm = &mut state.places[0].buildings[0];
+        farm.units = 7;
+        assert_eq!(
+            building_footprint(&rules, &state.places[0].buildings[..1]).unwrap(),
+            2800
+        );
+        state.places[0].buildings[0].method_levels[0] = 0;
+        assert_eq!(
+            building_footprint(&rules, &state.places[0].buildings[..1]).unwrap(),
+            2800
+        );
+    }
+
+    #[test]
+    fn capacity_units_round_trip_and_refuse_overuse() {
+        let rules = level_rules();
+        let mut state = shipped_production_fixture(&rules);
+        farm_with(&rules, &mut state, vec![level(0, 0, Some("pasture"), 13)]);
+        state.places[0].buildings[0].units = 7;
+        let mut bytes = Vec::new();
+        state.encode(&mut bytes).unwrap();
+        let mut reader = Reader::new(&bytes);
+        let loaded = EconomyState::decode(&mut reader).unwrap();
+        reader.finish().unwrap();
+        assert_eq!(loaded, state);
+        validate_level_records(&rules, &BTreeMap::new(), &loaded).unwrap();
+        state.places[0].buildings[0].units = 4;
+        let error = validate_level_records(&rules, &BTreeMap::new(), &state).unwrap_err();
+        assert!(
+            error.contains("building farm") && error.contains("exceeds 4 units"),
+            "{error}"
+        );
     }
 
     #[test]

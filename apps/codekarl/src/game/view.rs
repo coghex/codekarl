@@ -112,6 +112,9 @@ pub(crate) struct BuildingView {
     pub(crate) made: Vec<(String, u64)>,
     pub(crate) kind: String,
     pub(crate) levels: u64,
+    pub(crate) has_methods: bool,
+    pub(crate) units: u64,
+    pub(crate) free_units: u64,
     /// The levels of each method that has any, in method order.
     pub(crate) methods: Vec<(String, u64)>,
     /// Paid positions held, and positions open.
@@ -583,6 +586,15 @@ fn building_view(
             .collect(),
         kind: building.kind.clone(),
         levels: u64::from(building.levels),
+        has_methods: definition.is_some_and(|item| !item.methods.is_empty()),
+        units: u64::from(building.units),
+        free_units: u64::from(building.units).saturating_sub(definition.map_or(0, |item| {
+            item.methods
+                .iter()
+                .zip(&building.method_levels)
+                .map(|(method, levels)| u64::from(method.size_units) * u64::from(*levels))
+                .sum()
+        })),
         methods,
         filled,
         open: positions.saturating_sub(filled),
@@ -765,22 +777,7 @@ fn place_view(
             sum.saturating_add(projected_yield(rules, building, mean_fertility_pm))
         }),
         has_economy: !place.pops.is_empty() || !place.buildings.is_empty(),
-        footprint_m2: place
-            .buildings
-            .iter()
-            .map(|building| {
-                u64::try_from(
-                    rules
-                        .footprint_m2
-                        .get(&building.kind)
-                        .copied()
-                        .unwrap_or_default()
-                        .max(0),
-                )
-                .expect("validated footprints are nonnegative")
-                    * u64::from(building.levels)
-            })
-            .sum(),
+        footprint_m2: ck_economy::building_footprint(rules, &place.buildings).unwrap_or_default(),
         prepared_m2: place.prepared_m2,
         max_buildable_m2: land
             .and_then(|land| ck_economy::max_buildable_m2(rules, place.development_pm, land).ok())
@@ -924,6 +921,7 @@ mod tests {
                     abandoned: false,
                     kind: "farm".to_owned(),
                     levels: 3,
+                    units: 15,
                     method_levels: vec![3, 0, 0, 0],
                     level_records: Vec::new(),
                     herds: vec![27, 18, 15, 0],
@@ -952,6 +950,7 @@ mod tests {
                     abandoned: false,
                     kind: "storehouse".to_owned(),
                     levels: 1,
+                    units: 0,
                     method_levels: vec![1, 0, 0],
                     level_records: Vec::new(),
                     herds: Vec::new(),
@@ -1030,6 +1029,22 @@ mod tests {
         view.place("fixture")
             .expect("the fixture is in the view")
             .clone()
+    }
+
+    #[test]
+    fn building_view_reports_capacity_and_free_units_even_when_empty() {
+        let rules = shipped_rules();
+        let mut place = fixture(&rules);
+        let farm = &mut place.buildings[0];
+        farm.units = 17;
+        let view = building_view(&rules, farm, 0, test_date());
+        assert!(view.has_methods);
+        assert_eq!((view.units, view.free_units), (17, 2));
+        farm.method_levels.fill(0);
+        let empty = building_view(&rules, farm, 0, test_date());
+        assert!(empty.has_methods);
+        assert_eq!((empty.units, empty.free_units), (17, 17));
+        assert!(!building_view(&rules, &place.buildings[1], 0, test_date()).has_methods);
     }
 
     #[test]

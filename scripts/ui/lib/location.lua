@@ -964,14 +964,19 @@ local function buildings_lines(place)
       lines[#lines + 1] = ""
     end
     lines[#lines + 1] = building.kind
-    if #building.methods == 0 then
-      lines[#lines + 1] = "  levels: " .. building.levels
-    else
-      local methods = {}
-      for _, method in ipairs(building.methods) do
-        methods[#methods + 1] = method.id .. " " .. method.levels
+    if building.has_methods then
+      local line = "  units: " .. building.units
+      if building.free_units > 0 then line = line .. ", free: " .. building.free_units end
+      if #building.methods > 0 then
+        local methods = {}
+        for _, method in ipairs(building.methods) do
+          methods[#methods + 1] = method.id .. " " .. method.levels
+        end
+        line = line .. ", levels: " .. table.concat(methods, ", ")
       end
-      lines[#lines + 1] = "  levels: " .. table.concat(methods, ", ")
+      lines[#lines + 1] = line
+    else
+      lines[#lines + 1] = "  levels: " .. building.levels
     end
     lines[#lines + 1] = "  positions: " .. building.filled .. " filled, " .. building.open .. " open"
     lines[#lines + 1] = "  housing occupants: " .. (building.housing_occupants or 0)

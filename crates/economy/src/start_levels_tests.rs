@@ -76,6 +76,7 @@ fn method(id: &str, resource: &str, serves: &str, outputs: &[(&str, u64)]) -> Me
         jobs: Vec::new(),
         made_by: BTreeMap::new(),
         id: id.to_owned(),
+        size_units: 5,
         resource: resource.to_owned(),
         cells_per_level: None,
         annual_output,
@@ -142,7 +143,7 @@ fn building(id: &str, mut methods: Vec<Method>) -> BuildingType {
         penalty_pm: 500,
         overhead_pm: 100,
         recruit_range_m: Some(30_000),
-        market_capacity_ml_per_level: 0,
+        market_capacity_ml_per_unit: 0,
         // The land buildings keep cattle, so the startup estimate applies the herd-good factor to beef.
         herds: if id == "storehouse" {
             BTreeMap::new()
@@ -238,12 +239,12 @@ fn rules_with(buildings: Vec<BuildingType>, fuel_need_milli_day: u64) -> Rules {
         "pasture".to_owned(),
         BTreeMap::from([("crops".to_owned(), 1000)]),
     )]);
-    rules.footprint_m2.retain(|id, _| id == "storehouse");
-    rules.housing_per_level.retain(|id, _| id == "storehouse");
+    rules.footprint_m2_per_unit.clear();
+    rules.housing_milli_per_unit.clear();
     rules.housing_class.retain(|id, _| id == "storehouse");
     for item in &buildings {
-        rules.footprint_m2.insert(item.id.clone(), 2000);
-        rules.housing_per_level.insert(item.id.clone(), 17);
+        rules.footprint_m2_per_unit.insert(item.id.clone(), 400);
+        rules.housing_milli_per_unit.insert(item.id.clone(), 3400);
         rules
             .housing_class
             .insert(item.id.clone(), "basic".to_owned());
@@ -752,7 +753,17 @@ fn a_cut_for_want_of_land_and_sea_is_reported_as_that() {
         farm: 4,
         ..Place::new(50)
     };
-    let report = place.start(&rules).1;
+    let (state, report) = place.start(&rules);
+    let farm = state.places[0]
+        .buildings
+        .iter()
+        .find(|building| building.kind == "farm")
+        .unwrap();
+    assert_eq!(farm.units, 10);
+    assert_eq!(
+        building_footprint(&rules, std::slice::from_ref(farm)).unwrap(),
+        4000
+    );
     assert!(
         report
             .iter()
@@ -1179,4 +1190,73 @@ fn the_shipped_rules_start_every_level_on_a_method_or_cut_and_report_it() {
     let counts = place.levels(&rules);
     assert_eq!(farm.methods[0].id, "mixed_farming");
     assert_eq!(counts["farm"][..2], [10, 0]);
+}
+
+#[test]
+fn opening_places_only_five_unit_methods() {
+    let mut small = farming("small");
+    small.size_units = 1;
+    let rules = farm_of(vec![small, farming("farming")], 4);
+    let (counts, _) = place_levels(&rules, &peasants(&rules, 50), land(8, 0), &[("farm", 2)]);
+    assert_eq!(counts[0], vec![0, 2]);
+}
+
+#[test]
+fn method_size_is_required_and_positive() {
+    let mut rules = farm_of(vec![farming("farming")], 4);
+    rules.buildings[0].methods[0].size_units = 0;
+    assert!(
+        rules
+            .validate("fixture")
+            .unwrap_err()
+            .entry
+            .ends_with("size_units")
+    );
+
+    let source = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/game/economy.toml"),
+    )
+    .unwrap();
+    let missing = source.replacen("size_units=5\n", "", 1);
+    assert!(toml::from_str::<Rules>(&missing).is_err());
+}
+
+#[test]
+fn resource_free_method_uses_no_ground_or_cells() {
+    let mut processing = farming("processing");
+    processing.resource = "none".into();
+    let mut rules = farm_of(vec![processing], 4);
+    rules.validate("fixture").unwrap();
+    let method = &rules.buildings[0].methods[0];
+    assert_eq!(
+        method_suitability_pm(&rules, &rules.buildings[0], method, "oats", None),
+        1000
+    );
+    let candidates =
+        level_candidates(&rules, &rules.buildings[0], &land(0, 0), 0, 1000, &[0]).unwrap();
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].terrain, None);
+    let shipped =
+        Rules::load(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/game/economy.toml"))
+            .unwrap();
+    let farm = shipped
+        .buildings
+        .iter()
+        .find(|building| building.id == "farm")
+        .unwrap();
+    let mut no_resource = farm.methods[0].clone();
+    no_resource.resource = "none".into();
+    assert!(herd_supplies(&shipped, farm, "beef"));
+    assert_eq!(
+        method_suitability_pm(&shipped, farm, &no_resource, "beef", None),
+        1000
+    );
+    rules.buildings[0].methods[0].cells_per_level = Some(1);
+    assert!(
+        rules
+            .validate("fixture")
+            .unwrap_err()
+            .entry
+            .ends_with("cells_per_level")
+    );
 }
