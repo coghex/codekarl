@@ -975,6 +975,7 @@ void ck_app_t_schedule_sim_keys(void) {
  * the test writes a file `NNN.key` there for each key it wants pressed, holding `<hexadecimal key code>:<characters>`, and the
  * poll (on the main queue, every 5 ms) taps each such file's key (a key-down and a key-up, marked) in name order, then renames
  * the file to `NNN.key.done`. `MD:x y` and `MU:x y` inject marked mouse down and up at UI point coordinates.
+ * `MR` resigns key and reports the result; `MUF` injects focus loss for the cancellation regression.
  * A file holding `D<hex>:<characters>` presses the key and leaves it down; `U<hex>:` lets it up. So the keys are ordered by what the test has seen happen, not by a count or a delay. */
 void ck_app_t_schedule_key_files(void) {
     const char *dir = getenv("CK_WINDOWED_TEST_KEY_FILES");
@@ -1015,7 +1016,13 @@ void ck_app_t_schedule_key_files(void) {
                     continue;
                 }
                 NSString *head = [text substringToIndex:colon.location];
-                if ([head isEqualToString:@"MD"] || [head isEqualToString:@"MU"]) {
+                if ([head isEqualToString:@"MR"]) {
+                    [window resignKeyWindow];
+                    ck_app_write_marker(directory, window.keyWindow ? "still-key" : "resigned-key");
+                    [NSFileManager.defaultManager moveItemAtPath:path toPath:[path stringByAppendingString:@".done"] error:nil];
+                    continue;
+                }
+                if ([head isEqualToString:@"MD"] || [head isEqualToString:@"MU"] || [head isEqualToString:@"MUF"]) {
                     NSString *coordinates = [text substringFromIndex:colon.location + 1];
                     NSScanner *scanner = [NSScanner scannerWithString:coordinates];
                     double x = 0.0, y = 0.0;
@@ -1026,6 +1033,9 @@ void ck_app_t_schedule_key_files(void) {
                             ck_app_t_send_ui_mouse(window, NSEventTypeMouseMoved, point);
                             ck_app_t_send_ui_mouse(window, NSEventTypeLeftMouseDown, point);
                         } else {
+                            if ([head isEqualToString:@"MUF"]) {
+                                [[window delegate] windowDidResignKey:[NSNotification notificationWithName:NSWindowDidResignKeyNotification object:window]];
+                            }
                             ck_app_t_send_ui_mouse(window, NSEventTypeLeftMouseUp, point);
                         }
                     }
