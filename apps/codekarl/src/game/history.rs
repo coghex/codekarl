@@ -607,6 +607,33 @@ impl Recorder {
         self.pending.push(pending);
     }
 
+    /// What the graph viewer reads: the history as it stands, immutable.
+    pub(super) fn view(
+        &self,
+        revision: u64,
+        horizon: Option<(u16, u8)>,
+    ) -> super::history_view::View {
+        super::history_view::View {
+            revision,
+            saves: self.saves.clone(),
+            campaign: self.index.campaign,
+            origin: self.index.origin,
+            years: self.index.years.clone(),
+            pending: self
+                .pending
+                .iter()
+                .map(|pending| {
+                    (
+                        Sha256::digest(&pending.bytes).into(),
+                        std::sync::Arc::new(pending.bytes.clone()),
+                    )
+                })
+                .collect(),
+            running: std::sync::Arc::new(self.months.clone()),
+            horizon,
+        }
+    }
+
     pub(super) fn trailer(&mut self) -> Option<Vec<u8>> {
         self.pending.retain_mut(|pending| {
             if pending.wait() {

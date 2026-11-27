@@ -49,6 +49,9 @@ pub(crate) struct SimSnapshot {
     /// The revision of [`economy`](Self::economy): it rises with every new view, a load included, and is `0` while there is
     /// none.
     pub(crate) economy_revision: u64,
+    /// The revision of the running history the graph viewer reads: it rises whenever that history changes (a month recorded, a load,
+    /// a new game), and is `0` while the game has none.
+    pub(crate) history_revision: u64,
     /// The economy view of that revision, immutable and published in this same write as the time fields (design §6).
     pub(crate) economy: Option<Arc<EconomyView>>,
     /// Positions and frozen paths at this hour.
@@ -88,6 +91,7 @@ impl SimSnapshot {
             || self.layers != other.layers
             || self.log_choices != other.log_choices
             || self.economy_revision != other.economy_revision
+            || self.history_revision != other.history_revision
             || self.expeditions != other.expeditions
             || self.pop_trade != other.pop_trade
             || self.events_revision != other.events_revision

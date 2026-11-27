@@ -733,6 +733,9 @@ local function wind_line(place)
   return "wind " .. place.wind.knots .. " kn " .. place.wind.direction
 end
 
+-- The function a graph icon calls: `handler(subject, graph)` with a subject `{kind, id}` and a graph key (CK-441). Without one the tab has no icons.
+local graph_handler = nil
+
 local function location_lines(place, width)
   if place.state == "abandoned" then
     local lines = {(tostring(place.kind):gsub("_", " ")), {tooltip_parts = {{text = "abandoned", term = "abandoned"}}, place = place.id}}
@@ -813,29 +816,43 @@ local function location_lines(place, width)
     end
   end
   heading("people", "population")
-  local people = {{place.workers + place.dependents, "people", "population", "population"},
-    {place.food_days, "food days", "food_days", "place_food"}, {place.workers, "workers", "worker", "population"},
-    {place.dependents, "dependents", "dependent", "population"}}
-  local function people_width(entry) return font.layout(tostring(entry[1]) .. " " .. entry[2]).width end
-  local columns = math.max(people_width(people[1]) + people_width(people[2]), people_width(people[3]) + people_width(people[4])) + 8 <= right - 1
+  local births, deaths = 0, 0
+  for _, pop in ipairs(place.pops or {}) do births, deaths = births + (pop.births or 0), deaths + (pop.deaths or 0) end
+  -- A figure with a graph (CK-441): its words, its tooltip target and the graph its icon opens.
+  local people = {{place.workers + place.dependents, "people", "population", "population", "people"},
+    {place.food_days, "food days", "food_days", "place_food", "food_days"}, {place.workers, "workers", "worker", "population", "people"},
+    {place.dependents, "dependents", "dependent", "population", "people"}, {births, "births", nil, nil, "births_deaths"},
+    {deaths, "deaths", nil, nil, "births_deaths"}}
+  local graphs = graph_handler ~= nil
+  -- An icon sits 3 UI pixels after its word and is 9 wide.
+  local function people_width(entry) return font.layout(tostring(entry[1]) .. " " .. entry[2]).width + (graphs and 12 or 0) end
+  local widest = 0
+  for index = 1, #people, 2 do widest = math.max(widest, people_width(people[index]) + people_width(people[index + 1])) end
+  local columns = widest + 8 <= right - 1
   local function people_row(first, second)
-    local cells, targets = {}, {}
+    local cells, targets, hotspots = {}, {}, {}
     local function add(entry, x)
       local number = tostring(entry[1]) .. " "
       cells[#cells + 1] = {text = number, x = x, align = "left"}; targets[#targets + 1] = {class = entry[4]}
       cells[#cells + 1] = {text = entry[2], x = x + font.layout(number).width, align = "left", colour = theme.colour("term")}
       targets[#targets + 1] = {term = entry[3]}
+      if graphs then
+        local graph = entry[5]
+        hotspots[#hotspots + 1] = {x = x + font.layout(number .. entry[2]).width + 3, icon = "graph",
+          on_click = function() graph_handler({kind = "place", id = place.id}, graph) end}
+      end
     end
     add(first, 1)
     if second ~= nil then add(second, right - people_width(second)) end
-    lines[#lines + 1] = {cells = cells, tooltip = function(_, _, cell)
+    lines[#lines + 1] = {cells = cells, hotspots = #hotspots > 0 and hotspots or nil, tooltip = function(_, _, cell)
       local target = targets[cell]
       if target == nil then return nil end
       if target.term then return tooltip.explanation(target.term), tostring(cell) end
+      if target.class == nil then return nil end
       return tooltip.content(target.class, {place = place.id}), tostring(cell)
     end}
   end
-  if columns then people_row(people[1], people[2]); people_row(people[3], people[4])
+  if columns then for index = 1, #people, 2 do people_row(people[index], people[index + 1]) end
   else for _, entry in ipairs(people) do people_row(entry) end end
   heading("housing", "housing")
   figure("basic", "basic_housing", place.basic_housing_occupants or 0, place.basic_housing_capacity or 0, nil, "housing")
@@ -860,7 +877,7 @@ local function location_lines(place, width)
   for _, price in ipairs(place.prices) do
     widest_price = math.max(widest_price, font.layout(milli(price.price_milli)).width)
   end
-  local name_width = math.max(0, price_right - widest_price - 4 - 16)
+  local name_width = math.max(0, price_right - widest_price - 4 - 16 - (graph_handler ~= nil and 12 or 0))
   local header = {cells = {
     {text = "good", x = 16, align = "left", colour = theme.colour("term"), identity = true},
     {text = "price", x = price_right, align = "right", colour = theme.colour("term"), identity = true},
@@ -882,12 +899,16 @@ local function location_lines(place, width)
       local largest = math.max(price.bought, price.offered)
       value = largest > 0 and (price.offered - price.bought) / largest or 0
     end
+    local shown_name = clip_column(name, name_width)
     local row = {
+      -- A graph icon after the good's name (CK-441).
+      hotspots = graph_handler ~= nil and {{x = 16 + font.layout(shown_name).width + 3, icon = "graph",
+        on_click = function() graph_handler({kind = "place", id = place.id}, "price:" .. price.good) end}} or nil,
       -- What the list bar sorts and filters by (CK-296): the name as shown before it is clipped, and the good's tags.
       sort = {name = name, price = price.price_milli, base_price = price.base, buy_sell = value},
       filter = {tag = price.tags},
       cells = {
-        {text = clip_column(name, name_width), x = 16, align = "left", colour = name_colour, identity = entry ~= nil},
+        {text = shown_name, x = 16, align = "left", colour = name_colour, identity = entry ~= nil},
         {text = milli(price.price_milli), x = price_right, align = "right"},
         {text = tostring(price.base), x = base_right, align = "right"},
       },
@@ -970,6 +991,11 @@ local FORMATTERS = {
 }
 
 -- The lines of tab `key` (`"location"`, `"pops"` or `"buildings"`) for `place`, a table `game.place` returned.
+-- Sets the function the graph icons call, `handler(subject, graph)` with a subject `{kind, id}` and a graph key; nil takes the icons away.
+function location.set_graph_handler(handler)
+  graph_handler = handler
+end
+
 function location.lines(key, place, width)
   local format = FORMATTERS[key]
   if format == nil then

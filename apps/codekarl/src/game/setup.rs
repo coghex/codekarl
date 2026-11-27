@@ -957,6 +957,7 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
     let history_rules = economy_rules.clone();
     let (sender, receiver) = channel();
     let controls = SimControls::with_wake(sender.clone(), Arc::clone(&wake));
+    let history_host = controls.history().clone();
     let slot = SimSlot::new(wake);
     let owned_slot = Arc::clone(&slot);
     let spawn = OwnerSpawn::new("sim", move || {
@@ -994,6 +995,7 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
                 (layers, events, log_choices),
             )
             .with_history(history, history_builder(history_rules))
+            .with_history_host(history_host)
             .with_expeditions(move |state: &GameState| {
                 expedition_rules.as_deref().map_or_else(Vec::new, |rules| {
                     super::expedition_map::build(&state.economy, rules)
@@ -4180,6 +4182,82 @@ mod stretch_save_tests {
         );
         recorded.step_for_tests();
         assert_eq!(recorded.history_months().len(), 1);
+    }
+
+    /// CK-441: the graph viewer reads what the core publishes. The history revision rises when a month is recorded and when a load replaces the
+    /// history, the horizon follows the clock, and a graph asked of the host is answered from the recorded month.
+    #[test]
+    fn the_graph_viewer_reads_the_history_the_core_publishes_and_its_revision_rises_with_each_change()
+     {
+        use super::super::history_view::{Graph, Host, Outcome, Range, Request, Subject};
+        let dir = crate::testing::Dir::new();
+        let source = shipped_start(&dir.0, None);
+        let outputs = || Outputs {
+            log: Box::new(|_, _| {}),
+            publish: Box::new(|_| {}),
+            fail: Box::new(|e| panic!("{e}")),
+        };
+        let (ready, woken) = std::sync::mpsc::channel();
+        let host = Host::new(Arc::new(move || {
+            let _ = ready.send(());
+        }));
+        let mut core = test_core_running(source, dir.0.join("saves"), outputs())
+            .with_history_host(host.clone());
+        let first = core.snapshot().history_revision;
+        assert!(first > 0, "a game with history publishes it at once");
+        // Nothing is recorded before the first 1st: no subjects beyond `global` and no chart.
+        let request = |number| Request {
+            subject: Subject::Global,
+            graph: Graph::People,
+            range: Range::All,
+            budget: 250,
+            serial: number,
+        };
+        host.request(request(1));
+        woken.recv().unwrap();
+        assert_eq!(host.take()[0].outcome, Outcome::NoRecords);
+        while core.date()
+            < (Date {
+                year: 768,
+                month: 11,
+                day: 1,
+                hour: 13,
+            })
+        {
+            assert_eq!(
+                core.snapshot().history_revision,
+                first,
+                "no change, no new revision"
+            );
+            core.step_for_tests();
+        }
+        let recorded = core.snapshot().history_revision;
+        assert!(recorded > first, "a recorded month is a new revision");
+        host.request(request(2));
+        woken.recv().unwrap();
+        let answer = host.take().remove(0);
+        assert_eq!((answer.request, answer.revision), (2, recorded));
+        let Outcome::Chart(chart) = answer.outcome else {
+            panic!("a chart of the recorded month");
+        };
+        assert_eq!(chart.horizon, (768, 10));
+        assert_eq!(
+            chart.columns.len(),
+            1,
+            "all starts at the origin: one year, 768"
+        );
+        assert_eq!(chart.columns[0].months, 1);
+        // A save and a quickload: the load replaces the history, so the revision rises again and the host serves it.
+        core.dispatch(Message::Control(Control::Quicksave), Duration::ZERO);
+        core.step_for_tests();
+        core.dispatch(Message::Control(Control::Quickload), Duration::ZERO);
+        let loaded = core.snapshot().history_revision;
+        assert!(loaded > recorded, "a load is a new revision");
+        host.request(request(3));
+        woken.recv().unwrap();
+        let after = host.take().remove(0);
+        assert_eq!(after.revision, loaded);
+        assert!(matches!(after.outcome, Outcome::Chart(_)));
     }
 
     /// CK-431: a same-build save is read by the same code, and trade state that names a vehicle kind the rules do not have is refused when

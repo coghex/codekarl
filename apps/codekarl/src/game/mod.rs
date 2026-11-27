@@ -32,6 +32,7 @@ pub(crate) mod expedition_route;
 pub(crate) mod gameplay;
 pub(crate) mod hashes;
 mod history;
+pub(crate) mod history_view;
 mod lows;
 pub(crate) mod owner;
 pub(crate) mod saves;

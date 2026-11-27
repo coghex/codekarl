@@ -891,7 +891,24 @@ mod tests {
     }
 
     /// The application's icons: name, width in pixels and the seven shape rows after the two blank ones.
-    const ICONS: [(&str, usize, &[&str]); 21] = [
+    const ICONS: [(&str, usize, &[&str]); 22] = [
+        (
+            "graph",
+            9,
+            &[
+                ".........",
+                "#........",
+                "#.......#",
+                "#......#.",
+                "#.....#..",
+                "#..#.#...",
+                "#.#.#....",
+                "##.......",
+                "#........",
+                "#########",
+                ".........",
+            ],
+        ),
         (
             "event_log",
             9,

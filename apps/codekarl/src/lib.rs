@@ -95,6 +95,8 @@ pub use game::travel as travel_network;
 mod game_api;
 mod glossary;
 mod go_to;
+#[cfg(test)]
+mod graph_window_tests;
 mod input_stash;
 mod lifecycle;
 mod map_app;
