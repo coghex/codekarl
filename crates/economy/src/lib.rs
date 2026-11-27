@@ -20,6 +20,7 @@ mod expedition;
 mod fuel;
 pub mod genetics;
 pub mod lifecycle;
+mod opening;
 pub mod peoples;
 pub mod personality;
 mod start_levels;
@@ -28,7 +29,9 @@ mod swap;
 pub mod switching;
 mod trade;
 pub mod wages;
-pub use choose::{Journey, LookEvent, LookObserver, LookReport, Paces, Party, Way, Ways};
+pub use choose::{
+    FirstLooks, Journey, LookEvent, LookObserver, LookReport, Paces, Party, Way, Ways,
+};
 pub use events::{Epithet, EpithetScope, EpithetTrigger, EventRules};
 pub use expedition::{
     Assigned, Delays, DrivenAnimal, Expedition, ExpeditionRules, ExpeditionVehicle, Group, Hours,
@@ -36,6 +39,7 @@ pub use expedition::{
 };
 pub use genetics::{Genetics, PopGenetics};
 pub use lifecycle::LifeCycle;
+pub use opening::{OpeningReport, run_opening};
 pub use peoples::Peoples;
 pub use personality::Personality;
 pub use trade::{
@@ -4485,7 +4489,7 @@ fn choose_terrain(
 }
 
 // Length-prefix each identifier to keep keys independent of list order and unambiguous.
-fn herd_draw(seed: u64, keys: &[&str]) -> u64 {
+pub(crate) fn herd_draw(seed: u64, keys: &[&str]) -> u64 {
     let mut h = seed ^ 0xcbf2_9ce4_8422_2325;
     for key in keys {
         for byte in (key.len() as u64)
@@ -12756,6 +12760,8 @@ mod genetics_tests;
 mod lifecycle_tests;
 #[cfg(test)]
 mod noble_tests;
+#[cfg(test)]
+mod opening_tests;
 #[cfg(test)]
 mod personality_tests;
 #[cfg(test)]

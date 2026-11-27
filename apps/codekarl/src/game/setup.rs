@@ -150,48 +150,13 @@ pub(crate) fn prepare(
     };
     let houses = Arc::new(load_houses(directory)?);
     let slots = Arc::new(load_slot_locations(directory)?);
-    let quality_by_place = if let Some(rules) = economy_rules.as_deref() {
-        economy::land_counts(&scenario, &rules.terrain_order)?
-            .into_iter()
-            .enumerate()
-            .map(|(index, land)| {
-                Ok((
-                    scenario.locations[index].id.clone(),
-                    ck_economy::mean_fertility(&land).map_err(|error| error.to_string())?,
-                ))
-            })
-            .collect::<Result<BTreeMap<_, _>, String>>()?
-    } else {
-        BTreeMap::new()
-    };
-    let land_for_switching = if let Some(rules) = economy_rules.as_deref() {
-        economy::land_counts(&scenario, &rules.terrain_order)?
-            .into_iter()
-            .enumerate()
-            .map(|(index, land)| (scenario.locations[index].id.clone(), land))
-            .collect::<BTreeMap<_, _>>()
-    } else {
-        BTreeMap::new()
-    };
-    let shelter_by_place = if let Some(rules) = economy_rules.as_deref() {
-        economy::land_counts(&scenario, &rules.terrain_order)?
-            .into_iter()
-            .enumerate()
-            .map(|(index, land)| {
-                Ok((
-                    scenario.locations[index].id.clone(),
-                    ck_economy::natural_shelter(rules, &land).map_err(|error| error.to_string())?,
-                ))
-            })
-            .collect::<Result<BTreeMap<_, _>, String>>()?
-    } else {
-        BTreeMap::new()
-    };
-    let nearby_by_place = nearby_places(
-        &scenario,
-        economy_rules.as_deref().map_or(0, max_recruit_range_m),
-    );
-    let trade_by_place = trade_neighbours(&scenario);
+    let DayTables {
+        quality_by_place,
+        land_by_place: land_for_switching,
+        shelter_by_place,
+        nearby_by_place,
+        trade_by_place,
+    } = DayTables::build(&scenario, economy_rules.as_deref())?;
     let reach_by_place = marriage_reach(
         &scenario,
         economy_rules
@@ -326,6 +291,15 @@ pub(crate) fn prepare(
             start_time,
             log,
         )?;
+        open_trade(
+            economy_rules.as_deref(),
+            trade_network.as_ref(),
+            &scenario,
+            &mut economy_state,
+            start_time,
+            seed,
+            log,
+        )?;
         (
             Simulation::new(
                 start_time,
@@ -381,7 +355,7 @@ pub(crate) fn prepare(
     })
 }
 
-pub(super) struct WeatherData {
+pub(crate) struct WeatherData {
     backdrop: Option<ck_map::Backdrop>,
     steering_cache: Arc<std::sync::OnceLock<Vec<i64>>>,
     rules: ck_sim::weather::WeatherRules,
@@ -456,7 +430,7 @@ impl WeatherData {
         Ok(result)
     }
 
-    pub(super) fn load(root: &Path, scenario: &ck_map::Scenario) -> Result<Self, String> {
+    pub(crate) fn load(root: &Path, scenario: &ck_map::Scenario) -> Result<Self, String> {
         use ck_sim::weather::{WeatherPlace, WeatherRules};
         let path = root.join("game/weather.toml");
         let text =
@@ -554,7 +528,11 @@ impl WeatherData {
         }
     }
 
-    fn daily_degree_hours(&self, date: Date, base: i64) -> Result<BTreeMap<String, u64>, String> {
+    pub(crate) fn daily_degree_hours(
+        &self,
+        date: Date,
+        base: i64,
+    ) -> Result<BTreeMap<String, u64>, String> {
         let day = ck_sim::weather::julian_day(
             i64::from(date.year),
             i64::from(date.month),
@@ -1202,6 +1180,41 @@ fn trade_network(
     })))
 }
 
+/// Opens a new game with trade under way (CK-434, trade spec part F): after the herds are set and the people made, before the first tick,
+/// the pops are given the goods of the opening and the nobles and monasteries their fleets, and every trader looks once. A game whose rules
+/// have no looks, or whose scenario has no network, opens as before. A saved game is never opened again: its state already holds it.
+fn open_trade(
+    rules: Option<&Rules>,
+    network: Option<&Arc<super::trade_ways::TradeNetwork>>,
+    scenario: &ck_map::Scenario,
+    economy: &mut ck_economy::EconomyState,
+    start: GameTime,
+    seed: u64,
+    log: &mut dyn FnMut(Level, String),
+) -> Result<(), String> {
+    let (Some(rules), Some(network)) = (rules, network) else {
+        return Ok(());
+    };
+    if !rules.expedition.looks {
+        return Ok(());
+    }
+    let mut ways = super::trade_ways::NetworkWays::new(Arc::clone(network), None);
+    ways.begin(super::trade_ways::starting_states(scenario));
+    let report = ck_economy::run_opening(rules, economy, start.hours(), seed, &mut ways, &mut ())
+        .map_err(|error| format!("[game] the opening of trade: {error}"))?;
+    log(
+        Level::Info,
+        format!(
+            "opening: {} vehicles given, {} trips chosen ({} started part way out), {} traders without a trip",
+            report.fleets.len() as u64 + report.looks.given,
+            report.looks.jobs,
+            report.looks.started.len(),
+            report.looks.idle.len(),
+        ),
+    );
+    Ok(())
+}
+
 /// The trade systems' hour (CK-431, trade spec 11c.1): builds that are done complete, ready jobs start, expired jobs are given up. The
 /// scheduler runs a tick's daily systems before its hourly ones, so at noon this follows the economy's daily step.
 pub(crate) fn register_trade_hourly(
@@ -1275,6 +1288,108 @@ pub(crate) fn register_economy_callback(scheduler: &mut Scheduler<GameState>, ru
     );
 }
 
+/// The tables each place's daily economy step reads, built once from the scenario and the rules: the game's setup and the year witness
+/// of `economy-soak --looks` both build them here, so the witness cannot drift from the game's day.
+#[expect(
+    clippy::struct_field_names,
+    reason = "Each table keeps the name the economy's daily step gives its argument."
+)]
+pub(crate) struct DayTables {
+    pub(crate) quality_by_place: BTreeMap<String, u16>,
+    pub(crate) land_by_place: BTreeMap<String, ck_economy::LandCounts>,
+    pub(crate) shelter_by_place: BTreeMap<String, u64>,
+    pub(crate) nearby_by_place: BTreeMap<String, Vec<ck_economy::NearbyPlace>>,
+    pub(crate) trade_by_place: BTreeMap<String, Vec<ck_economy::NearbyPlace>>,
+}
+
+impl DayTables {
+    /// The tables of a scenario; empty where the assets have no economy rules.
+    pub(crate) fn build(
+        scenario: &ck_map::Scenario,
+        rules: Option<&Rules>,
+    ) -> Result<Self, String> {
+        let by_id = |index: usize| scenario.locations[index].id.clone();
+        let (mut quality_by_place, mut land_by_place, mut shelter_by_place) =
+            (BTreeMap::new(), BTreeMap::new(), BTreeMap::new());
+        if let Some(rules) = rules {
+            for (index, land) in economy::land_counts(scenario, &rules.terrain_order)?
+                .into_iter()
+                .enumerate()
+            {
+                quality_by_place.insert(
+                    by_id(index),
+                    ck_economy::mean_fertility(&land).map_err(|error| error.to_string())?,
+                );
+                shelter_by_place.insert(
+                    by_id(index),
+                    ck_economy::natural_shelter(rules, &land).map_err(|error| error.to_string())?,
+                );
+                land_by_place.insert(by_id(index), land);
+            }
+        }
+        Ok(Self {
+            quality_by_place,
+            land_by_place,
+            shelter_by_place,
+            nearby_by_place: nearby_places(scenario, rules.map_or(0, max_recruit_range_m)),
+            trade_by_place: trade_neighbours(scenario),
+        })
+    }
+}
+
+/// Each place's noon-to-noon heating degree-hours for the economy's day, as the game computes them from the shipped climate; none where
+/// the scenario has no weather, which the economy reads as zero.
+///
+/// # Errors
+/// A weather day outside the calendar.
+pub(crate) fn degree_hours_for(
+    weather: Option<&WeatherData>,
+    rules: &Rules,
+    date: Date,
+) -> Result<BTreeMap<String, u64>, String> {
+    Ok(weather
+        .map(|data| data.daily_degree_hours(date, rules.fuel_heat_base_tenths))
+        .transpose()?
+        .unwrap_or_default())
+}
+
+/// What one day of the economy reads besides the rules and the state.
+pub(crate) struct DayInputs<'a> {
+    pub(crate) quality_by_place: &'a BTreeMap<String, u16>,
+    pub(crate) shelter_by_place: &'a BTreeMap<String, u64>,
+    pub(crate) nearby_by_place: &'a BTreeMap<String, Vec<ck_economy::NearbyPlace>>,
+    pub(crate) land_by_place: &'a BTreeMap<String, ck_economy::LandCounts>,
+    pub(crate) trade_by_place: &'a BTreeMap<String, Vec<ck_economy::NearbyPlace>>,
+    pub(crate) degree_hours: &'a BTreeMap<String, u64>,
+}
+
+/// The economy's step of one day, the one call the game's daily system and the year witness both make. `floors` are the characters' (the
+/// witness has none).
+///
+/// # Errors
+/// The economy's data error, as a message.
+pub(crate) fn run_economy_day(
+    rules: &Rules,
+    economy: &mut ck_economy::EconomyState,
+    date: Date,
+    floors: &BTreeMap<(String, usize), u64>,
+    inputs: &DayInputs<'_>,
+) -> Result<ck_economy::ProductionLedger, String> {
+    ck_economy::run_daily_economy_with_degree_hours(
+        rules,
+        economy,
+        date,
+        inputs.quality_by_place,
+        inputs.shelter_by_place,
+        inputs.nearby_by_place,
+        floors,
+        inputs.land_by_place,
+        inputs.trade_by_place,
+        inputs.degree_hours,
+    )
+    .map_err(|error| error.to_string())
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "the rules and each place table the daily pass reads, the place names and the storage handle"
@@ -1298,12 +1413,8 @@ fn register_economy_callback_with_context(
             Cadence::Daily { hour: ECONOMY_HOUR },
             &[CHARACTER_STREAM],
             move |state, tick| {
-                let degree_hours = weather
-                    .as_ref()
-                    .map(|data| data.daily_degree_hours(tick.date(), rules.fuel_heat_base_tenths))
-                    .transpose()
-                    .map_err(io::Error::other)?
-                    .unwrap_or_default();
+                let degree_hours = degree_hours_for(weather.as_deref(), &rules, tick.date())
+                    .map_err(io::Error::other)?;
                 // The characters' draws are keyed by this tick's draw of the system's own stream: deterministic under the master
                 // seed, and drawn once for all three phases of the day.
                 let seed = tick.stream(CHARACTER_STREAM)?.draw();
@@ -1324,17 +1435,19 @@ fn register_economy_callback_with_context(
                         .entry((character.pop.place.clone(), character.pop.slot as usize))
                         .or_insert(0_u64) += 1;
                 }
-                ck_economy::run_daily_economy_with_degree_hours(
+                run_economy_day(
                     &rules,
                     &mut state.economy,
                     tick.date(),
-                    &quality_by_place,
-                    &shelter_by_place,
-                    &nearby_by_place,
                     &floors,
-                    &land_by_place,
-                    &trade_by_place,
-                    &degree_hours,
+                    &DayInputs {
+                        quality_by_place: &quality_by_place,
+                        shelter_by_place: &shelter_by_place,
+                        nearby_by_place: &nearby_by_place,
+                        land_by_place: &land_by_place,
+                        trade_by_place: &trade_by_place,
+                        degree_hours: &degree_hours,
+                    },
                 )
                 .map_err(io::Error::other)
                 .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>)?;
@@ -4743,7 +4856,7 @@ mod stretch_save_tests {
         assert_eq!(
             hashes::rules_hash(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets"))
                 .unwrap(),
-            "bee97c6c541cd909"
+            "304b28ef48ddfaa0"
         );
         let mut save = source.simulation.save(source.identity.meta(42));
         let weather = source.weather.as_ref().unwrap();

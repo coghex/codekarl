@@ -81,6 +81,83 @@ pub struct ExpeditionRules {
     /// The hours in a year, for the yearly test of a new vehicle (r5 3.5: 365 days).
     #[serde(default = "default_year_hours")]
     pub year_hours: u64,
+    /// The numbers of the opening (CK-434, part F).
+    #[serde(default)]
+    pub opening: OpeningRules,
+}
+
+/// The fleets the opening gives (r141, r142): vehicle kinds by their ids, each optional so a rules file without them gives none.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct OpeningFleets {
+    /// A noble's land vehicle when its demesne's horses are above the standard level (the covered wagon).
+    #[serde(default)]
+    pub noble_horses: Option<String>,
+    /// A noble's land vehicle otherwise (the ox-cart).
+    #[serde(default)]
+    pub noble: Option<String>,
+    /// A noble's boat where its place has a landing a barge can use (the simple barge).
+    #[serde(default)]
+    pub barge: Option<String>,
+    /// The boat of a place reached only by sea, which a noble gets if it has no barge landing (the currach).
+    #[serde(default)]
+    pub sea: Option<String>,
+    /// A monastic pop's land vehicle (the ox-cart).
+    #[serde(default)]
+    pub monastic: Option<String>,
+    /// A monastic pop's vehicle where its place is on an island (the currach).
+    #[serde(default)]
+    pub monastic_island: Option<String>,
+}
+
+/// The opening's numbers (trade spec section 10, 11b.6 and 11c.5): every one a placeholder the owner tunes (r22).
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct OpeningRules {
+    /// The days of its want a pop's opening goods are at most (r136: 30).
+    #[serde(default = "default_goods_days")]
+    pub goods_days: u64,
+    /// The days the target its buy orders use is reckoned for (economy design 3.16: 240).
+    #[serde(default = "default_target_days")]
+    pub target_days: u64,
+    /// The seeded share of those days a pop is given, in per-mille: its lowest and highest (500 and 1000).
+    #[serde(default = "default_share_pm")]
+    pub share_pm: [u64; 2],
+    /// How fast the nearness of a producer falls with the hours to it, in per-mille of the pop's travel limit: the goods given are
+    /// `max(0, 1000 - reach_pm * t / limit)` per-mille (2000, so nothing from a place half the limit away).
+    #[serde(default = "default_reach_pm")]
+    pub reach_pm: u64,
+    /// The fleets.
+    #[serde(default)]
+    pub fleets: OpeningFleets,
+}
+
+const fn default_goods_days() -> u64 {
+    30
+}
+
+const fn default_target_days() -> u64 {
+    240
+}
+
+const fn default_share_pm() -> [u64; 2] {
+    [500, 1000]
+}
+
+const fn default_reach_pm() -> u64 {
+    2000
+}
+
+impl Default for OpeningRules {
+    fn default() -> Self {
+        Self {
+            goods_days: default_goods_days(),
+            target_days: default_target_days(),
+            share_pm: default_share_pm(),
+            reach_pm: default_reach_pm(),
+            fleets: OpeningFleets::default(),
+        }
+    }
 }
 
 const fn default_look_hours() -> u64 {
@@ -123,6 +200,7 @@ impl Default for ExpeditionRules {
             visit_radius_m: default_visit_radius_m(),
             foot_people: default_foot_people(),
             year_hours: default_year_hours(),
+            opening: OpeningRules::default(),
         }
     }
 }
@@ -165,6 +243,18 @@ impl ExpeditionRules {
         }
         if self.limit_hours.values().any(|hours| *hours == 0) {
             return Err(refuse("limit_hours", "a travel limit is some hours"));
+        }
+        let opening = &self.opening;
+        if opening.goods_days == 0
+            || opening.target_days == 0
+            || opening.reach_pm == 0
+            || opening.share_pm[0] > opening.share_pm[1]
+            || opening.share_pm[1] > 1000
+        {
+            return Err(refuse(
+                "opening",
+                "the opening's days and reach are positive and its share is a range within 1000 per-mille",
+            ));
         }
         let mut seen = std::collections::BTreeSet::new();
         for animal in &self.animals {
@@ -2214,35 +2304,93 @@ fn first_fed_noon(left: u64, daily: bool) -> u64 {
 /// the part of a day not eaten kept for the next. When nothing to eat is left its supplies are gone, and it goes at half pace (T25).
 pub(crate) fn feed(rules: &Rules, place: &mut PlaceState, now: u64) -> Result<(), DataError> {
     for expedition in &mut place.trade.expeditions {
-        expedition.fed = Some(now);
-        let need = expedition
-            .hunger_centi(rules)
-            .ok_or_else(|| missing_data("trade.feed".to_owned(), "daily hunger overflow"))?;
-        let mut pantry = expedition.pantry_centi;
-        for (good, item) in rules.goods.iter().enumerate() {
-            if pantry >= need {
-                break;
-            }
-            if item.hunger_centi == 0 {
-                continue;
-            }
-            let hunger = u64::from(item.hunger_centi);
-            let units = (need - pantry)
-                .div_ceil(hunger)
-                .min(expedition.supplies[good]);
-            expedition.supplies[good] -= units;
-            pantry += units * hunger;
+        feed_one(rules, expedition, now)?;
+    }
+    Ok(())
+}
+
+/// One expedition's eating at the noon `now`.
+fn feed_one(rules: &Rules, expedition: &mut Expedition, now: u64) -> Result<(), DataError> {
+    expedition.fed = Some(now);
+    let need = expedition
+        .hunger_centi(rules)
+        .ok_or_else(|| missing_data("trade.feed".to_owned(), "daily hunger overflow"))?;
+    let mut pantry = expedition.pantry_centi;
+    for (good, item) in rules.goods.iter().enumerate() {
+        if pantry >= need {
+            break;
         }
-        pantry -= pantry.min(need);
-        expedition.pantry_centi = pantry;
-        if !expedition.gone && expedition.gone_by_feeding(rules) {
-            expedition.gone = true;
-            if expedition.phase != Phase::Waiting {
-                expedition.set_pace(rules)?;
-            }
+        if item.hunger_centi == 0 {
+            continue;
+        }
+        let hunger = u64::from(item.hunger_centi);
+        let units = (need - pantry)
+            .div_ceil(hunger)
+            .min(expedition.supplies[good]);
+        expedition.supplies[good] -= units;
+        pantry += units * hunger;
+    }
+    pantry -= pantry.min(need);
+    expedition.pantry_centi = pantry;
+    if !expedition.gone && expedition.gone_by_feeding(rules) {
+        expedition.gone = true;
+        if expedition.phase != Phase::Waiting {
+            expedition.set_pace(rules)?;
         }
     }
     Ok(())
+}
+
+/// Puts the expedition numbered `number`, which has just been started in `now` (the hour before the first tick) and not moved, part way
+/// along its way out (r135, 11b.6 rule 24): `draw` in per-mille of its outbound hours, rounded down to whole hours, so a trip of an hour or
+/// less stays at 0 and none is at its arrival. What the ticks of those hours would have done is done for them, in the order a game runs
+/// them (a noon's daily step, with its meal and its people's day away, before the hour's travel): the travel, its wear, the meals from its
+/// supplies. Its departure hour is moved back by the hours. Returns the hours it has travelled.
+///
+/// # Errors
+/// An expedition that cannot be found or cannot be moved.
+pub(crate) fn advance_opening(
+    rules: &Rules,
+    place: &mut PlaceState,
+    number: u64,
+    draw: u64,
+    now: u64,
+) -> Result<u64, DataError> {
+    let entry = || format!("trade.opening.{number}");
+    let index = place
+        .trade
+        .expeditions
+        .iter()
+        .position(|expedition| expedition.number == number)
+        .ok_or_else(|| missing_data(entry(), "the expedition to place is not there"))?;
+    let expedition = &mut place.trade.expeditions[index];
+    let ahead = expedition
+        .remaining_hours(rules)
+        .ok_or_else(|| missing_data(entry(), "a leg cannot be made with what it holds"))?;
+    let along = (ahead * ratio(u128::from(draw), 1000)).floor().to_integer();
+    let hours = u64::try_from(along)
+        .map_err(|_| missing_data(entry(), "the hours along its way are not a count"))?;
+    let departure = now
+        .checked_sub(hours)
+        .ok_or_else(|| missing_data(entry(), "the departure hour is before the calendar"))?;
+    let mut spent = Vec::new();
+    for hour in departure..=now {
+        if hour % 24 == NOON {
+            // Its people are away at this noon, the one it left in included; it eats at each noon after the one it left in.
+            if hour > departure {
+                feed_one(rules, expedition, hour)?;
+            }
+            spent.push(expedition.groups.clone());
+        }
+        if hour > departure {
+            step(rules, expedition, hour)?;
+        }
+    }
+    expedition.left = departure;
+    for groups in &spent {
+        count_people(place, groups, &mut BTreeMap::new());
+    }
+    Ok(hours)
 }
 
 /// The most people one expedition holds: far above the few a plan sends, and what keeps a crew's carriers a small table.

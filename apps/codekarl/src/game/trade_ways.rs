@@ -152,25 +152,34 @@ impl NetworkWays {
         Ok(())
     }
 
-    /// The forward search from `home` and the reverse search into it for a key, made once for the hour.
-    fn searches(&mut self, home: &str, key: &Key, party: &Party) -> Result<(), String> {
+    /// The forward search from `home` for a key, made once for the hour.
+    fn forward_search(&mut self, home: &str, key: &Key, party: &Party) -> Result<(), String> {
         self.planner(key, party)?;
         let node = self.node(home)?;
         let slot = (home.to_owned(), key.clone());
-        let planner = &self.planners[key];
         if !self.forward.contains_key(&slot) {
             let started = std::time::Instant::now();
-            let routes = planner.routes_from(&self.network.scenario, &self.states, node)?;
+            let routes =
+                self.planners[key].routes_from(&self.network.scenario, &self.states, node)?;
             let spent = started.elapsed();
             self.note(|counts| {
                 counts.forward += 1;
                 counts.forward_time += spent;
             });
-            self.forward.insert(slot.clone(), routes);
+            self.forward.insert(slot, routes);
         }
+        Ok(())
+    }
+
+    /// The forward search from `home` and the reverse search into it for a key, made once for the hour.
+    fn searches(&mut self, home: &str, key: &Key, party: &Party) -> Result<(), String> {
+        self.forward_search(home, key, party)?;
+        let node = self.node(home)?;
+        let slot = (home.to_owned(), key.clone());
         if !self.reverse.contains_key(&slot) {
             let started = std::time::Instant::now();
-            let routes = planner.routes_to(&self.network.scenario, &self.states, node)?;
+            let routes =
+                self.planners[key].routes_to(&self.network.scenario, &self.states, node)?;
             let spent = started.elapsed();
             self.note(|counts| {
                 counts.reverse += 1;
@@ -234,6 +243,34 @@ impl Ways for NetworkWays {
         way: Way,
     ) -> Result<Option<Journey>, String> {
         self.way(home, other, party, paces, way, true)
+    }
+
+    fn clipped_hours(
+        &mut self,
+        home: &str,
+        other: &str,
+        party: &Party,
+    ) -> Result<Option<num_rational::BigRational>, String> {
+        let paces = Paces::uniform(1000);
+        match self.way(home, other, party, paces, Way::Out, false) {
+            Ok(journey) => Ok(journey.map(|journey| journey.hours(paces))),
+            // A way that never leaves the radius of home is a valid way of no time (the expedition chooser keeps neighbours away from
+            // it; the opening's nearness does not).
+            Err(problem) if problem == super::expedition_route::WITHIN_RADIUS => {
+                Ok(Some(num_rational::BigRational::from_integer(0.into())))
+            }
+            Err(problem) => Err(problem),
+        }
+    }
+
+    /// An island place is one the network gives an access entry, offshore at all tides or at high tide (CK-434, the designer): it is
+    /// reached only by water. The entries include the lough islands, which have a barge landing and so are given a barge first.
+    fn island(&self, place: &str) -> bool {
+        self.network
+            .scenario
+            .network
+            .as_ref()
+            .is_some_and(|network| network.access.iter().any(|access| access.place == place))
     }
 }
 
@@ -377,6 +414,44 @@ mod tests {
             .fold(BigRational::from_integer(0.into()), |sum, leg| {
                 sum + leg.hours(pace)
             })
+    }
+
+    /// CK-434: the opening's two questions of the network. An island is a place with an `[[access]]` entry, and the clipped hours of a way
+    /// are the hours of its clipped legs, with a way that never leaves the radius of home a way of no time rather than an error.
+    #[test]
+    fn islands_are_the_places_with_an_access_entry_and_the_clipped_hours_of_a_near_producer_are_no_error()
+     {
+        let (mut ways, _, _) = network_ways();
+        assert!(ways.island("inishmacsaint"), "an offshore place");
+        assert!(!ways.island("tara"), "a place on the mainland");
+        let cart = party("cart", false);
+        let hours_to =
+            |ways: &mut NetworkWays, other: &str| ways.clipped_hours("tara", other, &cart).unwrap();
+        let journey = ways
+            .journey("tara", "armagh", &cart, Paces::uniform(1000), Way::Out)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            hours_to(&mut ways, "armagh"),
+            Some(journey.hours(Paces::uniform(1000))),
+            "the hours of the clipped legs"
+        );
+        // Every pair of neighbour places, which lie under 4 km apart and may lie within the radius of each other, has an answer.
+        let pairs: Vec<(String, String)> = ways
+            .network
+            .neighbours
+            .iter()
+            .flat_map(|(from, near)| {
+                near.iter()
+                    .map(move |other| (from.clone(), other.id.clone()))
+            })
+            .take(8)
+            .collect();
+        assert!(!pairs.is_empty());
+        for (from, other) in pairs {
+            let found = ways.clipped_hours(&from, &other, &cart);
+            assert!(found.is_ok(), "{from} to {other}: {found:?}");
+        }
     }
 
     /// The reverse search gives a place's time home exactly as a forward search from that place does (itineraries may differ only
@@ -799,6 +874,58 @@ mod tests {
                     .find(|expedition| expedition.trader == 0)
                     .map(|expedition| expedition.plan.clone())
             })
+    }
+
+    /// CK-434, through the real adapter: the opening's first look of the peasant of `a` finds the trip to `b` on the fixture network, makes
+    /// it a job, starts it at once (its vehicle and people are at home) part way out by its own draw, and the state it leaves is one a game
+    /// at the first tick can hold. The same seed opens the same game.
+    #[test]
+    fn the_opening_over_the_fixture_network_starts_the_peasants_trip_part_way_out_and_the_same_seed_opens_the_same_game()
+     {
+        let (scenario, rules, states) = fixture();
+        let mut economy = ck_economy::fixtures::rules_with(&["hand_cart"]);
+        economy.expedition.looks = true;
+        let network = Arc::new(TradeNetwork {
+            scenario,
+            rules,
+            neighbours: BTreeMap::new(),
+            radius_m: 2000,
+        });
+        let start = ck_sim::GameTime::from_date(ck_sim::Date {
+            year: 768,
+            month: 3,
+            day: 10,
+            hour: 6,
+        })
+        .unwrap()
+        .hours();
+        let open = |seed: u64| {
+            let mut state = ck_economy::fixtures::world(vec![
+                ck_economy::fixtures::home_place(&economy, "a", 4000, 4000),
+                ck_economy::fixtures::dest_place(&economy, "b", 8000, 1500),
+            ]);
+            let mut ways = NetworkWays::new(Arc::clone(&network), None);
+            ways.begin(states.clone());
+            let report =
+                ck_economy::run_opening(&economy, &mut state, start, seed, &mut ways, &mut ())
+                    .unwrap();
+            (state, report)
+        };
+        let (state, report) = open(42);
+        assert!(report.looks.jobs >= 1, "{report:?}");
+        let peasant = state.places[0]
+            .trade
+            .expeditions
+            .iter()
+            .find(|expedition| expedition.trader == 0)
+            .expect("the peasant's trip started at once");
+        assert_eq!(peasant.plan.destination, 1, "the trip to b");
+        assert!(peasant.plan.arrival.is_some(), "its way is frozen");
+        assert!(peasant.left < start, "it left before the first tick");
+        ck_economy::validate_trade_state_at(&economy, &state, start)
+            .expect("a state the first tick can hold");
+        let (again, _) = open(42);
+        assert!(again == state, "the same seed, the same opening");
     }
 
     /// CK-433 spec 12 part D, through the real adapter and the look: a trader of `a` whose trip to `b` is over the limit centre to

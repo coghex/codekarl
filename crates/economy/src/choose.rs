@@ -79,6 +79,18 @@ pub struct Journey {
     pub arrival: [i64; 2],
 }
 
+impl Journey {
+    /// The hours of the way at the paces: each leg at the pace of its own mode.
+    #[must_use]
+    pub fn hours(&self, paces: Paces) -> Hours {
+        let mut hours = whole(0);
+        for leg in &self.legs {
+            hours += leg.hours(paces.on(leg.mode));
+        }
+        hours
+    }
+}
+
 /// The travel network as a trader's look needs it (CK-402 through the application). Places are named by their ids.
 pub trait Ways {
     /// Whether two places are neighbours: under twice the visiting radius apart in a straight line (rule 9 of part E).
@@ -120,6 +132,31 @@ pub trait Ways {
         paces: Paces,
         way: Way,
     ) -> Result<Option<Journey>, String>;
+
+    /// The hours of the clipped one-way way from `home` to `other` for a party at walking pace on every mode (the opening reads the
+    /// nearness of a producer from it), or none when the places are not connected for the party. A way that lies wholly within the
+    /// visiting radius of home takes no time. The default reads the way [`Self::journey`] gives; a network whose journey refuses such a
+    /// way says what it takes here.
+    ///
+    /// # Errors
+    /// A message when the network cannot be searched.
+    fn clipped_hours(
+        &mut self,
+        home: &str,
+        other: &str,
+        party: &Party,
+    ) -> Result<Option<Hours>, String> {
+        let paces = Paces::uniform(1000);
+        Ok(self
+            .journey(home, other, party, paces, Way::Out)?
+            .map(|journey| journey.hours(paces)))
+    }
+
+    /// Whether `place` is on an island, which the network reaches only by sea (the opening's fleets, r141 and r142). A network with no
+    /// islands says no.
+    fn island(&self, _place: &str) -> bool {
+        false
+    }
 }
 
 /// What happens in a look, for whoever watches: the evidence's harness and the cases. The economy keeps no counters of its own; it
@@ -306,6 +343,7 @@ pub(crate) fn run_looks(
                 now,
                 ways,
                 observer: &mut *observer,
+                opening: false,
             }
             .look(place, pop)?;
             match decision {
@@ -319,11 +357,143 @@ pub(crate) fn run_looks(
                     observer.observe(LookEvent::Build);
                     trade::start_new_job(rules, state, place, now)?;
                 }
+                Some(Decision::Given { .. }) => {
+                    return Err(missing_data(
+                        "trade.look".to_owned(),
+                        "a look outside the opening gave a vehicle",
+                    ));
+                }
                 None => {}
             }
         }
     }
     Ok(())
+}
+
+/// What the opening's first looks made, for the report.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FirstLooks {
+    /// The traders that looked, in the order they did.
+    pub order: Vec<(usize, u32)>,
+    /// Those whose look made no job.
+    pub idle: Vec<(usize, u32)>,
+    /// Trade jobs made, vehicles given with them, and the trips that started at once, as expeditions part way out.
+    pub jobs: u64,
+    /// Vehicles given because a chosen plan lacked them.
+    pub given: u64,
+    /// Expeditions started part way out, with the hours each has travelled.
+    pub started: Vec<(usize, u64, u64)>,
+}
+
+/// The opening's first looks (CK-434, part F, 11c.5 rule 19): every trader of `order` looks once, in that order, at hour `now` (the hour
+/// before the first tick): the chooser runs as part D has it with each plan's vehicles either the trader's own and free or new and free,
+/// ranked by what a year of the trip costs (a new vehicle's price once), a vehicle of its own before one given on a tie. A plan chosen
+/// that lacks a vehicle is given it, already built; the job it makes starts at once if it can, and a trip that starts is put part way
+/// out by `draw(place id, pop slot)` per-mille (11b.6 rule 24). Every look sets the trader's last look to `stamp`, the hour of the first
+/// tick (the designer's intent: a first look that makes a job has last look S), while `now` is the hour before it that stages the trips.
+///
+/// # Errors
+/// A malformed state or a way the network cannot give; the looks made before the error stand.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The opening's hour, the look timestamp, the order, the network, the observer and the draw are each a separate input."
+)]
+pub(crate) fn run_first_looks(
+    rules: &Rules,
+    state: &mut EconomyState,
+    now: u64,
+    stamp: u64,
+    order: &[(usize, usize)],
+    ways: &mut dyn Ways,
+    observer: &mut dyn LookObserver,
+    draw: &dyn Fn(&str, u32) -> u64,
+) -> Result<FirstLooks, DataError> {
+    let mut report = FirstLooks::default();
+    for &(place, pop) in order {
+        let slot = trade::convert(pop);
+        observer.observe(LookEvent::Look {
+            first: true,
+            timer: false,
+            rest: false,
+            build: false,
+        });
+        state.places[place].trade.looks.insert(
+            slot,
+            Look {
+                last: stamp,
+                rest: None,
+            },
+        );
+        report.order.push((place, slot));
+        let decision = Looker {
+            rules,
+            state,
+            now,
+            ways,
+            observer: &mut *observer,
+            opening: true,
+        }
+        .look(place, pop)?;
+        let plan = match decision {
+            Some(Decision::Trade(plan)) => *plan,
+            Some(Decision::Given { plan, held }) => {
+                let mut plan = *plan;
+                let mut counters = state.trade.clone();
+                let mut numbers = Vec::with_capacity(held.len());
+                for (kind, number) in held {
+                    numbers.push(if let Some(number) = number {
+                        number
+                    } else {
+                        report.given += 1;
+                        trade::give_vehicle(&mut state.places[place], &mut counters, pop, kind)?
+                    });
+                }
+                state.trade = counters;
+                plan.vehicles = numbers;
+                plan
+            }
+            Some(Decision::Build { .. }) => {
+                return Err(missing_data(
+                    "trade.opening".to_owned(),
+                    "the opening's look chose to build",
+                ));
+            }
+            None => {
+                report.idle.push((place, slot));
+                continue;
+            }
+        };
+        state.order_trade(rules, place, pop, plan, now)?;
+        observer.observe(LookEvent::Trade);
+        report.jobs += 1;
+        let before = state.trade.expeditions;
+        trade::start_new_job(rules, state, place, now)?;
+        // Each trip that started puts itself part way out at its trader's own draw.
+        for number in before + 1..=state.trade.expeditions {
+            let trader = state.places[place]
+                .trade
+                .expeditions
+                .iter()
+                .find(|expedition| expedition.number == number)
+                .map(|expedition| expedition.trader)
+                .ok_or_else(|| {
+                    missing_data(
+                        "trade.opening".to_owned(),
+                        "a trip that started is not among the place's expeditions",
+                    )
+                })?;
+            let id = state.places[place].id.clone();
+            let hours = crate::expedition::advance_opening(
+                rules,
+                &mut state.places[place],
+                number,
+                draw(&id, trader),
+                now,
+            )?;
+            report.started.push((place, number, hours));
+        }
+    }
+    Ok(report)
 }
 
 /// What a look decides.
@@ -332,6 +502,12 @@ enum Decision {
     Trade(Box<Plan>),
     /// Build a vehicle of the kind for a trip.
     Build { kind: usize, trip: Box<Trip> },
+    /// The opening's choice with a vehicle the trader lacks: carry out the plan with the vehicles of `held`, in the plan's order, each
+    /// as `(kind, number)` where the number is the trader's own free vehicle's, or none for one that is given, already built (r141).
+    Given {
+        plan: Box<Plan>,
+        held: Vec<(usize, Option<u64>)>,
+    },
 }
 
 /// The kinds of crew a plan may be made with (rule 12).
@@ -476,6 +652,9 @@ struct Worked {
     paces: (Paces, Paces),
     /// The kinds the plan would have built.
     new: Vec<usize>,
+    /// What the opening ranks the plan by (r141, 11c.5 rule 19): its running cost for each trip of the year, plus what the vehicles it
+    /// lacks cost once. Not worked, and 0, outside the opening.
+    yearly: i128,
 }
 
 /// What the markets and the pop look like at the look, and what the trips under way have spoken for.
@@ -547,6 +726,8 @@ struct Looker<'a> {
     now: u64,
     ways: &'a mut dyn Ways,
     observer: &'a mut dyn LookObserver,
+    /// Whether this is the opening's first look (CK-434): a vehicle the trader lacks is given, already built, and no yearly test is made.
+    opening: bool,
 }
 
 /// A good the trader wants, with how much (after what is already coming) and how it ranks.
@@ -555,6 +736,156 @@ struct Want {
     deficit: u128,
     tier: u8,
     share_pm: u128,
+}
+
+/// What a place has to make a vehicle of, in the opening: goods by rules order, animals above the standard level by herd species.
+pub(crate) struct Available {
+    pub(crate) goods: Vec<u128>,
+    pub(crate) animals: Vec<u64>,
+}
+
+impl Available {
+    /// Whether every input and animal of the kind is to be had (the opening gives a vehicle only of a kind its place could make).
+    fn makes(&self, rules: &Rules, kind: &crate::VehicleKind) -> bool {
+        self.makes_all(rules, &[kind])
+    }
+
+    /// Whether all of the kinds could be made at once from the one pool: each input and animal takes from what the kinds before it left
+    /// (a plan with a cart and a boat cannot count the same wood or the same head twice, §10 rule 3, §11c.5 rule 19). A category input
+    /// takes goods in the rules' order until the category's amount is supplied.
+    pub(crate) fn makes_all(&self, rules: &Rules, kinds: &[&crate::VehicleKind]) -> bool {
+        let (mut goods, mut animals) = (self.goods.clone(), self.animals.clone());
+        // First what is named: the specific goods and the animals of every kind are reserved before any category input picks a substitute,
+        // so that a flexible input (a wagon's fabric, which a hide or linen can supply) does not spend the good another kind needs by name
+        // (a currach's hides) whatever order the kinds come in.
+        for kind in kinds {
+            for input in &kind.inputs {
+                match (&input.category, &input.good) {
+                    (None, Some(id)) => {
+                        let Some(index) = rules.goods.iter().position(|good| good.id == *id) else {
+                            return false;
+                        };
+                        let units = u128::from(input.amount);
+                        if goods[index] < units {
+                            return false;
+                        }
+                        goods[index] -= units;
+                    }
+                    (None, None) => return false,
+                    (Some(_), _) => {}
+                }
+            }
+            for animal in &kind.animals {
+                let Some(index) = rules
+                    .herd_species
+                    .iter()
+                    .position(|species| species.animal == animal.species)
+                else {
+                    return false;
+                };
+                if animals[index] < animal.count {
+                    return false;
+                }
+                animals[index] -= animal.count;
+            }
+        }
+        // Then the category inputs, a search for an allocation whenever one exists: each input tries each good that supplies its category as
+        // the first to be taken from (then the rest in the rules' order), and the inputs after it must be satisfied from what that leaves.
+        let inputs: Vec<(&str, u128)> = kinds
+            .iter()
+            .flat_map(|kind| &kind.inputs)
+            .filter_map(|input| {
+                input
+                    .category
+                    .as_deref()
+                    .map(|category| (category, u128::from(input.amount) * 1000))
+            })
+            .collect();
+        category_inputs_fit(rules, &inputs, &goods)
+    }
+}
+
+/// Whether the category inputs `(category, amount in per-mille)` can all be supplied from `goods` (units by rules order), by an exact
+/// search: each input in turn is covered by some whole units of each good that supplies it, and the inputs after it must be covered from
+/// what is left. Only coverings that are minimal (no unit could be left out) need be tried, since a unit more never helps another input.
+fn category_inputs_fit(rules: &Rules, inputs: &[(&str, u128)], goods: &[u128]) -> bool {
+    let Some(((category, amount), rest)) = inputs.split_first() else {
+        return true;
+    };
+    let suppliers: Vec<(usize, u128)> = (0..rules.goods.len())
+        .filter_map(|index| {
+            let each = rules.goods[index].category_supplied(category, 1);
+            (each > 0 && goods[index] > 0).then_some((index, each))
+        })
+        .collect();
+    let mut coverings: Vec<Vec<(usize, u128)>> = Vec::new();
+    covers(
+        rules,
+        category,
+        &suppliers,
+        goods,
+        (*amount, *amount),
+        &mut Vec::new(),
+        &mut coverings,
+    );
+    coverings.into_iter().any(|covering| {
+        let mut left = goods.to_vec();
+        for (index, units) in covering {
+            left[index] -= units;
+        }
+        category_inputs_fit(rules, rest, &left)
+    })
+}
+
+/// Every minimal covering of `total` (per-mille of a category) by whole units of the `suppliers` from `goods`, added to `out` as
+/// `(good, units)` lists; `need` is what the covering being built (`taken`) has still to supply. A covering is minimal when leaving one
+/// unit of any good out would not cover `total`.
+fn covers(
+    rules: &Rules,
+    category: &str,
+    suppliers: &[(usize, u128)],
+    goods: &[u128],
+    (total, need): (u128, u128),
+    taken: &mut Vec<(usize, u128)>,
+    out: &mut Vec<Vec<(usize, u128)>>,
+) {
+    if need == 0 {
+        let supplied =
+            |index: usize, units: u128| rules.goods[index].category_supplied(category, units);
+        let sum: u128 = taken
+            .iter()
+            .map(|(index, units)| supplied(*index, *units))
+            .sum();
+        let minimal = taken.iter().all(|(index, units)| {
+            sum - supplied(*index, *units) + supplied(*index, units - 1) < total
+        });
+        if minimal {
+            out.push(taken.clone());
+        }
+        return;
+    }
+    let Some(((index, each), rest)) = suppliers.split_first() else {
+        return;
+    };
+    let most = goods[*index].min(need.div_ceil(*each));
+    for units in (0..=most).rev() {
+        let supplied = rules.goods[*index].category_supplied(category, units);
+        if units > 0 {
+            taken.push((*index, units));
+        }
+        covers(
+            rules,
+            category,
+            rest,
+            goods,
+            (total, need.saturating_sub(supplied)),
+            taken,
+            out,
+        );
+        if units > 0 {
+            taken.pop();
+        }
+    }
 }
 
 fn price(place: &PlaceState, good: usize) -> u128 {
@@ -632,7 +963,12 @@ impl Looker<'_> {
         if wants.is_empty() {
             return Ok(None);
         }
-        let shapes = self.shapes(home, pop);
+        let available = if self.opening {
+            Some(self.available_at(home, pop, &view)?)
+        } else {
+            None
+        };
+        let shapes = self.shapes(home, pop, available.as_ref());
         if shapes.is_empty() {
             return Ok(None);
         }
@@ -685,6 +1021,7 @@ impl Looker<'_> {
                     dest_want: &dest_want,
                     dest_spare: &dest_spare,
                     spoken: &forecasts.spoken[destination],
+                    available: available.as_ref(),
                 }
                 .work(shape)?
                 else {
@@ -694,10 +1031,29 @@ impl Looker<'_> {
                 if worked.gain <= 0 {
                     continue;
                 }
-                // The cheapest running cost; then the greater gain; then fewer vehicles, the kinds' order, fewer people (rule 13).
+                // The cheapest running cost; then the greater gain; then fewer vehicles, the kinds' order, fewer people (rule 13). In
+                // the opening the plan that costs least over a year comes first (its running cost for the year's trips and what the
+                // vehicles it lacks cost once), a plan with a vehicle of the trader's own before one with a vehicle given when the costs tie
+                // (11c.5 rule 19).
                 let better = cheapest.as_ref().is_none_or(|old| {
-                    (worked.cost, -worked.gain, worked.shape.order(rules))
-                        < (old.cost, -old.gain, old.shape.order(rules))
+                    if self.opening {
+                        (
+                            worked.yearly,
+                            worked.new.len(),
+                            worked.cost,
+                            -worked.gain,
+                            worked.shape.order(rules),
+                        ) < (
+                            old.yearly,
+                            old.new.len(),
+                            old.cost,
+                            -old.gain,
+                            old.shape.order(rules),
+                        )
+                    } else {
+                        (worked.cost, -worked.gain, worked.shape.order(rules))
+                            < (old.cost, -old.gain, old.shape.order(rules))
+                    }
                 });
                 if better {
                     cheapest = Some(worked);
@@ -724,6 +1080,20 @@ impl Looker<'_> {
             let mut plan = worked.plan;
             self.freeze(home, &worked.shape, worked.paces, &mut plan)?;
             return Ok(Some(Decision::Trade(Box::new(plan))));
+        }
+        if self.opening {
+            // The opening gives the vehicles a plan lacks, already built (r141).
+            let mut plan = worked.plan;
+            self.freeze(home, &worked.shape, worked.paces, &mut plan)?;
+            let held = worked
+                .shape
+                .held()
+                .map(|held| (held.kind, held.number))
+                .collect();
+            return Ok(Some(Decision::Given {
+                plan: Box::new(plan),
+                held,
+            }));
         }
         // A plan that needs a vehicle the trader lacks was kept only if the year's gain pays for it (T13): build the first it lacks.
         let kind = worked.new[0];
@@ -774,15 +1144,15 @@ impl Looker<'_> {
         Ok(())
     }
 
-    /// The trips a year and whether their gain pays for the vehicles a plan lacks (r5 3.5, the yearly test): the fewer of what time
-    /// allows and what the need left unmet allows, so a second vehicle is judged on what the trips already under way leave unmet.
-    fn pays_for_vehicles(
+    /// The trips a year of a plan (r5 3.5, the yearly test): the fewer of what time allows and what the need left unmet allows, so a second
+    /// vehicle is judged on what the trips already under way leave unmet.
+    fn trips_a_year(
         &self,
         home: usize,
         pop: usize,
         wants: &[Want],
         worked: &Worked,
-    ) -> Result<bool, DataError> {
+    ) -> Result<u64, DataError> {
         // The need the trips must meet is what the trader lacks (after the trips already coming, `wants`) and the home market cannot give
         // it: what the other pops of its place offer above what they want themselves (T13: the need that cannot be met at home).
         let (_, home_offers) = swap::place_totals(self.rules, &self.state.places[home])?;
@@ -802,7 +1172,22 @@ impl Looker<'_> {
                 (deficit.saturating_sub(at_home), *brings)
             })
             .collect();
-        let trips = trips_in_a_year(self.rules.expedition.year_hours, &worked.hours, &unmet);
+        Ok(trips_in_a_year(
+            self.rules.expedition.year_hours,
+            &worked.hours,
+            &unmet,
+        ))
+    }
+
+    /// Whether the year's gain pays for the vehicles a plan lacks (r5 3.5, the yearly test).
+    fn pays_for_vehicles(
+        &self,
+        home: usize,
+        pop: usize,
+        wants: &[Want],
+        worked: &Worked,
+    ) -> Result<bool, DataError> {
+        let trips = self.trips_a_year(home, pop, wants, worked)?;
         let yearly_gain = worked.gain.saturating_mul(i128::from(trips));
         let mut cost = 0_i128;
         for kind in &worked.new {
@@ -813,6 +1198,40 @@ impl Looker<'_> {
 
     /// What a vehicle costs the trader to have built: its inputs and animal at home prices and the build's wages (r5 3.5).
     fn vehicle_cost(&self, home: usize, pop: usize, kind: usize) -> Result<i128, DataError> {
+        let place = &self.state.places[home];
+        let definition = &self.rules.vehicles[kind];
+        let mut cost = self.vehicle_price(home, kind)?;
+        // The hands' wages: the trader's own are not paid; otherwise the cheapest pop with enough at home, for the build's days.
+        let days = u128::from(definition.build_hours.div_ceil(24).max(1));
+        let own_home = place.pops[pop]
+            .workers
+            .saturating_sub(place.trade.held(pop));
+        if own_home < definition.hands {
+            let wage = (0..place.pops.len())
+                .filter(|other| {
+                    *other != pop
+                        && place.pops[*other]
+                            .workers
+                            .saturating_sub(place.trade.held(*other))
+                            >= definition.hands
+                })
+                .map(|other| {
+                    u128::from(definition.hands)
+                        * u128::from(trade::pop_wage(self.rules, place, other))
+                        * days
+                        / 30
+                        + 1
+                })
+                .min();
+            cost = cost.saturating_add(
+                wage.map_or(i128::MAX, |wage| i128::try_from(wage).unwrap_or(i128::MAX)),
+            );
+        }
+        Ok(cost)
+    }
+
+    /// A vehicle's price once: its inputs and its animal at home prices, with no wages (the opening's ranking, r141).
+    fn vehicle_price(&self, home: usize, kind: usize) -> Result<i128, DataError> {
         let rules = self.rules;
         let place = &self.state.places[home];
         let definition = &rules.vehicles[kind];
@@ -849,39 +1268,46 @@ impl Looker<'_> {
                     .unwrap_or(i128::MAX),
             );
         }
-        // The hands' wages: the trader's own are not paid; otherwise the cheapest pop with enough at home, for the build's days.
-        let days = u128::from(definition.build_hours.div_ceil(24).max(1));
-        let own_home = place.pops[pop]
-            .workers
-            .saturating_sub(place.trade.held(pop));
-        if own_home < definition.hands {
-            let wage = (0..place.pops.len())
-                .filter(|other| {
-                    *other != pop
-                        && place.pops[*other]
-                            .workers
-                            .saturating_sub(place.trade.held(*other))
-                            >= definition.hands
-                })
-                .map(|other| {
-                    u128::from(definition.hands)
-                        * u128::from(trade::pop_wage(rules, place, other))
-                        * days
-                        / 30
-                        + 1
-                })
-                .min();
-            cost = cost.saturating_add(
-                wage.map_or(i128::MAX, |wage| i128::try_from(wage).unwrap_or(i128::MAX)),
-            );
-        }
         Ok(cost)
+    }
+
+    /// What the opening can find at a trader's place to make a vehicle of (11c.5 rule 19: "its own goods, or what other pops there could
+    /// swap it, animals above the standard level included"): the trader's own stock and what the others offer, by good; the head above
+    /// the standard level in the place's herds, by species.
+    fn available_at(
+        &self,
+        home: usize,
+        pop: usize,
+        view: &swap::TraderView,
+    ) -> Result<Available, DataError> {
+        let place = &self.state.places[home];
+        let (_, offered) = swap::place_totals(self.rules, place)?;
+        let goods = offered
+            .iter()
+            .zip(&view.spare)
+            .zip(&place.pops[pop].stock)
+            .map(|((offered, own_spare), stock)| {
+                offered
+                    .saturating_sub(*own_spare)
+                    .saturating_add(u128::from(*stock))
+            })
+            .collect();
+        let mut animals = vec![0_u64; self.rules.herd_species.len()];
+        for building in &place.buildings {
+            for (species, (above, _)) in crate::herd_levels(self.rules, building)?
+                .into_iter()
+                .enumerate()
+            {
+                animals[species] = animals[species].saturating_add(above);
+            }
+        }
+        Ok(Available { goods, animals })
     }
 
     /// The plans to try (rule 12): on foot with 1 to `foot_people` people; or one land vehicle of each kind the trader has free (or
     /// could build), alone or with one boat of each kind it has free or could build; each with its full crew or its fewest; and a boat
     /// alone (11c.3 rule 10). Of two free vehicles of one kind the lower number is used (rule 11).
-    fn shapes(&self, home: usize, pop: usize) -> Vec<Shape> {
+    fn shapes(&self, home: usize, pop: usize, available: Option<&Available>) -> Vec<Shape> {
         let rules = self.rules;
         let place = &self.state.places[home];
         let culture = &place.pops[pop].culture;
@@ -910,7 +1336,9 @@ impl Looker<'_> {
                         kind,
                         number: Some(number),
                     });
-                } else if definition.cultures.is_empty() || definition.cultures.contains(culture) {
+                } else if (definition.cultures.is_empty() || definition.cultures.contains(culture))
+                    && available.is_none_or(|available| available.makes(rules, definition))
+                {
                     found.push(Held { kind, number: None });
                 }
             }
@@ -982,6 +1410,8 @@ struct Evaluation<'a, 'b> {
     dest_want: &'a [u128],
     dest_spare: &'a [u128],
     spoken: &'a [u64],
+    /// In the opening, what the place has to make vehicles of: a plan's new vehicles must be makeable from it together.
+    available: Option<&'a Available>,
 }
 
 /// The timing of a trip with a load (11d.2 rule 4): its two ways, the hours of its round trip for the limit, the tick it is home, the
@@ -1418,7 +1848,37 @@ impl Evaluation<'_, '_> {
                 .filter(|held| held.number.is_none())
                 .map(|held| held.kind)
                 .collect(),
+            yearly: 0,
         };
+        if self.looker.opening {
+            // The vehicles a plan lacks are given only if the place could make them all together, from one pool of what it has.
+            if worked.new.len() > 1
+                && self.available.is_some_and(|available| {
+                    let kinds: Vec<&crate::VehicleKind> = worked
+                        .new
+                        .iter()
+                        .map(|kind| &self.looker.rules.vehicles[*kind])
+                        .collect();
+                    !available.makes_all(self.looker.rules, &kinds)
+                })
+            {
+                return Ok(None);
+            }
+            // The opening makes no yearly test: a plan that gains is kept, and ranked by what a year of it costs (11c.5 rule 19).
+            let mut worked = worked;
+            let trips = self
+                .looker
+                .trips_a_year(self.home, self.pop, self.wants, &worked)?;
+            let mut price = 0_i128;
+            for kind in &worked.new {
+                price = price.saturating_add(self.looker.vehicle_price(self.home, *kind)?);
+            }
+            worked.yearly = worked
+                .cost
+                .saturating_mul(i128::from(trips))
+                .saturating_add(price);
+            return Ok(Some(worked));
+        }
         // A plan that needs a vehicle the trader lacks is possible only if the year's gain pays for the vehicle (T13).
         if !worked.new.is_empty()
             && (worked.gain <= 0

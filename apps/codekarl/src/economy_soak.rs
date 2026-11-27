@@ -1,7 +1,8 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fmt::Write as FmtWrite,
     path::{Path, PathBuf},
+    time::{Duration, Instant},
 };
 
 use ck_economy::{EconomyState, Rules};
@@ -23,7 +24,6 @@ pub(super) fn run(arguments: impl IntoIterator<Item = String>) -> Result<String,
     let mut seed = 1_u64;
     let mut looks = false;
     let mut hours_limit: Option<u64> = None;
-    let mut sample: Option<usize> = None;
     let mut args = arguments.into_iter();
     while let Some(argument) = args.next() {
         match argument.as_str() {
@@ -43,14 +43,6 @@ pub(super) fn run(arguments: impl IntoIterator<Item = String>) -> Result<String,
                     .map_err(|_| "--seed must be an unsigned integer")?;
             }
             "--looks" => looks = true,
-            "--sample" => {
-                sample = Some(
-                    args.next()
-                        .ok_or("--sample needs a number")?
-                        .parse()
-                        .map_err(|_| "--sample must be a whole number of places")?,
-                );
-            }
             "--hours" => {
                 hours_limit = Some(
                     args.next()
@@ -61,8 +53,8 @@ pub(super) fn run(arguments: impl IntoIterator<Item = String>) -> Result<String,
             }
             "--help" => {
                 return Ok(
-                    "Usage: economy-soak [--scenario DIR] [--years N] [--seed N] [--looks [--hours N] [--sample PLACES]]\n\
-                     --looks runs the traders' looks hour by hour (CK-433) and prints what looking cost instead of the CSV; --sample lets only\n                     the first PLACES places' traders look at the opening, to measure the cost of one.\n"
+                    "Usage: economy-soak [--scenario DIR] [--years N] [--seed N] [--looks [--hours N]]\n\
+                     --looks opens the game with trade under way (CK-434), runs the traders' looks hour by hour (CK-433) and prints what the\n                     opening and looking cost instead of the CSV.\n"
                         .to_owned(),
                 );
             }
@@ -107,6 +99,13 @@ pub(super) fn run(arguments: impl IntoIterator<Item = String>) -> Result<String,
         crate::game::setup::nearby_places(&map, crate::game::setup::max_recruit_range_m(&rules));
     let trade_by_place = crate::game::setup::trade_neighbours(&map);
     if looks {
+        let tables = crate::game::setup::DayTables::build(&map, Some(&rules))?;
+        // The shipped climate, which the game's day reads for the heating of each place (CK-446): none for a scenario without it.
+        let weather = if assets.join("game/weather.toml").exists() {
+            Some(crate::game::setup::WeatherData::load(assets, &map)?)
+        } else {
+            None
+        };
         return looks_report(
             assets,
             &map,
@@ -115,11 +114,9 @@ pub(super) fn run(arguments: impl IntoIterator<Item = String>) -> Result<String,
             seed,
             years,
             hours_limit,
-            sample,
-            &quality_by_place,
-            &shelter_by_place,
-            &nearby_by_place,
-            &trade_by_place,
+            // The tables and the climate the game's day reads, built by the game's own code (CK-434 review 6).
+            &tables,
+            weather.as_ref(),
         );
     }
     let mut date = Date {
@@ -226,9 +223,70 @@ fn simulate_with_supply(
     Ok(csv)
 }
 
+/// A look report that says on standard error how far the opening has got, for a run that takes a while.
+#[derive(Default)]
+struct ProgressReport {
+    report: ck_economy::LookReport,
+    since: Option<Instant>,
+}
+
+impl ck_economy::LookObserver for ProgressReport {
+    fn observe(&mut self, event: ck_economy::LookEvent) {
+        let since = *self.since.get_or_insert_with(Instant::now);
+        let looks = self.report.looks;
+        self.report.observe(event);
+        if self.report.looks != looks && self.report.looks.is_multiple_of(50) {
+            eprintln!(
+                "opening: {} first looks after {:.1} s",
+                self.report.looks,
+                since.elapsed().as_secs_f64()
+            );
+        }
+    }
+}
+
+/// The opening's vehicles by kind and owner type, and its expeditions by what moves them (section 13 evidence), one line each.
+fn opening_tally(rules: &Rules, state: &EconomyState) -> Result<String, String> {
+    let mut vehicles: BTreeMap<(String, String), u64> = BTreeMap::new();
+    let mut moving: BTreeMap<String, u64> = BTreeMap::new();
+    let mut gathering = 0_u64;
+    for place in &state.places {
+        for vehicle in &place.trade.vehicles {
+            let owner = place.pops[vehicle.pop as usize].kind.clone();
+            let kind = rules.vehicles[vehicle.kind as usize].id.clone();
+            *vehicles.entry((kind, owner)).or_insert(0) += 1;
+        }
+        for expedition in &place.trade.expeditions {
+            let by = expedition.vehicles.first().map_or_else(
+                || "on foot".to_owned(),
+                |vehicle| rules.vehicles[vehicle.kind as usize].id.clone(),
+            );
+            *moving.entry(by).or_insert(0) += 1;
+        }
+        gathering += place
+            .trade
+            .jobs
+            .iter()
+            .filter(|job| matches!(job.kind, ck_economy::JobKind::Trade { .. }))
+            .count() as u64;
+    }
+    let mut out = String::new();
+    for ((kind, owner), count) in &vehicles {
+        writeln!(out, "opening vehicles: {kind} of {owner} pops: {count}")
+            .map_err(|error| error.to_string())?;
+    }
+    for (by, count) in &moving {
+        writeln!(out, "opening expeditions part way out: {by}: {count}")
+            .map_err(|error| error.to_string())?;
+    }
+    writeln!(out, "opening trade jobs gathering: {gathering}")
+        .map_err(|error| error.to_string())?;
+    Ok(out)
+}
+
 /// What a run of the traders' looks cost (CK-433, trade spec 11d.2 rule 3 and section 13): the shipped scenario's economy stepped hour
-/// by hour with looks on, read-only evidence and not a game. The opening is the first hour, in which every trader looks; the year is
-/// every hour after it.
+/// by hour with looks on, read-only evidence and not a game. The opening (CK-434) is run first, before the first tick, with every
+/// trader's first look; the year is every hour after it.
 #[expect(
     clippy::too_many_arguments,
     clippy::too_many_lines,
@@ -242,22 +300,17 @@ fn looks_report(
     seed: u64,
     years: u16,
     hours_limit: Option<u64>,
-    sample: Option<usize>,
-    quality_by_place: &BTreeMap<String, u16>,
-    shelter_by_place: &BTreeMap<String, u64>,
-    nearby_by_place: &BTreeMap<String, Vec<ck_economy::NearbyPlace>>,
-    trade_by_place: &BTreeMap<String, Vec<ck_economy::NearbyPlace>>,
+    tables: &crate::game::setup::DayTables,
+    weather: Option<&crate::game::setup::WeatherData>,
 ) -> Result<String, String> {
     use crate::game::trade_ways::{NetworkWays, TradeNetwork, starting_states};
-    use std::time::{Duration, Instant};
-
     rules.expedition.looks = true;
     let travel = std::fs::read_to_string(assets.join("game/travel.toml"))
         .map_err(|error| format!("travel.toml: {error}"))?;
     let network = std::sync::Arc::new(TradeNetwork {
         scenario: map.clone(),
         rules: ck_sim::travel::TravelRules::parse(&travel)?,
-        neighbours: trade_by_place.clone(),
+        neighbours: tables.trade_by_place.clone(),
         radius_m: rules.expedition.visit_radius_m,
     });
     let watch = crate::game::trade_ways::SearchWatch::default();
@@ -267,48 +320,99 @@ fn looks_report(
         year: map.start.year,
         month: map.start.month,
         day: map.start.day,
-        hour: 0,
+        hour: map.start.hour,
     };
     let hours = hours_limit.unwrap_or(u64::from(years) * 365 * 24);
-    if let Some(places) = sample {
-        // The traders of the other places have looked at the start, so only the sampled places' look at the opening.
-        let start = ck_sim::GameTime::from_date(date)
-            .map_err(|error| error.to_string())?
-            .hours();
-        for place in state.places.iter_mut().skip(places) {
-            for pop in 0..place.pops.len() {
-                place.trade.looks.insert(
-                    u32::try_from(pop).map_err(|error| error.to_string())?,
-                    ck_economy::Look {
-                        last: start,
-                        rest: None,
+    let start = ck_sim::GameTime::from_date(date)
+        .map_err(|error| error.to_string())?
+        .hours();
+    // The same game without trade, for the hunger and deaths to be read against (section 13), when a whole year is run.
+    let baseline = if hours_limit.is_none() {
+        // The same hours from the same first hour, the daily economy alone: the same calendar and reporting boundaries as the run with trade.
+        let (mut alone, mut at, mut csv) = (state.clone(), date, String::new());
+        for _ in 0..hours {
+            if at.hour == 12 {
+                let degree_hours = crate::game::setup::degree_hours_for(weather, &rules, at)?;
+                let ledger = crate::game::setup::run_economy_day(
+                    &rules,
+                    &mut alone,
+                    at,
+                    &BTreeMap::new(),
+                    &crate::game::setup::DayInputs {
+                        quality_by_place: &tables.quality_by_place,
+                        shelter_by_place: &tables.shelter_by_place,
+                        nearby_by_place: &tables.nearby_by_place,
+                        land_by_place: &tables.land_by_place,
+                        trade_by_place: &tables.trade_by_place,
+                        degree_hours: &degree_hours,
                     },
-                );
+                )?;
+                if at.day == 1 {
+                    append_month_rows(
+                        &mut csv,
+                        seed,
+                        at,
+                        &rules,
+                        &alone,
+                        &ledger,
+                        &tables.shelter_by_place,
+                    )?;
+                }
             }
+            step_date(&mut at)?;
         }
-    }
-    let (mut opening, mut year) = (
-        ck_economy::LookReport::default(),
-        ck_economy::LookReport::default(),
-    );
-    let (mut opening_time, mut day_time, mut day_max) =
-        (Duration::ZERO, Duration::ZERO, Duration::ZERO);
+        Some(summarize_months(&csv))
+    } else {
+        None
+    };
+    // The opening (CK-434, part F): the pops' goods, the fleets and every trader's first look, in one go before the first tick.
+    let mut opening = ProgressReport::default();
+    ways.begin(states.clone());
+    let opened = Instant::now();
+    let opened_with =
+        ck_economy::run_opening(&rules, &mut state, start, seed, &mut ways, &mut opening)
+            .map_err(|error| error.to_string())?;
+    let opening_time = opened.elapsed();
+    let opening = opening.report;
+    let opening_searches = watch.lock().ok().map(|counts| counts.clone());
+    let opening_vehicles = opening_tally(&rules, &state)?;
+    let mut year = ck_economy::LookReport::default();
+    let (mut day_time, mut day_max) = (Duration::ZERO, Duration::ZERO);
     let (mut looking_days, mut daily_total) = (0_u64, Duration::ZERO);
-    let mut opening_searches = None;
-    for hour in 0..hours {
+    // What the year's trade did, for the evidence: the expeditions made by what moves them, the goods they took out and meant to bring
+    // back, and (with the daily economy's monthly rows) the hunger and deaths against the same year without trade.
+    let mut moved = Movement::new(rules_goods(&rules), state.trade.expeditions);
+    let mut monthly = String::new();
+    for _ in 0..hours {
         if date.hour == 12 {
-            ck_economy::run_daily_economy_with_trade_neighbours(
+            let degree_hours = crate::game::setup::degree_hours_for(weather, &rules, date)?;
+            let ledger = crate::game::setup::run_economy_day(
                 &rules,
                 &mut state,
                 date,
-                quality_by_place,
-                shelter_by_place,
-                nearby_by_place,
                 &BTreeMap::new(),
-                &BTreeMap::new(),
-                trade_by_place,
-            )
-            .map_err(|error| error.to_string())?;
+                &crate::game::setup::DayInputs {
+                    quality_by_place: &tables.quality_by_place,
+                    shelter_by_place: &tables.shelter_by_place,
+                    nearby_by_place: &tables.nearby_by_place,
+                    land_by_place: &tables.land_by_place,
+                    trade_by_place: &tables.trade_by_place,
+                    degree_hours: &degree_hours,
+                },
+            )?;
+            if date.day == 1 {
+                append_month_rows(
+                    &mut monthly,
+                    seed,
+                    date,
+                    &rules,
+                    &state,
+                    &ledger,
+                    &tables.shelter_by_place,
+                )?;
+            }
+            // After the noon exchange and before the hour's travel: the load an expedition that has just traded starts home with.
+            moved.see(&rules, &state);
         }
         ways.begin(states.clone());
         let started = Instant::now();
@@ -316,16 +420,11 @@ fn looks_report(
         ck_economy::run_trade_hour_with_looks(&rules, &mut state, date, &mut ways, &mut report)
             .map_err(|error| error.to_string())?;
         let spent = started.elapsed();
-        if hour == 0 {
-            opening = report;
-            opening_time = spent;
-            opening_searches = watch.lock().ok().map(|counts| counts.clone());
-        } else {
-            year.add(&report);
-            if report.looks > 0 {
-                day_time += spent;
-                daily_total += spent;
-            }
+        moved.see(&rules, &state);
+        year.add(&report);
+        if report.looks > 0 {
+            day_time += spent;
+            daily_total += spent;
         }
         if date.hour == 23 {
             if day_time > Duration::ZERO {
@@ -334,16 +433,7 @@ fn looks_report(
             }
             day_time = Duration::ZERO;
         }
-        // The next hour.
-        date.hour += 1;
-        if date.hour == 24 {
-            date.hour = 0;
-            date.day += 1;
-            if date.day > days_in_month(date.year, date.month).map_err(|error| error.to_string())? {
-                advance_month(&mut date)?;
-                date.hour = 0;
-            }
-        }
+        step_date(&mut date)?;
     }
     let counts = watch
         .lock()
@@ -375,7 +465,30 @@ fn looks_report(
         )
     )
     .map_err(|error| error.to_string())?;
-    writeln!(out, "opening (hour 0): {}", shown(&opening)).map_err(|error| error.to_string())?;
+    writeln!(out, "opening (before the first tick): {}", shown(&opening))
+        .map_err(|error| error.to_string())?;
+    writeln!(
+        out,
+        "opening gave: {} vehicles as fleets and {} with a chosen plan, {} trips chosen of which {} started part way out ({} hours travelled in all), {} traders with no job given a last look",
+        opened_with.fleets.len(),
+        opened_with.looks.given,
+        opened_with.looks.jobs,
+        opened_with.looks.started.len(),
+        opened_with.looks.started.iter().map(|(_, _, hours)| hours).sum::<u64>(),
+        opened_with.last_looks,
+    )
+    .map_err(|error| error.to_string())?;
+    out.push_str(&opening_vehicles);
+    for (index, (units, pops)) in opened_with.goods.iter().enumerate() {
+        if *units > 0 {
+            writeln!(
+                out,
+                "opening goods: {} {units} units to {pops} pops",
+                rules.goods[index].id
+            )
+            .map_err(|error| error.to_string())?;
+        }
+    }
     if let Some(counts) = &opening_searches {
         writeln!(
             out,
@@ -419,7 +532,145 @@ fn looks_report(
     }
     writeln!(out, "at the end: {away} expeditions away, {jobs} jobs")
         .map_err(|error| error.to_string())?;
+    moved.write(&mut out)?;
+    let (deaths, hungry, rows) = summarize_months(&monthly);
+    writeln!(
+        out,
+        "with trade: {deaths} deaths and {hungry} of {rows} pop-months holding under 60 days of food, over the {hours} hours run"
+    )
+    .map_err(|error| error.to_string())?;
+    if let Some((deaths, hungry, rows)) = baseline {
+        writeln!(
+            out,
+            "without trade (the accepted base, the daily economy alone): {deaths} deaths and {hungry} of {rows} pop-months holding under 60 days of food"
+        )
+        .map_err(|error| error.to_string())?;
+    }
     Ok(out)
+}
+
+/// The goods of the rules, by id.
+fn rules_goods(rules: &Rules) -> Vec<String> {
+    rules.goods.iter().map(|good| good.id.clone()).collect()
+}
+
+/// What the expeditions made did, tallied as each is first seen (section 13): by what moves them, and the goods each took out and meant to
+/// bring back.
+struct Movement {
+    goods: Vec<String>,
+    seen: u64,
+    /// The load each expedition that has traded brings home, as last seen; counted once, when the expedition has unloaded and is gone.
+    returning: BTreeMap<u64, Vec<u64>>,
+    by_kind: BTreeMap<String, u64>,
+    out: Vec<u64>,
+    back: Vec<u64>,
+}
+
+impl Movement {
+    fn new(goods: Vec<String>, seen: u64) -> Self {
+        let count = goods.len();
+        Self {
+            goods,
+            seen,
+            returning: BTreeMap::new(),
+            by_kind: BTreeMap::new(),
+            out: vec![0; count],
+            back: vec![0; count],
+        }
+    }
+
+    /// Tallies the expeditions made since the last look by what moves them and what they took out, remembers the load each that has
+    /// traded brings home, and counts that load once the expedition is gone from its place (it has unloaded at home). Seen at noon between
+    /// the exchange and the hour's travel as well as after the hour, so a return of an hour or less is seen too; a trip still travelling
+    /// when the run ends has brought nothing home yet and is not counted.
+    fn see(&mut self, rules: &Rules, state: &EconomyState) {
+        let mut present = BTreeSet::new();
+        for expedition in state
+            .places
+            .iter()
+            .flat_map(|place| &place.trade.expeditions)
+        {
+            present.insert(expedition.number);
+            if expedition.number > self.seen {
+                let by = expedition.vehicles.first().map_or_else(
+                    || "on foot".to_owned(),
+                    |vehicle| rules.vehicles[vehicle.kind as usize].id.clone(),
+                );
+                *self.by_kind.entry(by).or_insert(0) += 1;
+                for (total, units) in self.out.iter_mut().zip(&expedition.plan.cargo) {
+                    *total += units;
+                }
+            }
+            if expedition.traded {
+                self.returning
+                    .insert(expedition.number, expedition.cargo.clone());
+            }
+        }
+        let home: Vec<u64> = self
+            .returning
+            .keys()
+            .copied()
+            .filter(|number| !present.contains(number))
+            .collect();
+        for number in home {
+            if let Some(load) = self.returning.remove(&number) {
+                for (total, units) in self.back.iter_mut().zip(&load) {
+                    *total += units;
+                }
+            }
+        }
+        self.seen = state.trade.expeditions;
+    }
+
+    fn write(&self, out: &mut String) -> Result<(), String> {
+        for (by, count) in &self.by_kind {
+            writeln!(out, "expeditions made after the opening: {by}: {count}")
+                .map_err(|error| error.to_string())?;
+        }
+        for (index, good) in self.goods.iter().enumerate() {
+            if self.out[index] > 0 || self.back[index] > 0 {
+                writeln!(
+                    out,
+                    "goods moved between places: {good}: {} taken out, {} brought home and unloaded",
+                    self.out[index], self.back[index]
+                )
+                .map_err(|error| error.to_string())?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The deaths, the pop-months under 60 days of food and the pop-months of a monthly CSV (the soak's own columns).
+fn summarize_months(csv: &str) -> (u64, u64, u64) {
+    let (mut deaths, mut hungry, mut rows) = (0_u64, 0_u64, 0_u64);
+    for line in csv.lines().filter(|line| !line.starts_with("seed,")) {
+        let fields: Vec<&str> = line.split(',').collect();
+        let (Some(food), Some(dead)) = (fields.get(11), fields.get(13)) else {
+            continue;
+        };
+        let (Ok(food), Ok(dead)) = (food.parse::<u64>(), dead.parse::<u64>()) else {
+            continue;
+        };
+        rows += 1;
+        deaths += dead;
+        hungry += u64::from(food < 60_000);
+    }
+    (deaths, hungry, rows)
+}
+
+/// The next hour.
+fn step_date(date: &mut Date) -> Result<(), String> {
+    date.hour += 1;
+    if date.hour == 24 {
+        date.hour = 0;
+        date.day += 1;
+        if date.day > days_in_month(date.year, date.month).map_err(|error| error.to_string())? {
+            advance_month(date)?;
+            date.hour = 0;
+        }
+    }
+    Ok(())
 }
 
 fn advance_month(date: &mut Date) -> Result<(), String> {
@@ -642,6 +893,79 @@ fn csv_field(value: &str) -> String {
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    /// An expedition of the trader that has traded and holds `cargo` (the load it starts home with).
+    fn traded(number: u64, goods: usize, cargo: Vec<u64>) -> ck_economy::Expedition {
+        ck_economy::Expedition {
+            number,
+            trader: 0,
+            plan: ck_economy::Plan {
+                destination: 1,
+                out: Vec::new(),
+                back: Vec::new(),
+                vehicles: Vec::new(),
+                people: Vec::new(),
+                cargo: vec![0; goods],
+                wanted: vec![0; goods],
+                supplies: vec![0; goods],
+                arrival: None,
+            },
+            groups: Vec::new(),
+            vehicles: Vec::new(),
+            cargo,
+            supplies: vec![0; goods],
+            pantry_centi: 0,
+            gone: false,
+            fed: None,
+            phase: ck_economy::Phase::Homeward,
+            traded: true,
+            leg: 0,
+            done: ck_economy::Hours::from_integer(0.into()),
+            pace_pm: 1000,
+            limiter: ck_economy::Limiter::Nothing,
+            reckoned: vec![0; goods],
+            reckoned_mode: ck_economy::Mode::Land,
+            left: 0,
+            arrived: Some(0),
+            daily: false,
+            loaded: vec![0; goods],
+        }
+    }
+
+    /// The year witness counts what an expedition brings home when it has unloaded: one seen between the noon exchange and the hour's
+    /// travel and gone from its place after it (a return of an hour or less) is counted, and one still travelling when the run ends is not.
+    #[test]
+    fn the_witness_counts_a_return_when_it_has_unloaded_and_not_while_it_travels() {
+        let rules = ck_economy::fixtures::rules_with(&["ox_cart"]);
+        let goods = rules.goods.len();
+        let mut load = vec![0_u64; goods];
+        load[0] = 10;
+        let mut state = ck_economy::fixtures::world(vec![ck_economy::fixtures::home_place(
+            &rules, "home", 40, 40,
+        )]);
+        state.places[0]
+            .trade
+            .expeditions
+            .push(traded(1, goods, load.clone()));
+        state.places[0]
+            .trade
+            .expeditions
+            .push(traded(2, goods, load));
+        state.trade.expeditions = 2;
+        let mut moved = Movement::new(rules_goods(&rules), 0);
+        // Seen after the noon exchange: both have traded and are starting home.
+        moved.see(&rules, &state);
+        assert_eq!(moved.back[0], 0, "nothing has been brought home yet");
+        // Expedition 1 returned and unloaded within the hour; 2 is still on the road when the run ends.
+        state.places[0].trade.expeditions.remove(0);
+        moved.see(&rules, &state);
+        assert_eq!(moved.back[0], 10, "the same-hour return is counted once");
+        moved.see(&rules, &state);
+        assert_eq!(
+            moved.back[0], 10,
+            "and only once; the one on the road is not counted"
+        );
+    }
 
     /// A running digest of everything the daily economy changes: prices, stores, herds, wages, staffing, the product carries and
     /// the production carries in the old unit, and every pop's numbers and stores.
