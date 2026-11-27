@@ -186,9 +186,25 @@ fn a_hand_cart_is_built_from_the_pops_own_wood_and_people_in_four_hours_and_it_o
             kind: kind(&rules, "hand_cart"),
             pop: u32::try_from(PEASANT).unwrap(),
             free: true,
+            materials: Some(VehicleMaterials {
+                goods: {
+                    let mut goods = vec![0; rules.goods.len()];
+                    goods[wood(&rules)] = 2;
+                    goods
+                },
+                animals: vec![0; rules.herd_species.len()]
+            }),
         }]
     );
     assert!(state.places[0].trade.jobs.is_empty(), "the job ends");
+    let mut encoded = Vec::new();
+    state.encode(&mut encoded).unwrap();
+    let restored = EconomyState::decode(&mut Reader::new(&encoded)).unwrap();
+    assert_eq!(
+        restored.places[0].trade.vehicles,
+        state.places[0].trade.vehicles
+    );
+    validate_trade_state(&rules, &restored).unwrap();
     assert_eq!(
         state.places[0].trade.held(PEASANT),
         0,
@@ -890,6 +906,7 @@ fn a_saved_trade_state_that_names_what_does_not_exist_is_refused() {
             kind: kinds,
             pop: 0,
             free: true,
+            materials: None,
         });
     }));
     assert!(broken(&|s| {
@@ -1017,6 +1034,7 @@ fn saved_trade_state() -> (Rules, EconomyState) {
         kind: 0,
         pop: 0,
         free: true,
+        materials: None,
     });
     state.trade.vehicles = 1;
     trade::count_days_away(&mut state.places[0]);
@@ -1050,7 +1068,8 @@ fn every_saved_trade_field_is_checked_against_its_whole_domain() {
         number: 1,
         kind: 0,
         pop: 0,
-        free: true
+        free: true,
+        materials: None
     })));
     assert!(refused(&|s| jobs_of(s)[1].number = jobs_of(s)[0].number));
     assert!(refused(&|s| jobs_of(s)[0].number = 0));
@@ -1062,6 +1081,11 @@ fn every_saved_trade_field_is_checked_against_its_whole_domain() {
     assert!(refused(&|s| jobs_of(s)[0].pop = 99));
     assert!(refused(&|s| s.places[0].trade.vehicles[0].kind = kinds));
     assert!(refused(&|s| s.places[0].trade.vehicles[0].pop = 99));
+    assert!(refused(&|s| s.places[0].trade.vehicles[0].materials =
+        Some(VehicleMaterials {
+            goods: vec![],
+            animals: vec![]
+        })));
     assert!(refused(&|s| {
         jobs_of(s)[0].need_goods.pop();
     }));

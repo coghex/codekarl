@@ -53,6 +53,7 @@ pub(crate) struct SimSnapshot {
     pub(crate) economy: Option<Arc<EconomyView>>,
     /// Positions and frozen paths at this hour.
     pub(crate) expeditions: Arc<Vec<super::expedition_map::ExpeditionMap>>,
+    pub(crate) pop_trade: Arc<Vec<super::trade_panel::PopTrade>>,
     /// Weather computed from the state at this hour, independent of the economy revision.
     pub(crate) weather: HourlyWeather,
     /// Event rows at this revision.
@@ -88,6 +89,7 @@ impl SimSnapshot {
             || self.log_choices != other.log_choices
             || self.economy_revision != other.economy_revision
             || self.expeditions != other.expeditions
+            || self.pop_trade != other.pop_trade
             || self.events_revision != other.events_revision
             || self.world != other.world
     }

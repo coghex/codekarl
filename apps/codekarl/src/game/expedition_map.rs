@@ -9,6 +9,7 @@ pub(crate) struct ExpeditionMap {
     pub(crate) position: [i64; 2],
     pub(crate) past: Vec<Vec<[i64; 2]>>,
     pub(crate) ahead: Vec<Vec<[i64; 2]>>,
+    pub(crate) panel: Option<super::expedition_panel::PanelView>,
 }
 
 fn point((x, y): (Hours, Hours)) -> Option<[i64; 2]> {
@@ -46,6 +47,7 @@ fn one(trip: &Expedition, rules: &Rules) -> Option<ExpeditionMap> {
                 position,
                 past,
                 ahead,
+                panel: None,
             });
         }
         Phase::Homeward => {
@@ -77,6 +79,7 @@ fn one(trip: &Expedition, rules: &Rules) -> Option<ExpeditionMap> {
         position,
         past,
         ahead,
+        panel: None,
     })
 }
 
@@ -84,8 +87,14 @@ pub(crate) fn build(state: &EconomyState, rules: &Rules) -> Vec<ExpeditionMap> {
     let mut trips: Vec<_> = state
         .places
         .iter()
-        .flat_map(|place| &place.trade.expeditions)
-        .filter_map(|trip| one(trip, rules))
+        .enumerate()
+        .flat_map(|(home, place)| {
+            place.trade.expeditions.iter().filter_map(move |trip| {
+                let mut view = one(trip, rules)?;
+                view.panel = super::expedition_panel::build(state, home, trip, rules);
+                Some(view)
+            })
+        })
         .collect();
     trips.sort_by_key(|trip| trip.number);
     trips
@@ -166,5 +175,9 @@ mod tests {
         let mut waiting = trip.clone();
         waiting.phase = Phase::Waiting;
         assert_eq!(one(&waiting, &rules).unwrap().position, [100, 300]);
+        assert_eq!(waiting.remaining_hours(&rules), Some(ratio(0, 1)));
+        let mut empty = trip.clone();
+        empty.plan.out.clear();
+        assert_eq!(empty.remaining_hours(&rules), Some(ratio(1, 1)));
     }
 }

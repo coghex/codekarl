@@ -1528,3 +1528,68 @@ panel_detail:refresh(1, 1, 0); note('charged_pop_done')",
         "{recorded:?}"
     );
 }
+
+#[test]
+fn pop_detail_lists_hourly_vehicles_and_jobs_and_opens_a_vehicle() {
+    let mut rig = rig(&[r"
+game.pop_trade = function(place, slot, world)
+  assert(place == 'cards' and slot == 0 and world == '0')
+  return {vehicles={{number='7',kind='hand_cart',free=true,expedition=false,carrier=false,load_g=0,load_ml=0,
+    capacity_g=150000,capacity_ml=500000,crew=0,full_crew=1,pace_pm=false}},
+    jobs={{label='building ox_cart',state='gathering',hours_left=false,lacks={{id='hardwood',amount=2}}},
+      {label='trip to elsewhere',state='outbound',hours_left=false,lacks={}}}}
+end
+colour_watch = true
+panel_detail = require('lib.location_detail').new{view = {width = 1800, height = 900}, top = function() return 0 end,
+  open_character = function() end, on_go = function() end,
+  open_vehicle = function(vehicle, place, index, world) note('vehicle_open ' .. vehicle.number .. ' ' .. place .. ' ' .. index .. ' ' .. world) end}
+panel_detail:open('pop', 'cards', 'Cards', 1, 1, 1, 0)
+local items = panel_detail.stack.items
+local card = items[#items - 1]
+assert(card.on_click, 'vehicle card is clickable')
+card.on_click(); require('lib.pointer').dispatch({})
+note('pop_trade_ok')
+"]);
+    rig.opened();
+    let captured = notes(&rig);
+    assert!(
+        captured
+            .iter()
+            .any(|line| line == "vehicle_open 7 cards 1 0"),
+        "{captured:?}"
+    );
+    assert!(
+        captured.iter().any(|line| line == "pop_trade_ok"),
+        "{captured:?}"
+    );
+    assert!(
+        captured
+            .iter()
+            .any(|line| line.contains("building ox cart")),
+        "{captured:?}"
+    );
+    assert!(
+        captured
+            .iter()
+            .any(|line| line.contains("trip to elsewhere")),
+        "{captured:?}"
+    );
+}
+
+#[test]
+fn vehicle_return_does_not_rebind_a_changed_pop() {
+    let mut rig = rig(&[r"
+game.pop_members = function() return {} end
+panel_detail = require('lib.location_detail').new{view = {width = 1800, height = 900}, top = function() return 0 end,
+  open_character = function() end, on_go = function() end}
+panel_detail:open('pop', 'cards', 'Cards', 1, 1, 1, 0)
+local original = panel_detail.item_kind
+panel_detail:close()
+VIEWS[1].cards.pops[1].kind = 'replacement'
+assert(not panel_detail:return_to_pop('cards', 1, original, 1, 1, 0), 'a different pop is not rebound')
+assert(not panel_detail:is_open())
+VIEWS[1].cards.pops[1].kind = original
+assert(panel_detail:return_to_pop('cards', 1, original, 1, 1, 0), 'the same pop returns')
+"]);
+    rig.opened();
+}

@@ -3075,6 +3075,11 @@ GUARDS: tuple[Guard, ...] = (
         "rust.app",
         ("scripts/ui/main.lua", "assets/ui/"),
     ),
+    Guard(
+        "apps/codekarl/src/ui_link/expedition_tests.rs",
+        "rust.app",
+        ("scripts/ui/main.lua", "assets/ui/"),
+    ),
     # These off-screen GPU cases decode the same shipped font as part of their owning crate tests.
     Guard(
         "crates/gpu-metal/tests/presenter_instanced/cases.rs",

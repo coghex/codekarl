@@ -57,6 +57,8 @@ local relayouts = {}
 local help_window = nil
 local places_window = nil
 local expedition_layer = nil
+local expedition_panel = nil
+local expedition_update = nil
 
 if game ~= nil then
   if game.expeditions ~= nil then expedition_layer = require("lib.expeditions").new() end
@@ -420,6 +422,7 @@ if game ~= nil then
   -- The location panel: the left third of the screen below the time bar, filled from the economy view of the revision `game_time`
   -- carries (`game.place`), never from live state.
   local detail_panel
+  local pop_vehicle
   local last_events_revision = 0
   local location_panel
   location_panel = location.new{
@@ -437,6 +440,93 @@ if game ~= nil then
       return 0
     end,
   }
+
+  if expedition_layer ~= nil and game.expedition_camera ~= nil then
+    local following, manual, last_tick = false, nil, nil
+    local function stop_follow()
+      following, manual = false, nil
+      if expedition_panel then expedition_panel:set_following(false) end
+    end
+    windows.observe_open(function(_, spec)
+      if not spec.expedition_owned then
+        stop_follow()
+        if expedition_panel and expedition_panel:is_open() and (spec.kind == 'place' or spec.kind == 'social') then expedition_panel:discard() end
+      end
+    end)
+    local function go(zoom, expected)
+      if not expedition_panel or not expedition_panel:is_open() then return false end
+      local ok, generation = pcall(game.expedition_camera, expedition_panel.id, expedition_panel.world, zoom, expected or false)
+      if not ok then stop_follow(); return false end
+      manual = generation
+      return true
+    end
+    expedition_panel = require('lib.expedition_panel').new{
+      view = view, top = function() return time_panel ~= nil and time_panel.y + time_panel.height + MARGIN or 0 end,
+      on_close = function()
+        stop_follow()
+        if expedition_layer.selected == expedition_panel.id then expedition_layer:clear() end
+      end,
+      on_go = function() go(true) end,
+      on_follow = function()
+        if following then stop_follow() elseif go(false) then following = true; expedition_panel:set_following(true) end
+      end,
+      on_child = stop_follow,
+    }
+    expedition_update = function(data)
+      local selected = expedition_layer.selected
+      if expedition_panel:is_open() and expedition_panel.world ~= data.world then expedition_panel:discard(); pop_vehicle = nil end
+      if expedition_panel:is_vehicle() and expedition_panel.origin_pop and selected ~= nil then expedition_panel:discard(); pop_vehicle = nil end
+      if expedition_panel:is_vehicle() and expedition_panel.origin_pop then
+        if pop_vehicle then
+          local ok, row = pcall(game.pop_trade, pop_vehicle.place, pop_vehicle.index - 1, data.world)
+          if ok and row and row.tick ~= pop_vehicle.tick then
+            pop_vehicle.tick = row.tick
+            for _, vehicle in ipairs(row.vehicles) do
+              if vehicle.number == pop_vehicle.number then expedition_panel:refresh({home = pop_vehicle.place, vehicles = {vehicle}}); break end
+            end
+          end
+        end
+        return
+      end
+      if expedition_panel:is_vehicle() and selected ~= nil and selected ~= expedition_panel.id then expedition_panel:discard() end
+      local trip
+      for _, entry in ipairs(data.trips) do if entry.id == selected then trip = entry; break end end
+      if not trip or not trip.panel then
+        if expedition_panel:is_vehicle() then
+          if last_tick ~= data.tick or not expedition_panel.ended then
+            last_tick = data.tick
+            local parent = expedition_panel.data
+            local ok, row = pcall(game.pop_trade, parent.home, parent.trader_slot, data.world)
+            if ok and row then
+              for _, vehicle in ipairs(row.vehicles) do
+                if vehicle.number == expedition_panel.vehicle.number then
+                  parent.vehicles = {vehicle}; expedition_panel:refresh(parent); break
+                end
+              end
+            end
+          end
+          expedition_panel:trip_ended(); stop_follow(); return
+        end
+        if expedition_panel:is_open() then expedition_panel:close() end
+        stop_follow(); last_tick = nil; return
+      end
+      trip.panel.icon = trip.icon
+      if following then
+        local ok, generation = pcall(game.expedition_camera, false)
+        if not ok or generation ~= manual then stop_follow() end
+      end
+      if not expedition_panel:is_open() or expedition_panel.id ~= selected or expedition_panel.world ~= data.world then
+        if detail_panel ~= nil then detail_panel:close() end
+        if character_panel ~= nil then character_panel:close() end
+        if location_panel.window ~= nil and not location_panel.window.closed then location_panel.window:close() end
+        expedition_panel:open(selected, data.world, trip.panel); last_tick = data.tick
+      elseif last_tick ~= data.tick then
+        expedition_panel:refresh(trip.panel); last_tick = data.tick
+        if following then go(false, manual) end
+      end
+    end
+    relayouts[#relayouts + 1] = function() expedition_panel:relayout() end
+  end
 
   game.on_time(function(time)
     event_log:refresh(time)
@@ -490,6 +580,7 @@ if game ~= nil then
   -- A place's `id` and `name` (`game_select`'s fields, a map click's or a places-list row's) open the location panel, or show that
   -- place in it. The places list only selects.
   local function show_place(selection)
+    if expedition_panel ~= nil then expedition_panel:discard() end
     location_panel:show(selection)
     -- An open character screen stays over the left slot until it is closed.
     if character_panel ~= nil then character_panel:raise() end
@@ -577,6 +668,23 @@ if game ~= nil then
     view = view,
     top = function() return time_panel ~= nil and time_panel.y + time_panel.height + MARGIN or 0 end,
     on_go = function(id, revision) go_to.to("location", id, revision) end,
+    open_vehicle = function(vehicle, place, index, world)
+      if not expedition_panel or world ~= current_world then return end
+      local ok, current = pcall(game.pop_trade, place, index - 1, tostring(world))
+      if not ok or not current then return end
+      local live
+      for _, candidate in ipairs(current.vehicles) do if candidate.number == vehicle.number then live = candidate; break end end
+      if not live then return end
+      local expected_kind = detail_panel.item_kind
+      detail_panel:close()
+      pop_vehicle = {place = place, index = index, number = vehicle.number, tick = nil}
+      expedition_panel:open_from_pop(live, place, tostring(world), function()
+        pop_vehicle = nil
+        local still_current = pcall(game.pop_trade, place, index - 1, tostring(world))
+        if world == current_world and still_current then detail_panel:return_to_pop(place, index, expected_kind,
+          location_panel:current_revision(), last_events_revision, world) end
+      end)
+    end,
     open_character = function(id, world)
       if world == current_world then character_panel:open(id, location_panel:current_revision(), world) end
     end,
@@ -908,6 +1016,7 @@ if game ~= nil then
   -- restart, no new revision and no tick, so it works with the game paused.
   place_names.on_change(function()
     location_panel:relabel()
+    if expedition_panel ~= nil then expedition_panel:relabel() end
     character_panel:relabel()
     event_log:relabel()
     find_popup.relabel()
@@ -923,8 +1032,13 @@ end
 frame.on_update(function(update)
   -- An update's typing is handled first, all of it, and then its pointer events (lib/typing.lua).
   typing.dispatch(update)
-  pointer.dispatch(update.pointer)
   if expedition_layer ~= nil then expedition_layer:update(game.expeditions(expedition_layer.selected or false), update.width, update.height) end
+  pointer.dispatch(update.pointer)
+  if expedition_layer ~= nil then
+    local data = game.expeditions(expedition_layer.selected or false)
+    expedition_layer:update(data, update.width, update.height)
+    if expedition_update ~= nil and data ~= nil then expedition_update(data) end
+  end
   theme.refresh()
   require("lib.settings_window").update(update)
   listbar.update(update)
@@ -955,7 +1069,7 @@ window.on_close_request(function(source)
   log.info("close requested by " .. source)
   -- Escape closes what is open and, with nothing left, opens the pause menu; the close button ends the run.
   if source == "key" and find_popup.current() then find_popup.close(); return false end
-  if source == "key" and expedition_layer and expedition_layer.selected ~= nil then expedition_layer:clear(); return false end
+  if source == "key" and expedition_layer and expedition_layer.selected ~= nil and (not expedition_panel or not expedition_panel:is_open()) then expedition_layer:clear(); return false end
   return menu.close_request(source, view)
 end)
 

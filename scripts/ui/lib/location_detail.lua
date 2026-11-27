@@ -218,7 +218,7 @@ local function building_items(self, building, width)
 end
 
 function detail.new(spec)
-  return setmetatable({view = spec.view, top = spec.top, open_character = spec.open_character, on_go = spec.on_go}, detail)
+  return setmetatable({view = spec.view, top = spec.top, open_character = spec.open_character, on_go = spec.on_go, open_vehicle = spec.open_vehicle}, detail)
 end
 
 function detail:is_open() return self.window ~= nil and not self.window.closed end
@@ -248,6 +248,37 @@ function detail:refresh(revision, events_revision, world)
       revision = revision, characters = members}, width, kit)
     local stock = stock_section(item.stock, item.room_ml, "room", self.blights, width, self)
     if stock ~= nil then items[#items + 1] = stock end
+    if game.pop_trade ~= nil then
+      local got_trade, trade = pcall(game.pop_trade, self.place, self.index - 1, tostring(self.world))
+      if got_trade and trade then
+        if #trade.vehicles > 0 then
+          items[#items + 1] = section(11, function(result, group, y) heading(result, group, 0, y, width, 'vehicles') end)
+          local vehicle_items = require('lib.expedition_panel').vehicle_items(trade, width, function(number)
+            local chosen
+            for _, vehicle in ipairs(trade.vehicles) do if vehicle.number == number then chosen = vehicle; break end end
+            if chosen and self.open_vehicle then
+              local place, index, world = self.place, self.index, self.world
+              pointer.defer(function() if self:is_open() and self.world == world then self.open_vehicle(chosen, place, index, world) end end)
+            end
+          end)
+          for _, card in ipairs(vehicle_items) do items[#items + 1] = card end
+        end
+        if #trade.jobs > 0 then
+          items[#items + 1] = section(11 + #trade.jobs * 22, function(result, group, y)
+            heading(result, group, 0, y, width, 'jobs')
+            for n, job in ipairs(trade.jobs) do
+              local destination = job.label:match('^trip to (.+)$')
+              local label = destination and ('trip to ' .. require('lib.place_names').name_of(destination)) or job.label:gsub('_', ' ')
+              local status = job.hours_left and (job.hours_left .. ' h left') or job.state
+              draw.text(result, group, 0, y + 11 + (n - 1) * 22, draw.clip(label, width // 2), theme.colour('term'))
+              draw.text(result, group, width, y + 11 + (n - 1) * 22, status, theme.colour('text'), nil, 'right')
+              local missing = {}; for _, good in ipairs(job.lacks) do missing[#missing + 1] = good.amount .. ' ' .. good.id:gsub('_', ' ') end
+              if #missing > 0 then draw.text(result, group, 0, y + 22 + (n - 1) * 22, draw.clip(table.concat(missing, ', '), width), theme.colour('dim')) end
+            end
+          end)
+        end
+      end
+    end
   end
   if self.stack ~= nil and not self.stack.closed then
     local scroll = self.stack:scroll_position(); self.stack:set_items(items); self.stack:set_pos(scroll)
@@ -287,6 +318,15 @@ function detail:open(kind, place, name, index, revision, events_revision, world)
   end
   created:add_title_button{icon = "location", tooltip = "go to", on_click = function() self.on_go(self.place, self.revision) end}
   self:refresh(revision, events_revision, world)
+end
+
+-- A child returns only to the same pop the parent showed, under the current revision.
+function detail:return_to_pop(place, index, expected_kind, revision, events_revision, world)
+  local ok, source = pcall(game.place, place, revision)
+  local pop = ok and source and source.pops[index] or nil
+  if not pop or pop.kind ~= expected_kind then return false end
+  self:open('pop', place, require('lib.place_names').name_of(place), index, revision, events_revision, world)
+  return self:is_open()
 end
 
 function detail:relayout()

@@ -1437,6 +1437,7 @@ pub(crate) fn snapshot(hour: u8, speed: u8, paused: Option<PauseReason>) -> SimS
         economy_revision: 0,
         economy: None,
         expeditions: Arc::new(Vec::new()),
+        pop_trade: Arc::new(Vec::new()),
         weather: BTreeMap::new(),
         events: Arc::new(Vec::new()),
         events_revision: 0,

@@ -4480,6 +4480,7 @@ mod tests {
             economy_revision: 0,
             economy: None,
             expeditions: std::sync::Arc::new(Vec::new()),
+            pop_trade: std::sync::Arc::new(Vec::new()),
             weather: BTreeMap::new(),
             events: std::sync::Arc::new(Vec::new()),
             events_revision: 0,

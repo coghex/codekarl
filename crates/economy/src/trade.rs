@@ -191,6 +191,71 @@ pub struct Vehicle {
     pub pop: u32,
     /// Whether it is free for a job; one reserved by a trade job or away on a trip is not (part C).
     pub free: bool,
+    /// The actual goods and animals used by the build; `None` for a vehicle given at the start.
+    pub materials: Option<VehicleMaterials>,
+}
+
+/// What a build consumed, indexed by the rules' goods and herd species.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VehicleMaterials {
+    /// Goods, in rules order.
+    pub goods: Vec<u64>,
+    /// Animals, in herd species order.
+    pub animals: Vec<u64>,
+}
+
+fn valid_materials(rules: &Rules, kind: &VehicleKind, materials: &VehicleMaterials) -> bool {
+    if materials.goods.len() != rules.goods.len()
+        || materials.animals.len() != rules.herd_species.len()
+    {
+        return false;
+    }
+    let animals_match =
+        rules
+            .herd_species
+            .iter()
+            .zip(&materials.animals)
+            .all(|(species, count)| {
+                kind.animals
+                    .iter()
+                    .filter(|a| a.species == species.animal)
+                    .fold(0_u64, |sum, a| sum.saturating_add(a.count))
+                    == *count
+            });
+    let bounded = materials.goods.iter().enumerate().all(|(index, amount)| {
+        let ceiling = kind.inputs.iter().fold(0_u128, |sum, input| {
+            sum.saturating_add(match (&input.category, &input.good) {
+                (Some(category), _) => rules.goods[index]
+                    .units_for_category(category, input.amount)
+                    .unwrap_or(0),
+                (None, Some(good)) if rules.goods[index].id == *good => u128::from(input.amount),
+                _ => 0,
+            })
+        });
+        u128::from(*amount) <= ceiling
+    });
+    let met = kind
+        .inputs
+        .iter()
+        .all(|input| match (&input.category, &input.good) {
+            (Some(category), _) => {
+                rules
+                    .goods
+                    .iter()
+                    .zip(&materials.goods)
+                    .fold(0_u128, |sum, (good, amount)| {
+                        sum.saturating_add(good.category_supplied(category, u128::from(*amount)))
+                    })
+                    >= u128::from(input.amount) * 1000
+            }
+            (None, Some(id)) => rules
+                .goods
+                .iter()
+                .position(|good| good.id == *id)
+                .is_some_and(|i| materials.goods[i] >= input.amount),
+            _ => false,
+        });
+    animals_match && bounded && met
 }
 
 /// What a job is for.
@@ -1056,6 +1121,10 @@ fn complete_builds(
             kind: vehicle,
             pop: job.pop,
             free: true,
+            materials: Some(VehicleMaterials {
+                goods: job.stock,
+                animals: job.animals,
+            }),
         });
     }
     Ok(released)
@@ -1251,6 +1320,14 @@ impl Canonical for PlaceTrade {
             vehicle.kind.encode(out)?;
             vehicle.pop.encode(out)?;
             vehicle.free.encode(out)?;
+            match &vehicle.materials {
+                Some(materials) => {
+                    true.encode(out)?;
+                    materials.goods.encode(out)?;
+                    materials.animals.encode(out)?;
+                }
+                None => false.encode(out)?,
+            }
         }
         encode_length(self.jobs.len(), out)?;
         for job in &self.jobs {
@@ -1321,6 +1398,14 @@ impl Canonical for PlaceTrade {
                 kind: u32::decode(input)?,
                 pop: u32::decode(input)?,
                 free: bool::decode(input)?,
+                materials: if bool::decode(input)? {
+                    Some(VehicleMaterials {
+                        goods: Vec::<u64>::decode(input)?,
+                        animals: Vec::<u64>::decode(input)?,
+                    })
+                } else {
+                    None
+                },
             });
         }
         let count = input.length()?;
@@ -1484,6 +1569,12 @@ pub fn validate_trade_state_at(
                 || vehicle.number == 0
                 || vehicle.number > state.trade.vehicles
                 || !vehicle_numbers.insert(vehicle.number)
+                || vehicle.materials.as_ref().is_some_and(|m| {
+                    rules
+                        .vehicles
+                        .get(vehicle.kind as usize)
+                        .is_none_or(|kind| !valid_materials(rules, kind, m))
+                })
             {
                 return Err(refuse(
                     format!("vehicles.{}", vehicle.number),

@@ -634,17 +634,19 @@ pub struct Expedition {
 
 /// What one leg carries and who moves it (11b.3 rule 9, 11c.2 rules 5 and 6, 11d.1 rule 1).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Assigned {
+pub struct Assigned {
     /// The moving vehicles as `(index in the expedition's vehicles, crew, weight carried in grams)`, in carrier order.
-    pub(crate) moving: Vec<(usize, u64, u128)>,
+    pub moving: Vec<(usize, u64, u128)>,
     /// The people not in a moving vehicle's crew and not drovers, who walk (on land) or ride.
-    pub(crate) walkers: u64,
+    pub walkers: u64,
     /// The drovers.
-    pub(crate) drovers: u64,
+    pub drovers: u64,
     /// The driven species aboard on land, by herd species index.
-    pub(crate) driven: Vec<usize>,
+    pub driven: Vec<usize>,
     /// The weight and space of what rides in each carrier or pack, for the panel: `(weight_g, space_ml)` by carrier.
-    pub(crate) loads: Vec<(u128, u128)>,
+    pub loads: Vec<(u128, u128)>,
+    /// Carried vehicle and its carrier, as indices into the expedition's vehicles.
+    pub carried: Vec<(usize, usize)>,
 }
 
 /// A carrier with what it has room for.
@@ -838,10 +840,14 @@ pub(crate) fn assign_partly(
             .then(a.key.cmp(&b.key))
     });
     let mut loads = vec![(0_u128, 0_u128); rooms.len()];
+    let mut carried = Vec::new();
     // Where each batch of goods went, to take what has been eaten out of the last of them.
     let mut placed: Vec<(usize, usize, u128, &Item)> = Vec::new();
     for item in &items {
         for (carrier, count) in first_fit(&mut rooms, item)? {
+            if item.rank == 0 {
+                carried.push((order[item.key], moving[carrier]));
+            }
             let count = u128::from(count);
             loads[carrier].0 += count * item.weight_g;
             loads[carrier].1 += count * item.space_ml;
@@ -887,6 +893,7 @@ pub(crate) fn assign_partly(
         drovers,
         driven: driven.into_iter().map(|(species, _)| species).collect(),
         loads,
+        carried,
     })
 }
 
@@ -1356,6 +1363,73 @@ impl Canonical for Expedition {
 }
 
 impl Expedition {
+    /// Remaining travel time on the current way at the present load and supply state.
+    /// Future consumption may change the pace, so this is a forecast rather than a promise.
+    #[must_use]
+    pub fn remaining_hours(&self, rules: &Rules) -> Option<Hours> {
+        if self.phase == Phase::Waiting {
+            return Some(whole(0));
+        }
+        if self.way().is_empty() {
+            return Some(whole(1));
+        }
+        let start = self.leg as usize;
+        self.way()
+            .iter()
+            .enumerate()
+            .skip(start)
+            .try_fold(whole(0), |sum, (index, leg)| {
+                let pace = if index == start {
+                    self.pace_pm
+                } else {
+                    self.reckon(rules, leg.mode)?.0
+                };
+                Some(
+                    sum + if index == start {
+                        leg.hours_left(&self.done, pace)
+                    } else {
+                        leg.hours(pace)
+                    },
+                )
+            })
+    }
+    /// The current leg's assignment with supplies consumed since loading removed from their original carriers.
+    /// Load entries follow moving-vehicle order, or pack order on foot. Returns `None` for an invalid assignment.
+    #[must_use]
+    pub fn assignment(&self, rules: &Rules) -> Option<Assigned> {
+        assign_after(
+            rules,
+            &self.vehicles,
+            self.people(),
+            &self.cargo,
+            &self.loaded,
+            &self.supplies,
+            self.reckoned_mode,
+        )
+    }
+
+    /// Each moving vehicle's current pace, in assignment order, before the supplies penalty.
+    #[must_use]
+    pub fn vehicle_paces(&self, rules: &Rules) -> Option<Vec<u32>> {
+        let assignment = self.assignment(rules)?;
+        assignment
+            .moving
+            .iter()
+            .map(|(index, crew, weight)| {
+                let kind = rules
+                    .vehicles
+                    .get(self.vehicles.get(*index)?.kind as usize)?;
+                Some(vehicle_pace(
+                    rules,
+                    kind,
+                    self.reckoned_mode,
+                    *crew,
+                    *weight,
+                ))
+            })
+            .collect()
+    }
+
     /// The slowest moving vehicle's kind for the map chip, with ties in kind and vehicle-number order.
     /// Returns `None` when the party travels on foot or its saved assignment is invalid.
     #[must_use]
