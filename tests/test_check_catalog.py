@@ -2579,6 +2579,13 @@ GUARDS: tuple[Guard, ...] = (
     # CK-435: the map readback fixture loads the vehicle rules; the art witness hashes the shipped chips.
     Guard("apps/codekarl/src/game/expedition_map.rs", "rust.app", ("assets/game/economy.toml",)),
     Guard("apps/codekarl/src/expedition_art_tests.rs", "rust.app", ("assets/ui/expeditions/",)),
+    # CK-433: the trade network's tests (the reverse search against forward searches, the searches shared for an hour, the clipped ways)
+    # read the shipped travel rules and Ireland's network.
+    Guard(
+        "apps/codekarl/src/game/trade_ways.rs",
+        "rust.app",
+        ("assets/game/travel.toml", "assets/scenarios/ireland-768/"),
+    ),
     Guard(
         "apps/codekarl/tests/travel_scale.rs",
         "travel.scale",
@@ -2956,6 +2963,13 @@ GUARDS: tuple[Guard, ...] = (
     # swap's loss limit) they read, and run the exchange over them.
     Guard(
         "crates/economy/src/swap_tests.rs",
+        "economy.core",
+        ("assets/game/economy.toml",),
+    ),
+    # CK-433: the shared fixtures (moved out of the swap's tests) load the shipped rules, whose two new numbers (the market
+    # capacity of a building level and the swap's loss limit) the swap's tests read, and run the exchange over them.
+    Guard(
+        "crates/economy/src/fixtures.rs",
         "economy.core",
         ("assets/game/economy.toml",),
     ),

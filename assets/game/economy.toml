@@ -847,3 +847,14 @@ animals = [
     { animal = "sheep", pace_pm = 800, aboard_ml = 500000 },
     { animal = "horses", pace_pm = 800, aboard_ml = 3000000 },
 ]
+# Choosing a trade (CK-433, trade spec 3.3 and part D): a trader looks again 720 hours after its last look, or 12 hours after an
+# expedition of its has unloaded; it considers only trips whose round trip is within its type's limit (r137: 7 days for peasant and
+# labourer, 30 for monk and noble); a plan on foot sends one to four people; the yearly test counts 365 days.
+# Off in the shipped game until part F (the opening) turns trade on with its first looks.
+looks = false
+look_hours = 720
+rest_hours = 12
+visit_radius_m = 2000
+foot_people = 4
+year_hours = 8760
+limit_hours = { peasant = 168, labourer = 168, monk = 720, noble = 720 }

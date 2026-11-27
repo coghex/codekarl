@@ -733,7 +733,10 @@ mod tests {
         place.trade.jobs.push(crate::Job {
             number: 1,
             pop: 0,
-            kind: crate::JobKind::Build { vehicle: 0 },
+            kind: crate::JobKind::Build {
+                vehicle: 0,
+                trip: None,
+            },
             made: 0,
             need_goods: needs,
             need_animals: vec![0; rules.herd_species.len()],

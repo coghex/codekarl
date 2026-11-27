@@ -77,12 +77,33 @@ impl Journey {
     }
 }
 
+/// The planner a builder reads: its own, or one a caller keeps for many builders (the trade look's caches, CK-433).
+#[expect(
+    clippy::large_enum_variant,
+    reason = "A builder holds one planner for the length of a call; boxing it would only add an allocation."
+)]
+enum PlannerRef<'a> {
+    Owned(TravelPlanner),
+    Shared(&'a TravelPlanner),
+}
+
+impl std::ops::Deref for PlannerRef<'_> {
+    type Target = TravelPlanner;
+
+    fn deref(&self) -> &TravelPlanner {
+        match self {
+            Self::Owned(planner) => planner,
+            Self::Shared(planner) => planner,
+        }
+    }
+}
+
 /// Builds journeys for one party over a scenario's network.
 pub(crate) struct JourneyBuilder<'a> {
     scenario: &'a ck_map::Scenario,
     rules: &'a TravelRules,
     base: &'a TravelProfile,
-    planner: TravelPlanner,
+    planner: PlannerRef<'a>,
     states: &'a BTreeMap<u64, WayState>,
     radius_m: u64,
 }
@@ -105,10 +126,30 @@ impl<'a> JourneyBuilder<'a> {
             scenario,
             rules,
             base,
-            planner: TravelPlanner::new(scenario, effective, rules)?,
+            planner: PlannerRef::Owned(TravelPlanner::new(scenario, effective, rules)?),
             states,
             radius_m,
         })
+    }
+
+    /// A builder that reads a planner the caller keeps (the same profile as `effective` would give), so many builders share its measured
+    /// ways and water graph.
+    pub(crate) fn with_planner(
+        scenario: &'a ck_map::Scenario,
+        rules: &'a TravelRules,
+        base: &'a TravelProfile,
+        planner: &'a TravelPlanner,
+        states: &'a BTreeMap<u64, WayState>,
+        radius_m: u64,
+    ) -> Self {
+        Self {
+            scenario,
+            rules,
+            base,
+            planner: PlannerRef::Shared(planner),
+            states,
+            radius_m,
+        }
     }
 
     /// The clipped quickest way from the place `from` to the place `to` (network node ids).
@@ -116,14 +157,34 @@ impl<'a> JourneyBuilder<'a> {
     /// # Errors
     /// A message when the places are not connected for this party, or the way never leaves the first 2 km.
     pub(crate) fn way(&self, from: u64, to: u64) -> Result<Journey, String> {
+        let routes = self.planner.routes_from(self.scenario, self.states, from)?;
+        self.way_in(&routes, from, to, false, true)
+    }
+
+    /// The clipped quickest way from `from` to `to` read from a search already made: the forward search from `from`, or, when `reversed`,
+    /// the reverse search into `to` (CK-433), whose itineraries are in travel order, so both give the way as the party travels it. With
+    /// `geometry` false the legs have no frozen path (the work, speeds and delays, which are all a trip's time needs): freezing the
+    /// points of every candidate's way is most of what a look would cost, and only the way chosen needs them.
+    ///
+    /// # Errors
+    /// A message when the places are not connected for this party, or the way never leaves the first 2 km.
+    pub(crate) fn way_in(
+        &self,
+        routes: &Routes,
+        from: u64,
+        to: u64,
+        reversed: bool,
+        geometry: bool,
+    ) -> Result<Journey, String> {
         let n = self
             .scenario
             .network
             .as_ref()
             .ok_or("scenario has no network")?;
-        let routes = self.planner.routes_from(self.scenario, self.states, from)?;
+        // A forward search is from `from` and answers for `to`; a reverse search is into `to` and answers for `from`.
+        let asked = if reversed { from } else { to };
         let trip = routes
-            .itinerary(self.scenario, self.planner.ways(), to, self.rules)
+            .itinerary(self.scenario, self.planner.ways(), asked, self.rules)
             .ok_or("the places are not connected for this party")?;
         let node_point = |id: u64| {
             n.nodes
@@ -150,7 +211,7 @@ impl<'a> JourneyBuilder<'a> {
         let clipper = Clipper {
             scenario: self.scenario,
             ways: self.planner.ways(),
-            routes: &routes,
+            routes,
             trip: &trip,
             units_per_mm: self.units_per_mm()?,
         };
@@ -177,8 +238,10 @@ impl<'a> JourneyBuilder<'a> {
             if !on {
                 continue;
             }
-            let mut modelled = self.model(leg, &routes, &from_mm, &to_mm)?;
-            (modelled.path, modelled.along) = clipper.path(index, &from_mm, &to_mm)?;
+            let mut modelled = self.model(leg, routes, &from_mm, &to_mm)?;
+            if geometry {
+                (modelled.path, modelled.along) = clipper.path(index, &from_mm, &to_mm)?;
+            }
             legs.push(modelled);
         }
         adopt_neighbouring_modes(&mut legs);
@@ -706,6 +769,31 @@ pub(crate) fn scaled_profile(profile: &TravelProfile, pace_pm: u32) -> TravelPro
         river: profile.river.map(scale),
         lough: profile.lough.map(scale),
         sea: profile.sea.map(scale),
+        slowing: profile.slowing,
+    }
+}
+
+/// The profile of a party that moves at one pace on land and another on water (11b.3 rule 6 for each mode): the path and road speeds
+/// scaled by the land pace, the river, lough and sea speeds by the water pace, each rounded down and at least 1. A pace of 0 is a mode the
+/// party cannot go by with its load: its speeds are left out, so no search takes a way that needs them.
+#[must_use]
+pub(crate) fn scaled_by_mode(profile: &TravelProfile, paces: ck_economy::Paces) -> TravelProfile {
+    let scale = |pace: u32| move |speed: u64| (speed.saturating_mul(u64::from(pace)) / 1000).max(1);
+    let (land, water) = (scale(paces.land), scale(paces.water));
+    TravelProfile {
+        path: profile
+            .path
+            .filter(|_| paces.land != 0)
+            .map(|speeds| speeds.map(land)),
+        road: profile
+            .road
+            .filter(|_| paces.land != 0)
+            .map(|speeds| speeds.map(land)),
+        // The water capability goes as a unit: a class without its speeds is not a profile.
+        water_class: profile.water_class.clone().filter(|_| paces.water != 0),
+        river: profile.river.filter(|_| paces.water != 0).map(water),
+        lough: profile.lough.filter(|_| paces.water != 0).map(water),
+        sea: profile.sea.filter(|_| paces.water != 0).map(water),
         slowing: profile.slowing,
     }
 }

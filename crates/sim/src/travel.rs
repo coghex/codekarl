@@ -461,6 +461,112 @@ pub fn itinerary_search(start: u64, edges: &[ItineraryEdge]) -> ItinerarySearch 
     ItinerarySearch { start, best }
 }
 
+/// Reusable results of a search for the ways into one state.
+pub struct ItinerarySearchTo {
+    target: u64,
+    best: BTreeMap<u64, (BigRational, Vec<u64>, u64, u64)>,
+}
+
+impl ItinerarySearchTo {
+    /// Read the itinerary from a state to the target, in the order it is travelled.
+    #[must_use]
+    pub fn path(&self, start: u64) -> Option<ItineraryPath> {
+        let (hours, legs, _, _) = self.best.get(&start)?.clone();
+        let mut node = start;
+        let mut edges = Vec::new();
+        while node != self.target {
+            let (_, _, next, edge) = self.best.get(&node)?;
+            edges.push(*edge);
+            node = *next;
+        }
+        Some(ItineraryPath { hours, legs, edges })
+    }
+}
+
+/// Find, for every state, a quickest itinerary into `target` in one pass over the edges turned round, in travel order.
+///
+/// **The fixed tie rule** (design 11b.3 rule 10: the quickest way home is by exact time, then the number of legs; among equal ways this
+/// search's own rule chooses, and what it chooses is the way evaluated and the way frozen): exact time, then the number of legs, then the
+/// legs' ordering keys **in the order they are travelled** (the same comparison a forward search makes, which a search that appended
+/// edges to a path built from the target would make from the target back), then the number of water steps the way ends with, then the
+/// state and transition it ends with. The forward search's later tie-breaks (per state, from the origin) are not reproduced: two ways
+/// that tie on time and on legs may be told apart differently by a forward search from the origin, at the same time and with the same
+/// legs (a detour of water steps of the same time before a landing, for one). A search that puts each edge in front of the path it leads
+/// into keeps this comparison consistent (a better path into a state stays better with the same edge in front of it).
+///
+/// # Panics
+/// Panics on a negative transition time.
+#[must_use]
+pub fn itinerary_search_to(target: u64, edges: &[ItineraryEdge]) -> ItinerarySearchTo {
+    // A label: the forward comparison's key, whether every transition of the path is a water step (the count it ends with then grows
+    // when one is put in front), and the state and transition that follow the state it labels.
+    type Label = (
+        (BigRational, usize, Vec<u64>, usize, u64, u64),
+        bool,
+        u64,
+        u64,
+    );
+    let mut incoming: BTreeMap<u64, Vec<&ItineraryEdge>> = BTreeMap::new();
+    for edge in edges {
+        assert!(edge.hours >= BigRational::from_integer(0.into()));
+        incoming.entry(edge.to).or_default().push(edge);
+    }
+    let initial: Label = (
+        (
+            BigRational::from_integer(0.into()),
+            0,
+            Vec::new(),
+            0,
+            target,
+            0,
+        ),
+        true,
+        target,
+        0,
+    );
+    let mut pending = BTreeMap::from([(target, initial.clone())]);
+    let mut queue = BinaryHeap::from([Reverse((initial, target))]);
+    let mut best: BTreeMap<u64, (BigRational, Vec<u64>, u64, u64)> = BTreeMap::new();
+    while let Some(Reverse((label, node))) = queue.pop() {
+        if best.contains_key(&node) || pending.get(&node) != Some(&label) {
+            continue;
+        }
+        pending.remove(&node);
+        let ((hours, _, legs, trailing, last_from, last_edge), all_water, next, edge_id) = label;
+        for edge in incoming.get(&node).into_iter().flatten() {
+            if best.contains_key(&edge.from) {
+                continue;
+            }
+            let mut front = edge.leg_ids.clone();
+            front.extend_from_slice(&legs);
+            let into_target = node == target;
+            let candidate: Label = (
+                (
+                    &hours + &edge.hours,
+                    front.len(),
+                    front,
+                    if all_water && edge.water_step {
+                        trailing + 1
+                    } else {
+                        trailing
+                    },
+                    if into_target { edge.from } else { last_from },
+                    if into_target { edge.id } else { last_edge },
+                ),
+                all_water && edge.water_step,
+                node,
+                edge.id,
+            );
+            if pending.get(&edge.from).is_none_or(|old| candidate < *old) {
+                pending.insert(edge.from, candidate.clone());
+                queue.push(Reverse((candidate, edge.from)));
+            }
+        }
+        best.insert(node, (hours, legs, next, edge_id));
+    }
+    ItinerarySearchTo { target, best }
+}
+
 /// A measured land stretch; geometry is measured once and state is read for each query.
 #[derive(Clone, Debug)]
 pub struct LandWay {
@@ -1395,5 +1501,110 @@ mod tests {
         assert_eq!(paths.path(1).unwrap().edges, [1]);
         assert_eq!(shown_hours(&paths.path(1).unwrap().hours), BigInt::from(2));
         assert_eq!(paths.path(2).unwrap().edges, [3]);
+    }
+
+    fn plain_edge(
+        from: u64,
+        to: u64,
+        id: u64,
+        hours: i64,
+        legs: &[u64],
+        water: bool,
+    ) -> ItineraryEdge {
+        ItineraryEdge {
+            from,
+            to,
+            id,
+            hours: fraction(hours, 1),
+            leg_ids: legs.to_vec(),
+            water_step: water,
+        }
+    }
+
+    #[test]
+    fn the_search_into_a_state_breaks_equal_ways_in_the_order_they_are_travelled() {
+        // Two ways from 0 to 3 of equal time and equal length, whose legs are [1, 9] and [2, 3] in the order travelled. The forward search
+        // takes the first; a search from 3 over the edges turned round would compare [9, 1] with [3, 2] and take the second.
+        let edges = [
+            plain_edge(0, 1, 10, 1, &[1], false),
+            plain_edge(1, 3, 11, 1, &[9], false),
+            plain_edge(0, 2, 12, 1, &[2], false),
+            plain_edge(2, 3, 13, 1, &[3], false),
+        ];
+        let forward = itinerary_search(0, &edges).path(3).unwrap();
+        assert_eq!(
+            (forward.legs.clone(), forward.edges.clone()),
+            (vec![1, 9], vec![10, 11])
+        );
+        let into = itinerary_search_to(3, &edges).path(0).unwrap();
+        assert_eq!(
+            (into.legs, into.edges, into.hours),
+            (forward.legs, forward.edges, forward.hours)
+        );
+    }
+
+    #[test]
+    fn the_search_into_a_state_gives_each_state_the_time_and_the_legs_a_forward_search_from_it_gives()
+     {
+        // Small graphs with many ties (hours of 0 to 2, a few leg keys, some water steps), each state read against its own forward search:
+        // the same exact time and the same legs in the order travelled (the edges between may differ among ways of equal time and legs).
+        let mut seed = 0x2545_f491_u64;
+        let mut roll = move |below: u64| {
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (seed >> 33) % below
+        };
+        for _ in 0..60 {
+            let nodes = 6 + roll(3);
+            let mut edges = Vec::new();
+            for id in 0..(nodes * 3) {
+                let (from, to) = (roll(nodes), roll(nodes));
+                if from == to {
+                    continue;
+                }
+                let legs: Vec<u64> = (0..roll(3)).map(|_| roll(12)).collect();
+                // A transition that starts no leg and takes no time never ties two ways in the game.
+                let hours = i64::try_from(roll(3)).unwrap() + i64::from(legs.is_empty());
+                edges.push(plain_edge(from, to, id, hours, &legs, roll(2) == 0));
+            }
+            let target = roll(nodes);
+            let into = itinerary_search_to(target, &edges);
+            for start in 0..nodes {
+                let forward = itinerary_search(start, &edges).path(target);
+                let reverse = into.path(start);
+                assert_eq!(
+                    forward.as_ref().map(|path| (&path.hours, &path.legs)),
+                    reverse.as_ref().map(|path| (&path.hours, &path.legs)),
+                    "from {start} to {target} over {edges:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn equal_time_water_ways_into_a_landing_have_the_forward_time_and_legs_and_the_reverse_tie_rule_is_fixed()
+     {
+        // One water step of two hours, or two of one hour each, into the same landing (the shape the application builds: water steps
+        // start no leg, the landing starts one). A forward search keeps the direct step; the search into the landing has its own fixed
+        // rule among such ways, and either way is two hours and the landing's leg. What it chooses is the same every time.
+        let edges = [
+            plain_edge(0, 2, 0, 2, &[], true),
+            plain_edge(0, 1, 1, 1, &[], true),
+            plain_edge(1, 2, 2, 1, &[], true),
+            plain_edge(2, 3, 3, 0, &[7], false),
+        ];
+        let forward = itinerary_search(0, &edges).path(3).unwrap();
+        assert_eq!(forward.edges, [0, 3]);
+        let first = itinerary_search_to(3, &edges).path(0).unwrap();
+        let again = itinerary_search_to(3, &edges).path(0).unwrap();
+        assert_eq!((&first.hours, &first.legs), (&forward.hours, &forward.legs));
+        assert_eq!(first.hours, fraction(2, 1));
+        assert!(
+            first.edges == [0, 3] || first.edges == [1, 2, 3],
+            "{:?}",
+            first.edges
+        );
+        assert_eq!(first.edges, again.edges, "the rule is fixed");
     }
 }

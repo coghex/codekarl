@@ -5,56 +5,12 @@
 
 use std::{collections::BTreeMap, path::Path};
 
+pub(crate) use super::fixtures::{
+    MONK, PEASANT, THIRD, good, herd_rules, place, rules, set_price, settle_the_rest, shipped,
+    spare, target, want,
+};
 use super::swap::{Position, market_capacities, pop_position, want_order};
 use super::*;
-
-pub(crate) const PEASANT: usize = 0;
-pub(crate) const MONK: usize = 1;
-pub(crate) const THIRD: usize = 2;
-
-fn shipped() -> Rules {
-    Rules::load(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/game/economy.toml"))
-        .unwrap()
-}
-
-pub(crate) fn good(rules: &Rules, id: &str) -> usize {
-    rules.goods.iter().position(|item| item.id == id).unwrap()
-}
-
-/// The shipped rules with every pop kind on one diet and comfort profile, so each pop has a target for oats, barley, fish and honey
-/// (food) and for herbs (a comfort good with no hunger value), and with room for the stores unless a case narrows it.
-pub(crate) fn rules() -> Rules {
-    let mut rules = shipped();
-    let diet = BTreeMap::from([
-        ("oats".to_owned(), 400),
-        ("barley".to_owned(), 200),
-        ("fish".to_owned(), 200),
-        ("honey".to_owned(), 200),
-    ]);
-    for kind in ["peasant", "monk", "labourer", "noble"] {
-        rules.diet_profiles.insert(kind.to_owned(), diet.clone());
-        rules.comfort_profiles.insert(
-            kind.to_owned(),
-            BTreeMap::from([
-                (
-                    "niceties".to_owned(),
-                    BTreeMap::from([("herbs".to_owned(), 1000)]),
-                ),
-                ("luxuries".to_owned(), BTreeMap::new()),
-            ]),
-        );
-    }
-    for item in &mut rules.pop_types {
-        if matches!(item.id.as_str(), "peasant" | "monk" | "labourer" | "noble") {
-            item.niceties_expectation_pm = 500;
-        }
-    }
-    for item in &mut rules.goods {
-        item.pop_limit_milli = 1_000_000_000;
-    }
-    rules.validate("fixture").unwrap();
-    rules
-}
 
 /// The profiles of the hunger cases: every pop eats fish alone, and wants herbs and beeswax for comfort, so a pop's days of food are
 /// its pounds of fish over ten (six people need 600 centi a day, a pound of fish gives 60).
@@ -123,51 +79,6 @@ pub(crate) fn building_state(rules: &Rules, kind: &str, levels: u32, pops: usize
     }
 }
 
-/// A place of `pops` pops (peasants, monks, then labourers) of 1000 people each, with prices as the base prices.
-pub(crate) fn place(rules: &Rules, pops: usize) -> PlaceState {
-    let goods = rules.goods.len();
-    let kinds = ["peasant", "monk", "labourer"];
-    PlaceState {
-        id: "fixture".to_owned(),
-        pops: (0..pops)
-            .map(|index| PopState {
-                id: 0,
-                kind: kinds[index].to_owned(),
-                culture: "gaelic".to_owned(),
-                religion: "christianity".to_owned(),
-                literacy_pm: 0,
-                workers: 600,
-                dependents: 400,
-                employment: Vec::new(),
-                stock: vec![0; goods],
-                consumption: PopConsumption {
-                    pantry_hunger_centi: vec![0; goods],
-                    ticking_carries: vec![0; goods],
-                    ..PopConsumption::default()
-                },
-                counters: CounterBuckets::default(),
-                short_on_rent: false,
-                housed_last: false,
-                genetics: PopGenetics::default(),
-                pending_births: 0,
-                pending_deaths: 0,
-            })
-            .collect(),
-        buildings: Vec::new(),
-        prices_milli: rules
-            .goods
-            .iter()
-            .map(|item| item.base_price * 1000)
-            .collect(),
-        prepared_m2: 0,
-        development_pm: 0,
-        price_drift_carries: vec![0; goods],
-        last_market_orders: None,
-        counters: CounterBuckets::for_place(goods),
-        trade: PlaceTrade::default(),
-    }
-}
-
 pub(crate) fn add_building(
     rules: &Rules,
     place: &mut PlaceState,
@@ -216,31 +127,6 @@ pub(crate) fn capacity(rules: &mut Rules, place: &mut PlaceState, pop: usize, ml
         .market_capacity_ml_per_level = ml;
     let building = add_building(rules, place, kind, 1);
     own(place, building, pop, 1);
-}
-
-pub(crate) fn target(rules: &Rules, place: &PlaceState, pop: usize, id: &str) -> u64 {
-    let people = place.pops[pop].workers + place.pops[pop].dependents;
-    u64::try_from(pop_target_units(rules, &place.pops[pop].kind, people, good(rules, id)).unwrap())
-        .unwrap()
-}
-
-/// Sets a pop's store so it holds `spare` above its target of a good.
-pub(crate) fn spare(rules: &Rules, place: &mut PlaceState, pop: usize, id: &str, units: u64) {
-    place.pops[pop].stock[good(rules, id)] = target(rules, place, pop, id) + units;
-}
-
-/// Sets a pop's store so it lacks `units` of its target of a good.
-pub(crate) fn want(rules: &Rules, place: &mut PlaceState, pop: usize, id: &str, units: u64) {
-    let goal = target(rules, place, pop, id);
-    assert!(
-        goal >= units,
-        "{id}: target {goal} is below the want {units}"
-    );
-    place.pops[pop].stock[good(rules, id)] = goal - units;
-}
-
-pub(crate) fn set_price(rules: &Rules, place: &mut PlaceState, id: &str, price: u64) {
-    place.prices_milli[good(rules, id)] = price * 1000;
 }
 
 pub(crate) fn stock(rules: &Rules, place: &PlaceState, pop: usize, id: &str) -> u64 {
@@ -310,35 +196,6 @@ fn example_a(starter: usize, ml: u64) -> (Rules, PlaceState) {
     settle_the_rest(&rules, &mut place, &["oats", "fish"]);
     capacity(&mut rules, &mut place, starter, ml);
     (rules, place)
-}
-
-/// Puts every good a case did not set at each pop's target, so it is neither spare nor wanted.
-pub(crate) fn settle_the_rest(rules: &Rules, place: &mut PlaceState, set: &[&str]) {
-    let fuel_is_set = rules
-        .goods
-        .iter()
-        .any(|item| item.category_supplied("fuel", 1) > 0 && set.contains(&item.id.as_str()));
-    for pop in 0..place.pops.len() {
-        for item in &rules.goods {
-            if !set.contains(&item.id.as_str()) {
-                place.pops[pop].stock[good(rules, &item.id)] = target(rules, place, pop, &item.id);
-            }
-        }
-        if !fuel_is_set {
-            let heat = fuel::fuel_daily_need(rules, &place.pops[pop]).unwrap() * 240;
-            let (index, supply) = rules
-                .goods
-                .iter()
-                .enumerate()
-                .map(|(i, good)| (i, good.category_supplied("fuel", 1)))
-                .max_by_key(|(_, supply)| *supply)
-                .unwrap();
-            if supply > 0 {
-                place.pops[pop].stock[index] = u64::try_from(heat / supply).unwrap();
-                place.pops[pop].consumption.hearth_milli = u64::try_from(heat % supply).unwrap();
-            }
-        }
-    }
 }
 
 #[test]
@@ -3110,29 +2967,6 @@ fn the_real_price_step_can_reverse_the_fuel_ranking() {
 }
 
 // CK-430 (trade part A): live animals in the swap and the herds' standard level (r163).
-
-/// The case's rules: the farm keeps only cattle, ten head a level, so a one-level herd's maximum is 10 and its standard level 7 (two
-/// thirds would be 6); an animal has no pop store, as shipped (its limit is zero). Oats are a food, herbs a comfort.
-pub(crate) fn herd_rules() -> Rules {
-    let mut rules = rules();
-    for item in &mut rules.goods {
-        if item.tags.iter().any(|tag| tag == "herd") {
-            item.pop_limit_milli = 0;
-        }
-    }
-    for building in &mut rules.buildings {
-        building.herds.clear();
-    }
-    rules
-        .buildings
-        .iter_mut()
-        .find(|building| building.id == "farm")
-        .unwrap()
-        .herds
-        .insert("cattle".to_owned(), HerdCapacity { maximum: 10 });
-    rules.validate("fixture").unwrap();
-    rules
-}
 
 /// A one-level farm of `head` cattle, owned by the `owners` (pop, positions) and worked by 100 hired hands, whose store takes the
 /// payments for an animal sold from it.

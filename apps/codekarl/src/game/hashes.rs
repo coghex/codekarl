@@ -125,7 +125,7 @@ pub(crate) fn figure_files(directory: &Path) -> Result<Option<[PathBuf; 3]>, Str
     }
 }
 
-/// Hash shared economy rules (including the genetic, personality, character event, life-cycle and generator data) and the map's terrain suitability inputs.
+/// Hash shared economy rules (including the genetic, personality, character event, life-cycle and generator data, and the travel rules) and the map's terrain suitability inputs.
 pub(crate) fn rules_hash(asset_root: &Path) -> Result<String, String> {
     let game_rules = asset_root.join("game/economy.toml");
     if !game_rules.exists() {
@@ -146,6 +146,9 @@ pub(crate) fn rules_hash(asset_root: &Path) -> Result<String, String> {
         read(asset_root, "game/lifecycle/epithets.toml")?,
         read(asset_root, "game/lifecycle/connections.toml")?,
         read(asset_root, "game/lifecycle/generator.toml")?,
+        // The travel rules (speeds, transfers, fords and tides) decide every way a trader's look chooses (CK-433, trade spec 11c.8 rule
+        // 25: data the simulation newly reads is part of this hash), so a save from other travel rules is another game's.
+        read(asset_root, "game/travel.toml")?,
         read(asset_root, "map/ireland/terrain.toml")?,
     ]))
 }

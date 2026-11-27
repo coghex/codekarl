@@ -868,7 +868,10 @@ fn funded_household_oats_are_received_before_a_waiting_jobs_oats() {
     place.trade.jobs.push(Job {
         number: 1,
         pop: u32::try_from(PEASANT).unwrap(),
-        kind: JobKind::Build { vehicle: 0 },
+        kind: JobKind::Build {
+            vehicle: 0,
+            trip: None,
+        },
         made: 0,
         need_goods: needs,
         need_animals: vec![0; rules.herd_species.len()],
@@ -904,7 +907,10 @@ fn a_full_household_is_skipped_for_the_funded_part_of_a_job() {
     place.trade.jobs.push(Job {
         number: 1,
         pop: u32::try_from(PEASANT).unwrap(),
-        kind: JobKind::Build { vehicle: 0 },
+        kind: JobKind::Build {
+            vehicle: 0,
+            trip: None,
+        },
         made: 0,
         need_goods: needs,
         need_animals: vec![0; rules.herd_species.len()],
@@ -959,9 +965,11 @@ fn a_saved_trade_state_that_names_what_does_not_exist_is_refused() {
         validate_trade_state(&rules, &loaded).is_err()
     };
     let kinds = u32::try_from(rules.vehicles.len()).unwrap();
-    assert!(broken(
-        &|s| s.places[0].trade.jobs[0].kind = JobKind::Build { vehicle: kinds }
-    ));
+    assert!(broken(&|s| s.places[0].trade.jobs[0].kind =
+        JobKind::Build {
+            vehicle: kinds,
+            trip: None
+        }));
     assert!(broken(&|s| s.places[0].trade.jobs[0].pop = 99));
     assert!(broken(&|s| s.places[0].trade.jobs[0]
         .stock
@@ -1155,9 +1163,10 @@ fn every_saved_trade_field_is_checked_against_its_whole_domain() {
     assert!(refused(&|s| jobs_of(s)[0].number = 0));
     // Indices and dimensions.
     let kinds = u32::try_from(rules.vehicles.len()).unwrap();
-    assert!(refused(
-        &|s| jobs_of(s)[0].kind = JobKind::Build { vehicle: kinds }
-    ));
+    assert!(refused(&|s| jobs_of(s)[0].kind = JobKind::Build {
+        vehicle: kinds,
+        trip: None
+    }));
     assert!(refused(&|s| jobs_of(s)[0].pop = 99));
     assert!(refused(&|s| s.places[0].trade.vehicles[0].kind = kinds));
     assert!(refused(&|s| s.places[0].trade.vehicles[0].pop = 99));

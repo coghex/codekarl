@@ -58,6 +58,49 @@ pub struct ExpeditionRules {
     /// assignment that needs them is not possible).
     #[serde(default)]
     pub animals: Vec<DrivenAnimal>,
+    /// Whether traders look at all. Off in the shipped rules until part F opens a new game with its first looks (the designer, CK-433 intent
+    /// answer 2026-11-26): part D's tests turn it on.
+    #[serde(default)]
+    pub looks: bool,
+    /// The hours after its last look at which a trader looks again (r134, section 3.3: 720).
+    #[serde(default = "default_look_hours")]
+    pub look_hours: u64,
+    /// The hours after an expedition has unloaded at which its trader looks (r158, section 3.3: 12).
+    #[serde(default = "default_rest_hours")]
+    pub rest_hours: u64,
+    /// The round-trip travel limit of each pop type, in hours (r137, section 3.3): a type with none does not trade.
+    #[serde(default)]
+    pub limit_hours: BTreeMap<String, u64>,
+    /// The visiting radius, in metres (r154, r155: 2 km): an expedition leaves home from the first point this far from its centre and
+    /// arrives at the first point this near the destination's.
+    #[serde(default = "default_visit_radius_m")]
+    pub visit_radius_m: u64,
+    /// The most people a plan on foot sends (rule 12: 4).
+    #[serde(default = "default_foot_people")]
+    pub foot_people: u64,
+    /// The hours in a year, for the yearly test of a new vehicle (r5 3.5: 365 days).
+    #[serde(default = "default_year_hours")]
+    pub year_hours: u64,
+}
+
+const fn default_look_hours() -> u64 {
+    720
+}
+
+const fn default_rest_hours() -> u64 {
+    12
+}
+
+const fn default_visit_radius_m() -> u64 {
+    2000
+}
+
+const fn default_foot_people() -> u64 {
+    4
+}
+
+const fn default_year_hours() -> u64 {
+    8760
 }
 
 impl Default for ExpeditionRules {
@@ -73,6 +116,13 @@ impl Default for ExpeditionRules {
             wear_hours: 720,
             daily_hunger_centi: 100,
             animals: Vec::new(),
+            looks: false,
+            look_hours: default_look_hours(),
+            rest_hours: default_rest_hours(),
+            limit_hours: BTreeMap::new(),
+            visit_radius_m: default_visit_radius_m(),
+            foot_people: default_foot_people(),
+            year_hours: default_year_hours(),
         }
     }
 }
@@ -105,6 +155,16 @@ impl ExpeditionRules {
         }
         if self.pack_g == 0 || self.pack_ml == 0 {
             return Err(refuse("pack_g", "a pack holds something"));
+        }
+        if self.look_hours == 0
+            || self.foot_people == 0
+            || self.year_hours == 0
+            || self.visit_radius_m == 0
+        {
+            return Err(refuse("look_hours", "must be positive"));
+        }
+        if self.limit_hours.values().any(|hours| *hours == 0) {
+            return Err(refuse("limit_hours", "a travel limit is some hours"));
         }
         let mut seen = std::collections::BTreeSet::new();
         for animal in &self.animals {
@@ -1605,7 +1665,7 @@ impl Expedition {
 }
 
 /// The whole ticks a stretch of travel of `hours` takes: it moves one hour at each tick, so the hours rounded up, and at least one.
-fn ticks_of(hours: &Hours) -> Option<u64> {
+pub(crate) fn ticks_of(hours: &Hours) -> Option<u64> {
     u64::try_from(hours.ceil().to_integer())
         .ok()
         .map(|ticks| ticks.max(1))
@@ -2111,6 +2171,17 @@ fn unload(
             home.free = true;
         }
     }
+    // Its trader looks again after the rest (r158): one pending look, at the earlier of this one and any already pending (11b.4 rule 16).
+    let rest = now.saturating_add(rules.expedition.rest_hours);
+    let look = place
+        .trade
+        .looks
+        .entry(expedition.trader)
+        .or_insert(trade::Look {
+            last: expedition.left.min(now),
+            rest: None,
+        });
+    look.rest = Some(look.rest.map_or(rest, |pending| pending.min(rest)));
     Ok(())
 }
 
