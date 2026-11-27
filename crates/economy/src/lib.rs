@@ -13,6 +13,7 @@ use serde::Deserialize;
 use start_levels::{Candidate, StartDemand};
 
 pub mod bigint;
+mod budget;
 pub mod events;
 mod expedition;
 mod fuel;
@@ -41,6 +42,10 @@ pub use trade::{
 };
 
 const WAGE_HISTORY_MONTHS: usize = 12;
+
+const fn default_near_pm() -> u16 {
+    125
+}
 
 const fn default_hire_pm() -> u16 {
     100
@@ -436,6 +441,15 @@ pub struct Rules {
     /// Extra margin a method switch must earn, in per-mille of staying value.
     #[serde(default = "default_method_switch_margin_pm")]
     pub method_switch_margin_pm: u16,
+    /// Near-term share of the 240-day food target, in per-mille.
+    #[serde(default = "default_near_pm")]
+    pub food_near_pm: u16,
+    /// Near-term share of the 240-day comfort target, in per-mille.
+    #[serde(default = "default_near_pm")]
+    pub comfort_near_pm: u16,
+    /// Near-term share of the 240-day fuel target, in per-mille.
+    #[serde(default = "default_near_pm")]
+    pub fuel_near_pm: u16,
     /// Target-price response in per-mille.
     pub price_k_pm: u32,
     /// The most a swap's starter may lose to rounding, as a share of what it gives, in per-mille (CK-391).
@@ -766,6 +780,15 @@ impl Rules {
                     format!("shelter_pm.{terrain}"),
                     "terrain is absent from terrain_order".to_owned(),
                 ));
+            }
+        }
+        for (name, value) in [
+            ("food_near_pm", self.food_near_pm),
+            ("comfort_near_pm", self.comfort_near_pm),
+            ("fuel_near_pm", self.fuel_near_pm),
+        ] {
+            if value > 1000 {
+                return Err(refuse(name.to_owned(), "must be at most 1000".to_owned()));
             }
         }
         if self.hire_pm > 1000 {
@@ -3877,16 +3900,6 @@ fn daily_market_orders(rules: &Rules, place: &PlaceState) -> Result<DailyMarketO
         let target = daily
             .checked_mul(240)
             .ok_or_else(|| missing_data("fuel.target".to_owned(), "target overflow"))?;
-        let holding = fuel::fuel_holding(rules, &pop.stock, pop.consumption.hearth_milli)?;
-        if let Some(index) = fuel::fuel_ranking(rules, &place.prices_milli, false)?
-            .first()
-            .copied()
-        {
-            let supply = rules.goods[index].category_supplied("fuel", 1);
-            orders.buy_units[index] = orders.buy_units[index]
-                .checked_add(target.saturating_sub(holding).div_ceil(supply))
-                .ok_or_else(|| missing_data("fuel.buy".to_owned(), "buy overflow"))?;
-        }
         let spare = fuel::fuel_spare(
             rules,
             &pop.stock,
@@ -3905,10 +3918,6 @@ fn daily_market_orders(rules: &Rules, place: &PlaceState) -> Result<DailyMarketO
             }
             let holding = pop_market_holding(place, pop_index, good_index)?;
             let target = pop_target_units(rules, &pop.kind, people, good_index)?;
-            let buy = target.saturating_sub(holding);
-            orders.buy_units[good_index] = orders.buy_units[good_index]
-                .checked_add(buy)
-                .ok_or_else(|| missing_data("market.buy".to_owned(), "buy order overflow"))?;
             // A pop offers whatever it holds above its target, with or without a hunger value (CK-391): the
             // exchange swaps the same spare, so the price step and the exchange see the same offers.
             let sell = holding.saturating_sub(target);
@@ -3917,35 +3926,45 @@ fn daily_market_orders(rules: &Rules, place: &PlaceState) -> Result<DailyMarketO
                 .ok_or_else(|| missing_data("market.sell".to_owned(), "sell order overflow"))?;
         }
     }
-    // Owners of a herd below its standard level want animals; the want is a buy order like a good's (CK-430, r163).
     let live = live_species(rules);
-    let wants = herd_wants(rules, place)?;
-    for (good, species) in live.iter().enumerate() {
-        let Some(species) = *species else { continue };
-        for building in &wants {
-            for pop in building {
-                orders.buy_units[good] = orders.buy_units[good]
-                    .checked_add(u128::from(pop[species]))
-                    .ok_or_else(|| missing_data("market.buy".to_owned(), "buy order overflow"))?;
+    for (pop, rows) in budget::orders(rules, place, &place.prices_milli)?
+        .iter()
+        .enumerate()
+    {
+        let mut heat = 0_u128;
+        let mut fuel_value = 0_u128;
+        for row in rows {
+            match row.destination {
+                budget::Destination::Fuel => {
+                    heat = heat
+                        .checked_add(row.funded)
+                        .ok_or_else(|| missing_data("fuel.buy".into(), "buy overflow"))?;
+                    fuel_value = fuel_value
+                        .checked_add(row.funded_value)
+                        .ok_or_else(|| missing_data("fuel.buy".into(), "buy overflow"))?;
+                }
+                budget::Destination::Household(good)
+                | budget::Destination::Herd { good, .. }
+                | budget::Destination::Job { good, .. } => {
+                    orders.buy_units[good] = orders.buy_units[good]
+                        .checked_add(row.funded)
+                        .ok_or_else(|| missing_data("market.buy".into(), "buy overflow"))?;
+                }
             }
         }
-    }
-    // What a job still lacks is its trader's buy order (r5 3.4); an animal a given-up job holds is on offer (11b.1).
-    let (job_goods, job_animals) = trade::lacks(rules, place);
-    for pop in 0..place.pops.len() {
-        for (good, lack) in job_goods[pop].iter().enumerate() {
+        if let Some((good, loads)) =
+            budget::price_fuel_order(rules, &place.prices_milli, heat, fuel_value)?
+        {
             orders.buy_units[good] = orders.buy_units[good]
-                .checked_add(u128::from(*lack))
-                .ok_or_else(|| missing_data("market.buy".to_owned(), "buy order overflow"))?;
+                .checked_add(loads)
+                .ok_or_else(|| missing_data("fuel.buy".into(), "buy overflow"))?;
         }
         for (good, species) in live.iter().enumerate() {
-            let Some(species) = *species else { continue };
-            orders.buy_units[good] = orders.buy_units[good]
-                .checked_add(u128::from(job_animals[pop][species]))
-                .ok_or_else(|| missing_data("market.buy".to_owned(), "buy order overflow"))?;
-            orders.sell_units[good] = orders.sell_units[good]
-                .checked_add(u128::from(place.trade.offered(pop, species)))
-                .ok_or_else(|| missing_data("market.sell".to_owned(), "sell order overflow"))?;
+            if let Some(species) = *species {
+                orders.sell_units[good] = orders.sell_units[good]
+                    .checked_add(u128::from(place.trade.offered(pop, species)))
+                    .ok_or_else(|| missing_data("market.sell".into(), "sell overflow"))?;
+            }
         }
     }
     for building in building_market_sells(rules, place, &place.prices_milli)? {
@@ -11941,6 +11960,9 @@ pub(crate) mod tests {
             )]),
             grazing: BTreeMap::from([("pasture".to_owned(), BTreeMap::new())]),
             method_switch_margin_pm: 200,
+            food_near_pm: 125,
+            comfort_near_pm: 125,
+            fuel_near_pm: 125,
             price_k_pm: 500,
             swap_loss_limit_pm: 100,
             job_giveup_hours: 720,
@@ -13316,7 +13338,7 @@ pub(crate) mod tests {
             .iter()
             .position(|good| good.id == "mead")
             .unwrap();
-        let pop = PopState {
+        let mut pop = PopState {
             id: 0,
             kind: "monk".to_owned(),
             culture: "connachta".to_owned(),
@@ -13334,6 +13356,7 @@ pub(crate) mod tests {
             pending_births: 0,
             pending_deaths: 0,
         };
+        pop.stock[good_at(&rules, "wool")] = 1_000_000;
         let place = PlaceState {
             id: "luxury_market".to_owned(),
             pops: vec![pop],
@@ -13387,6 +13410,7 @@ pub(crate) mod tests {
         let place_with = |ale_holding| {
             let mut stock = vec![0; rules.goods.len()];
             stock[ale] = ale_holding;
+            stock[good_at(&rules, "wool")] = 1_000_000;
             stock[oats] = u64::try_from(oats_target + 7).unwrap();
             PlaceState {
                 id: "comfort_order".to_owned(),
@@ -13690,6 +13714,7 @@ pub(crate) mod tests {
             paid_years: vec![0; WAGE_HISTORY_MONTHS],
         };
         let mut pop = pop;
+        pop.stock[index("wool")] = 1_000_000;
         pop.employment[1] = farm.employment[0].clone();
         let place = PlaceState {
             id: "market_fixture".to_owned(),
@@ -13775,12 +13800,23 @@ pub(crate) mod tests {
         state.places[0].prices_milli[0] = 100_001;
         let orders_used = daily_market_orders(&rules, &state.places[0]).unwrap();
         update_daily_prices(&rules, &mut state).unwrap();
-        assert_eq!(state.places[0].prices_milli, [105_000]);
+        assert_eq!(
+            state.places[0].prices_milli,
+            [100_001],
+            "an unfunded shortfall does not move the price"
+        );
         assert_eq!(state.places[0].last_market_orders, Some(orders_used));
-        assert_eq!(state.places[0].price_drift_carries, [900]);
-        update_daily_prices(&rules, &mut state).unwrap();
-        assert_eq!(state.places[0].prices_milli, [109_500]);
-        assert_eq!(state.places[0].price_drift_carries, [900]);
+        let mut carry = 0;
+        assert_eq!(
+            drift_value(100_001, 150_000, 100, 1000, &mut carry, 1, 500_000).unwrap(),
+            105_000
+        );
+        assert_eq!(carry, 900);
+        assert_eq!(
+            drift_value(105_000, 150_000, 100, 1000, &mut carry, 1, 500_000).unwrap(),
+            109_500
+        );
+        assert_eq!(carry, 900);
     }
 
     #[test]
@@ -16766,7 +16802,7 @@ pub(crate) mod tests {
                 workers: 1,
                 dependents: 0,
                 employment: Vec::new(),
-                stock: vec![0],
+                stock: vec![241],
                 consumption: PopConsumption {
                     pantry_hunger_centi: vec![0],
                     ticking_carries: vec![0],
@@ -16808,13 +16844,9 @@ pub(crate) mod tests {
         .unwrap();
 
         let place = &state.places[0];
-        assert_eq!(
-            place.prices_milli,
-            [105_000],
-            "the market moves price first"
-        );
+        assert_eq!(place.prices_milli, [95_001], "the market moves price first");
         assert_eq!(place.counters.last.produced, [12]);
-        assert_eq!(place.counters.last.produced_value_milli, [1_260_000]);
+        assert_eq!(place.counters.last.produced_value_milli, [1_140_012]);
     }
 
     #[test]
@@ -17587,16 +17619,18 @@ pub(crate) mod tests {
         pop.dependents = 0;
         pop.stock[hardwood] = 300;
         pop.stock[peat] = 100;
+        swap_tests::settle_the_rest(&rules, place, &["hardwood", "peat"]);
+        swap_tests::spare(&rules, place, 0, "wool", 100_000);
         let orders = daily_market_orders(&rules, place).unwrap();
         assert_eq!(
             (orders.buy_units[hardwood], orders.buy_units[peat]),
-            (0, 158)
+            (0, 157)
         );
         place.prices_milli[peat] = 8000;
         let orders = daily_market_orders(&rules, place).unwrap();
         assert_eq!(
             (orders.buy_units[hardwood], orders.buy_units[peat]),
-            (110, 0)
+            (94, 0)
         );
     }
 
@@ -17645,6 +17679,8 @@ pub(crate) mod tests {
     fn noon_burn_uses_the_price_before_the_price_step() {
         let mut rules = shipped_rules();
         flatten_pasture(&mut rules);
+        let wool_index = good_at(&rules, "wool");
+        rules.goods[wool_index].stacked_outside = true;
         let mut state = shipped_production_fixture(&rules);
         let place = &mut state.places[0];
         place.pops.truncate(1);
@@ -17652,6 +17688,7 @@ pub(crate) mod tests {
         place.pops[0].employment.clear();
         place.pops[0].workers = 1;
         place.pops[0].dependents = 0;
+        place.pops[0].stock[wool_index] = 1000;
         place.pops[0].consumption.pantry_hunger_centi = vec![0; rules.goods.len()];
         place.pops[0].consumption.ticking_carries = vec![0; rules.goods.len()];
         let wood = good_at(&rules, "hardwood");
@@ -17666,7 +17703,7 @@ pub(crate) mod tests {
         place.prices_milli[peat] = 6999;
         place.price_drift_carries = vec![0; rules.goods.len()];
         let orders = daily_market_orders(&rules, place).unwrap();
-        assert_eq!(orders.buy_units[peat], 5);
+        assert_eq!(orders.buy_units[peat], 4);
         let ledger = run_daily_economy(
             &rules,
             &mut state,
@@ -17692,6 +17729,8 @@ pub(crate) mod tests {
     fn noon_draw_uses_the_opening_price_and_respects_owner_reserve() {
         let mut rules = shipped_rules();
         flatten_pasture(&mut rules);
+        let wool_index = good_at(&rules, "wool");
+        rules.goods[wool_index].stacked_outside = true;
         let mut state = shipped_production_fixture(&rules);
         let place = &mut state.places[0];
         place.pops.truncate(1);
@@ -17700,6 +17739,7 @@ pub(crate) mod tests {
         place.buildings[0].employment.truncate(1);
         place.pops[0].workers = 1;
         place.pops[0].dependents = 0;
+        place.pops[0].stock[wool_index] = 1000;
         place.pops[0].consumption.pantry_hunger_centi = vec![0; rules.goods.len()];
         place.pops[0].consumption.ticking_carries = vec![0; rules.goods.len()];
         place.pops[0].consumption.hearth_milli = 500;
@@ -17721,7 +17761,7 @@ pub(crate) mod tests {
                 orders.sell_units[wood],
                 orders.sell_units[peat]
             ),
-            (7, 0, 0)
+            (6, 0, 0)
         );
         run_daily_economy(
             &rules,
@@ -18062,10 +18102,10 @@ pub(crate) mod tests {
         }
         let place = &initial.places[0];
         let order = daily_market_orders(&rules, place).unwrap();
-        assert_eq!((order.buy_units[wood], order.buy_units[peat]), (0, 7));
+        assert_eq!((order.buy_units[wood], order.buy_units[peat]), (0, 3));
         assert_eq!(
             (place.prices_milli[wood], place.prices_milli[peat]),
-            (5000, 3399)
+            (5000, 3178)
         );
     }
 
@@ -18125,7 +18165,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn fuel_need_is_in_the_start_projection_but_live_orders_buy_peat() {
+    fn fuel_need_is_in_the_start_projection_but_unfunded_live_orders_are_empty() {
         let mut rules = shipped_rules();
         flatten_pasture(&mut rules);
         let mut state = shipped_production_fixture(&rules);
@@ -18153,7 +18193,7 @@ pub(crate) mod tests {
             10_000
         );
         let orders = daily_market_orders(&rules, place).unwrap();
-        assert_eq!((orders.buy_units[wood], orders.buy_units[peat]), (0, 3429));
+        assert_eq!((orders.buy_units[wood], orders.buy_units[peat]), (0, 0));
     }
 
     #[test]
@@ -20453,7 +20493,11 @@ pub(crate) mod tests {
             ("monk", 4000),
             ("noble", 2000),
         ] {
-            let place = inland_place(&rules, vec![inland_pop(&rules, kind, 100, &[])], Vec::new());
+            let place = inland_place(
+                &rules,
+                vec![inland_pop(&rules, kind, 100, &[("wool", 1_000_000)])],
+                Vec::new(),
+            );
             let orders = daily_market_orders(&rules, &place).unwrap();
             assert_eq!(orders.buy_units[fish], wanted, "{kind} fish buy order");
             assert_eq!(orders.sell_units[fish], 0, "{kind} fish sell order");
@@ -20604,7 +20648,7 @@ pub(crate) mod tests {
             next_pop_serial: 1,
             places: vec![inland_place(
                 &rules,
-                vec![inland_pop(&rules, "peasant", 100, &[])],
+                vec![inland_pop(&rules, "peasant", 100, &[("wool", 1_000_000)])],
                 Vec::new(),
             )],
             trade: TradeCounters::default(),
@@ -20713,7 +20757,7 @@ pub(crate) mod tests {
             .get_mut("1")
             .unwrap()
             .farm_levels = 3;
-        let (state, _) = starting_state(
+        let (mut state, _) = starting_state(
             &rules,
             &data,
             &[StartLocation {
@@ -20733,6 +20777,10 @@ pub(crate) mod tests {
         .unwrap();
         let farm = &state.places[0].buildings[0];
         assert_eq!(farm.method_levels[1], 0, "no sea cell, no sea level");
+        let pop = &mut state.places[0].pops[0];
+        let people = pop.workers + pop.dependents;
+        let target = pop_target_units(&rules, &pop.kind, people, 0).unwrap();
+        pop.stock[0] = u64::try_from(target + 10_000).unwrap();
         assert!(
             daily_market_orders(&rules, &state.places[0])
                 .unwrap()

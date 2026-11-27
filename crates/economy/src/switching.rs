@@ -3483,6 +3483,9 @@ mod switch_step_tests {
         // Oats are 15,000 and wood 5,000 as the day begins: the move to wood passes. The day's price step moves them (wood to 6,000
         // and oats to 28,500), and at those prices the move fails. The level moves: the look was made at the opening prices.
         let (mut rules, mut state, land) = daily_march(5_000);
+        let wool_index = good_at(&rules, "wool");
+        rules.goods[wool_index].stacked_outside = true;
+        state.places[0].pops[0].stock[wool_index] = 1_000_000;
         // Keep this price-order witness on a growing candidate.
         rules
             .buildings

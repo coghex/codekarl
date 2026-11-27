@@ -284,7 +284,9 @@ fn the_noon_exchange_makes_one_capacity_cut_swap_and_a_save_at_eleven_or_thirtee
 
 #[test]
 fn a_building_payment_for_scarce_fish_survives_saves_around_noon() {
-    let rules = rules();
+    let mut rules = rules();
+    let wool = rules.goods.iter().position(|g| g.id == "wool").unwrap();
+    rules.goods[wool].stacked_outside = true;
     let mut economy = fort(&rules);
     let place = &mut economy.places[0];
     let oats = rules.goods.iter().position(|g| g.id == "oats").unwrap();
@@ -302,6 +304,9 @@ fn a_building_payment_for_scarce_fish_survives_saves_around_noon() {
         .position(|b| b.kind == "demesne")
         .unwrap();
     place.pops[nobles].stock[oats] = 0;
+    for pop in &mut place.pops {
+        pop.stock[wool] = 100_000;
+    }
     place.pops[labourers].stock[oats] = 400;
     place.pops[peasants].stock[fish] = 1_300;
     place.buildings[demesne].stock[oats] = 1_000;
