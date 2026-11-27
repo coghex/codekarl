@@ -63,6 +63,7 @@ pub(crate) struct Prepared {
     /// Map-derived makeshift shelter by place, not saved in `EconomyState`.
     shelter_by_place: BTreeMap<String, u64>,
     saves: PathBuf,
+    history: super::history::Recorder,
     pub(super) storage: super::character_storage::Storage,
     /// Where the view builder finds the current archive reader (CK-377).
     archive_cell: super::character_storage::SourceCell,
@@ -234,9 +235,12 @@ pub(crate) fn prepare(
         )
     };
     let storage_parent = request.game.saves.parent().unwrap_or(Path::new("."));
-    let (simulation, storage, layers, log_choices) = if let Some(path) = request.load {
+    let (simulation, storage, layers, log_choices, history) = if let Some(path) = request.load {
+        use std::io::{Seek, SeekFrom};
         let mut file = std::fs::File::open(path)
             .map_err(|error| format!("cannot read save {}: {error}", path.display()))?;
+        let handoff = super::history::Handoff::begin(&mut file, &request.game.saves);
+        file.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
         let staging = super::character_storage::Storage::fresh_path(storage_parent)
             .map_err(|e| e.to_string())?;
         let (save, _) = Save::<GameState>::read_with_sections(
@@ -275,8 +279,11 @@ pub(crate) fn prepare(
         let simulation = Simulation::from_save(save, scheduler(), apply)
             .map_err(|error| format!("save {}: {error}", path.display()))?;
         let date = simulation.date().unwrap_or(start);
+        let history = handoff
+            .finish(&mut file, &request.game.saves, date)
+            .map_err(|e| e.to_string())?;
         log(Level::Info, format!("loaded {} at {date}", path.display()));
-        (simulation, storage, layers, log_choices)
+        (simulation, storage, layers, log_choices, history)
     } else {
         let seed = match request.seed {
             Some(seed) => seed,
@@ -317,6 +324,11 @@ pub(crate) fn prepare(
             storage,
             ck_sim::MapLayers::default(),
             ck_sim::LogChoices::default(),
+            super::history::Recorder::new(
+                &request.game.saves,
+                operating_system_seed()?,
+                (start.year, start.month),
+            ),
         )
     };
     let mut storage = storage;
@@ -342,6 +354,7 @@ pub(crate) fn prepare(
         slots,
         shelter_by_place,
         saves: request.game.saves.clone(),
+        history,
         storage,
         characters_io,
         archive_cell,
@@ -736,6 +749,7 @@ fn core_over(
     let fuel_rules = prepared.economy_rules.clone();
     let expedition_rules = prepared.economy_rules.clone();
     let trade_panel_rules = prepared.economy_rules.clone();
+    let history_rules = prepared.economy_rules.clone();
     let stretch_ids = prepared
         .simulation
         .state()
@@ -750,6 +764,7 @@ fn core_over(
         layers,
         events,
         log_choices,
+        history,
         ..
     } = prepared;
     Core::new_with_events(
@@ -771,6 +786,7 @@ fn core_over(
         })),
         (layers, events, log_choices),
     )
+    .with_history(history, history_builder(history_rules))
     .with_expeditions(move |state: &GameState| {
         expedition_rules.as_deref().map_or_else(Vec::new, |rules| {
             super::expedition_map::build(&state.economy, rules)
@@ -792,6 +808,19 @@ fn core_over(
         Ok(())
     })
     .with_character_storage(storage, super::character_storage::Storage::validate)
+}
+
+fn history_builder(rules: Option<Arc<Rules>>) -> super::core::HistoryBuilder<GameState> {
+    Box::new(move |state, year, month| {
+        rules.as_ref().map_or_else(
+            || super::history::MonthRecord {
+                year,
+                month,
+                places: Vec::new(),
+            },
+            |rules| super::history::MonthRecord::sample(rules, &state.economy, year, month),
+        )
+    })
 }
 
 /// A game wired to the run: the controls the UI link sends presses through, the slot it reads, and the owner to spawn.
@@ -905,12 +934,14 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
         events,
         saves,
         storage,
+        history,
         ..
     } = prepared;
     let wiring_gameplay = gameplay.clone();
     let fuel_rules = economy_rules.clone();
     let expedition_rules = economy_rules.clone();
     let trade_panel_rules = economy_rules.clone();
+    let history_rules = economy_rules.clone();
     let (sender, receiver) = channel();
     let controls = SimControls::with_wake(sender.clone(), Arc::clone(&wake));
     let slot = SimSlot::new(wake);
@@ -949,6 +980,7 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
                 })),
                 (layers, events, log_choices),
             )
+            .with_history(history, history_builder(history_rules))
             .with_expeditions(move |state: &GameState| {
                 expedition_rules.as_deref().map_or_else(Vec::new, |rules| {
                     super::expedition_map::build(&state.economy, rules)
@@ -1979,6 +2011,606 @@ mod stretch_save_tests {
         )
         .unwrap();
         (game, prepared)
+    }
+
+    #[test]
+    fn damaged_history_loads_through_both_real_paths() {
+        use sha2::{Digest, Sha256};
+        let dir = crate::testing::Dir::new();
+        let (game, prepared) = fixture(&dir.0);
+        let expected_date = prepared.simulation.date().unwrap();
+        let mut original = test_core_running(
+            prepared,
+            game.saves.clone(),
+            Outputs {
+                log: Box::new(|_, _| {}),
+                publish: Box::new(|_| {}),
+                fail: Box::new(|e| panic!("{e}")),
+            },
+        );
+        original.dispatch(Message::Control(Control::Quicksave), Duration::ZERO);
+        let path = super::super::saves::quicksave_path(&game.saves);
+        let bytes = fs::read(&path).unwrap();
+        let length = usize::try_from(u64::from_le_bytes(
+            bytes[bytes.len() - 16..bytes.len() - 8].try_into().unwrap(),
+        ))
+        .unwrap();
+        let start = bytes.len() - 16 - length;
+        let original_index = super::super::history::Index::decode(&bytes[start..]).unwrap();
+        let mut variants = vec![bytes[..start].to_vec(), bytes[..bytes.len() - 1].to_vec()];
+        let mut damaged = bytes.clone();
+        damaged[start + 20] ^= 1;
+        variants.push(damaged);
+        let mut unknown = bytes.clone();
+        unknown[start + 8] = 2;
+        let hash_at = bytes.len() - 16 - 32;
+        let hash = Sha256::digest(&unknown[start..hash_at]);
+        unknown[hash_at..hash_at + 32].copy_from_slice(&hash);
+        variants.push(unknown);
+        let mut garbage = bytes[..start].to_vec();
+        garbage.extend_from_slice(b"garbage after end");
+        variants.push(garbage);
+        for variant in variants {
+            fs::write(&path, variant).unwrap();
+            let messages = Arc::new(Mutex::new(Vec::<String>::new()));
+            let recorded = Arc::clone(&messages);
+            let mut loaded = prepare(
+                &Request {
+                    game: &game,
+                    vms: &[],
+                    load: Some(&path),
+                    seed: None,
+                },
+                || Ok(42),
+                &mut |_, text| recorded.lock().unwrap().push(text.clone()),
+            )
+            .unwrap();
+            assert_eq!(loaded.simulation.date().unwrap(), expected_date);
+            let index =
+                super::super::history::Index::decode(&loaded.history.trailer().unwrap()).unwrap();
+            assert_ne!(index.campaign, original_index.campaign);
+            assert!(index.years.is_empty());
+            assert_eq!(index.origin, (expected_date.year, expected_date.month));
+            assert!(
+                messages
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .all(|line| !line.to_lowercase().contains("history"))
+            );
+            let (_, fresh) = fixture(&dir.0);
+            let recorded = Arc::clone(&messages);
+            let mut playing = test_core_running(
+                fresh,
+                game.saves.clone(),
+                Outputs {
+                    log: Box::new(move |_, text| recorded.lock().unwrap().push(text.clone())),
+                    publish: Box::new(|_| {}),
+                    fail: Box::new(|e| panic!("{e}")),
+                },
+            );
+            playing.step_for_tests();
+            playing.dispatch(Message::Control(Control::Quickload), Duration::ZERO);
+            assert_eq!(playing.date(), expected_date);
+            playing.dispatch(Message::Control(Control::Quicksave), Duration::ZERO);
+            let saved = fs::read(&path).unwrap();
+            let length = usize::try_from(u64::from_le_bytes(
+                saved[saved.len() - 16..saved.len() - 8].try_into().unwrap(),
+            ))
+            .unwrap();
+            let index =
+                super::super::history::Index::decode(&saved[saved.len() - 16 - length..]).unwrap();
+            assert_ne!(index.campaign, original_index.campaign);
+            assert!(index.years.is_empty());
+            assert_eq!(index.origin, (expected_date.year, expected_date.month));
+            assert!(
+                messages
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .all(|line| !line.to_lowercase().contains("history"))
+            );
+        }
+    }
+
+    #[test]
+    fn changing_campaign_after_prefix_makes_a_gap_on_both_load_paths() {
+        let dir = crate::testing::Dir::new();
+        let (game, prepared) = fixture(&dir.0);
+        let date = prepared.simulation.date().unwrap();
+        let outputs = || Outputs {
+            log: Box::new(|_, _| {}),
+            publish: Box::new(|_| {}),
+            fail: Box::new(|e| panic!("{e}")),
+        };
+        let mut source = test_core_running(prepared, game.saves.clone(), outputs());
+        source.dispatch(Message::Control(Control::Quicksave), Duration::ZERO);
+        let path = super::super::saves::quicksave_path(&game.saves);
+        let bytes = fs::read(&path).unwrap();
+        let len = usize::try_from(u64::from_le_bytes(
+            bytes[bytes.len() - 16..bytes.len() - 8].try_into().unwrap(),
+        ))
+        .unwrap();
+        let start = bytes.len() - 16 - len;
+        let mut index = super::super::history::Index::decode(&bytes[start..]).unwrap();
+        let old_campaign = index.campaign;
+        index.campaign = old_campaign ^ 1;
+        let mut replaced = bytes[..start].to_vec();
+        replaced.extend(index.encode().unwrap());
+        let arrange_change = || {
+            fs::write(&path, &bytes).unwrap();
+            let path = path.clone();
+            let replaced = replaced.clone();
+            super::super::history::BEFORE_HANDOFF_FINISH.with(|hook| {
+                *hook.borrow_mut() = Some(Box::new(move || fs::write(path, replaced).unwrap()));
+            });
+        };
+        arrange_change();
+        let mut loaded = prepare(
+            &Request {
+                game: &game,
+                vms: &[],
+                load: Some(&path),
+                seed: None,
+            },
+            || Ok(42),
+            &mut |_, _| {},
+        )
+        .unwrap();
+        let gap = super::super::history::Index::decode(&loaded.history.trailer().unwrap()).unwrap();
+        assert_ne!(gap.campaign, old_campaign);
+        assert_ne!(gap.campaign, index.campaign);
+        assert!(gap.years.is_empty());
+        assert_eq!(gap.origin, (date.year, date.month));
+        let (_, fresh) = fixture(&dir.0);
+        let mut playing = test_core_running(fresh, game.saves.clone(), outputs());
+        arrange_change();
+        playing.dispatch(Message::Control(Control::Quickload), Duration::ZERO);
+        playing.dispatch(Message::Control(Control::Quicksave), Duration::ZERO);
+        let saved = fs::read(&path).unwrap();
+        let len = usize::try_from(u64::from_le_bytes(
+            saved[saved.len() - 16..saved.len() - 8].try_into().unwrap(),
+        ))
+        .unwrap();
+        let gap = super::super::history::Index::decode(&saved[saved.len() - 16 - len..]).unwrap();
+        assert_ne!(gap.campaign, old_campaign);
+        assert_ne!(gap.campaign, index.campaign);
+        assert!(gap.years.is_empty());
+        assert_eq!(gap.origin, (date.year, date.month));
+    }
+
+    #[test]
+    fn damaged_core_with_intact_history_is_refused_and_keeps_running_lock() {
+        let dir = crate::testing::Dir::new();
+        let (game, prepared) = fixture(&dir.0);
+        let date = prepared.simulation.date().unwrap();
+        let mut playing = test_core_running(
+            prepared,
+            game.saves.clone(),
+            Outputs {
+                log: Box::new(|_, _| {}),
+                publish: Box::new(|_| {}),
+                fail: Box::new(|e| panic!("{e}")),
+            },
+        );
+        playing.dispatch(Message::Control(Control::Quicksave), Duration::ZERO);
+        let path = super::super::saves::quicksave_path(&game.saves);
+        let bytes = fs::read(&path).unwrap();
+        let len = usize::try_from(u64::from_le_bytes(
+            bytes[bytes.len() - 16..bytes.len() - 8].try_into().unwrap(),
+        ))
+        .unwrap();
+        let index = super::super::history::Index::decode(&bytes[bytes.len() - 16 - len..]).unwrap();
+        let lock = fs::File::open(
+            game.saves
+                .join("history/locks")
+                .join(format!("{:016x}.lock", index.campaign)),
+        )
+        .unwrap();
+        for tag in [b"STAT", b"ARCH", b"LOGS", b"END\0"] {
+            let mut corrupt = bytes.clone();
+            let at = corrupt
+                .windows(4)
+                .position(|window| window == tag)
+                .expect("section tag");
+            corrupt[at + if tag == b"END\0" { 4 } else { 12 }] ^= 1;
+            fs::write(&path, corrupt).unwrap();
+            assert!(
+                prepare(
+                    &Request {
+                        game: &game,
+                        vms: &[],
+                        load: Some(&path),
+                        seed: None
+                    },
+                    || Ok(42),
+                    &mut |_, _| {}
+                )
+                .is_err()
+            );
+            playing.dispatch(Message::Control(Control::Quickload), Duration::ZERO);
+            assert_eq!(playing.date(), date);
+            assert!(
+                lock.try_lock().is_err(),
+                "running campaign must remain locked"
+            );
+        }
+        playing.dispatch(Message::Control(Control::Quicksave), Duration::ZERO);
+        let saved = fs::read(&path).unwrap();
+        let len = usize::try_from(u64::from_le_bytes(
+            saved[saved.len() - 16..saved.len() - 8].try_into().unwrap(),
+        ))
+        .unwrap();
+        let after = super::super::history::Index::decode(&saved[saved.len() - 16 - len..]).unwrap();
+        assert_eq!(after.campaign, index.campaign);
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the fixture matrix keeps both load paths and recovery together"
+    )]
+    fn unavailable_lock_stores_detach_both_load_paths_with_or_without_trailer() {
+        use std::os::unix::fs::PermissionsExt;
+        fn watched(f: impl FnOnce()) {
+            let (tx, rx) = std::sync::mpsc::channel();
+            super::super::history::COLLECTION_DONE
+                .with(|hook| *hook.borrow_mut() = Some(Box::new(move || tx.send(()).unwrap())));
+            f();
+            rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        }
+        for case in 0..3 {
+            for intact in [false, true] {
+                let dir = crate::testing::Dir::new();
+                let (game, prepared) = fixture(&dir.0);
+                let date = prepared.simulation.date().unwrap();
+                let messages = Arc::new(Mutex::new(Vec::<String>::new()));
+                let outputs = || Outputs {
+                    log: {
+                        let messages = Arc::clone(&messages);
+                        Box::new(move |_, text| messages.lock().unwrap().push(text.clone()))
+                    },
+                    publish: Box::new(|_| {}),
+                    fail: Box::new(|e| panic!("{e}")),
+                };
+                let mut source = None;
+                watched(|| {
+                    source = Some(test_core_running(prepared, game.saves.clone(), outputs()));
+                });
+                let mut source = source.unwrap();
+                watched(|| {
+                    source.dispatch(Message::Control(Control::Quicksave), Duration::ZERO);
+                });
+                drop(source);
+                let path = super::super::saves::quicksave_path(&game.saves);
+                let mut bytes = fs::read(&path).unwrap();
+                let len = usize::try_from(u64::from_le_bytes(
+                    bytes[bytes.len() - 16..bytes.len() - 8].try_into().unwrap(),
+                ))
+                .unwrap();
+                if !intact {
+                    bytes.truncate(bytes.len() - 16 - len);
+                }
+                fs::write(&path, &bytes).unwrap();
+                let root = game.saves.join("history");
+                fs::remove_dir_all(&root).unwrap();
+                let locks = root.join("locks");
+                match case {
+                    0 => fs::write(&root, b"root").unwrap(),
+                    1 => {
+                        fs::create_dir(&root).unwrap();
+                        fs::write(&locks, b"locks").unwrap();
+                    }
+                    _ => {
+                        fs::create_dir_all(&locks).unwrap();
+                        fs::create_dir(root.join("000000000000002a")).unwrap();
+                        fs::write(root.join("000000000000002a/orphan.ckhist"), b"keep").unwrap();
+                        fs::set_permissions(&locks, fs::Permissions::from_mode(0o555)).unwrap();
+                    }
+                }
+                let mut loaded = prepare(
+                    &Request {
+                        game: &game,
+                        vms: &[],
+                        load: Some(&path),
+                        seed: None,
+                    },
+                    || Ok(42),
+                    &mut |_, text| messages.lock().unwrap().push(text.clone()),
+                )
+                .unwrap();
+                assert_eq!(loaded.simulation.date().unwrap(), date);
+                let index =
+                    super::super::history::Index::decode(&loaded.history.trailer().unwrap())
+                        .unwrap();
+                assert!(index.years.is_empty());
+                assert_eq!(index.origin, (date.year, date.month));
+                assert!(
+                    messages
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .all(|line| !line.to_lowercase().contains("history"))
+                );
+                super::super::history::COLLECTION_SCHEDULED.with(|count| count.set(0));
+                loaded.history.collect_async();
+                super::super::history::COLLECTION_SCHEDULED
+                    .with(|count| assert_eq!(count.get(), 0));
+                loaded.history.record(super::super::history::MonthRecord {
+                    year: date.year,
+                    month: 12,
+                    places: vec![],
+                });
+                let index =
+                    super::super::history::Index::decode(&loaded.history.trailer().unwrap())
+                        .unwrap();
+                assert!(index.years.is_empty());
+                let (_, mut fresh) = fixture(&dir.0);
+                let new_index =
+                    super::super::history::Index::decode(&fresh.history.trailer().unwrap())
+                        .unwrap();
+                assert!(new_index.years.is_empty());
+                assert_eq!(new_index.origin, (date.year, date.month));
+                super::super::history::COLLECTION_SCHEDULED.with(|count| count.set(0));
+                let mut playing = test_core_running(fresh, game.saves.clone(), outputs());
+                super::super::history::COLLECTION_SCHEDULED
+                    .with(|count| assert_eq!(count.get(), 0));
+                playing.step_for_tests();
+                playing.dispatch(Message::Control(Control::Quickload), Duration::ZERO);
+                assert_eq!(playing.date(), date);
+                playing.dispatch(Message::Control(Control::Quicksave), Duration::ZERO);
+                let saved = fs::read(&path).unwrap();
+                let len = usize::try_from(u64::from_le_bytes(
+                    saved[saved.len() - 16..saved.len() - 8].try_into().unwrap(),
+                ))
+                .unwrap();
+                let index =
+                    super::super::history::Index::decode(&saved[saved.len() - 16 - len..]).unwrap();
+                assert!(index.years.is_empty());
+                assert_eq!(index.origin, (date.year, date.month));
+                match case {
+                    0 => {
+                        assert_eq!(fs::read(&root).unwrap(), b"root");
+                        fs::remove_file(&root).unwrap();
+                    }
+                    1 => {
+                        assert_eq!(fs::read(&locks).unwrap(), b"locks");
+                        fs::remove_file(&locks).unwrap();
+                    }
+                    _ => {
+                        assert_eq!(fs::read_dir(&locks).unwrap().count(), 0);
+                        assert_eq!(
+                            fs::read(root.join("000000000000002a/orphan.ckhist")).unwrap(),
+                            b"keep"
+                        );
+                        fs::set_permissions(&locks, fs::Permissions::from_mode(0o755)).unwrap();
+                    }
+                }
+                drop(loaded);
+                drop(playing);
+                let recovered = prepare(
+                    &Request {
+                        game: &game,
+                        vms: &[],
+                        load: Some(&path),
+                        seed: None,
+                    },
+                    || Ok(42),
+                    &mut |_, _| {},
+                )
+                .unwrap();
+                let lock =
+                    fs::File::open(locks.join(format!("{:016x}.lock", index.campaign))).unwrap();
+                assert!(lock.try_lock().is_err());
+                drop(recovered);
+            }
+        }
+    }
+
+    #[test]
+    fn unavailable_lock_store_loads_silently_and_keeps_its_bytes() {
+        let dir = crate::testing::Dir::new();
+        let (game, prepared) = fixture(&dir.0);
+        let date = prepared.simulation.date().unwrap();
+        let outputs = || Outputs {
+            log: Box::new(|_, _| {}),
+            publish: Box::new(|_| {}),
+            fail: Box::new(|e| panic!("{e}")),
+        };
+        let mut source = test_core_running(prepared, game.saves.clone(), outputs());
+        source.dispatch(Message::Control(Control::Quicksave), Duration::ZERO);
+        drop(source);
+        let root = game.saves.join("history");
+        fs::remove_dir_all(&root).unwrap();
+        fs::write(&root, b"unavailable lock store").unwrap();
+        let path = super::super::saves::quicksave_path(&game.saves);
+        let loaded = prepare(
+            &Request {
+                game: &game,
+                vms: &[],
+                load: Some(&path),
+                seed: None,
+            },
+            || Ok(42),
+            &mut |_, _| {},
+        )
+        .unwrap();
+        assert_eq!(loaded.simulation.date().unwrap(), date);
+        let (_, fresh) = fixture(&dir.0);
+        let mut playing = test_core_running(fresh, game.saves.clone(), outputs());
+        playing.step_for_tests();
+        playing.dispatch(Message::Control(Control::Quickload), Duration::ZERO);
+        assert_eq!(playing.date(), date);
+        playing.dispatch(Message::Control(Control::Quicksave), Duration::ZERO);
+        let bytes = fs::read(path).unwrap();
+        let len = usize::try_from(u64::from_le_bytes(
+            bytes[bytes.len() - 16..bytes.len() - 8].try_into().unwrap(),
+        ))
+        .unwrap();
+        let index = super::super::history::Index::decode(&bytes[bytes.len() - 16 - len..]).unwrap();
+        assert!(index.years.is_empty());
+        assert_eq!(fs::read(root).unwrap(), b"unavailable lock store");
+    }
+
+    #[test]
+    fn deleting_and_overwriting_saves_collects_other_campaign_but_not_own() {
+        use crate::game::core::{SaveCall, SaveReply};
+        use std::time::Duration;
+        fn watched(f: impl FnOnce()) {
+            let (tx, rx) = std::sync::mpsc::channel();
+            super::super::history::COLLECTION_DONE
+                .with(|hook| *hook.borrow_mut() = Some(Box::new(move || tx.send(()).unwrap())));
+            f();
+            rx.recv_timeout(Duration::from_secs(10))
+                .expect("collection completed");
+        }
+        fn call(core: &mut Core<GameState, GameCommand>, action: SaveCall) {
+            let (tx, rx) = std::sync::mpsc::channel();
+            core.dispatch(Message::Save(action, tx), Duration::ZERO);
+            assert!(matches!(rx.recv().unwrap(), SaveReply::Finished(Ok(()))));
+        }
+        let dir = crate::testing::Dir::new();
+        let (game, prepared) = fixture(&dir.0);
+        let outputs = || Outputs {
+            log: Box::new(|_, _| {}),
+            publish: Box::new(|_| {}),
+            fail: Box::new(|e| panic!("{e}")),
+        };
+        let mut core = None;
+        watched(|| core = Some(test_core_running(prepared, game.saves.clone(), outputs())));
+        let mut core = core.unwrap();
+        watched(|| {
+            core.dispatch(Message::Control(Control::Quicksave), Duration::ZERO);
+        });
+        let quick = super::super::saves::quicksave_path(&game.saves);
+        let bytes = fs::read(&quick).unwrap();
+        let len = usize::try_from(u64::from_le_bytes(
+            bytes[bytes.len() - 16..bytes.len() - 8].try_into().unwrap(),
+        ))
+        .unwrap();
+        let start = bytes.len() - 16 - len;
+        let own = super::super::history::Index::decode(&bytes[start..])
+            .unwrap()
+            .campaign;
+        let other = own ^ 1;
+        drop(super::super::history::Recorder::new(
+            &game.saves,
+            other,
+            (768, 10),
+        ));
+        let folder = game.saves.join("history").join(format!("{other:016x}"));
+        fs::create_dir_all(&folder).unwrap();
+        let names = [
+            format!("0768-{}.ckhist", "01".repeat(32)),
+            format!("0769-{}.ckhist", "02".repeat(32)),
+        ];
+        for name in &names {
+            fs::write(folder.join(name), b"year").unwrap();
+        }
+        let mut index = super::super::history::Index::decode(&bytes[start..]).unwrap();
+        index.campaign = other;
+        index.years = vec![(768, [1; 32]), (769, [2; 32])];
+        let mut a = bytes[..start].to_vec();
+        a.extend(index.encode().unwrap());
+        fs::write(game.saves.join("a.cksave"), a).unwrap();
+        index.years.pop();
+        let mut b = bytes[..start].to_vec();
+        b.extend(index.encode().unwrap());
+        fs::write(game.saves.join("b.cksave"), b).unwrap();
+        watched(|| call(&mut core, SaveCall::Delete("a.cksave".into())));
+        assert!(folder.join(&names[0]).exists());
+        assert!(!folder.join(&names[1]).exists());
+        watched(|| call(&mut core, SaveCall::Over("b.cksave".into())));
+        assert!(!folder.exists());
+        let own_folder = game.saves.join("history").join(format!("{own:016x}"));
+        fs::create_dir_all(&own_folder).unwrap();
+        fs::write(own_folder.join(&names[0]), b"unsaved").unwrap();
+        watched(|| call(&mut core, SaveCall::Over("b.cksave".into())));
+        assert!(own_folder.join(&names[0]).exists());
+        watched(|| call(&mut core, SaveCall::Delete("b.cksave".into())));
+        assert!(own_folder.join(&names[0]).exists());
+        let quick_name = quick.file_name().unwrap().to_str().unwrap().to_owned();
+        watched(|| call(&mut core, SaveCall::Delete(quick_name)));
+        assert!(own_folder.join(&names[0]).exists());
+        drop(core);
+        let (_, next) = fixture(&dir.0);
+        let mut next_core = None;
+        watched(|| next_core = Some(test_core_running(next, game.saves.clone(), outputs())));
+        assert!(!own_folder.exists());
+        drop(next_core);
+    }
+
+    #[test]
+    fn long_history_survives_start_quickload_and_named_save() {
+        use crate::game::core::{SaveCall, SaveReply};
+        use sha2::{Digest, Sha256};
+        let dir = crate::testing::Dir::new();
+        let (game, prepared) = fixture(&dir.0);
+        let outputs = || Outputs {
+            log: Box::new(|_, _| {}),
+            publish: Box::new(|_| {}),
+            fail: Box::new(|e| panic!("{e}")),
+        };
+        let mut source = test_core_running(prepared, game.saves.clone(), outputs());
+        source.dispatch(Message::Control(Control::Quicksave), Duration::ZERO);
+        let path = super::super::saves::quicksave_path(&game.saves);
+        let mut bytes = fs::read(&path).unwrap();
+        let len = usize::try_from(u64::from_le_bytes(
+            bytes[bytes.len() - 16..bytes.len() - 8].try_into().unwrap(),
+        ))
+        .unwrap();
+        let start = bytes.len() - 16 - len;
+        let mut index = super::super::history::Index::decode(&bytes[start..]).unwrap();
+        let folder = game
+            .saves
+            .join("history")
+            .join(format!("{:016x}", index.campaign));
+        fs::create_dir_all(&folder).unwrap();
+        for year in 1..=2000_u16 {
+            let month = super::super::history::MonthRecord {
+                year,
+                month: 1,
+                places: vec![],
+            };
+            let content = super::super::history::encode_year(&[month]).unwrap();
+            let hash: [u8; 32] = Sha256::digest(&content).into();
+            fs::write(
+                folder.join(format!(
+                    "{year:04}-{}.ckhist",
+                    super::super::history::hash_hex(&hash)
+                )),
+                content,
+            )
+            .unwrap();
+            index.years.push((year, hash));
+        }
+        bytes.truncate(start);
+        bytes.extend_from_slice(&index.encode().unwrap());
+        assert!(bytes.len() - start > 65_536);
+        fs::write(&path, &bytes).unwrap();
+        let loaded = prepare(
+            &Request {
+                game: &game,
+                vms: &[],
+                load: Some(&path),
+                seed: None,
+            },
+            || Ok(42),
+            &mut |_, _| {},
+        )
+        .unwrap();
+        let mut playing = test_core_running(loaded, game.saves.clone(), outputs());
+        let (tx, rx) = std::sync::mpsc::channel();
+        playing.dispatch(
+            Message::Save(SaveCall::New("Long".into()), tx),
+            Duration::ZERO,
+        );
+        assert!(matches!(rx.recv().unwrap(), SaveReply::Finished(Ok(()))));
+        source.dispatch(Message::Control(Control::Quickload), Duration::ZERO);
+        source.dispatch(Message::Control(Control::Quicksave), Duration::ZERO);
+        let references = super::super::history::save_references(&game.saves).unwrap();
+        assert_eq!(references.len(), 2);
+        assert!(references.iter().all(|item| item.years == index.years));
     }
 
     fn save_with(prepared: &Prepared, path: &Path, states: BTreeMap<u64, StretchState>) -> u64 {
@@ -3316,6 +3948,109 @@ mod stretch_save_tests {
             &mut |_, _| {},
         )
         .unwrap()
+    }
+
+    #[test]
+    fn recorder_copies_the_completed_month_without_changing_the_simulation() {
+        let dir = crate::testing::Dir::new();
+        let source = shipped_start(&dir.0, None);
+        let rules = source.economy_rules.clone().unwrap();
+        let outputs = || Outputs {
+            log: Box::new(|_, _| {}),
+            publish: Box::new(|_| {}),
+            fail: Box::new(|e| panic!("{e}")),
+        };
+        let mut recorded = test_core_running(source, dir.0.join("saves"), outputs());
+        let mut plain =
+            test_core_running(shipped_start(&dir.0, None), dir.0.join("saves"), outputs())
+                .without_history();
+        while recorded.date()
+            < (Date {
+                year: 768,
+                month: 11,
+                day: 1,
+                hour: 13,
+            })
+        {
+            assert!(recorded.history_months().is_empty());
+            recorded.step_for_tests();
+            plain.step_for_tests();
+        }
+        assert_eq!(
+            recorded.history_months(),
+            &[super::super::history::MonthRecord::sample(
+                &rules,
+                &recorded.state().economy,
+                768,
+                10
+            )]
+        );
+        let state = &recorded.state().economy;
+        let place = state
+            .places
+            .iter()
+            .find(|place| !place.pops.is_empty())
+            .unwrap();
+        let record = recorded.history_months()[0]
+            .places
+            .iter()
+            .find(|item| item.id == place.id)
+            .unwrap();
+        assert_eq!(
+            (record.births, record.deaths),
+            (place.counters.last.births, place.counters.last.deaths)
+        );
+        assert_eq!(record.goods[0].id, rules.goods[0].id);
+        assert_eq!(record.goods[0].price, place.prices_milli[0]);
+        assert_eq!(record.goods[0].produced, place.counters.last.produced[0]);
+        let pop = &place.pops[0];
+        let pop_record = record.pops.iter().find(|item| item.id == pop.id).unwrap();
+        assert_eq!(
+            (
+                pop_record.workers,
+                pop_record.dependents,
+                pop_record.births,
+                pop_record.deaths
+            ),
+            (
+                pop.workers,
+                pop.dependents,
+                pop.counters.last.births,
+                pop.counters.last.deaths
+            )
+        );
+        let mut reordered = state.clone();
+        for place in &mut reordered.places {
+            place.pops.reverse();
+        }
+        let resampled = super::super::history::MonthRecord::sample(&rules, &reordered, 768, 10);
+        let reordered_place = resampled
+            .places
+            .iter()
+            .find(|item| item.id == place.id)
+            .unwrap();
+        for pop in &place.pops {
+            let row = reordered_place
+                .pops
+                .iter()
+                .find(|row| row.id == pop.id)
+                .unwrap();
+            assert_eq!(
+                (row.workers, row.dependents, row.births, row.deaths),
+                (
+                    pop.workers,
+                    pop.dependents,
+                    pop.counters.last.births,
+                    pop.counters.last.deaths
+                )
+            );
+        }
+        assert_eq!(
+            ck_sim::Canonical::to_bytes(recorded.state()).unwrap(),
+            ck_sim::Canonical::to_bytes(plain.state()).unwrap()
+        );
+        recorded.step_for_tests();
+        assert_eq!(recorded.history_months().len(), 1);
     }
 
     /// CK-431: a same-build save is read by the same code, and trade state that names a vehicle kind the rules do not have is refused when

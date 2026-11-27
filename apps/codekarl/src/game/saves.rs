@@ -173,7 +173,7 @@ pub(crate) fn list(saves: &Path, identity: &Identity) -> Result<Vec<Entry>, Stri
             let (Some(format), Some(build)) = (header.format, header.build.as_ref()) else {
                 return Fit::Unreadable;
             };
-            if format != 3 || build != &identity.build {
+            if format != 4 || build != &identity.build {
                 return Fit::Version;
             }
             let expected = [
@@ -342,7 +342,6 @@ pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
 }
 
 /// Writes a complete new file, then links it into place without replacing any entry already there.
-#[cfg(test)]
 pub(crate) fn write_new_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let directory = path.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(directory)?;

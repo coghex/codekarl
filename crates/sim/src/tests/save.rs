@@ -126,7 +126,7 @@ fn the_file_starts_with_the_magic_and_ends_with_the_end_tag_and_a_checksum_of_ev
 fn the_header_is_toml_with_the_documented_keys() {
     let header = take_apart(&valid_bytes()).header;
     let table: toml::Table = header.parse().unwrap();
-    assert_eq!(table["format"].as_integer(), Some(3));
+    assert_eq!(table["format"].as_integer(), Some(4));
     assert_eq!(table["name"].as_str(), Some("test save"));
     assert_eq!(table["written"].as_str(), Some("2026-11-13T12:34:56Z"));
     assert_eq!(table["date"].as_str(), Some("7 Feb 768"));
@@ -150,7 +150,7 @@ fn the_header_is_toml_with_the_documented_keys() {
 #[test]
 fn the_format_two_header_carries_name_written_time_and_the_game_date() {
     let table: toml::Table = take_apart(&valid_bytes()).header.parse().unwrap();
-    assert_eq!(table["format"].as_integer(), Some(3));
+    assert_eq!(table["format"].as_integer(), Some(4));
     assert_eq!(table["name"].as_str(), Some("test save"));
     assert_eq!(table["written"].as_str(), Some("2026-11-13T12:34:56Z"));
     assert_eq!(table["date"].as_str(), Some("7 Feb 768"));
@@ -193,7 +193,7 @@ fn a_header_probe_reads_only_the_bounded_prefix_and_keeps_later_format_fields() 
     let bytes = with_header(|header| {
         format!(
             "{}future_flag = true\n",
-            header.replace("format = 3", "format = 9")
+            header.replace("format = 4", "format = 9")
         )
     });
     let mut reader = std::io::Cursor::new(bytes.clone());
@@ -346,7 +346,7 @@ fn bad_magic_is_refused() {
 
 #[test]
 fn an_unknown_format_is_refused() {
-    let bytes = with_header(|header| header.replace("format = 3", "format = 99"));
+    let bytes = with_header(|header| header.replace("format = 4", "format = 99"));
     assert_eq!(load(&bytes), Err(SaveError::UnknownFormat { found: 99 }));
 }
 
@@ -738,6 +738,25 @@ fn a_journal_record_keeps_the_issuer_and_the_exact_command_bytes() {
 }
 
 #[test]
+fn streamed_loader_leaves_trailer_for_history() {
+    use std::io::{Cursor, Read};
+    let save = valid_save();
+    let mut bytes = Vec::new();
+    save.write_with_sections(&mut bytes, &mut []).unwrap();
+    bytes.extend_from_slice(b"damaged history is still history");
+    let path = std::env::temp_dir().join(format!("ck-sim-trailer-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&path);
+    let mut input = Cursor::new(bytes);
+    let (loaded, _) =
+        Save::<World>::read_with_sections(&mut input, &expected(), &path, &[]).unwrap();
+    assert_eq!(loaded, save);
+    let mut trailer = Vec::new();
+    input.read_to_end(&mut trailer).unwrap();
+    assert_eq!(trailer, b"damaged history is still history");
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
 fn external_sections_stream_and_refuse_corruption() {
     use std::io::Cursor;
     let save = valid_save();
@@ -785,18 +804,18 @@ fn external_sections_stream_and_refuse_corruption() {
 fn streamed_loader_refuses_an_old_format_before_external_sections() {
     use std::io::Cursor;
     let mut bytes = valid_save().to_bytes().unwrap();
-    let old = b"format = 3";
+    let old = b"format = 4";
     let position = bytes
         .windows(old.len())
         .position(|part| part == old)
         .unwrap();
-    bytes[position + old.len() - 1] = b'2';
+    bytes[position + old.len() - 1] = b'3';
     let path = std::env::temp_dir().join(format!("ck-old-format-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&path);
     let error =
         Save::<World>::read_with_sections(&mut Cursor::new(bytes), &expected(), &path, &[*b"ARCH"])
             .unwrap_err();
-    assert!(error.to_string().contains("format 2"), "{error}");
+    assert!(error.to_string().contains("format 3"), "{error}");
     assert!(!path.exists());
 }
 
