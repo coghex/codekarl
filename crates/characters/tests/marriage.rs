@@ -1429,6 +1429,7 @@ fn pop(workers: u64, dependents: u64, mean: i64) -> PopState {
     genetics.paternal.insert("p".to_owned(), 1000);
     genetics.maternal.insert("m".to_owned(), 1000);
     PopState {
+        id: 0,
         kind: "noble".to_owned(),
         culture: "ulaid".to_owned(),
         religion: "christianity".to_owned(),
@@ -1462,6 +1463,7 @@ fn place(id: &str, pop: PopState) -> PlaceState {
 }
 fn economy(source: PopState, destination: PopState) -> EconomyState {
     EconomyState {
+        next_pop_serial: 1,
         places: vec![place("a", destination), place("b", source)],
         trade: TradeCounters::default(),
     }

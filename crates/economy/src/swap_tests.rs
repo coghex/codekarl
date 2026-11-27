@@ -131,6 +131,7 @@ pub(crate) fn place(rules: &Rules, pops: usize) -> PlaceState {
         id: "fixture".to_owned(),
         pops: (0..pops)
             .map(|index| PopState {
+                id: 0,
                 kind: kinds[index].to_owned(),
                 culture: "gaelic".to_owned(),
                 religion: "christianity".to_owned(),
@@ -253,6 +254,7 @@ fn position(rules: &Rules, place: &PlaceState, pop: usize, id: &str) -> (u128, u
 
 pub(crate) fn exchange(rules: &Rules, place: &mut PlaceState) {
     let mut state = EconomyState {
+        next_pop_serial: 1,
         places: vec![place.clone()],
         trade: TradeCounters::default(),
     };
@@ -1749,6 +1751,7 @@ fn the_price_step_sees_a_pops_spare_wool_as_a_sell_order() {
     place.pops[PEASANT].stock[wool] = 1;
     place.prices_milli[wool] = 40_000;
     let mut state = EconomyState {
+        next_pop_serial: 1,
         places: vec![place],
         trade: TradeCounters::default(),
     };
@@ -1981,6 +1984,7 @@ fn rule_20_the_price_after_the_first_noon_is_the_literal_the_formula_gives_for_t
     place.pops[PEASANT].stock[wool] = 1;
     set_price(&rules, &mut place, "wool", 40);
     let mut state = EconomyState {
+        next_pop_serial: 1,
         places: vec![place],
         trade: TradeCounters::default(),
     };
@@ -2143,6 +2147,7 @@ fn nothing_to_swap() -> (Rules, EconomyState) {
     (
         rules,
         EconomyState {
+            next_pop_serial: 1,
             places: vec![place],
             trade: TradeCounters::default(),
         },
@@ -2846,6 +2851,7 @@ fn opening_fuel_prices_rank_the_swap_but_moved_prices_value_it() {
     set_price(&rules, &mut place, "peat", 90);
     let before = place.pops[PEASANT].stock[oats];
     let mut state = EconomyState {
+        next_pop_serial: 1,
         places: vec![place],
         trade: TradeCounters::default(),
     };
@@ -2883,6 +2889,7 @@ fn a_month_without_fuel_offers_preserves_the_nonfuel_day() {
             .retain(|tag| tag != "fuel");
     }
     let mut actual = EconomyState {
+        next_pop_serial: 1,
         places: vec![place],
         trade: TradeCounters::default(),
     };
@@ -2977,6 +2984,7 @@ fn the_real_price_step_can_reverse_the_fuel_ranking() {
     place.pops[THIRD].stock[wood] = 1;
     let opening = place.prices_milli.clone();
     let mut state = EconomyState {
+        next_pop_serial: 1,
         places: vec![place],
         trade: TradeCounters::default(),
     };
@@ -3234,6 +3242,7 @@ fn the_want_for_an_animal_is_a_buy_order_that_moves_the_places_price() {
     );
     let base = place.prices_milli[cattle];
     let mut state = EconomyState {
+        next_pop_serial: 1,
         places: vec![place],
         trade: TradeCounters::default(),
     };
@@ -3447,6 +3456,7 @@ fn neighbour_exchange_uses_each_sellers_price_and_does_not_cross_a_chain() {
     capacity(&mut rules, &mut a, 0, 10_000_000);
     let c_before = c.clone();
     let mut state = EconomyState {
+        next_pop_serial: 1,
         places: vec![a, b, c],
         trade: TradeCounters::default(),
     };
@@ -3495,6 +3505,7 @@ fn neighbour_herd_sale_pays_its_building_and_delivers_the_head() {
     capacity(&mut rules, &mut buyer, 0, 100_000_000);
     let before = stock(&rules, &buyer, 0, "oats");
     let mut state = EconomyState {
+        next_pop_serial: 1,
         places: vec![seller, buyer],
         trade: TradeCounters::default(),
     };
@@ -3542,6 +3553,7 @@ fn neighbour_scarcity_remainder_goes_to_the_wealthier_claimant_across_pairs() {
     let ch = cattle_farm(&rules, &mut c, 6, &[(0, 1)]);
     capacity(&mut rules, &mut b, 0, 100_000_000);
     let mut state = EconomyState {
+        next_pop_serial: 1,
         places: vec![a, b, c],
         trade: TradeCounters::default(),
     };
@@ -3624,6 +3636,7 @@ fn neighbour_relation_is_strict_and_not_transitive() {
             )])
         };
         let mut state = EconomyState {
+            next_pop_serial: 1,
             places: vec![a, b, c],
             trade: TradeCounters::default(),
         };
@@ -3692,6 +3705,7 @@ fn neighbour_worked_sheep_example_uses_one_share_and_the_starters_capacity() {
     let before_a = a.pops[0].stock.clone();
     let before_c = c.pops[0].stock[good(&rules, "barley")];
     let mut state = EconomyState {
+        next_pop_serial: 1,
         places: vec![a, b, c],
         trade: TradeCounters::default(),
     };
@@ -3755,6 +3769,7 @@ fn local_then_neighbour_pairs_spend_one_shared_capacity() {
         rules.goods[good(&rules, "oats")].volume_ml + rules.goods[good(&rules, "fish")].volume_ml;
     capacity(&mut rules, &mut b, 0, 2 * load);
     let mut state = EconomyState {
+        next_pop_serial: 1,
         places: vec![a, b, c],
         trade: TradeCounters::default(),
     };
@@ -3817,6 +3832,7 @@ fn second_pass_reallocates_an_unspent_local_share_to_a_neighbour() {
     want(&rules, &mut a, 0, "fish", 2);
     capacity(&mut rules, &mut b, 0, 1_000_000);
     let mut state = EconomyState {
+        next_pop_serial: 1,
         places: vec![a, b],
         trade: TradeCounters::default(),
     };

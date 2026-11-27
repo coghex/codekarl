@@ -1256,6 +1256,7 @@ mod fraction_tests {
         building.method_levels = vec![2, 0];
         assert_eq!(building.production_carries[0][oats], 50_000_000_000);
         let state = crate::EconomyState {
+            next_pop_serial: 1,
             places: vec![place],
             trade: crate::TradeCounters::default(),
         };

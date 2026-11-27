@@ -30,6 +30,27 @@ fn the_mixer_and_the_hash_match_their_frozen_vectors() {
 }
 
 #[test]
+fn pop_ids_reverse_to_their_serials() {
+    fn undo_right_xor(mut value: u64, shift: u32) -> u64 {
+        let original = value;
+        let mut distance = shift;
+        while distance < 64 {
+            value ^= original >> distance;
+            distance += shift;
+        }
+        value
+    }
+    fn inverse(id: u64) -> u64 {
+        let value = undo_right_xor(id, 31).wrapping_mul(0x3196_42b2_d24d_8ec3);
+        let value = undo_right_xor(value, 27).wrapping_mul(0x96de_1b17_3f11_9089);
+        undo_right_xor(value, 30).wrapping_sub(0x9e37_79b9_7f4a_7c15)
+    }
+    for serial in [0, 1, 2, 17, 1_000_000, u64::MAX - 1, u64::MAX] {
+        assert_eq!(inverse(crate::pop_id(serial)), serial);
+    }
+}
+
+#[test]
 fn draws_match_their_frozen_vectors_and_the_counter_moves_with_each() {
     let mut stream = weather();
     assert_eq!(stream.counter(), 0);

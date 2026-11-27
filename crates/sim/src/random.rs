@@ -25,6 +25,12 @@ pub(crate) const fn mix(x: u64) -> u64 {
     finalise(x.wrapping_add(GOLDEN_GAMMA))
 }
 
+/// The stable, one-to-one identifier for a population creation serial.
+#[must_use]
+pub const fn pop_id(serial: u64) -> u64 {
+    mix(serial)
+}
+
 /// An incremental FNV-1a 64-bit hash.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Fnv1a(u64);
