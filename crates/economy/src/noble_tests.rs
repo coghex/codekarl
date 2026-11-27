@@ -1049,6 +1049,7 @@ fn place_of(
                 employment[*building_index].clone();
         }
         place.pops.push(PopState {
+            id: 0,
             kind: tenant.kind.to_owned(),
             culture: tenant.culture.to_owned(),
             religion: "christianity".to_owned(),
@@ -1558,6 +1559,7 @@ fn the_rent_counters_roll_with_the_existing_counters_on_the_first_and_are_saved(
 
     // They are saved with the flag, byte for byte.
     let state = EconomyState {
+        next_pop_serial: 1,
         places: vec![place.clone()],
         trade: TradeCounters::default(),
     };
@@ -1722,6 +1724,7 @@ fn the_live_housing_read_keeps_the_months_priority_until_the_next_first_and_surv
         .job(0, 0, 1);
     let place = place_of(&rules, &[("demesne", 1)], vec![first, second, worker], &[]);
     let mut state = EconomyState {
+        next_pop_serial: 1,
         places: vec![place],
         trade: TradeCounters::default(),
     };

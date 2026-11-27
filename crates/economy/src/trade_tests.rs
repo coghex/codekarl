@@ -31,6 +31,7 @@ fn hours(date: Date) -> u64 {
 
 fn state_of(place: PlaceState) -> EconomyState {
     EconomyState {
+        next_pop_serial: 1,
         places: vec![place],
         trade: TradeCounters::default(),
     }

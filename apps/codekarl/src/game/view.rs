@@ -887,6 +887,7 @@ mod tests {
             id: "fixture".to_owned(),
             counters: CounterBuckets::default(),
             pops: vec![PopState {
+                id: 0,
                 kind: "peasant".to_owned(),
                 culture: "ulaid".to_owned(),
                 religion: "christianity".to_owned(),
@@ -988,6 +989,7 @@ mod tests {
     fn field_room_for(rules: &Rules, mut place: PlaceState) -> u64 {
         place.id = "fixture".to_owned();
         let state = EconomyState {
+            next_pop_serial: 1,
             places: vec![place],
             trade: TradeCounters::default(),
         };
@@ -1018,6 +1020,7 @@ mod tests {
         let view = build(
             Some(rules),
             &EconomyState {
+                next_pop_serial: 1,
                 places: vec![place],
                 trade: TradeCounters::default(),
             },
@@ -1120,6 +1123,7 @@ mod tests {
         farm.paid_years[1] = 769;
         let make = |date| {
             let state = EconomyState {
+                next_pop_serial: 1,
                 places: vec![place.clone()],
                 trade: TradeCounters::default(),
             };
@@ -1286,6 +1290,7 @@ mod tests {
         holdings.wage_history = vec![100; 12];
 
         let mut state = EconomyState {
+            next_pop_serial: 1,
             places: vec![dying, source, destination],
             trade: TradeCounters::default(),
         };
@@ -1493,6 +1498,7 @@ mod tests {
         let view = build(
             Some(&rules),
             &EconomyState {
+                next_pop_serial: 1,
                 places: vec![place],
                 trade: TradeCounters::default(),
             },
@@ -1571,6 +1577,7 @@ mod tests {
             build(
                 Some(&rules),
                 &EconomyState {
+                    next_pop_serial: 1,
                     places: vec![place.clone()],
                     trade: TradeCounters::default(),
                 },
@@ -1684,6 +1691,7 @@ mod tests {
     fn a_fixture_place_derives_every_number_the_panel_shows() {
         let rules = shipped_rules();
         let state = EconomyState {
+            next_pop_serial: 1,
             places: vec![fixture(&rules)],
             trade: TradeCounters::default(),
         };
@@ -1970,6 +1978,7 @@ mod tests {
         empty.pops.clear();
         empty.buildings.clear();
         let state = EconomyState {
+            next_pop_serial: 1,
             places: vec![empty],
             trade: TradeCounters::default(),
         };
@@ -2070,6 +2079,7 @@ mod tests {
         let mut place = fixture(rules);
         change(&mut place.buildings[0]);
         let state = EconomyState {
+            next_pop_serial: 1,
             places: vec![place],
             trade: TradeCounters::default(),
         };
@@ -2078,6 +2088,7 @@ mod tests {
 
     fn yield_with_fertility(rules: &Rules, place: PlaceState, fertility_pm: Option<u16>) -> u64 {
         let state = EconomyState {
+            next_pop_serial: 1,
             places: vec![place],
             trade: TradeCounters::default(),
         };
@@ -2340,6 +2351,7 @@ mod tests {
         let view = build_with_land(
             Some(&rules),
             &EconomyState {
+                next_pop_serial: 1,
                 places: vec![rich, poor],
                 trade: TradeCounters::default(),
             },

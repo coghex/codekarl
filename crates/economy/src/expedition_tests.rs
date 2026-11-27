@@ -404,6 +404,7 @@ pub(crate) fn two_places(rules: &mut Rules) -> EconomyState {
         materials: None,
     });
     EconomyState {
+        next_pop_serial: 1,
         places: vec![home, dest],
         trade: TradeCounters {
             vehicles: 1,

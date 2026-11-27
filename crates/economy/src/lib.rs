@@ -2353,6 +2353,9 @@ fn starting_state_with_payday(
                 location.id
             ));
         }
+        for pop in &mut pops {
+            pop.id = allocate_pop_id(&mut state.next_pop_serial)?;
+        }
         state.places.push(PlaceState {
             id: location.id.clone(),
             pops,
@@ -2616,6 +2619,7 @@ fn make_pop(
         .get(kind)
         .ok_or_else(|| missing_data(format!("starting_needs_pm.{kind}"), "value is missing"))?;
     Ok(PopState {
+        id: 0,
         kind: kind.to_owned(),
         culture: culture.to_owned(),
         religion: religion.to_owned(),
@@ -4849,6 +4853,8 @@ fn decode_place_counters(input: &mut Reader<'_>) -> Result<CounterBuckets, Canon
 /// One population in the deterministic initial state.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PopState {
+    /// Stable identifier derived from this pop's creation serial.
+    pub id: u64,
     /// Population type key.
     pub kind: String,
     /// Culture key.
@@ -6342,12 +6348,32 @@ fn give(capacity: u64, demands: &[u64]) -> Result<Vec<u64>, DataError> {
 }
 
 /// Canonical saved economy state; all lookup maps are represented in stable vectors.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EconomyState {
     /// Places in scenario-file order.
     pub places: Vec<PlaceState>,
     /// How many vehicles and jobs have been numbered (CK-431). Saved.
     pub trade: TradeCounters,
+    /// Serial to assign to the next committed population.
+    pub next_pop_serial: u64,
+}
+
+impl Default for EconomyState {
+    fn default() -> Self {
+        Self {
+            places: Vec::new(),
+            trade: TradeCounters::default(),
+            next_pop_serial: 1,
+        }
+    }
+}
+
+fn allocate_pop_id(next: &mut u64) -> Result<u64, DataError> {
+    let serial = *next;
+    *next = serial
+        .checked_add(1)
+        .ok_or_else(|| missing_data("pop.id".to_owned(), "population serial exhausted"))?;
+    Ok(ck_sim::pop_id(serial))
 }
 
 /// Per-system conservation results. These values are returned to the caller and are not saved.
@@ -9351,16 +9377,23 @@ fn pop_wage_per_head(
         .map_err(|_| missing_data("movement.wage".to_owned(), "wage per head exceeds u64"))
 }
 
-fn ensure_pop(place: &mut PlaceState, kind: &str, culture: &str, religion: &str) -> usize {
+fn ensure_pop(
+    place: &mut PlaceState,
+    kind: &str,
+    culture: &str,
+    religion: &str,
+    next: &mut u64,
+) -> Result<usize, DataError> {
     if let Some(index) = place
         .pops
         .iter()
         .position(|pop| pop.kind == kind && pop.culture == culture && pop.religion == religion)
     {
-        return index;
+        return Ok(index);
     }
     let index = place.pops.len();
     place.pops.push(PopState {
+        id: allocate_pop_id(next)?,
         kind: kind.to_owned(),
         culture: culture.to_owned(),
         religion: religion.to_owned(),
@@ -9393,7 +9426,7 @@ fn ensure_pop(place: &mut PlaceState, kind: &str, culture: &str, religion: &str)
                 .insert(pop_carry_index, vec![0; place.prices_milli.len()]);
         }
     }
-    index
+    Ok(index)
 }
 
 fn scaled_share(amount: u64, movers: u64, source_size: u64) -> Result<u64, DataError> {
@@ -9470,6 +9503,7 @@ fn weighted_average(
 fn transfer_pop(
     rules: &Rules,
     places: &mut [PlaceState],
+    next: &mut u64,
     source_place_index: usize,
     source_pop_index: usize,
     destination_place_index: usize,
@@ -9510,7 +9544,8 @@ fn transfer_pop(
         destination_pop_kind,
         &source_snapshot.culture,
         &source_snapshot.religion,
-    );
+        next,
+    )?;
     let old_destination_size = places[destination_place_index].pops[destination_pop_index]
         .workers
         .checked_add(places[destination_place_index].pops[destination_pop_index].dependents)
@@ -9752,9 +9787,10 @@ fn source_order(
     clippy::too_many_arguments,
     reason = "The function applies different monk and labourer transfer rules to one source and destination move."
 )]
-fn move_recruits(
+fn move_recruits_with_serial(
     rules: &Rules,
     places: &mut [PlaceState],
+    next: &mut u64,
     source_place: usize,
     source_pop: usize,
     destination_place: usize,
@@ -9791,9 +9827,11 @@ fn move_recruits(
             })?;
             ("labourer", count, moved_dependents, count, moved_dependents)
         };
+    let mut trial_next = *next;
     let destination_pop_index = transfer_pop(
         rules,
         &mut trial,
+        &mut trial_next,
         0,
         source_pop,
         trial_destination,
@@ -9817,12 +9855,54 @@ fn move_recruits(
     if !same_place {
         places[destination_place] = updated.next().expect("the destination place was cloned");
     }
+    *next = trial_next;
     Ok((
         moved_workers.checked_add(moved_dependents).ok_or_else(|| {
             missing_data("movement.transfer".to_owned(), "moved population overflow")
         })?,
         destination_pop_index,
     ))
+}
+
+#[cfg(test)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Test adapter for existing movement fixtures."
+)]
+fn move_recruits(
+    rules: &Rules,
+    places: &mut [PlaceState],
+    source_place: usize,
+    source_pop: usize,
+    destination_place: usize,
+    destination_building: usize,
+    position_kind: &str,
+    job_id: &str,
+    count: u64,
+) -> Result<(u64, usize), DataError> {
+    move_recruits_with_serial(
+        rules,
+        places,
+        &mut 1,
+        source_place,
+        source_pop,
+        destination_place,
+        destination_building,
+        position_kind,
+        job_id,
+        count,
+    )
+}
+
+#[cfg(test)]
+fn move_open_positions_with_floors(
+    rules: &Rules,
+    places: &mut [PlaceState],
+    nearby: &BTreeMap<String, Vec<NearbyPlace>>,
+    allowance: &[Vec<Vec<JobBudget>>],
+    floors: &BTreeMap<(String, usize), u64>,
+) -> Result<Vec<Vec<u64>>, DataError> {
+    move_open_positions_with_serial(rules, places, &mut 1, nearby, allowance, floors)
 }
 
 #[cfg(test)]
@@ -9880,9 +9960,10 @@ fn leave_allowance(workers: u64, away: u64, leave_pm: u16) -> Result<u64, DataEr
     clippy::too_many_lines,
     reason = "Destination, monk-first, local-first, then nearest-neighbour ordering is the recruitment rule and stays explicit here."
 )]
-fn move_open_positions_with_floors(
+fn move_open_positions_with_serial(
     rules: &Rules,
     places: &mut [PlaceState],
+    next: &mut u64,
     nearby_by_place: &BTreeMap<String, Vec<NearbyPlace>>,
     movement_allowance: &[Vec<Vec<JobBudget>>],
     floors: &BTreeMap<(String, usize), u64>,
@@ -10013,9 +10094,10 @@ fn move_open_positions_with_floors(
                         if count == 0 {
                             continue;
                         }
-                        let (moved_people, destination_pop) = move_recruits(
+                        let (moved_people, destination_pop) = move_recruits_with_serial(
                             rules,
                             places,
+                            next,
                             destination_place,
                             source_pop,
                             destination_place,
@@ -10100,9 +10182,10 @@ fn move_open_positions_with_floors(
                         if count == 0 {
                             continue;
                         }
-                        let (moved_people, destination_pop) = move_recruits(
+                        let (moved_people, destination_pop) = move_recruits_with_serial(
                             rules,
                             places,
+                            next,
                             source_place,
                             source_pop,
                             destination_place,
@@ -10370,9 +10453,10 @@ fn run_monthly_demography_with_floors(
         release_excess_employment(place)?;
         movement_allowance.push(fill_monthly_hiring(rules, place)?);
     }
-    let movement_by_pop = move_open_positions_with_floors(
+    let movement_by_pop = move_open_positions_with_serial(
         rules,
         &mut state.places,
+        &mut state.next_pop_serial,
         nearby_by_place,
         &movement_allowance,
         floors,
@@ -11268,6 +11352,7 @@ impl Canonical for EconomyState {
             place.id.encode(out)?;
             encode_length(place.pops.len(), out)?;
             for pop in &place.pops {
+                pop.id.encode(out)?;
                 pop.kind.encode(out)?;
                 pop.culture.encode(out)?;
                 pop.religion.encode(out)?;
@@ -11324,7 +11409,8 @@ impl Canonical for EconomyState {
             encode_place_counters(&place.counters, out)?;
             place.trade.encode(out)?;
         }
-        self.trade.encode(out)
+        self.trade.encode(out)?;
+        self.next_pop_serial.encode(out)
     }
     fn decode(input: &mut Reader<'_>) -> Result<Self, CanonicalError> {
         let place_count = input.length()?;
@@ -11335,6 +11421,7 @@ impl Canonical for EconomyState {
             let mut pops = Vec::with_capacity(count);
             for _ in 0..count {
                 pops.push(PopState {
+                    id: u64::decode(input)?,
                     kind: String::decode(input)?,
                     culture: String::decode(input)?,
                     religion: String::decode(input)?,
@@ -11404,6 +11491,7 @@ impl Canonical for EconomyState {
         Ok(Self {
             places,
             trade: TradeCounters::decode(input)?,
+            next_pop_serial: u64::decode(input)?,
         })
     }
 }
@@ -11945,6 +12033,7 @@ pub(crate) mod tests {
         install_fixture_herds(&mut rules);
         let goods = rules.goods.len();
         let make_pop = |necessities_pm| PopState {
+            id: 0,
             kind: "peasant".to_owned(),
             culture: "connachta".to_owned(),
             religion: "christianity".to_owned(),
@@ -12052,6 +12141,7 @@ pub(crate) mod tests {
         drawer.employment = vec![Employment::default(); 2];
         starver.employment = vec![Employment::default(), farm.employment[1].clone()];
         let state = EconomyState {
+            next_pop_serial: 1,
             places: vec![PlaceState {
                 id: "daily_fixture".to_owned(),
                 pops: vec![drawer, starver],
@@ -12169,6 +12259,7 @@ pub(crate) mod tests {
         let goods = rules.goods.len();
         let empty_stock = vec![0; goods];
         let pop = |kind: &str, workers, employment| PopState {
+            id: 0,
             kind: kind.to_owned(),
             culture: "connachta".to_owned(),
             religion: "christianity".to_owned(),
@@ -12186,6 +12277,7 @@ pub(crate) mod tests {
             pending_deaths: 0,
         };
         EconomyState {
+            next_pop_serial: 1,
             places: vec![PlaceState {
                 id: "fixture".to_owned(),
                 pops: vec![
@@ -12653,6 +12745,7 @@ pub(crate) mod tests {
         building.pay_carries[early] = 1;
         building.pay_carries[later] = 2;
         let mut monthly = EconomyState {
+            next_pop_serial: 1,
             places: vec![place.clone()],
             trade: TradeCounters::default(),
         };
@@ -12756,6 +12849,7 @@ pub(crate) mod tests {
         rules.goods[0].volume_ml = 100_000;
         rules.goods[0].pop_limit_milli = 1000;
         let mut pop = PopState {
+            id: 0,
             kind: "peasant".to_owned(),
             culture: "ulaid".to_owned(),
             religion: "christianity".to_owned(),
@@ -12914,6 +13008,7 @@ pub(crate) mod tests {
         rules.goods[0].volume_ml = 100_000;
         rules.goods[0].pop_limit_milli = 1_000_000;
         let pop = |kind: &str| PopState {
+            id: 0,
             kind: kind.to_owned(),
             culture: "ulaid".to_owned(),
             religion: "christianity".to_owned(),
@@ -13032,6 +13127,7 @@ pub(crate) mod tests {
         let mut rules = tiny_rules();
         rules.goods[0].hunger_centi = 100;
         let pop = |kind: &str, food| PopState {
+            id: 0,
             kind: kind.to_owned(),
             culture: "ulaid".to_owned(),
             religion: "christianity".to_owned(),
@@ -13216,6 +13312,7 @@ pub(crate) mod tests {
             .position(|good| good.id == "mead")
             .unwrap();
         let pop = PopState {
+            id: 0,
             kind: "monk".to_owned(),
             culture: "connachta".to_owned(),
             religion: "christianity".to_owned(),
@@ -13289,6 +13386,7 @@ pub(crate) mod tests {
             PlaceState {
                 id: "comfort_order".to_owned(),
                 pops: vec![PopState {
+                    id: 0,
                     kind: "monk".to_owned(),
                     culture: "connachta".to_owned(),
                     religion: "christianity".to_owned(),
@@ -13331,6 +13429,7 @@ pub(crate) mod tests {
 
     fn reserve_test_pop(people: u64) -> PopState {
         PopState {
+            id: 0,
             kind: "peasant".to_owned(),
             culture: "connachta".to_owned(),
             religion: "christianity".to_owned(),
@@ -13506,6 +13605,7 @@ pub(crate) mod tests {
         };
         let physical = storehouse_physical_stock(&rules, &accounts);
         let pop = PopState {
+            id: 0,
             kind: "monk".to_owned(),
             culture: "connachta".to_owned(),
             religion: "christianity".to_owned(),
@@ -13613,6 +13713,7 @@ pub(crate) mod tests {
         let place = PlaceState {
             id: "balanced".to_owned(),
             pops: vec![PopState {
+                id: 0,
                 kind: "peasant".to_owned(),
                 culture: "connachta".to_owned(),
                 religion: "christianity".to_owned(),
@@ -13643,6 +13744,7 @@ pub(crate) mod tests {
             trade: PlaceTrade::default(),
         };
         let mut state = EconomyState {
+            next_pop_serial: 1,
             places: vec![place],
             trade: TradeCounters::default(),
         };
@@ -15165,6 +15267,7 @@ pub(crate) mod tests {
                 last_market_orders: None,
                 counters: CounterBuckets::for_place(rules.goods.len()),
                 pops: vec![PopState {
+                    id: ck_sim::pop_id(1),
                     kind: "peasant".to_owned(),
                     culture: "connachta".to_owned(),
                     religion: "christianity".to_owned(),
@@ -16650,6 +16753,7 @@ pub(crate) mod tests {
         let mut place = PlaceState {
             id: "fixture".to_owned(),
             pops: vec![PopState {
+                id: 0,
                 kind: "peasant".to_owned(),
                 culture: "connachta".to_owned(),
                 religion: "christianity".to_owned(),
@@ -16681,6 +16785,7 @@ pub(crate) mod tests {
         };
         place.counters.current.produced[0] = 12;
         let mut state = EconomyState {
+            next_pop_serial: 1,
             places: vec![place],
             trade: TradeCounters::default(),
         };
@@ -16705,6 +16810,40 @@ pub(crate) mod tests {
         );
         assert_eq!(place.counters.last.produced, [12]);
         assert_eq!(place.counters.last.produced_value_milli, [1_260_000]);
+    }
+
+    #[test]
+    fn pop_ids_follow_creation_order_and_survive_state_round_trip() {
+        let rules = tiny_rules();
+        let data = tiny_start_data();
+        let locations = [StartLocation {
+            id: "fort".into(),
+            kind: "ringfort".into(),
+            size: 1,
+            land: LandCounts::default(),
+        }];
+        let (state, _) = starting_state(&rules, &data, &locations, 10).unwrap();
+        let (again, _) = starting_state(&rules, &data, &locations, 10).unwrap();
+        let ids: Vec<_> = state
+            .places
+            .iter()
+            .flat_map(|place| place.pops.iter().map(|pop| pop.id))
+            .collect();
+        assert!(!ids.is_empty());
+        assert_eq!(
+            ids,
+            (1..=ids.len() as u64)
+                .map(ck_sim::pop_id)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(state.next_pop_serial, ids.len() as u64 + 1);
+        assert_eq!(state, again);
+        let mut bytes = Vec::new();
+        state.encode(&mut bytes).unwrap();
+        let mut input = Reader::new(&bytes);
+        let loaded = EconomyState::decode(&mut input).unwrap();
+        input.finish().unwrap();
+        assert_eq!(loaded, state);
     }
 
     #[test]
@@ -17026,6 +17165,7 @@ pub(crate) mod tests {
     fn projected_buy_units_pins_a_literal_diet_profile_projection() {
         let rules = tiny_rules();
         let pop = PopState {
+            id: 0,
             kind: "peasant".to_owned(),
             culture: "connachta".to_owned(),
             religion: "christianity".to_owned(),
@@ -20241,6 +20381,7 @@ pub(crate) mod tests {
             stock[good_at(rules, id)] = *units;
         }
         PopState {
+            id: 0,
             kind: kind.to_owned(),
             culture: "connachta".to_owned(),
             religion: "christianity".to_owned(),
@@ -20419,7 +20560,12 @@ pub(crate) mod tests {
         )
         .unwrap();
         let (inland, coast) = (&state.places[0], &state.places[1]);
-        assert_eq!(inland.pops, coast.pops);
+        assert_ne!(inland.pops[0].id, coast.pops[0].id);
+        let mut coast_pops = coast.pops.clone();
+        for (inland_pop, coast_pop) in inland.pops.iter().zip(&mut coast_pops) {
+            coast_pop.id = inland_pop.id;
+        }
+        assert_eq!(inland.pops, coast_pops);
         assert_eq!(inland.buildings, coast.buildings);
         assert_eq!(inland.prices_milli, coast.prices_milli);
         let orders = daily_market_orders(&rules, inland).unwrap();
@@ -20449,6 +20595,7 @@ pub(crate) mod tests {
         let rules = shipped_rules();
         let fish = good_at(&rules, "fish");
         let mut state = EconomyState {
+            next_pop_serial: 1,
             places: vec![inland_place(
                 &rules,
                 vec![inland_pop(&rules, "peasant", 100, &[])],
@@ -20479,6 +20626,7 @@ pub(crate) mod tests {
         let rules = shipped_rules();
         let oats = good_at(&rules, "oats");
         let mut state = EconomyState {
+            next_pop_serial: 1,
             places: vec![inland_place(
                 &rules,
                 vec![inland_pop(&rules, "peasant", 100, &[("oats", 1000)])],
@@ -20753,6 +20901,7 @@ pub(crate) mod tests {
     )]
     fn canonical_economy_round_trip_is_byte_stable() {
         let state = EconomyState {
+            next_pop_serial: 1,
             places: vec![PlaceState {
                 id: "a".to_owned(),
                 price_drift_carries: vec![-321],
@@ -20777,6 +20926,7 @@ pub(crate) mod tests {
                     closed: true,
                 },
                 pops: vec![PopState {
+                    id: 0,
                     kind: "peasant".to_owned(),
                     culture: "irish".to_owned(),
                     religion: "christianity".to_owned(),
@@ -21236,6 +21386,7 @@ pub(crate) mod tests {
         ]);
 
         let pop = |workers, employment| PopState {
+            id: 0,
             kind: "peasant".to_owned(),
             culture: "connachta".to_owned(),
             religion: "christianity".to_owned(),
@@ -21294,6 +21445,7 @@ pub(crate) mod tests {
             paid_years: vec![0; WAGE_HISTORY_MONTHS],
         };
         let mut state = EconomyState {
+            next_pop_serial: 1,
             places: vec![PlaceState {
                 id: "fort".to_owned(),
                 pops: vec![
@@ -21387,9 +21539,11 @@ pub(crate) mod tests {
         });
         install_fixture_herds(&mut rules);
         let no_workers = EconomyState {
+            next_pop_serial: 1,
             places: vec![PlaceState {
                 id: "ownerless".to_owned(),
                 pops: vec![PopState {
+                    id: 0,
                     kind: "peasant".to_owned(),
                     culture: "connachta".to_owned(),
                     religion: "christianity".to_owned(),
@@ -21561,6 +21715,7 @@ pub(crate) mod tests {
         rules.goods[0].volume_ml = 1;
         rules.goods[0].pop_limit_milli = 1000;
         let pop = |kind: &str, food| PopState {
+            id: 0,
             kind: kind.to_owned(),
             culture: "connachta".to_owned(),
             religion: "christianity".to_owned(),
@@ -22088,6 +22243,7 @@ pub(crate) mod tests {
     fn the_equilibrium_is_the_baseline_of_the_pops_present_needs_and_none_for_an_unknown_kind() {
         let rules = tiny_rules();
         let mut pop = PopState {
+            id: 0,
             kind: rules.pop_types[0].id.clone(),
             culture: "connachta".to_owned(),
             religion: "christianity".to_owned(),
@@ -22121,6 +22277,7 @@ pub(crate) mod tests {
     fn monthly_satisfaction_drift_runs_on_day_one_only() {
         let rules = tiny_rules();
         let pop = PopState {
+            id: 0,
             kind: "peasant".to_owned(),
             culture: "connachta".to_owned(),
             religion: "christianity".to_owned(),
@@ -22142,6 +22299,7 @@ pub(crate) mod tests {
             pending_deaths: 0,
         };
         let mut state = EconomyState {
+            next_pop_serial: 1,
             places: vec![PlaceState {
                 id: "empty".to_owned(),
                 pops: vec![pop],
@@ -22187,9 +22345,11 @@ pub(crate) mod tests {
         let rules = tiny_rules();
         let goods = rules.goods.len();
         let mut state = EconomyState {
+            next_pop_serial: 1,
             places: vec![PlaceState {
                 id: "test".to_owned(),
                 pops: vec![PopState {
+                    id: 0,
                     kind: "peasant".to_owned(),
                     culture: "connachta".to_owned(),
                     religion: "christianity".to_owned(),
@@ -22262,9 +22422,11 @@ pub(crate) mod tests {
             BTreeMap::from([("crops".to_owned(), 1000), ("oats".to_owned(), 1000)]),
         );
         let mut state = EconomyState {
+            next_pop_serial: 1,
             places: vec![PlaceState {
                 id: "test".to_owned(),
                 pops: vec![PopState {
+                    id: 0,
                     kind: "peasant".to_owned(),
                     culture: "connachta".to_owned(),
                     religion: "christianity".to_owned(),
@@ -22334,9 +22496,11 @@ pub(crate) mod tests {
         });
         let goods = rules.goods.len();
         let mut state = EconomyState {
+            next_pop_serial: 1,
             places: vec![PlaceState {
                 id: "test".to_owned(),
                 pops: vec![PopState {
+                    id: 0,
                     kind: "peasant".to_owned(),
                     culture: "connachta".to_owned(),
                     religion: "christianity".to_owned(),
@@ -22403,6 +22567,7 @@ pub(crate) mod tests {
             pop_limit_milli: 1000,
         });
         let pop = PopState {
+            id: 0,
             kind: "peasant".to_owned(),
             culture: "connachta".to_owned(),
             religion: "christianity".to_owned(),
@@ -22424,6 +22589,7 @@ pub(crate) mod tests {
             pending_deaths: 0,
         };
         let mut state = EconomyState {
+            next_pop_serial: 1,
             places: vec![PlaceState {
                 id: "test".to_owned(),
                 pops: vec![pop.clone()],
@@ -22462,6 +22628,7 @@ pub(crate) mod tests {
         rules.goods[0].pop_limit_milli = 100_000;
         let goods = rules.goods.len();
         let mut pop = PopState {
+            id: 0,
             kind: "peasant".to_owned(),
             culture: "connachta".to_owned(),
             religion: "christianity".to_owned(),
@@ -22634,9 +22801,11 @@ pub(crate) mod tests {
             BTreeMap::from([("peasant".to_owned(), 500_000)]),
         );
         let mut state = EconomyState {
+            next_pop_serial: 1,
             places: vec![PlaceState {
                 id: "test".to_owned(),
                 pops: vec![PopState {
+                    id: 0,
                     kind: "peasant".to_owned(),
                     culture: "connachta".to_owned(),
                     religion: "christianity".to_owned(),
@@ -22722,9 +22891,11 @@ pub(crate) mod tests {
             });
         }
         let mut state = EconomyState {
+            next_pop_serial: 1,
             places: vec![PlaceState {
                 id: "test".to_owned(),
                 pops: vec![PopState {
+                    id: 0,
                     kind: "peasant".to_owned(),
                     culture: "connachta".to_owned(),
                     religion: "christianity".to_owned(),
@@ -22800,6 +22971,7 @@ pub(crate) mod tests {
         let make = |necessities_pm| {
             let goods = rules.goods.len();
             let pop = PopState {
+                id: 0,
                 kind: "peasant".to_owned(),
                 culture: "connachta".to_owned(),
                 religion: "christianity".to_owned(),
@@ -22876,6 +23048,7 @@ pub(crate) mod tests {
         };
         let protected = make(400);
         let mut protected_state = EconomyState {
+            next_pop_serial: 1,
             places: vec![protected],
             trade: TradeCounters::default(),
         };
@@ -22898,6 +23071,7 @@ pub(crate) mod tests {
 
         let mut starving = make(200);
         let mut state = EconomyState {
+            next_pop_serial: 1,
             places: vec![starving.clone()],
             trade: TradeCounters::default(),
         };
@@ -23060,6 +23234,7 @@ pub(crate) mod tests {
     fn emergency_butchering_skips_owned_buildings_without_herds() {
         let rules = tiny_rules();
         let pop = PopState {
+            id: 0,
             kind: "peasant".to_owned(),
             culture: "connachta".to_owned(),
             religion: "christianity".to_owned(),
@@ -23149,6 +23324,7 @@ pub(crate) mod tests {
     fn housing_fill_splits_non_divisible_overflow_and_preserves_totals() {
         let rules = tiny_rules();
         let pop = PopState {
+            id: 0,
             kind: "peasant".to_owned(),
             culture: "connachta".to_owned(),
             religion: "christianity".to_owned(),
@@ -23265,6 +23441,7 @@ pub(crate) mod tests {
             .iter()
             .zip(employment_by_pop)
             .map(|((workers, dependents), employment)| PopState {
+                id: 0,
                 kind: "peasant".to_owned(),
                 culture: "connachta".to_owned(),
                 religion: "christianity".to_owned(),
@@ -23639,6 +23816,7 @@ pub(crate) mod tests {
     fn monthly_demography_keeps_exact_fractional_rate_carries() {
         let rules = tiny_rules();
         let pop = PopState {
+            id: 0,
             kind: "peasant".to_owned(),
             culture: "connachta".to_owned(),
             religion: "christianity".to_owned(),
@@ -23693,6 +23871,7 @@ pub(crate) mod tests {
             paid_years: vec![0; WAGE_HISTORY_MONTHS],
         };
         let mut state = EconomyState {
+            next_pop_serial: 1,
             places: vec![PlaceState {
                 id: "fort".to_owned(),
                 pops: vec![pop],
@@ -23725,6 +23904,7 @@ pub(crate) mod tests {
         rules.pop_types[0].worker_deaths_pm_year = 12_000;
         rules.pop_types[0].dependent_deaths_pm_year = 12_000;
         let pop = PopState {
+            id: 0,
             kind: "peasant".into(),
             culture: "connachta".into(),
             religion: "christianity".into(),
@@ -23754,6 +23934,7 @@ pub(crate) mod tests {
             trade: PlaceTrade::default(),
         };
         let mut state = EconomyState {
+            next_pop_serial: 1,
             places: vec![place],
             trade: TradeCounters::default(),
         };
@@ -23780,6 +23961,7 @@ pub(crate) mod tests {
         // Three 1000‰ death factors make 19,440‰/year equal 1.62 deaths this month.
         rules.pop_types[0].worker_deaths_pm_year = 19_440;
         let pop = PopState {
+            id: 0,
             kind: "peasant".to_owned(),
             culture: "connachta".to_owned(),
             religion: "christianity".to_owned(),
@@ -23797,6 +23979,7 @@ pub(crate) mod tests {
             pending_deaths: 0,
         };
         let mut state = EconomyState {
+            next_pop_serial: 1,
             places: vec![PlaceState {
                 id: "one-person-pool".to_owned(),
                 pops: vec![pop],
@@ -23827,6 +24010,7 @@ pub(crate) mod tests {
     /// A one-place state for the character accounting tests: one peasant pop of `workers` and `dependents`.
     fn accounting_state(workers: u64, dependents: u64) -> EconomyState {
         let mut state = EconomyState {
+            next_pop_serial: 1,
             places: vec![reserve_test_place(reserve_test_pop(workers), Vec::new())],
             trade: TradeCounters::default(),
         };
@@ -23986,6 +24170,7 @@ pub(crate) mod tests {
         let mut pop = reserve_test_pop(workers);
         pop.employment = buildings.iter().map(|b| b.employment[0].clone()).collect();
         EconomyState {
+            next_pop_serial: 1,
             places: vec![reserve_test_place(pop, buildings)],
             trade: TradeCounters::default(),
         }
@@ -24366,6 +24551,7 @@ pub(crate) mod tests {
             .curves
             .insert("deaths_crowding".to_owned(), vec![[0, 0], [2000, 1000]]);
         let pop = PopState {
+            id: 0,
             kind: "peasant".to_owned(),
             culture: "connachta".to_owned(),
             religion: "christianity".to_owned(),
@@ -24383,6 +24569,7 @@ pub(crate) mod tests {
             pending_deaths: 0,
         };
         let mut state = EconomyState {
+            next_pop_serial: 1,
             places: vec![PlaceState {
                 id: "emptying-pop".to_owned(),
                 pops: vec![pop],
@@ -24496,6 +24683,10 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "One fixture checks both new-cohort and existing-cohort movement, including identity and genetics."
+    )]
     fn movement_gives_a_new_pop_the_movers_genetics_and_blends_into_an_existing_one() {
         let (rules, mut state) = daily_accounting_fixture();
         let mut source = state.places.remove(0);
@@ -24529,9 +24720,11 @@ pub(crate) mod tests {
             }
         }
         let mut places = vec![source, destination];
-        let (_, index) = move_recruits(
+        let mut next_serial = 42;
+        let (_, index) = move_recruits_with_serial(
             &rules,
             &mut places,
+            &mut next_serial,
             0,
             0,
             1,
@@ -24541,6 +24734,10 @@ pub(crate) mod tests {
             10,
         )
         .unwrap();
+        assert_eq!(
+            (places[1].pops[index].id, next_serial),
+            (ck_sim::pop_id(42), 43)
+        );
         assert_eq!(
             places[1].pops[index].genetics, first,
             "a new pop takes the movers' state exactly"
@@ -24556,9 +24753,10 @@ pub(crate) mod tests {
         places[0].pops[0].genetics = second.clone();
         let heads = |pop: &PopState| pop.workers + pop.dependents;
         let before = heads(&places[1].pops[index]);
-        let (moved, again) = move_recruits(
+        let (moved, again) = move_recruits_with_serial(
             &rules,
             &mut places,
+            &mut next_serial,
             0,
             0,
             1,
@@ -24568,6 +24766,10 @@ pub(crate) mod tests {
             10,
         )
         .unwrap();
+        assert_eq!(
+            (places[1].pops[index].id, next_serial),
+            (ck_sim::pop_id(42), 43)
+        );
         assert_eq!((again, moved, before), (index, 14, 14));
         let blended = places[1].pops[index].genetics.clone();
         assert_eq!(blended.mean[0], 175_000);
@@ -24588,6 +24790,7 @@ pub(crate) mod tests {
 
         // The state is saved with the pop.
         let saved = EconomyState {
+            next_pop_serial: 1,
             places,
             trade: TradeCounters::default(),
         }
@@ -24689,6 +24892,7 @@ pub(crate) mod tests {
             methods: Vec::new(),
         });
         let pop = |kind: &str, workers: u64, job: Employment| PopState {
+            id: 0,
             kind: kind.to_owned(),
             culture: "connachta".to_owned(),
             religion: "christianity".to_owned(),
@@ -24947,6 +25151,7 @@ pub(crate) mod tests {
         let source = PlaceState {
             id: "source".to_owned(),
             pops: vec![PopState {
+                id: 0,
                 kind: "peasant".to_owned(),
                 culture: "connachta".to_owned(),
                 religion: "christianity".to_owned(),
@@ -25068,6 +25273,7 @@ pub(crate) mod tests {
     fn wage_comparison_excludes_equal_sources_and_orders_below_posted_by_wage_per_head() {
         let rules = tiny_rules();
         let pop = |workers, job| PopState {
+            id: 0,
             kind: "peasant".to_owned(),
             culture: "connachta".to_owned(),
             religion: "christianity".to_owned(),
@@ -25300,7 +25506,14 @@ pub(crate) mod tests {
     fn new_pop_slots_do_not_change_existing_indices() {
         let (_, mut place) = holdings_movement_fixture();
         let before = place.pops.clone();
-        let index = ensure_pop(&mut place, "new-kind", "new-culture", "new-religion");
+        let index = ensure_pop(
+            &mut place,
+            "new-kind",
+            "new-culture",
+            "new-religion",
+            &mut 1,
+        )
+        .unwrap();
         assert_eq!(index, before.len());
         assert_eq!(&place.pops[..before.len()], &before);
     }
@@ -25315,10 +25528,12 @@ pub(crate) mod tests {
         destination.prices_milli.clear();
         let mut places = vec![source, destination];
         let before = places.clone();
+        let mut next_serial = 42;
         assert!(
-            move_recruits(
+            move_recruits_with_serial(
                 &rules,
                 &mut places,
+                &mut next_serial,
                 0,
                 0,
                 1,
@@ -25329,6 +25544,7 @@ pub(crate) mod tests {
             )
             .is_err()
         );
+        assert_eq!(next_serial, 42, "a refused move cannot consume a serial");
         assert_eq!(
             places, before,
             "a refusal cannot partially commit either place"

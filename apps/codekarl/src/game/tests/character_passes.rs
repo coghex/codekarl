@@ -69,6 +69,7 @@ fn store_of(characters: Vec<Character>) -> CharacterStore {
 /// every daily step: the injected fault.
 fn economy(broken: bool) -> EconomyState {
     EconomyState {
+        next_pop_serial: 1,
         places: if broken {
             vec![PlaceState {
                 id: "fixture".to_owned(),
@@ -292,6 +293,7 @@ fn the_monthly_recovery_has_already_run_when_the_birthday_pass_fails() {
 fn economy_with_a_noble_pop() -> EconomyState {
     let mut state = economy(true);
     state.places[0].pops.push(ck_economy::PopState {
+        id: 0,
         kind: "noble".to_owned(),
         culture: "ulaid".to_owned(),
         religion: String::new(),

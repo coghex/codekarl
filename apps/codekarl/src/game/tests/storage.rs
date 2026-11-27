@@ -529,6 +529,7 @@ fn quicksave_then_quickload_continues_to_the_uninterrupted_digest() {
 #[test]
 fn same_build_saves_and_digests_ignore_derived_daily_market_orders() {
     let economy = ck_economy::EconomyState {
+        next_pop_serial: 1,
         places: vec![ck_economy::PlaceState {
             id: "fixture".to_owned(),
             pops: Vec::new(),
@@ -1248,6 +1249,7 @@ fn character_archive_logs_and_live_state_survive_streamed_save() {
     state.economy.places.push(ck_economy::PlaceState {
         id: "p".into(),
         pops: vec![ck_economy::PopState {
+            id: 0,
             kind: "peasant".into(),
             culture: "c".into(),
             religion: "r".into(),
