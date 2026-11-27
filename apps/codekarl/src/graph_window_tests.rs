@@ -274,6 +274,109 @@ end)
 }
 
 #[test]
+fn forms_are_per_window_and_export_uses_the_answer_still_shown() {
+    ok(r"
+run(function()
+  local calls = {}
+  game.history_export = function(name, csv)
+    calls[#calls + 1] = {name = name, csv = csv}
+    return {ok = true, filename = 'written.csv'}
+  end
+  graph.refresh{history_revision = 5, world = 0}
+  local one = graph.open{subject = {kind = 'place', id = 'cong'}, graph = 'people'}
+  local other = graph.open{subject = {kind = 'place', id = 'armagh'}, graph = 'people'}
+  assert(one.form == 'columns' and one.buttons[7].inactive, 'export waits for an answer')
+  assert(one:receive(answer(requests[1], 5, one:budget())))
+  assert(not one.buttons[6].inactive and not one.buttons[7].inactive)
+  one.buttons[5].on_click()
+  assert(one.form == 'lines' and other.form == 'columns', 'form belongs to its window')
+  one:set_range('1y')
+  one:export()
+  assert(#calls == 1 and calls[1].name == 'Cong-people-0770-01-to-0770-01', calls[1].name)
+  assert(calls[1].csv:find('4.0,2.0', 1, true), calls[1].csv)
+  assert(one.export_status == 'written: written.csv')
+  game.history_export = function() return {ok = false, reason = 'disk full'} end
+  one:export()
+  assert(one.export_status == 'could not write: disk full')
+  graph.refresh{history_revision = 6, world = 1}
+  assert(one:shown_answer() == nil and one.buttons[7].inactive, 'load clears the export')
+  local request = requests[#requests - 1]
+  local nonstack = answer(request, 6, one:budget())
+  nonstack.stacked = false
+  assert(one:receive(nonstack))
+  assert(one.buttons[6].inactive, 'bands are unavailable on non-stacking graphs')
+end)
+");
+}
+
+#[test]
+fn export_uses_the_displayed_answer_and_exact_csv_fields() {
+    ok(r#"
+run(function()
+  local csv = require('lib.graph_export')
+  local d = function(m) return {year = 770, month = m} end
+  local answer = {rate = true, series = {'births', 'deaths'}, columns = {
+    {from = d(1), to = d(1), record = true, values = {0, false}, people = 0, counts = {0, 2}},
+    {from = d(2), to = d(2), record = false},
+    {from = d(3), to = d(4), record = true, values = {1.25, 2}, people = 1.5, counts = {1, 3}},
+  }}
+  local text = csv.table(answer, 'births_deaths', function(k) return k end)
+  assert(text == 'from,to,births,deaths,people,births count,deaths count\n'
+    .. '0770-01,0770-01,0.0,,0.0,0,2\n0770-02,0770-02,,,,,\n'
+    .. '0770-03,0770-04,1.3,2.0,1.5,1,3\n', text)
+  local state = {series = {'a,b'}, columns = {{from = d(1), to = d(2), record = true, values = {1.5}}}}
+  assert(csv.table(state, 'people', function(k) return k end) == 'from,to,"a,b"\n0770-01,0770-02,1.5\n')
+  assert(csv.name(state, 'Cong', 'people') == 'Cong-people-0770-01-to-0770-02')
+  for _, step in ipairs({'month', 'season', 'year', 'decade', 'quarter century', 'century'}) do
+    state.step = step
+    assert(csv.table(state, 'people', function(k) return k end) == 'from,to,"a,b"\n0770-01,0770-02,1.5\n', step)
+    assert(csv.table(state, 'made', function(k) return k end) == 'from,to,"a,b"\n0770-01,0770-02,1.500\n', step)
+    state.columns[1].values = {1500}
+    assert(csv.table(state, 'price:oats', function(k) return k end) == 'from,to,"a,b"\n0770-01,0770-02,1.500\n', step)
+    state.columns[1].values = {1.5}
+  end
+end)
+"#);
+}
+
+#[test]
+fn graph_forms_break_at_gaps_and_draw_isolated_values() {
+    ok(r"
+run(function()
+  local spec = {width = 240, height = 100, dim = 'dim', track = 'track', form = 'lines',
+    colour_of = function(i) return 'series' .. i end, name_of = function(k) return k end}
+  local function col(month, record, values)
+    return {from = {year = 770, month = month}, to = {year = 770, month = month}, record = record, values = values}
+  end
+  local answer = {stacked = true, series = {'a', 'b'}, columns = {
+    col(1, true, {4, 2}), col(2, false, {}), col(3, true, {6, 0}), col(4, true, {0, false})}}
+  local lines = chart.layout(answer, spec)
+  local a, b = {}, {}
+  for _, rect in ipairs(lines.rects) do
+    if rect.colour == 'series1' then a[#a + 1] = rect end
+    if rect.colour == 'series2' then b[#b + 1] = rect end
+  end
+  assert(#a > 2 and a[1].w == 3, 'isolated line and joined line')
+  assert(#b == 2 and b[1].w == 3 and b[2].w == 3, 'gap and undefined break only that series')
+  local base = lines.plot.y + lines.plot.h
+  assert(b[2].y == base, 'measured zero is on the axis')
+  spec.form = 'bands'
+  local bands = chart.layout(answer, spec)
+  local first, crossing = nil, false
+  local gap = bands.columns[2]
+  for _, rect in ipairs(bands.rects) do
+    if rect.colour == 'series1' then
+      if first == nil then first = rect end
+      if rect.x >= gap.x and rect.x < gap.x + gap.w then crossing = true end
+    end
+  end
+  assert(first ~= nil and first.w == 3, 'isolated band is a three pixel block')
+  assert(not crossing, 'bands do not cross a missing column')
+end)
+");
+}
+
+#[test]
 fn a_columns_tooltip_names_its_period_values_counts_and_the_three_cases() {
     ok(r"
 run(function()
@@ -428,7 +531,7 @@ run(function()
   assert(one.window:size() == w - graph.ALL_EXTRA * P)
   local keep = 0
   for _, entry in ipairs(one.buttons) do keep = keep + 1 end
-  assert(keep == 3 + 4, 'three strips and four range buttons: ' .. keep)
+  assert(keep == 3 + 4 + 4, 'three strips, four form/export buttons and four range buttons: ' .. keep)
 end)
 ");
 }

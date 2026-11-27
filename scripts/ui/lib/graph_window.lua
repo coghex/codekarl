@@ -1,5 +1,5 @@
 -- The history graph windows (CK-441, history spec r5 part B): one graph a window, opened from the graph icons of the location tab or the time
--- bar's graph button, each with its three columns (tags, places, graphs), its range buttons and its stacked columns.
+-- bar's graph button, each with its three columns (tags, places, graphs), its range buttons, graph forms and export.
 --
 -- The windows are asked for through `game.history_subjects()` and `game.history_graph{...}`, and the answers are taken with `game.history_take()`
 -- (`graph.poll`). An answer is drawn only if it carries the window's latest request number, the current history revision and the window's
@@ -13,6 +13,7 @@ local pointer = require("lib.pointer")
 local tooltip = require("lib.tooltip")
 local list = require("lib.list")
 local chart = require("lib.graph_chart")
+local export = require("lib.graph_export")
 local place_names = require("lib.place_names")
 local resize_corner = require("lib.resize_corner")
 
@@ -189,7 +190,11 @@ function Instance:receive(answer)
       adds = answer.pop.adds or "none", ordinal = answer.pop.ordinal or 0}, place = answer.pop.place}
     if self:is_open() then self.window:set_title(self:title()) end
   end
-  self:draw()
+  answer.export_subject = self:subject_title()
+  answer.export_graph = graph.graph_title(self.graph)
+  answer.export_key = self.graph
+  if self.form == "bands" and not answer.stacked then self.form = "columns" end
+  self:build()
   return true
 end
 
@@ -222,7 +227,7 @@ end
 function Instance:spec()
   local cw = self:chart_width()
   local _, height = self:content_size()
-  return {width = cw, height = math.max(1, height - CHART_TOP), per = self:per(), colour_of = colour_of, name_of = function(key) return series_name(self, key) end,
+  return {width = cw, height = math.max(1, height - CHART_TOP), per = self:per(), form = self.form, colour_of = colour_of, name_of = function(key) return series_name(self, key) end,
     scale = self.graph ~= nil and self.graph:match("^price:") and 0.001 or 1, dim = theme.colour("dim"), track = theme.colour("track")}
 end
 
@@ -451,6 +456,25 @@ function Instance:build()
   local win = self.window
   local width = win.content_width // P
   self:build_columns()
+  local x = self:chart_x()
+  local shown = self:shown_answer()
+  for _, entry in ipairs({{key = "columns", icon = "graph_f1"}, {key = "lines", icon = "graph_f2"}, {key = "bands", icon = "graph_f3"}}) do
+    local choice = button.new{x = x * P, y = 0, icons = {entry.icon}, kind = win.kind, group = win.content, owner = win,
+      inactive = entry.key == "bands" and (shown == nil or not shown.stacked),
+      tooltip = entry.key, on_click = function() self.form = entry.key; self:build() end}
+    choice:set_selected(self.form == entry.key)
+    self.buttons[#self.buttons + 1] = choice
+    x = x + button.measure_icon(entry.icon) // P + 2
+  end
+  local can_export = shown ~= nil and shown.columns ~= nil and #shown.columns > 0
+  local export_button = button.new{x = x * P, y = 0, icons = {"graph_export"}, kind = win.kind, group = win.content, owner = win,
+    inactive = not can_export, on_click = function() self:export() end}
+  tooltip.attach(export_button.key, function()
+    if self.export_status ~= nil then return {title = self.export_status} end
+    return {title = "export", "writes this graph as a table", "to exports/ beside the saves"}
+  end)
+  export_button.tooltip_attached = true
+  self.buttons[#self.buttons + 1] = export_button
   -- The range buttons at the toolbar's right.
   local right = width - 1
   for index = #RANGES, 1, -1 do
@@ -468,6 +492,16 @@ function Instance:build()
   if self.subject ~= nil and self.graph ~= nil and self.asked_budget ~= budget then self:ask() end
   self:draw()
   self:set_plot_hit()
+end
+
+function Instance:export()
+  local answer = self:shown_answer()
+  if answer == nil or answer.columns == nil or #answer.columns == 0 then return end
+  local name = export.name(answer, answer.export_subject, answer.export_graph)
+  local csv = export.table(answer, answer.export_key, function(key) return series_name(self, key) end)
+  local result = game.history_export(name, csv)
+  self.export_status = result.ok and ("written: " .. result.filename) or ("could not write: " .. result.reason)
+  self:build()
 end
 
 function Instance:set_range(key)
@@ -529,7 +563,7 @@ function graph.open(spec)
       end
     end
   end
-  local self = setmetatable({subject = spec.subject, graph = spec.graph, range = "3y", following = true, shown = {spec.columns == true, spec.columns == true, spec.columns == true}, buttons = {}, lists = {}, tag = "global"}, Instance)
+  local self = setmetatable({subject = spec.subject, graph = spec.graph, range = "3y", form = "columns", following = true, shown = {spec.columns == true, spec.columns == true, spec.columns == true}, buttons = {}, lists = {}, tag = "global"}, Instance)
   if env.subjects == nil and game.history_subjects ~= nil then env.subjects = game.history_subjects() end
   if self.subject ~= nil then
     self.pick = self.subject

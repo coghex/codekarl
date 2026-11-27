@@ -1,5 +1,5 @@
 -- The layout of one graph's chart (CK-441, spec r5 rules 35 to 41): from the answer `game.history_graph` gave, the filled rectangles of its
--- axes and stacked columns (F1), its labels, its legend and the text of a column's tooltip. It makes no scene call: the graph window draws
+-- axes, graph forms, labels, its legend and the text of a column's tooltip. It makes no scene call: the graph window draws
 -- what this returns, and the tests read it. Every position is in UI pixels from the chart area's top-left corner.
 local draw = require("lib.draw")
 
@@ -95,7 +95,7 @@ function chart.layout(answer, spec)
   if count == 0 or plot_w <= 0 then return out end
   local dim, track = spec.dim, spec.track
   local largest = 0
-  for _, column in ipairs(columns) do largest = math.max(largest, total_of(column, answer.stacked) * scale) end
+  for _, column in ipairs(columns) do largest = math.max(largest, total_of(column, answer.stacked and spec.form ~= "lines") * scale) end
   local maximum = chart.round_max(largest)
   out.maximum = maximum
   local base = TOP + plot_h
@@ -117,7 +117,9 @@ function chart.layout(answer, spec)
       -- The axis line is present wherever the month was recorded, a measured zero included (rule 36).
       add(left, base, cell, 1, dim)
       local width = cell - gap
-      if answer.stacked then
+      if spec.form ~= nil and spec.form ~= "columns" then
+        -- Other forms are drawn after the axes, joining column centres.
+      elseif answer.stacked then
         local acc = 0
         for number, value in ipairs(column.values) do
           if type(value) == "number" then
@@ -150,6 +152,62 @@ function chart.layout(answer, spec)
           for _, entry in ipairs(order) do
             local height = round(entry.value * scale / maximum * plot_h)
             add(left, base - height, width, height, spec.colour_of(entry.number, series[entry.number]))
+          end
+        end
+      end
+    end
+  end
+  if spec.form == "lines" or (spec.form == "bands" and answer.stacked) then
+    local function centre(index) return (edges[index - 1] + edges[index] - 1) // 2 end
+    local function value(index, number)
+      local column = columns[index]
+      if column == nil or not column.record then return nil end
+      local v = column.values[number]
+      if type(v) ~= "number" then return nil end
+      return v * scale
+    end
+    local function bounds(index, number)
+      local v = value(index, number)
+      if v == nil then return nil end
+      local low = 0
+      if spec.form == "bands" then
+        for previous = 1, number - 1 do low = low + (value(index, previous) or 0) end
+      end
+      return low / maximum * plot_h, (low + v) / maximum * plot_h
+    end
+    for number, key in ipairs(series) do
+      local colour = spec.colour_of(number, key)
+      for index = 1, count do
+        local low, high = bounds(index, number)
+        if low ~= nil then
+          local prev = index > 1 and value(index - 1, number) ~= nil
+          local next_value = index < count and value(index + 1, number) ~= nil
+          local x = centre(index)
+          if not prev and not next_value then
+            local left = math.max(x0, x - 1)
+            local width = math.min(x0 + plot_w, x + 2) - left
+            if spec.form == "lines" then add(left, base - round(high), width, 1, colour)
+            else add(left, base - round(high), width, round(high) - round(low), colour) end
+          end
+          if next_value then
+            local next_low, next_high = bounds(index + 1, number)
+            local nx = centre(index + 1)
+            if spec.form == "lines" then
+              local last_y = base - round(high)
+              for px = x, nx do
+                local t = nx == x and 0 or (px - x) / (nx - x)
+                local y = base - round(high + (next_high - high) * t)
+                add(px, math.min(y, last_y), 1, math.abs(y - last_y) + 1, colour)
+                last_y = y
+              end
+            else
+              for px = x, nx do
+                local t = nx == x and 0 or (px - x) / (nx - x)
+                local lo = round(low + (next_low - low) * t)
+                local hi = round(high + (next_high - high) * t)
+                add(px, base - hi, 1, hi - lo, colour)
+              end
+            end
           end
         end
       end

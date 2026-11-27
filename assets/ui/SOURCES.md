@@ -24,3 +24,8 @@ ledger's monochrome bust is `theme/icon_characters.png`, written by `theme/make_
 from no other image; the provenance notes are in the two scripts, and `--check` fails when a committed image differs from what its script writes.
 
 The find popup river icon `theme/icon_river.png` is an original drawing of wavy strokes composed from plain shapes in `theme/make_theme.py`; it is copied from no other image.
+
+The history graph form icons `theme/icon_graph_f1.png`, `icon_graph_f2.png`, `icon_graph_f3.png` and `icon_graph_export.png` are original
+pixel drawings from plain shapes by ck-designer-8, defined in `theme/make_theme.py` from the history viewer r3 and r7 mock-ups. They are
+not traced or adapted from other art; their provenance is recorded in `viewer-provenance-r3.md` and `viewer-provenance-r7.md` in the history
+mock-ups.

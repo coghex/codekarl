@@ -114,6 +114,10 @@ pub(crate) fn extension_with_select(
             "history_take",
             history_take_function(controls.history().clone()),
         )
+        .function(
+            "history_export",
+            history_export_function(controls.history().clone()),
+        )
         .function("load_save_guarded", guarded_load_function(controls))
         .callback_observed(
             "on_time",
@@ -313,6 +317,25 @@ fn history_take_function(host: crate::game::history_view::Host) -> HostFunction 
                 .map(crate::game::history_view::Answer::to_value)
                 .collect(),
         )])
+    })
+}
+
+fn history_export_function(host: crate::game::history_view::Host) -> HostFunction {
+    Arc::new(move |arguments| {
+        let [
+            Some(ConfigValue::String(name)),
+            Some(ConfigValue::String(csv)),
+        ] = arguments
+        else {
+            return Err("game.history_export: expected name and table".to_owned());
+        };
+        Ok(vec![match host.export(name, csv) {
+            Ok(filename) => ConfigValue::Table(BTreeMap::from([
+                ("ok".to_owned(), ConfigValue::Bool(true)),
+                ("filename".to_owned(), ConfigValue::String(filename)),
+            ])),
+            Err(reason) => error_value(reason),
+        }])
     })
 }
 

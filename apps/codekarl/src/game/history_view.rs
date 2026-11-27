@@ -1092,6 +1092,48 @@ impl Host {
         });
     }
 
+    /// Writes a chart table beside the saves, creating a distinct file on each click.
+    pub(crate) fn export(&self, name: &str, bytes: &str) -> Result<String, String> {
+        use std::io::Write;
+        let view = self.view().ok_or("history unavailable")?;
+        let directory = view.saves.join("exports");
+        std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+        let mut slug = String::new();
+        for ch in name.to_lowercase().chars() {
+            if ch.is_alphanumeric() {
+                slug.push(ch);
+            } else if !slug.is_empty() && !slug.ends_with('-') {
+                slug.push('-');
+            }
+        }
+        let slug = slug.trim_end_matches('-');
+        let slug = if slug.is_empty() { "graph" } else { slug };
+        for number in 1_u32.. {
+            let filename = if number == 1 {
+                format!("{slug}.csv")
+            } else {
+                format!("{slug}-{number}.csv")
+            };
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(directory.join(&filename))
+            {
+                Ok(mut file) => {
+                    if let Err(error) = file.write_all(bytes.as_bytes()) {
+                        drop(file);
+                        let _ = std::fs::remove_file(directory.join(&filename));
+                        return Err(error.to_string());
+                    }
+                    return Ok(filename);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error.to_string()),
+            }
+        }
+        Err("no available filename".into())
+    }
+
     /// The answers that are ready, oldest first.
     pub(crate) fn take(&self) -> Vec<Answer> {
         self.shared
@@ -1151,6 +1193,32 @@ mod tests {
             running: Arc::new(running),
             horizon,
         }
+    }
+
+    #[test]
+    fn export_names_are_safe_and_collisions_preserve_existing_files() {
+        let directory = std::env::temp_dir().join(format!(
+            "ck-export-{}-{}",
+            std::process::id(),
+            next_revision()
+        ));
+        let mut fixture = view((770, 1), None, Vec::new());
+        fixture.saves = directory.clone();
+        let host = Host::new(Arc::new(|| {}));
+        host.publish(fixture, true);
+        let first = host.export("Cong/People 0770-01", "first\n").unwrap();
+        let second = host.export("Cong/People 0770-01", "second\n").unwrap();
+        assert_eq!(first, "cong-people-0770-01.csv");
+        assert_eq!(second, "cong-people-0770-01-2.csv");
+        assert_eq!(
+            std::fs::read_to_string(directory.join("exports").join(first)).unwrap(),
+            "first\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(directory.join("exports").join(second)).unwrap(),
+            "second\n"
+        );
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     fn ask(view: &View, graph: Graph, range: Range, budget: u32) -> Outcome {
