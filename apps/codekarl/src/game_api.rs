@@ -1199,6 +1199,9 @@ fn building_table(building: &BuildingView) -> ConfigValue {
         ("store_capacity_ml", integer(building.store_capacity_ml)),
         ("kind", text(&building.kind)),
         ("levels", integer(building.levels)),
+        ("has_methods", ConfigValue::Bool(building.has_methods)),
+        ("units", integer(building.units)),
+        ("free_units", integer(building.free_units)),
         (
             "methods",
             ConfigValue::Array(
@@ -2848,6 +2851,9 @@ mod tests {
                 made: Vec::new(),
                 kind: "farm".to_owned(),
                 levels: 3,
+                has_methods: true,
+                units: 15,
+                free_units: 0,
                 methods: vec![("mixed_farming".to_owned(), 3)],
                 filled: 25,
                 open: 5,

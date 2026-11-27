@@ -57,6 +57,7 @@ pub(crate) fn building_state(rules: &Rules, kind: &str, levels: u32, pops: usize
         abandoned: false,
         kind: kind.to_owned(),
         levels,
+        units: if methods == 0 { 0 } else { levels },
         method_levels: vec![0; methods],
         level_records: Vec::new(),
         herds: Vec::new(),
@@ -124,7 +125,7 @@ pub(crate) fn capacity(rules: &mut Rules, place: &mut PlaceState, pop: usize, ml
         .iter_mut()
         .find(|item| item.id == kind)
         .unwrap()
-        .market_capacity_ml_per_level = ml;
+        .market_capacity_ml_per_unit = ml;
     let building = add_building(rules, place, kind, 1);
     own(place, building, pop, 1);
 }
@@ -813,6 +814,18 @@ fn a_spare_wool_sell_order_does_not_fund_another_pops_oats() {
 // ---------------------------------------------------------------- rules 5 to 8: capacity
 
 #[test]
+fn market_capacity_uses_units_even_when_method_count_changes() {
+    let rules = shipped();
+    let mut place = place(&rules, 2);
+    let farm = add_building(&rules, &mut place, "farm", 1);
+    place.buildings[farm].units = 7;
+    own(&mut place, farm, PEASANT, 1);
+    assert_eq!(market_capacities(&rules, &place).unwrap(), vec![70_000, 0]);
+    place.buildings[farm].levels = 0;
+    assert_eq!(market_capacities(&rules, &place).unwrap(), vec![70_000, 0]);
+}
+
+#[test]
 fn a_buildings_capacity_is_split_by_owner_shares() {
     let mut rules = rules();
     rules
@@ -820,7 +833,7 @@ fn a_buildings_capacity_is_split_by_owner_shares() {
         .iter_mut()
         .find(|item| item.id == "farm")
         .unwrap()
-        .market_capacity_ml_per_level = 50_000;
+        .market_capacity_ml_per_unit = 50_000;
     let mut place = place(&rules, 3);
     let farm = add_building(&rules, &mut place, "farm", 3);
     // The 1:2 worker ratio rounds to owner shares of 333 and 667 per mille.
@@ -840,7 +853,7 @@ fn a_split_with_a_remainder_sums_to_the_whole_and_a_tie_goes_to_the_earlier_pop(
         .iter_mut()
         .find(|item| item.id == "farm")
         .unwrap()
-        .market_capacity_ml_per_level = 50_000;
+        .market_capacity_ml_per_unit = 50_000;
     let mut place = place(&rules, 3);
     let farm = add_building(&rules, &mut place, "farm", 1);
     // Owner shares round first to [334, 333, 333] per mille, then divide capacity.
@@ -877,7 +890,7 @@ fn a_pop_with_positions_in_two_buildings_has_the_sum_and_one_with_none_has_none(
             .iter_mut()
             .find(|item| item.id == kind)
             .unwrap()
-            .market_capacity_ml_per_level = ml;
+            .market_capacity_ml_per_unit = ml;
     }
     let mut place = place(&rules, 3);
     let farm = add_building(&rules, &mut place, "farm", 2);
@@ -940,11 +953,11 @@ fn a_building_type_with_no_number_gives_none_and_the_shipped_numbers_are_the_pro
             .iter()
             .find(|item| item.id == id)
             .unwrap()
-            .market_capacity_ml_per_level
+            .market_capacity_ml_per_unit
     };
-    assert_eq!(number("farm"), 50_000);
-    assert_eq!(number("holdings"), 100_000);
-    assert_eq!(number("demesne"), 100_000);
+    assert_eq!(number("farm"), 10_000);
+    assert_eq!(number("holdings"), 20_000);
+    assert_eq!(number("demesne"), 20_000);
     assert_eq!(number("storehouse"), 0);
     assert_eq!(rules.swap_loss_limit_pm, 100);
     let mut place = place(&rules, 2);
@@ -967,7 +980,7 @@ fn yesterdays_unused_capacity_is_not_there_today() {
         .iter_mut()
         .find(|item| item.id == "farm")
         .unwrap()
-        .market_capacity_ml_per_level = 600;
+        .market_capacity_ml_per_unit = 600;
     assert_eq!(market_capacities(&rules, &place).unwrap(), vec![600, 0]);
 }
 
@@ -1222,7 +1235,7 @@ fn the_allowance_of_a_valid_building_never_stops_the_day() {
         .iter_mut()
         .find(|item| item.id == "farm")
         .unwrap()
-        .market_capacity_ml_per_level = 1 << 62;
+        .market_capacity_ml_per_unit = 1 << 62;
     assert_eq!(
         market_capacities(&rules, &place).unwrap(),
         vec![1 << 63, 1 << 63]
@@ -1230,12 +1243,13 @@ fn the_allowance_of_a_valid_building_never_stops_the_day() {
     // The greatest number and levels share exactly too, with the odd unit going to the earlier pop on a tie.
     let building = &mut place.buildings[building];
     building.levels = u32::MAX;
+    building.units = u32::MAX;
     rules
         .buildings
         .iter_mut()
         .find(|item| item.id == "farm")
         .unwrap()
-        .market_capacity_ml_per_level = u64::MAX;
+        .market_capacity_ml_per_unit = u64::MAX;
     let whole = u128::from(u32::MAX) * u128::from(u64::MAX);
     let shares = market_capacities(&rules, &place).unwrap();
     assert_eq!(shares.iter().sum::<u128>(), whole);
@@ -1789,7 +1803,7 @@ fn one_day(rules: &Rules, state: &mut EconomyState, date: Date) -> ProductionLed
 fn without_capacity(rules: &Rules) -> Rules {
     let mut rules = rules.clone();
     for item in &mut rules.buildings {
-        item.market_capacity_ml_per_level = 0;
+        item.market_capacity_ml_per_unit = 0;
     }
     rules
 }
@@ -1840,7 +1854,7 @@ fn goods_paid_on_the_first_are_swapped_that_noon_and_not_before_the_payday() {
         .iter_mut()
         .find(|item| item.id == "demesne")
         .unwrap()
-        .market_capacity_ml_per_level = 1_000_000_000_000;
+        .market_capacity_ml_per_unit = 1_000_000_000_000;
     let state = fort(&rules);
     let (labourers, nobles) = (
         kind_of(&state.places[0], "labourer"),
@@ -2264,7 +2278,7 @@ fn a_receipt_that_only_volume_rules_out_is_not_searched_pair_by_pair() {
     place.pops[PEASANT].stock[wool] = u64::try_from(720_000_000 - held).unwrap();
     rules.buildings.iter_mut().for_each(|item| {
         if item.id == "farm" {
-            item.market_capacity_ml_per_level = 200_000_000;
+            item.market_capacity_ml_per_unit = 200_000_000;
         }
     });
     let before = goods_everywhere(&place);
@@ -2321,7 +2335,7 @@ fn a_full_store_makes_no_swap_though_the_bushels_given_would_free_room() {
             .iter_mut()
             .find(|kind| kind.id == "holdings")
             .unwrap()
-            .market_capacity_ml_per_level = 0;
+            .market_capacity_ml_per_unit = 0;
         let church = add_building(&rules, &mut place, "holdings", 1);
         place.buildings[church].employment[THIRD].workers = 1;
         place.pops[THIRD].employment[church].workers = 1;
@@ -2449,7 +2463,7 @@ fn the_noon_step_runs_with_the_largest_building_allowance_the_rules_accept() {
     // Two to the sixty-second ml a level is a valid number (a TOML integer): it must not stop the day at noon, whatever the levels.
     let mut rules = hunger_rules();
     for item in &mut rules.buildings {
-        item.market_capacity_ml_per_level = 1 << 62;
+        item.market_capacity_ml_per_unit = 1 << 62;
     }
     rules.validate("rules").unwrap();
     let mut state = fort(&rules);
@@ -2651,7 +2665,7 @@ fn food_precedes_fuel_and_peat_precedes_the_less_bulky_hardwood() {
             .iter_mut()
             .find(|b| b.id == "farm")
             .unwrap()
-            .market_capacity_ml_per_level = 162_000;
+            .market_capacity_ml_per_unit = 162_000;
         want(&rules, &mut place, PEASANT, "oats", 2);
         spare(&rules, &mut place, PEASANT, "herbs", 50);
         want(&rules, &mut place, MONK, "herbs", 20);
@@ -2768,7 +2782,7 @@ fn full_store_takes_fuel_up_to_its_limit_and_capacity_counts_load_volume() {
             .iter_mut()
             .find(|b| b.id == "farm")
             .unwrap()
-            .market_capacity_ml_per_level = capacity_ml;
+            .market_capacity_ml_per_unit = capacity_ml;
         let before = place.pops[PEASANT].stock[oats];
         // At equal value, one oat pays for one load.
         set_price(&rules, &mut place, "oats", 100);
@@ -2952,7 +2966,7 @@ fn the_real_price_step_can_reverse_the_fuel_ranking() {
         .iter_mut()
         .find(|b| b.id == "farm")
         .unwrap()
-        .market_capacity_ml_per_level = allowance;
+        .market_capacity_ml_per_unit = allowance;
     let before_oats = state.places[0].pops[PEASANT].stock[oats];
     swap::run_daily_swaps_at_prices(&rules, &mut state, &[opening]).unwrap();
     let place = &state.places[0];
@@ -3631,7 +3645,7 @@ fn neighbour_worked_sheep_example_uses_one_share_and_the_starters_capacity() {
     farm.herds.clear();
     farm.herds
         .insert("sheep".into(), HerdCapacity { maximum: 10 });
-    farm.market_capacity_ml_per_level = 2_000_000;
+    farm.market_capacity_ml_per_unit = 2_000_000;
     let sheep = rules
         .herd_species
         .iter()

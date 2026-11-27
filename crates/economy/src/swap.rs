@@ -288,18 +288,18 @@ pub(crate) fn pop_position(
     })
 }
 
-/// Each pop's market capacity for the day in millilitres (rules 5 to 8): a building's levels times its number, split among the pops
+/// Each pop's market capacity for the day in millilitres (rules 5 to 8): a building's units times its number, split among the pops
 /// by their owner shares (largest remainder, the earlier pop on a tie), summed over the pop's buildings.
 pub(crate) fn market_capacities(rules: &Rules, place: &PlaceState) -> Result<Vec<u128>, DataError> {
     let mut capacity = vec![0_u128; place.pops.len()];
     let mut resolved = place.clone();
     for (index, building) in place.buildings.iter().enumerate() {
-        let per_level = rules
+        let per_unit = rules
             .buildings
             .iter()
             .find(|definition| definition.id == building.kind)
-            .map_or(0, |definition| definition.market_capacity_ml_per_level);
-        if per_level == 0 || building.levels == 0 {
+            .map_or(0, |definition| definition.market_capacity_ml_per_unit);
+        if per_unit == 0 || building.units == 0 {
             continue;
         }
         if building.employment.len() != place.pops.len() {
@@ -308,8 +308,8 @@ pub(crate) fn market_capacities(rules: &Rules, place: &PlaceState) -> Result<Vec
                 "employment dimensions do not match place pops",
             ));
         }
-        // The building's whole allowance is worked in u128: levels (u32) times the number (u64) cannot overflow it.
-        let total = u128::from(building.levels) * u128::from(per_level);
+        // Units (u32) times the per-unit allowance (u64) fit in u128.
+        let total = u128::from(building.units) * u128::from(per_unit);
         let weights = resolve_owner_shares(&mut resolved, index)?;
         let shares = wide_shares(total, &weights)
             .map_err(|problem| missing_data("swap.capacity".to_owned(), problem))?;

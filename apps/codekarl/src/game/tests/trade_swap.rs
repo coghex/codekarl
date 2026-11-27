@@ -217,7 +217,7 @@ fn the_noon_exchange_makes_one_capacity_cut_swap_and_a_save_at_eleven_or_thirtee
     // The same day without capacity anywhere has no swap; what differs is the swap, which ate and drew the same either way.
     let mut no_capacity = rules.clone();
     for building in &mut no_capacity.buildings {
-        building.market_capacity_ml_per_level = 0;
+        building.market_capacity_ml_per_unit = 0;
     }
     let mut control = game(&no_capacity, economy.clone(), before);
     run_to(&mut control, at(2, 13));
@@ -318,7 +318,7 @@ fn a_building_payment_for_scarce_fish_survives_saves_around_noon() {
     let thirteen = canonical(&unbroken);
     let mut no_capacity = rules.clone();
     for building in &mut no_capacity.buildings {
-        building.market_capacity_ml_per_level = 0;
+        building.market_capacity_ml_per_unit = 0;
     }
     let mut control = game(&no_capacity, economy.clone(), before);
     run_to(&mut control, at(2, 13));
@@ -335,7 +335,7 @@ fn a_building_payment_for_scarce_fish_survives_saves_around_noon() {
     assert_eq!(moved, (-4, 14));
     let mut larger = rules.clone();
     for building in &mut larger.buildings {
-        building.market_capacity_ml_per_level = 1_000_000_000;
+        building.market_capacity_ml_per_unit = 1_000_000_000;
     }
     let mut larger_turn = game(&larger, economy.clone(), before);
     run_to(&mut larger_turn, at(2, 13));
@@ -391,7 +391,7 @@ fn a_fuel_swap_survives_saves_before_and_after_noon() {
 
     let mut no_capacity = rules.clone();
     for building in &mut no_capacity.buildings {
-        building.market_capacity_ml_per_level = 0;
+        building.market_capacity_ml_per_unit = 0;
     }
     let mut control = game(&no_capacity, economy.clone(), at(2, 0));
     run_to(&mut control, at(2, 13));

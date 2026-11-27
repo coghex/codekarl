@@ -3142,7 +3142,7 @@ mod stretch_save_tests {
                 b.level_records[0].number = b.levels;
             }),
             ("the level records count", |b| b.method_levels[0] += 1),
-            ("level records for", |b| {
+            ("the level records count", |b| {
                 b.level_records.pop();
             }),
             ("the saved suitability sums are not those", |b| {
@@ -3351,6 +3351,7 @@ mod stretch_save_tests {
             .find(|b| b.kind == "farm")
             .unwrap();
         farm.levels = levels;
+        farm.units = levels * 5;
         farm.method_levels = vec![0; farm.method_levels.len()];
         farm.method_levels[0] = levels;
         let unpaid_work = definition.methods[0]
@@ -4539,7 +4540,7 @@ mod stretch_save_tests {
         assert_eq!(
             hashes::rules_hash(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets"))
                 .unwrap(),
-            "3ac20aa81d7d61c3"
+            "51b9cb83438cf7a6"
         );
         let mut save = source.simulation.save(source.identity.meta(42));
         let weather = source.weather.as_ref().unwrap();

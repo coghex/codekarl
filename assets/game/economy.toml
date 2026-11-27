@@ -73,16 +73,20 @@ emergency_order=3
 yields=[{good="hides", units=1}]
 
 [footprint_m2]
-farm = 2000
-holdings = 4000
-demesne = 4000
 storehouse = 200
 
+[footprint_m2_per_unit]
+farm = 400
+holdings = 800
+demesne = 800
+
 [housing_per_level]
-farm = 17
-holdings = 14
-demesne = 37          # the labourers' households (10 workers with average dependents, 17) and the lord's household (20)
 storehouse = 3
+
+[housing_milli_per_unit]
+farm = 3400
+holdings = 2800
+demesne = 7400
 
 [housing_class]
 farm = "basic"
@@ -492,8 +496,9 @@ land_per_level=2
 penalty_pm=500
 overhead_pm=100
 recruit_range_m=30000
-market_capacity_ml_per_level=50000
+market_capacity_ml_per_unit=10000
 [[buildings.methods]]
+size_units=5
 id="mixed_farming"
 grows=true
 jobs=[{ id="peasant_labour", places=10, pop_types=["peasant"], wage_weight_pm=1000, manager=false }]
@@ -502,6 +507,7 @@ suitability="crops"
 annual_output={ oats=300, barley=50, peas_beans=6, vegetables=32, beef=1100, pork=970, mutton=165, dairy=860, wool=10, hides=5, linen=10, hemp=10 }
 score_share_pm={ oats=690, barley=120, peas_beans=30, vegetables=80, beef=25, pork=20, mutton=5, dairy=10, wool=5, hides=5, linen=5, hemp=5 }
 [[buildings.methods]]
+size_units=5
 id="coastal_subsistence"
 jobs=[{ id="peasant_labour", places=10, pop_types=["peasant"], wage_weight_pm=1000, manager=false }]
 resource="sea"
@@ -509,6 +515,7 @@ suitability="sea"
 annual_output={ fish=8000, seabirds=1500 }
 score_share_pm={ fish=850, seabirds=150 }
 [[buildings.methods]]
+size_units=5
 id="wood_focus"
 jobs=[{ id="peasant_labour", places=10, pop_types=["peasant"], wage_weight_pm=1000, manager=false }]
 serves="fuel"
@@ -518,6 +525,7 @@ suitability="hardwood"
 annual_output={ hardwood=3000, beef=1100, pork=970, mutton=165, dairy=860, wool=10, hides=5 }
 score_share_pm={ hardwood=930, beef=25, pork=20, mutton=5, dairy=10, wool=5, hides=5 }
 [[buildings.methods]]
+size_units=5
 id="turf_cutting"
 jobs=[{ id="peasant_labour", places=10, pop_types=["peasant"], wage_weight_pm=1000, manager=false }]
 serves="fuel"
@@ -534,8 +542,9 @@ land_per_level=2
 penalty_pm=500
 overhead_pm=300
 recruit_range_m=100000
-market_capacity_ml_per_level=100000
+market_capacity_ml_per_unit=20000
 [[buildings.methods]]
+size_units=5
 id="monastic_farming"
 grows=true
 jobs=[{ id="prior", places=1, pop_types=["monk"], wage_weight_pm=1500, manager=true }, { id="monks", places=5, pop_types=["monk"], wage_weight_pm=1000, manager=false }, { id="field_hands", places=5, pop_types=["labourer"], wage_weight_pm=1000, manager=false }]
@@ -545,6 +554,7 @@ suitability="crops"
 annual_output={ oats=300, barley=50, peas_beans=6, vegetables=32, beef=1100, pork=970, mutton=165, dairy=860, wool=10, hides=5, ale=400, honey=40, mead=40, apples=30, herbs=20, beeswax=10 }
 score_share_pm={ oats=450, barley=80, peas_beans=20, vegetables=50, beef=20, pork=15, mutton=5, dairy=15, wool=5, hides=5, ale=120, honey=30, mead=60, apples=60, herbs=50, beeswax=15 }
 [[buildings.methods]]
+size_units=5
 id="monastic_fishing"
 jobs=[{ id="prior", places=1, pop_types=["monk"], wage_weight_pm=1500, manager=true }, { id="monks", places=5, pop_types=["monk"], wage_weight_pm=1000, manager=false }, { id="fishermen", places=5, pop_types=["labourer"], wage_weight_pm=1000, manager=false }]
 made_by={ vegetables="monks", herbs="monks", fish="fishermen", seabirds="fishermen" }
@@ -559,8 +569,9 @@ land_per_level=2
 penalty_pm=500
 overhead_pm=300
 recruit_range_m=30000
-market_capacity_ml_per_level=100000
+market_capacity_ml_per_unit=20000
 [[buildings.methods]]
+size_units=5
 id="demesne_farming"
 grows=true
 jobs=[{ id="steward", places=1, pop_types=["noble","labourer"], wage_weight_pm=1500, manager=true }, { id="field_hands", places=4, pop_types=["labourer"], wage_weight_pm=1000, manager=false }, { id="milkers", places=2, pop_types=["labourer"], wage_weight_pm=1000, manager=false }, { id="herder", places=1, pop_types=["labourer"], wage_weight_pm=1000, manager=false }, { id="butcher", places=1, pop_types=["labourer"], wage_weight_pm=1000, manager=false }, { id="beekeeper", places=1, pop_types=["labourer"], wage_weight_pm=1000, manager=false }, { id="brewer", places=1, pop_types=["labourer"], wage_weight_pm=1000, manager=false }]
