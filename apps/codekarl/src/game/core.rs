@@ -164,6 +164,9 @@ pub(crate) struct Core<S, C> {
     expeditions: Option<ExpeditionBuilder<S>>,
     pop_trade: Option<TradeBuilder<S>>,
     history: Option<(super::history::Recorder, HistoryBuilder<S>)>,
+    /// Where the graph viewer reads the history (CK-441), and the revision of what it was last given.
+    history_host: Option<super::history_view::Host>,
+    history_revision: u64,
     /// The revision of `view`; `0` while the core has no view.
     revision: u64,
     view: Option<Arc<EconomyView>>,
@@ -332,6 +335,8 @@ where
             expeditions: None,
             pop_trade: None,
             history: None,
+            history_host: None,
+            history_revision: 0,
             revision: 0,
             view: None,
             world: 0,
@@ -411,7 +416,29 @@ where
     ) -> Self {
         history.collect_async();
         self.history = Some((history, builder));
+        self.publish_history(true);
         self
+    }
+
+    /// Gives the graph viewer a place to read the history from (rule 42).
+    pub(super) fn with_history_host(mut self, host: super::history_view::Host) -> Self {
+        self.history_host = Some(host);
+        self.publish_history(true);
+        self
+    }
+
+    /// Publishes the running history to the graph viewer under a new revision. `reset` marks a load or a new game.
+    fn publish_history(&mut self, reset: bool) {
+        let (Some((history, _)), Some(host)) = (&self.history, &self.history_host) else {
+            return;
+        };
+        self.history_revision = super::history_view::next_revision();
+        let horizon = self
+            .simulation
+            .date()
+            .ok()
+            .and_then(super::history_view::horizon_at);
+        host.publish(history.view(self.history_revision, horizon), reset);
     }
 
     #[cfg(test)]
@@ -451,6 +478,7 @@ where
             layers: self.layers,
             log_choices: self.log_choices,
             economy_revision: self.revision,
+            history_revision: self.history_revision,
             economy: self.view.clone(),
             expeditions: Arc::new(
                 self.expeditions
@@ -693,6 +721,7 @@ where
                         };
                         if year > 0 {
                             history.record(build(self.simulation.state(), year, month));
+                            self.publish_history(false);
                         }
                     }
                     self.refresh_view();
@@ -846,6 +875,7 @@ where
                 self.paused = Some(PauseReason::Load);
                 self.unsaved = false;
                 self.world += 1;
+                self.publish_history(true);
                 self.refresh_view();
                 self.log(Level::Info, format!("loaded {} ({filename})", entry.name));
                 Ok(())
@@ -886,6 +916,7 @@ where
                 self.paused = Some(PauseReason::Load);
                 self.unsaved = false;
                 self.world += 1;
+                self.publish_history(true);
                 self.refresh_view();
                 let date = self.snapshot().date;
                 self.log(Level::Info, format!("loaded {} at {date}", path.display()));

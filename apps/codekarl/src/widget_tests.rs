@@ -1372,8 +1372,8 @@ fn the_time_bar_routes_its_buttons_through_game_controls() {
             .iter()
             .filter(|entry| entry.starts_with("set_hit button_"))
             .count(),
-        13,
-        "three transports, Help, the event log, three ledger tabs and five map bar buttons: {entries:?}"
+        14,
+        "three transports, Help, the event log, the graph button, three ledger tabs and five map bar buttons: {entries:?}"
     );
     assert!(
         !entries.iter().any(|entry| entry.contains("time_speed_")),
@@ -4609,6 +4609,53 @@ fn time_bar_event_button_opens_and_closes_the_log() {
             .iter()
             .any(|line| line.starts_with("destroy_group"))
     );
+}
+
+#[test]
+fn time_bar_graph_button_opens_a_graph_window_with_the_columns_shown_each_click() {
+    let mut readout = Readout::new(
+        "game.history_subjects = function() return {revision = 1, tags = {'global'}, places = {global = {}}, goods = {}, pops = {}} end \
+         game.history_graph = function() end game.history_take = function() return {} end",
+    );
+    readout.deliver(&crate::readout_tests::snapshot(14, 1, None));
+    // The graph button follows the event log's button and wears the graph icon.
+    let button = "button_14";
+    assert!(
+        readout
+            .entries()
+            .iter()
+            .any(|line| line.contains("ui/theme/icon_graph.png"))
+    );
+    assert!(
+        readout
+            .entries()
+            .iter()
+            .any(|line| line.starts_with(&format!("set_hit {button} ")) && !line.ends_with(" nil"))
+    );
+    let click = || {
+        pointer_packet(
+            button,
+            32.0,
+            vec![
+                pointer_event("down", Some(button), None),
+                pointer_event("up", Some(button), None),
+            ],
+        )
+    };
+    let corners = |readout: &Readout| {
+        readout
+            .entries()
+            .iter()
+            .filter(|line| line.starts_with("set_hit graph_resize_") && !line.ends_with(" nil"))
+            .filter_map(|line| line.split_whitespace().nth(1).map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+    };
+    assert_eq!(corners(&readout), 0);
+    readout.update(1280, 800, Some(click()));
+    assert_eq!(corners(&readout), 1, "one window opened");
+    readout.update(1280, 800, Some(click()));
+    assert_eq!(corners(&readout), 2, "each click opens another");
 }
 
 #[test]

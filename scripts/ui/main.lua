@@ -89,6 +89,11 @@ if game ~= nil then
   local time_controls = {}
   local event_button
   local event_log = require("lib.event_log").new{view = view, changed = function(open) if event_button then event_button:set_selected(open) end end}
+  -- The history graph windows (CK-441): opened from the graph icons of the location tab and the time bar's graph button.
+  local graph_button
+  local graph_windows = require("lib.graph_window")
+  graph_windows.init{view = view}
+  require("lib.location").set_graph_handler(function(subject, graph_key) graph_windows.open{subject = subject, graph = graph_key} end)
   local shown_speed = nil
   local shown_paused = nil
   local fill_ledger
@@ -99,13 +104,14 @@ if game ~= nil then
 
   -- The panel follows only the date width. The control positions and readout origin stay fixed.
   local function fit_bar()
-    local width = readout_x - time_panel.x + readout.width * P + 20 * P
+    local width = readout_x - time_panel.x + readout.width * P + 36 * P
     local height = 19 * P
     local x, y = ui.anchor("top_left", width, height, MARGIN, MARGIN, view.width, view.height)
     time_panel:set_rect(x, y, width, height)
     render.set_hit("time_bar", {{x = time_panel.x, y = time_panel.y, width = time_panel.width, height = time_panel.height}}, time_group)
     text.move(readout, readout_x, y + 4 * P)
     if event_button then event_button:move(readout_x + readout.width * P + 3 * P, y + 2 * P) end
+    if graph_button then graph_button:move(readout_x + readout.width * P + 19 * P, y + 2 * P) end
     render.set_hit(readout_key, {{x = readout_x, y = y + 4 * P, width = readout.width * P, height = readout.height * P}}, time_group)
   end
 
@@ -417,6 +423,8 @@ if game ~= nil then
     create_modes_bar()
     event_button = button.new{x = readout_x + readout.width * P + 3 * P, y = row_y, icons = {"event_log"}, icon = "event_log",
       tooltip = "event log", kind = "time_bar", group = time_group, on_click = function() if event_log:is_open() then event_log:close() else event_log:open() end end}
+    graph_button = button.new{x = readout_x + readout.width * P + 19 * P, y = row_y, icons = {"graph"}, icon = "graph",
+      tooltip = "graphs", kind = "time_bar", group = time_group, on_click = function() graph_windows.open{columns = true} end}
   end
 
   -- The location panel: the left third of the screen below the time bar, filled from the economy view of the revision `game_time`
@@ -530,6 +538,7 @@ if game ~= nil then
 
   game.on_time(function(time)
     event_log:refresh(time)
+    graph_windows.refresh(time)
     layers.rivers, layers.roads, layers.expeditions = not not time.rivers, not not time.roads, not not time.expeditions
     if layers_picker ~= nil then layers_picker:refresh() end
     require("lib.save_screen").set_time(time)
@@ -574,6 +583,7 @@ if game ~= nil then
     end
   end
   relayouts[#relayouts + 1] = function() event_log:fit() end
+  relayouts[#relayouts + 1] = function() graph_windows.fit() end
   relayouts[#relayouts + 1] = fit_places_bar
   relayouts[#relayouts + 1] = fit_modes_bar
 
@@ -1019,6 +1029,7 @@ if game ~= nil then
     if expedition_panel ~= nil then expedition_panel:relabel() end
     character_panel:relabel()
     event_log:relabel()
+    graph_windows.relabel()
     find_popup.relabel()
     if fill_ledger ~= nil then fill_ledger() end
     -- The tooltips last, once every list they were opened over is rebuilt: a tooltip opened over a place's row or a character's card is read
@@ -1040,6 +1051,7 @@ frame.on_update(function(update)
     if expedition_update ~= nil and data ~= nil then expedition_update(data) end
   end
   theme.refresh()
+  require("lib.graph_window").poll()
   require("lib.settings_window").update(update)
   listbar.update(update)
   find_popup.update(update, view)

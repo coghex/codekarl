@@ -495,6 +495,7 @@ fn the_late_drain_returns_a_failing_game_time_call_and_posts_nothing_new() {
             layers: ck_sim::MapLayers::default(),
             log_choices: ck_sim::LogChoices::default(),
             economy_revision: 0,
+            history_revision: 0,
             economy: None,
             expeditions: std::sync::Arc::new(Vec::new()),
             pop_trade: std::sync::Arc::new(Vec::new()),

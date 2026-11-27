@@ -147,6 +147,8 @@ pub(crate) struct SimControls {
     block: Arc<AtomicBool>,
     find_block: Arc<AtomicU8>,
     guarded_results: Arc<GuardedResults>,
+    /// Where the graph viewer reads the running history (CK-441).
+    history: super::history_view::Host,
 }
 
 impl SimControls {
@@ -157,7 +159,9 @@ impl SimControls {
 
     pub(crate) fn with_wake(sender: Sender<Message>, wake: Arc<dyn Fn() + Send + Sync>) -> Self {
         let (result_sender, receiver) = mpsc::channel();
+        let history = super::history_view::Host::new(Arc::clone(&wake));
         Self {
+            history,
             sender,
             block: Arc::new(AtomicBool::new(false)),
             find_block: Arc::new(AtomicU8::new(0)),
@@ -170,6 +174,11 @@ impl SimControls {
                 registered: AtomicBool::new(false),
             }),
         }
+    }
+
+    /// The graph viewer's reading of the history; the owner publishes to it and the `game` calls read from it.
+    pub(crate) fn history(&self) -> &super::history_view::Host {
+        &self.history
     }
 
     /// Turns the game-key block on or off. Off at the start of a run.

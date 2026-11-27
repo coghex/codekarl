@@ -4478,6 +4478,7 @@ mod tests {
             layers: ck_sim::MapLayers::default(),
             log_choices: ck_sim::LogChoices::default(),
             economy_revision: 0,
+            history_revision: 0,
             economy: None,
             expeditions: std::sync::Arc::new(Vec::new()),
             pop_trade: std::sync::Arc::new(Vec::new()),

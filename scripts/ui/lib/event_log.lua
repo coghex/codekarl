@@ -4,7 +4,7 @@ local windows = require("lib.window")
 local cards = require("lib.cards")
 local scrollbar = require("lib.scrollbar")
 local listbar = require("lib.listbar")
-local pointer = require("lib.pointer")
+local resize_corner = require("lib.resize_corner")
 local theme = require("lib.theme")
 local draw = require("lib.draw")
 local time = require("lib.time")
@@ -131,35 +131,9 @@ function log:open()
   self.bar.sort_index = self.choices.sort == "time" and 1 or (self.choices.sort == "strength" and 2 or nil)
   self.bar.direction = self.bar.sort_index and (self.choices.descending and "descending" or "ascending") or nil
   self.bar.sort_button:set_selected(self.bar.sort_index ~= nil)
-  local corner = {group = ui.create_group(), key = ui.key("event_resize"), dragging = false}
-  corner.groups = {corner.group}
-  function corner:layout()
-    render.set_group_offset(self.group, created.x, created.y)
-    render.set_hit(self.key, {{x = created.outer_width - 9 * P, y = created.outer_height - 9 * P, width = 9 * P, height = 9 * P}}, self.group)
-  end
   local log_view = self
-  function corner:on_event(event, eligible)
-    if eligible == false then return end
-    if event.kind == "down" then
-      listbar.close_open(); self.dragging = {x = event.x, y = event.y, w = created.outer_width, h = created.outer_height}
-      pointer.pressed(self.key, true)
-    elseif self.dragging and (event.kind == "move" or event.kind == "up") then
-      local w = math.max(300 * P, math.min(self.dragging.w + event.x - self.dragging.x, math.max(300 * P, log_view.view.width - created.x)))
-      local h = math.max(120 * P, math.min(self.dragging.h + event.y - self.dragging.y, math.max(120 * P, log_view.view.height - created.y)))
-      created:set_outer_size(ui.snap(w), ui.snap(h)); log_view:rebuild(false)
-      if event.kind == "up" then self.dragging = false; pointer.pressed(self.key, false) end
-    elseif event.kind == "cancel" then self.dragging = false; pointer.pressed(self.key, false) end
-  end
-  function corner:functional() return true end
-  function corner:on_hover() end
-  function corner:on_overflow() self.dragging = false; pointer.pressed(self.key, false) end
-  function corner:destroy()
-    if self.closed then return end
-    self.closed = true; pointer.unregister(self.key); render.destroy_group(self.group)
-  end
-  self.corner = corner
-  pointer.register(corner.key, corner, created)
-  created:attach(corner)
+  self.corner = resize_corner.new{window = created, view = self.view, prefix = "event_resize", min_width = 300 * P, min_height = 120 * P,
+    on_begin = listbar.close_open, on_change = function() log_view:rebuild(false) end}
   self:fit(); self:scroll_edge()
   if self.changed then self.changed(true) end
 end

@@ -21,6 +21,11 @@
 -- dispatched (`pointer.observe_tagged` hands it to its observers). The list reads no tag back and keeps no history; the keys and regions
 -- of its rows are the same with or without tags.
 --
+-- **Hotspots** (CK-441). An item may carry `hotspots = {{x, icon, on_click, tooltip}, ...}`: a small icon (`ui/theme/icon_<icon>.png`, 9 by 11) drawn
+-- at `x` (UI pixels) in the row, with a hit region of its own above the row's (13 UI pixels wide, the row high) and the tooltip `tooltip`
+-- (default `graph`). Hovered or pressed, it sits on a square of the kind's `hot` and is drawn in `title_text`. A click calls `on_click()`
+-- and selects nothing. Hotspots are made and destroyed with their row.
+--
 -- A cell with an identity colour (a term or pop type) sets `identity = true`; on a highlighted fill it keeps that colour only
 -- when opaque and at least 3:1 against the fill. Other cell text uses the highlighted row's ink.
 --
@@ -130,6 +135,17 @@ local function checked_items(who, items)
           error(who .. ": item " .. index .. " icon must use exactly one of name and colour or image", 3)
         else
           checked.icon = {name = item.icon.name, colour = item.icon.colour, identity = item.icon.identity}
+        end
+      end
+      if item.hotspots ~= nil then
+        if type(item.hotspots) ~= "table" then error(who .. ": item " .. index .. " hotspots must be an array", 3) end
+        checked.hotspots = {}
+        for hot_index, spot in ipairs(item.hotspots) do
+          if type(spot) ~= "table" or not finite(spot.x) or type(spot.icon) ~= "string" or type(spot.on_click) ~= "function"
+            or (spot.tooltip ~= nil and type(spot.tooltip) ~= "string") then
+            error(who .. ": item " .. index .. " hotspot " .. hot_index .. " needs x, icon and on_click", 3)
+          end
+          checked.hotspots[hot_index] = {x = spot.x, icon = spot.icon, on_click = spot.on_click, tooltip = spot.tooltip}
         end
       end
       for cell_index = 1, cell_count do
@@ -354,6 +370,94 @@ local function set_bar(self, row_view, row_index, spec)
   end
 end
 
+-- The hotspots of a row (see the header): each has a hot square under its icon, parked unless hovered or pressed.
+local function show_hotspot(self, spot)
+  local lit = spot.hovered or spot.pressed
+  render.set_position(spot.square, lit and spot.left or ui.HIDDEN, lit and spot.top or ui.HIDDEN)
+  local ink = lit and self.colours.title_text or theme.colour("text")
+  if spot.tint ~= ink then
+    render.set_tint(spot.icon, ink)
+    spot.tint = ink
+  end
+end
+
+local function hotspot_widget(self, spot)
+  local widget = {}
+  function widget.on_event(_, event, eligible)
+    if self.closed then return end
+    if event.kind == "scroll" then
+      self:scroll(event)
+    elseif event.kind == "down" then
+      spot.pressed = true
+      pointer.pressed(spot.key, true)
+      show_hotspot(self, spot)
+    elseif event.kind == "up" then
+      if spot.pressed then
+        spot.pressed = false
+        pointer.pressed(spot.key, false)
+        show_hotspot(self, spot)
+        if eligible ~= false and event.inside == true then spot.on_click() end
+      end
+    elseif event.kind == "cancel" and spot.pressed then
+      spot.pressed = false
+      pointer.pressed(spot.key, false)
+      show_hotspot(self, spot)
+    end
+  end
+  function widget.on_hover(_, hovered)
+    if self.closed then return end
+    spot.hovered = hovered
+    show_hotspot(self, spot)
+  end
+  function widget.functional() return true end
+  function widget.on_overflow()
+    if spot.pressed then
+      spot.pressed = false
+      pointer.pressed(spot.key, false)
+      if not self.closed then show_hotspot(self, spot) end
+    end
+  end
+  return widget
+end
+
+local function destroy_hotspots(self, row_view)
+  for _, spot in ipairs(row_view.hot or {}) do
+    render.destroy_quad(spot.square)
+    render.destroy_quad(spot.icon)
+    render.set_hit(spot.key, nil, self.rows_group)
+    tooltip.detach(spot.key)
+    local retired = pointer.widget(spot.key)
+    self.retired[spot.key] = true
+    pointer.defer(function()
+      self.retired[spot.key] = nil
+      if pointer.widget(spot.key) == retired then pointer.unregister(spot.key) end
+    end)
+  end
+  row_view.hot, row_view.hot_source = nil, nil
+end
+
+local function sync_hotspots(self, index, item, row_view)
+  if row_view.hot_source == item.hotspots then return end
+  destroy_hotspots(self, row_view)
+  if item.hotspots == nil then return end
+  row_view.hot, row_view.hot_source = {}, item.hotspots
+  for number, spec in ipairs(item.hotspots) do
+    local left, top = (spec.x - 2) * P, row_top(index)
+    local spot = {key = self.base .. "_hot_" .. index .. "_" .. number .. "_" .. (self.hot_serial or 0), on_click = spec.on_click,
+      left = left, top = top}
+    self.hot_serial = (self.hot_serial or 0) + 1
+    spot.square = render.create_quad{texture = ui.texture("ui/theme/white.png"), x = ui.HIDDEN, y = ui.HIDDEN, width = 13 * P, height = ROW,
+      group = self.rows_group, tint = self.colours.hot}
+    spot.icon = render.create_quad{texture = ui.texture("ui/theme/icon_" .. spec.icon .. ".png"), x = spec.x * P, y = top + P,
+      width = 9 * P, height = 11 * P, group = self.rows_group, tint = theme.colour("text")}
+    spot.tint = theme.colour("text")
+    render.set_hit(spot.key, {{x = left, y = top, width = 13 * P, height = ROW}}, self.rows_group)
+    pointer.register(spot.key, hotspot_widget(self, spot), self.window)
+    tooltip.label(spot.key, spec.tooltip or "graph")
+    row_view.hot[number] = spot
+  end
+end
+
 local function remove_row(self, index)
   local row_view = self.lines[index]
   if row_view ~= nil then
@@ -361,6 +465,7 @@ local function remove_row(self, index)
     if row_view.stripe ~= nil then render.destroy_quad(row_view.stripe) end
     if row_view.icon ~= nil then render.destroy_quad(row_view.icon) end
     destroy_bar(row_view)
+    destroy_hotspots(self, row_view)
     self.lines[index] = nil
   end
   local key = self.row_keys[index]
@@ -441,6 +546,7 @@ local function update_visual(self, index)
   row_view.group, row_view.y = self.rows_group, row_top(index)
   if not is_cells then
     set_cell(self, row_view, index, 1, {text = item, x = 1, align = "left", colour = self.colours.text})
+    destroy_hotspots(self, row_view)
     return
   end
   set_bar(self, row_view, index, item.bar)
@@ -485,6 +591,7 @@ local function update_visual(self, index)
     row_view.icon = nil
     row_view.icon_source = nil
   end
+  sync_hotspots(self, index, item, row_view)
 end
 
 refresh_visible = function(self)
@@ -872,6 +979,13 @@ function list:destroy()
     pointer.unregister(key)
   end
   self.retired = {}
+  for _, row_view in pairs(self.lines) do
+    for _, spot in ipairs(row_view.hot or {}) do
+      render.set_hit(spot.key, nil, self.rows_group)
+      tooltip.detach(spot.key)
+      pointer.unregister(spot.key)
+    end
+  end
   self.row_keys = {}
   self.lines = {}
   if not self.window.closed then

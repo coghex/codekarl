@@ -1075,8 +1075,8 @@ fn click_tab_at(rig: &mut Rig, key: &str, (width, height): (u32, u32)) {
     rig.deliver_fixture_frame_at(width, height, 2);
 }
 
-const LOCATION_ROWS: &str = "people@1:left:#c9932e;stripe=-;icon=-;bar=38,255,nil|120 @1:left:-,people@23:left:#92ddea,215 @220:left:-,food days@242:left:#92ddea;stripe=-;icon=-|80 @1:left:-,workers@17:left:#92ddea,40 @218:left:-,dependents@234:left:#92ddea;stripe=-;icon=-|housing@1:left:#c9932e;stripe=-;icon=-;bar=44,249,nil|basic@1:left:#92ddea,80@269:right:-,/100@293:right:-;stripe=-;icon=-;bar=72,40,0.8|makeshift@1:left:#92ddea,10@275:right:-,/20@293:right:-;stripe=-;icon=-;bar=72,40,0.5|crowding@1:left:#92ddea,50%@293:right:-;stripe=-;icon=-|land and storage@1:left:#c9932e;stripe=-;icon=-;bar=93,200,nil|building land@1:left:#92ddea,4200@243:right:-,/24200 m²@293:right:-;stripe=-;icon=-;bar=73,40,0.17355371900826|storage@1:left:#92ddea,5400@247:right:-,/86400 L@293:right:-;stripe=-;icon=-;bar=72,40,0.0625|lost to overflow@1:left:#92ddea,0@293:right:-;stripe=-;icon=-|weather@1:left:#c9932e;stripe=-;icon=-;bar=45,248,nil|market@1:left:#c9932e;stripe=-;icon=-;bar=39,254,nil|good@16:left:#92ddea,price@212:right:#92ddea,base@238:right:#92ddea,buy/sell@246:left:#9a927e;stripe=-;icon=-|oats@16:left:#92ddea,100@212:right:-,100@238:right:-;stripe=-;icon=goods/oats;bar=246,46,nil|ale@16:left:#92ddea,2.5@212:right:-,2@238:right:-;stripe=-;icon=goods/ale;bar=246,46,nil";
-const NOBODY_ROWS: &str = "people@1:left:#c9932e;stripe=-;icon=-;bar=38,255,nil|0 @1:left:-,people@11:left:#92ddea,0 @232:left:-,food days@242:left:#92ddea;stripe=-;icon=-|0 @1:left:-,workers@11:left:#92ddea,0 @224:left:-,dependents@234:left:#92ddea;stripe=-;icon=-|housing@1:left:#c9932e;stripe=-;icon=-;bar=44,249,nil|basic@1:left:#92ddea,0@281:right:-,/0@293:right:-;stripe=-;icon=-;bar=72,40,0|makeshift@1:left:#92ddea,0@281:right:-,/0@293:right:-;stripe=-;icon=-;bar=72,40,0|crowding@1:left:#92ddea,0%@293:right:-;stripe=-;icon=-|land and storage@1:left:#c9932e;stripe=-;icon=-;bar=93,200,nil|building land@1:left:#92ddea,0@267:right:-,/0 m²@293:right:-;stripe=-;icon=-;bar=73,40,0|storage@1:left:#92ddea,0@271:right:-,/0 L@293:right:-;stripe=-;icon=-;bar=72,40,0|lost to overflow@1:left:#92ddea,0@293:right:-;stripe=-;icon=-|weather@1:left:#c9932e;stripe=-;icon=-;bar=45,248,nil|market@1:left:#c9932e;stripe=-;icon=-;bar=39,254,nil|good@16:left:#92ddea,price@212:right:#92ddea,base@238:right:#92ddea,buy/sell@246:left:#9a927e;stripe=-;icon=-";
+const LOCATION_ROWS: &str = "people@1:left:#c9932e;stripe=-;icon=-;bar=38,255,nil|120 @1:left:-,people@23:left:#92ddea,215 @208:left:-,food days@230:left:#92ddea;stripe=-;icon=-|80 @1:left:-,workers@17:left:#92ddea,40 @206:left:-,dependents@222:left:#92ddea;stripe=-;icon=-|2 @1:left:-,births@11:left:#92ddea,1 @236:left:-,deaths@246:left:#92ddea;stripe=-;icon=-|housing@1:left:#c9932e;stripe=-;icon=-;bar=44,249,nil|basic@1:left:#92ddea,80@269:right:-,/100@293:right:-;stripe=-;icon=-;bar=72,40,0.8|makeshift@1:left:#92ddea,10@275:right:-,/20@293:right:-;stripe=-;icon=-;bar=72,40,0.5|crowding@1:left:#92ddea,50%@293:right:-;stripe=-;icon=-|land and storage@1:left:#c9932e;stripe=-;icon=-;bar=93,200,nil|building land@1:left:#92ddea,4200@243:right:-,/24200 m²@293:right:-;stripe=-;icon=-;bar=73,40,0.17355371900826|storage@1:left:#92ddea,5400@247:right:-,/86400 L@293:right:-;stripe=-;icon=-;bar=72,40,0.0625|lost to overflow@1:left:#92ddea,0@293:right:-;stripe=-;icon=-|weather@1:left:#c9932e;stripe=-;icon=-;bar=45,248,nil|market@1:left:#c9932e;stripe=-;icon=-;bar=39,254,nil|good@16:left:#92ddea,price@212:right:#92ddea,base@238:right:#92ddea,buy/sell@246:left:#9a927e;stripe=-;icon=-|oats@16:left:#92ddea,100@212:right:-,100@238:right:-;stripe=-;icon=goods/oats;bar=246,46,nil|ale@16:left:#92ddea,2.5@212:right:-,2@238:right:-;stripe=-;icon=goods/ale;bar=246,46,nil";
+const NOBODY_ROWS: &str = "people@1:left:#c9932e;stripe=-;icon=-;bar=38,255,nil|0 @1:left:-,people@11:left:#92ddea,0 @220:left:-,food days@230:left:#92ddea;stripe=-;icon=-|0 @1:left:-,workers@11:left:#92ddea,0 @212:left:-,dependents@222:left:#92ddea;stripe=-;icon=-|0 @1:left:-,births@11:left:#92ddea,0 @236:left:-,deaths@246:left:#92ddea;stripe=-;icon=-|housing@1:left:#c9932e;stripe=-;icon=-;bar=44,249,nil|basic@1:left:#92ddea,0@281:right:-,/0@293:right:-;stripe=-;icon=-;bar=72,40,0|makeshift@1:left:#92ddea,0@281:right:-,/0@293:right:-;stripe=-;icon=-;bar=72,40,0|crowding@1:left:#92ddea,0%@293:right:-;stripe=-;icon=-|land and storage@1:left:#c9932e;stripe=-;icon=-;bar=93,200,nil|building land@1:left:#92ddea,0@267:right:-,/0 m²@293:right:-;stripe=-;icon=-;bar=73,40,0|storage@1:left:#92ddea,0@271:right:-,/0 L@293:right:-;stripe=-;icon=-;bar=72,40,0|lost to overflow@1:left:#92ddea,0@293:right:-;stripe=-;icon=-|weather@1:left:#c9932e;stripe=-;icon=-;bar=45,248,nil|market@1:left:#c9932e;stripe=-;icon=-;bar=39,254,nil|good@16:left:#92ddea,price@212:right:#92ddea,base@238:right:#92ddea,buy/sell@246:left:#9a927e;stripe=-;icon=-";
 
 fn card_run(recorded: &[String], colour: &str, value: &str) -> bool {
     let wanted = format!("{colour}={value}");
@@ -1196,6 +1196,48 @@ mod selectors_tabs;
 mod tooltips;
 
 #[test]
+fn the_location_tab_offers_a_graph_icon_after_each_figure_that_has_a_graph() {
+    let mut rig = rig(&[r"
+local loc = require('lib.location')
+local ui = require('lib.ui')
+local place = VIEWS[1].cards
+local calls = {}
+loc.set_graph_handler(function(subject, graph) calls[#calls + 1] = subject.kind .. ':' .. subject.id .. ' ' .. graph end)
+local function clicks(width)
+  calls = {}
+  local rows = loc.rows(loc.lines('location', place, width * ui.P), width * ui.P)
+  local spots = 0
+  for _, row in ipairs(rows) do
+    if type(row) == 'table' then
+      for _, spot in ipairs(row.hotspots or {}) do
+        spots = spots + 1
+        assert(spot.icon == 'graph' and type(spot.x) == 'number', 'an icon with a place')
+        spot.on_click()
+      end
+    end
+  end
+  return spots, rows
+end
+local expected = {}
+for _, entry in ipairs({'people', 'food_days', 'people', 'people', 'births_deaths', 'births_deaths'}) do
+  expected[#expected + 1] = 'place:' .. place.id .. ' ' .. entry
+end
+for _, price in ipairs(place.prices) do expected[#expected + 1] = 'place:' .. place.id .. ' price:' .. price.good end
+-- Wide, the figures pair up; narrow, they stack: the same icons open the same graphs either way.
+for _, width in ipairs({300, 133}) do
+  local spots = clicks(width)
+  assert(spots == #expected, 'icons at ' .. width .. ': ' .. spots .. ' of ' .. #expected)
+  assert(table.concat(calls, '|') == table.concat(expected, '|'), table.concat(calls, '|'))
+end
+-- No handler, no icons.
+loc.set_graph_handler(nil)
+local _, plain = clicks(300)
+for _, row in ipairs(plain) do assert(type(row) ~= 'table' or row.hotspots == nil, 'no icons without a handler') end
+"]);
+    rig.opened();
+}
+
+#[test]
 fn location_sections_reflow_capacity_figures_and_people() {
     let mut rig = rig(&[r#"
 local loc = require('lib.location')
@@ -1240,10 +1282,12 @@ local function row_of(items, label)
   end
   error('missing row ' .. label)
 end
-for index, expected in ipairs({'412 people', '74 food days', '247 workers', '165 dependents'}) do
+local births, deaths = 0, 0
+for _, pop in ipairs(place.pops) do births, deaths = births + pop.births, deaths + pop.deaths end
+for index, expected in ipairs({'412 people', '74 food days', '247 workers', '165 dependents', births .. ' births', deaths .. ' deaths'}) do
   assert(joined(rows[index + 1]) == expected and #rows[index + 1].cells == 2, 'people row order ' .. expected)
 end
-assert(joined(rows[6]) == 'housing', 'housing follows four people rows')
+assert(joined(rows[8]) == 'housing', 'housing follows six people rows')
 local land = row_of(rows, 'building land')
 assert(#rows[land].cells == 1 and rows[land].bar == nil, 'land label is alone')
 assert(joined(rows[land + 1]) == '41200000/96000000 m²' and rows[land + 1].bar == nil, 'land figure is alone')
@@ -1261,6 +1305,7 @@ place.prepared_m2, place.max_buildable_m2 = 96000, 96000
 local ordinary = ordinary_land(41200)
 assert(joined(ordinary[2]) == '412 people74 food days' and #ordinary[2].cells == 4, 'first people pair has two columns')
 assert(joined(ordinary[3]) == '247 workers165 dependents' and #ordinary[3].cells == 4, 'second people pair has two columns')
+assert(joined(ordinary[4]) == births .. ' births' .. deaths .. ' deaths' and #ordinary[4].cells == 4, 'third people pair has two columns')
 local ordinary_index = row_of(ordinary, 'building land')
 assert(joined(ordinary[ordinary_index]) == 'building land41200/96000 m²' and ordinary[ordinary_index].bar ~= nil,
   'ordinary land figure fits in one row')

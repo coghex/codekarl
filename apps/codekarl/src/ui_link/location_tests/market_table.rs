@@ -90,9 +90,9 @@ note_tooltip('oats_gap', line.row_keys[oats], x_for(158 * P - 1), y_for(oats))"]
     let price_rows = rows(&rig).last().expect("location rows").clone();
     assert!(price_rows.contains("good@16:left:#92ddea,price@124:right:#92ddea,base@150:right:#92ddea,buy/sell@158:left:#9a927e"), "header columns and term/dim colours: {price_rows}");
     assert!(price_rows.contains("oats@16:left:#92ddea,96.5@124:right:-,100@150:right:-;stripe=-;icon=goods/oats;bar=158,46,"), "icon, text and numeric columns: {price_rows}");
-    assert!(price_rows.contains("peas and..@16:left:#92ddea,1.2@124:right:-,2@150:right:-;stripe=-;icon=goods/peas_beans;bar=158,46,"), "good titles are used in the table and clipped when the widest price needs room: {price_rows}");
+    assert!(price_rows.contains("peas a..@16:left:#92ddea,1.2@124:right:-,2@150:right:-;stripe=-;icon=goods/peas_beans;bar=158,46,"), "good titles are used in the table and clipped when the widest price needs room: {price_rows}");
     assert!(
-        price_rows.contains("moonsto..@16:left:#ece3cb,4.5@124:right:-,4@150:right:-;stripe=-;icon=goods/fallback/unknown;bar=158,46,nil"),
+        price_rows.contains("moons..@16:left:#ece3cb,4.5@124:right:-,4@150:right:-;stripe=-;icon=goods/fallback/unknown;bar=158,46,nil"),
         "a good without its own icon is now a market row with the fallback art: {price_rows}"
     );
     assert!(

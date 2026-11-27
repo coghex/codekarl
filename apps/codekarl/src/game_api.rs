@@ -102,6 +102,18 @@ pub(crate) fn extension_with_select(
             save_function(controls.clone(), SaveCall::Delete),
         )
         .function("load_save", save_function(controls.clone(), SaveCall::Load))
+        .function(
+            "history_subjects",
+            history_subjects_function(controls.history().clone()),
+        )
+        .function(
+            "history_graph",
+            history_graph_function(controls.history().clone()),
+        )
+        .function(
+            "history_take",
+            history_take_function(controls.history().clone()),
+        )
         .function("load_save_guarded", guarded_load_function(controls))
         .callback_observed(
             "on_time",
@@ -207,6 +219,100 @@ fn mark_unsaved_function(controls: SimControls) -> HostFunction {
         }
         controls.mark_unsaved();
         Ok(Vec::new())
+    })
+}
+
+/// `game.history_subjects()`: the tags, places, goods and pops the history viewer can graph (CK-441, rules 25 and 42). `nil` while
+/// the game has no history.
+fn history_subjects_function(host: crate::game::history_view::Host) -> HostFunction {
+    Arc::new(move |arguments| {
+        if !arguments.is_empty() {
+            return Err("game.history_subjects: expected no arguments".to_owned());
+        }
+        Ok(host.subjects().into_iter().collect())
+    })
+}
+
+fn history_field<'a>(
+    fields: &'a BTreeMap<String, ConfigValue>,
+    key: &str,
+) -> Result<&'a ConfigValue, String> {
+    fields
+        .get(key)
+        .ok_or_else(|| format!("game.history_graph: missing {key}"))
+}
+
+fn history_text<'a>(
+    fields: &'a BTreeMap<String, ConfigValue>,
+    key: &str,
+) -> Result<&'a str, String> {
+    match history_field(fields, key)? {
+        ConfigValue::String(value) => Ok(value),
+        _ => Err(format!("game.history_graph: {key} must be text")),
+    }
+}
+
+fn history_request(
+    arguments: &[Option<ConfigValue>],
+) -> Result<crate::game::history_view::Request, String> {
+    use crate::game::history_view::{Graph, Range, Request, Subject};
+    let [Some(ConfigValue::Table(fields))] = arguments else {
+        return Err("game.history_graph: expected one table".to_owned());
+    };
+    let ConfigValue::Table(subject) = history_field(fields, "subject")? else {
+        return Err("game.history_graph: subject must be a table".to_owned());
+    };
+    let id = history_text(subject, "id").ok();
+    let subject =
+        match (history_text(subject, "kind")?, id) {
+            ("global", _) => Subject::Global,
+            ("tag", Some(id)) => Subject::Tag(id.to_owned()),
+            ("place", Some(id)) => Subject::Place(id.to_owned()),
+            ("pop", Some(id)) => Subject::Pop(u64::from_str_radix(id, 16).map_err(|_| {
+                "game.history_graph: a pop's id is 16 hexadecimal digits".to_owned()
+            })?),
+            _ => return Err("game.history_graph: unknown subject".to_owned()),
+        };
+    let graph = Graph::parse(history_text(fields, "graph")?)
+        .ok_or_else(|| "game.history_graph: unknown graph".to_owned())?;
+    let range = Range::parse(history_text(fields, "range")?)
+        .ok_or_else(|| "game.history_graph: unknown range".to_owned())?;
+    let number = |key: &str| match history_field(fields, key)? {
+        ConfigValue::Integer(value) if *value >= 0 => {
+            u64::try_from(*value).map_err(|_| format!("game.history_graph: {key} is too large"))
+        }
+        _ => Err(format!("game.history_graph: {key} must be a whole number")),
+    };
+    Ok(Request {
+        subject,
+        graph,
+        range,
+        budget: u32::try_from(number("budget")?).unwrap_or(u32::MAX),
+        serial: number("request")?,
+    })
+}
+
+/// `game.history_graph{subject, graph, range, budget, request}`: asks for a graph. The answer is computed off the simulation thread
+/// and comes back through `game.history_take()` carrying `request`, the history revision it was computed from and `budget`.
+fn history_graph_function(host: crate::game::history_view::Host) -> HostFunction {
+    Arc::new(move |arguments| {
+        host.request(history_request(arguments)?);
+        Ok(Vec::new())
+    })
+}
+
+/// `game.history_take()`: the answers that are ready, oldest first.
+fn history_take_function(host: crate::game::history_view::Host) -> HostFunction {
+    Arc::new(move |arguments| {
+        if !arguments.is_empty() {
+            return Err("game.history_take: expected no arguments".to_owned());
+        }
+        Ok(vec![ConfigValue::Array(
+            host.take()
+                .iter()
+                .map(crate::game::history_view::Answer::to_value)
+                .collect(),
+        )])
     })
 }
 
@@ -1709,6 +1815,10 @@ fn pause_value(reason: Option<PauseReason>) -> ConfigValue {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "One table of every field the UI reads of a snapshot; each field is one entry"
+)]
 pub(crate) fn time_table(snapshot: &SimSnapshot) -> ConfigValue {
     ConfigValue::Table(BTreeMap::from([
         (
@@ -1749,6 +1859,10 @@ pub(crate) fn time_table(snapshot: &SimSnapshot) -> ConfigValue {
         (
             "events_revision".to_owned(),
             integer(snapshot.events_revision),
+        ),
+        (
+            "history_revision".to_owned(),
+            integer(snapshot.history_revision),
         ),
         (
             "log_storms".to_owned(),
@@ -1957,6 +2071,7 @@ mod tests {
                 "economy_revision",
                 "events_revision",
                 "expeditions",
+                "history_revision",
                 "hour",
                 "log_blights",
                 "log_descending",

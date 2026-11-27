@@ -28,6 +28,24 @@ CLEAR: Pixel = (0, 0, 0, 0)
 CUTS = (3, 6, 7)
 ICON_HEIGHT = 11
 ICONS = {
+    # The graph icon (CK-441): two axes and a rising zigzag line, drawn from plain shapes; copied from no other icon. A line, not columns:
+    # the yield map mode's icon is already three rising columns.
+    "graph": (
+        9,
+        (
+            ".........",
+            "#........",
+            "#.......#",
+            "#......#.",
+            "#.....#..",
+            "#..#.#...",
+            "#.#.#....",
+            "##.......",
+            "#........",
+            "#########",
+            ".........",
+        ),
+    ),
     # Original lined page for the event log, drawn from plain shapes.
     "event_log": (
         9,

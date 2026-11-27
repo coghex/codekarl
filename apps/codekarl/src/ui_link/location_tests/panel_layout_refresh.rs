@@ -37,7 +37,8 @@ fn the_panel_refreshes_on_a_new_revision_and_not_on_a_date_alone() {
     rig.opened();
     let refreshed = LOCATION_ROWS
         .replace("120 @1:left", "130 @1:left")
-        .replace("80 @1:left", "90 @1:left");
+        .replace("80 @1:left", "90 @1:left")
+        .replace("|2 @1:left:-,births", "|0 @1:left:-,births");
     assert_eq!(rows(&rig), [LOCATION_ROWS.to_owned(), refreshed]);
     rig.opened();
     assert_eq!(
