@@ -1303,9 +1303,45 @@ herd stays. These are counts, not individual animals, so livestock stays abstrac
     hour therefore see the first one's job.
   - **Saves.** Each pop's last look and pending rest look are saved and checked (the pop exists, the look has happened, the pending look is
     not before it); a build's trip is checked as a plan's destination and amounts are.
-  - **The cost of looking.** `economy-soak --looks [--hours N] [--sample PLACES]` steps the shipped scenario hour by hour with looks on and
-    reports the looks by trigger, the destinations evaluated, the plans worked and refused, the searches run, and the time a day's looks
-    take, the opening (the first hour, when every trader looks) separately; part F's opening is a later spec.
+  - **The cost of looking.** `economy-soak --looks [--hours N]` opens the shipped scenario as a new game does (below), then steps it hour
+    by hour with looks on and reports the looks by trigger, the destinations evaluated, the plans worked and refused, the searches run, the
+    time a day's looks take, and the opening (its goods, fleets, first looks and the trips it started part way out) separately.
+  - **The opening (part F, CK-434; trade spec section 10 with 11b.6 and 11c.5).** A new game opens with trade under way, made
+    procedurally at every start (r134): `open_trade` in the application's setup runs
+    `ck_economy::run_opening` after the herds and the people are made and before the first tick. A saved game is never opened again; it
+    holds its opening. Every draw is keyed by the seed, the place id, the pop slot and its purpose (`herd_draw`), never a list position.
+    The opening's hour is the hour before the first tick, so the engine's own rule that a job started in an hour first moves in the next
+    gives a trip that has travelled `k` hours the departure hour `first tick - 1 - k`.
+    **The switch is off in the shipped game.** The opening is built and tested, but `looks` stays `false` in `assets/game/economy.toml`
+    because a first look on the real 123-place scenario costs seconds (the exact clipping of every reachable way, part D's code), so a
+    new game would take the better part of an hour to open; the profile and candidate speed-ups are in `runtime-m55/ck434-look-profile.md`.
+    The cases turn `looks` on in their fixtures; the application's tests start the real scenario with it off.
+    1. **Goods (r135, r136).** Each pop is given, free, for each good it has a buy order for (a raw want above zero) that no building at
+       its place makes and some place does (a method level above zero with an output of it, a herd's recurring product or slaughter yield;
+       never a live animal), `target x 30 / 240 x share x nearness` whole units, rounded down once: the pop's 240-day target, a seeded share
+       of 500 to 1000 per-mille, and `max(0, 1000 - 2000 x t / limit)` per-mille for the nearest producer `t` hours away (centre to centre
+       at walking pace by the quickest of the cart, barge and currach profiles) and the pop's round-trip limit. A producer half the limit
+       away or farther, or none reachable, gives none. Goods are filled in the data order, each as far as the store takes it. The numbers are
+       `[expedition.opening]` in `economy.toml`.
+    2. **Fleets (r141, r142).** Each noble pop gets a covered wagon if its demesne's horses are above the standard level, else an ox-cart,
+       and a simple barge if its place has a landing a barge can use (a boat-only barge party reaches another place from it), else a
+       currach if the place is an island (the scenario network gives it an `[[access]]` entry); each monastic pop an ox-cart, or a currach on
+       an island. A kind the pop's culture may not build is not given (a monastic pop falls back to the cart). The vehicles are free, built
+       (no materials) and include their animals; no herd loses one.
+    3. **The first looks (r135, r141; rule 19).** Every trader looks once, in an order drawn from the seed, by part D's chooser with each
+       plan's vehicles either its own and free or new and free, no yearly test. A plan is ranked by the cost of a year of it (its running
+       cost for each trip a year plus the price, once, of the vehicles it lacks: their inputs and animal at home prices, no wages), then a
+       vehicle of its own before a new one, then rule 13; a vehicle is a candidate only if its inputs are at the place (the trader's own
+       stock, what the other pops and buildings offer, and head above the standard level) and its culture may build it. The chosen plan's new
+       vehicles are then given, already built.
+    4. **Where each trip starts (rule 24).** A job whose goods are all held and whose hands can be had starts at once, its wage paid and its
+       cargo loaded, as an expedition `floor(f x H / 1000)` whole hours along its way out of `H` hours, `f` a draw in 0 to 999 (so never at
+       its arrival, and a trip of an hour or less at 0); the hours' travel, wear, meals from its supplies and its people's days away are
+       done as the unbroken game would have done them (a test runs both). Any other job starts the game gathering.
+    5. **Last looks (rule 25).** A trader whose first look made no job gets a last look `k` hours before the start, `k` drawn in 0 to 719, so
+       its next look is in the first 30 days; a trader that did look has its last look at the opening's hour.
+    The opening reads the nearness of a producer from one search for each place and profile (`Ways::place_hours`), not a clipped way
+    for each pair of places; the first looks share the searches of the look timer's own `trade_ways`.
 - **Later:** butchers turn live cattle into more meat than slaughter does, and buildings with room in their herds buy animals (Firm
   direction; out of scope).
 
