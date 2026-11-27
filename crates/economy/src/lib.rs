@@ -30,7 +30,7 @@ pub mod switching;
 mod trade;
 pub mod wages;
 pub use choose::{
-    FirstLooks, Journey, LookEvent, LookObserver, LookReport, Paces, Party, Way, Ways,
+    FirstLooks, Journey, LookEvent, LookObserver, LookReport, LookTrace, Paces, Party, Way, Ways,
 };
 pub use events::{Epithet, EpithetScope, EpithetTrigger, EventRules};
 pub use expedition::{

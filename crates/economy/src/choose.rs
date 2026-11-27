@@ -11,6 +11,7 @@
 //! The network is the application's: this module asks it for itineraries through [`Ways`] and never sees the map.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write as _;
 
 use crate::expedition::{
     Expedition, ExpeditionVehicle, Group, Hours, Leg, Limiter, Mode, Phase, Plan, assign_leg,
@@ -191,6 +192,15 @@ pub enum LookEvent {
 pub trait LookObserver {
     /// Sees one event.
     fn observe(&mut self, event: LookEvent);
+
+    /// Whether the observer keeps the look trace (CK-455, section 1): the lines are built only when it does, so a game that watches
+    /// nothing pays nothing for them.
+    fn tracing(&self) -> bool {
+        false
+    }
+
+    /// One line of the look trace, a canonical text with no timings or search counters in it.
+    fn trace(&mut self, _line: &str) {}
 }
 
 impl LookObserver for () {
@@ -246,6 +256,31 @@ impl LookObserver for LookReport {
     }
 }
 
+/// A look report that also keeps the look trace (CK-455, section 1): one canonical line for each look and for what it made or changed,
+/// with no timings and no search or refusal counters in it. The evidence's harness and the cases that compare traces watch with it.
+#[derive(Clone, Debug, Default)]
+pub struct LookTrace {
+    /// The counts, as a [`LookReport`] has them.
+    pub report: LookReport,
+    /// The trace, a line (ended by a newline) for each record.
+    pub text: String,
+}
+
+impl LookObserver for LookTrace {
+    fn observe(&mut self, event: LookEvent) {
+        self.report.observe(event);
+    }
+
+    fn tracing(&self) -> bool {
+        true
+    }
+
+    fn trace(&mut self, line: &str) {
+        self.text.push_str(line);
+        self.text.push('\n');
+    }
+}
+
 impl LookReport {
     /// Adds another hour's counts.
     pub fn add(&mut self, other: &Self) {
@@ -296,6 +331,33 @@ fn due_of(rules: &Rules, place: &PlaceState, pop: usize, now: u64, built: bool) 
     due
 }
 
+/// A place's vehicles, jobs and expeditions, one text each, for the look trace to find what a look made or changed.
+fn trade_snapshot(place: &PlaceState) -> Vec<String> {
+    let trade = &place.trade;
+    trade
+        .vehicles
+        .iter()
+        .map(|vehicle| format!("vehicle {vehicle:?}"))
+        .chain(trade.jobs.iter().map(|job| format!("job {job:?}")))
+        .chain(
+            trade
+                .expeditions
+                .iter()
+                .map(|expedition| format!("expedition {expedition:?}")),
+        )
+        .collect()
+}
+
+/// Writes to the look trace what a look made or changed at its place since `before` (the jobs, expeditions and vehicles that are new
+/// or differ).
+fn trace_changes(observer: &mut dyn LookObserver, before: &[String], place: &PlaceState) {
+    for line in trade_snapshot(place) {
+        if !before.contains(&line) {
+            observer.trace(&format!("  made-or-changed place={} {line}", place.id));
+        }
+    }
+}
+
 /// The hour's looks, in the order of places and then of pops (11b.2 rule 4 step 6): each trader that is due looks once, its last look
 /// is set to this hour and any pending rest look is cleared, and a job or a build is made if the look finds a trip worth it. `built`
 /// are the `(place, pop)` of the builds that completed this hour.
@@ -344,8 +406,13 @@ pub(crate) fn run_looks(
                 ways,
                 observer: &mut *observer,
                 opening: false,
+                reason: "",
+                chosen: None,
             }
             .look(place, pop)?;
+            let before = observer
+                .tracing()
+                .then(|| trade_snapshot(&state.places[place]));
             match decision {
                 Some(Decision::Trade(plan)) => {
                     state.order_trade(rules, place, pop, *plan, now)?;
@@ -364,6 +431,9 @@ pub(crate) fn run_looks(
                     ));
                 }
                 None => {}
+            }
+            if let Some(before) = &before {
+                trace_changes(observer, before, &state.places[place]);
             }
         }
     }
@@ -432,8 +502,13 @@ pub(crate) fn run_first_looks(
             ways,
             observer: &mut *observer,
             opening: true,
+            reason: "",
+            chosen: None,
         }
         .look(place, pop)?;
+        let snapshot = observer
+            .tracing()
+            .then(|| trade_snapshot(&state.places[place]));
         let plan = match decision {
             Some(Decision::Trade(plan)) => *plan,
             Some(Decision::Given { plan, held }) => {
@@ -491,6 +566,13 @@ pub(crate) fn run_first_looks(
                 now,
             )?;
             report.started.push((place, number, hours));
+            observer.trace(&format!(
+                "  started-part-way-out place={} expedition={number} hours={hours}",
+                state.places[place].id
+            ));
+        }
+        if let Some(snapshot) = &snapshot {
+            trace_changes(observer, snapshot, &state.places[place]);
         }
     }
     Ok(report)
@@ -728,6 +810,10 @@ struct Looker<'a> {
     observer: &'a mut dyn LookObserver,
     /// Whether this is the opening's first look (CK-434): a vehicle the trader lacks is given, already built, and no yearly test is made.
     opening: bool,
+    /// Why the look decided nothing, one reason of the decision and never of the search (the look trace, CK-455).
+    reason: &'static str,
+    /// What the look chose, as the look trace writes it, when the observer keeps one.
+    chosen: Option<String>,
 }
 
 /// A good the trader wants, with how much (after what is already coming) and how it ranks.
@@ -945,15 +1031,85 @@ impl Looker<'_> {
         wants
     }
 
+    /// One look: what it decides, and, when the observer keeps the look trace, its record (CK-455, section 1).
+    fn look(&mut self, home: usize, pop: usize) -> Result<Option<Decision>, DataError> {
+        let decision = self.decide(home, pop)?;
+        if self.observer.tracing() {
+            let line = self.look_line(home, pop, decision.as_ref());
+            self.observer.trace(&line);
+        }
+        Ok(decision)
+    }
+
+    /// The look's line of the trace: the hour, the trader and the outcome of the chooser's own decision, never a search's or a
+    /// refusal's reason, so that a destination skipped early cannot change it.
+    fn look_line(&self, home: usize, pop: usize, decision: Option<&Decision>) -> String {
+        let place = &self.state.places[home];
+        let mut line = format!(
+            "look hour={} opening={} place={} pop={} kind={} outcome=",
+            self.now, self.opening, place.id, pop, place.pops[pop].kind
+        );
+        match decision {
+            None => line.push_str(self.reason),
+            Some(Decision::Trade(_) | Decision::Given { .. }) => {
+                line.push_str(self.chosen.as_deref().unwrap_or("chosen"));
+                if let Some(Decision::Given { held, .. }) = decision {
+                    let _ = write!(line, " held={held:?}");
+                }
+            }
+            Some(Decision::Build { kind, trip }) => {
+                let _ = write!(
+                    line,
+                    "build kind={} destination={} cargo={:?} wanted={:?}",
+                    self.rules.vehicles[*kind].id,
+                    self.state.places[trip.destination as usize].id,
+                    trip.cargo,
+                    trip.wanted
+                );
+            }
+        }
+        line
+    }
+
+    /// A chosen plan as the trace writes it: where, with what, at which paces, what it costs and gains, the hours of the round trip
+    /// (the noon wait included) and of every leg, and the plan with its frozen points.
+    fn chosen_trace(&self, kind: &str, worked: &Worked, plan: &Plan) -> String {
+        let mut text = format!(
+            "{kind} destination={} shape={:?} paces={:?}/{:?} cost={} gain={} hours={} yearly={} new={:?}",
+            self.state.places[plan.destination as usize].id,
+            worked.shape,
+            worked.paces.0,
+            worked.paces.1,
+            worked.cost,
+            worked.gain,
+            worked.hours,
+            worked.yearly,
+            worked.new
+        );
+        for (name, legs, paces) in [
+            ("out", &plan.out, worked.paces.0),
+            ("back", &plan.back, worked.paces.1),
+        ] {
+            let hours: Vec<String> = legs
+                .iter()
+                .map(|leg| leg.hours(paces.on(leg.mode)).to_string())
+                .collect();
+            let _ = write!(text, " {name}-hours=[{}]", hours.join(","));
+        }
+        let _ = write!(text, " plan={plan:?}");
+        text
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "One look: the trader's position, the vehicles it could use, every destination and plan, and the choice, in order."
     )]
-    fn look(&mut self, home: usize, pop: usize) -> Result<Option<Decision>, DataError> {
+    fn decide(&mut self, home: usize, pop: usize) -> Result<Option<Decision>, DataError> {
         let rules = self.rules;
         let state = self.state;
         let place = &state.places[home];
         let Some(limit) = self.limit(home, pop) else {
+            self.reason = "skipped: its pops have no time limit";
             return Ok(None);
         };
         let forecasts = Forecasts::new(rules, state);
@@ -961,6 +1117,7 @@ impl Looker<'_> {
         let expected = forecasts.expected.get(&(home, trade::convert(pop)));
         let wants = self.wants(&view, expected);
         if wants.is_empty() {
+            self.reason = "skipped: nothing to trade";
             return Ok(None);
         }
         let available = if self.opening {
@@ -970,6 +1127,7 @@ impl Looker<'_> {
         };
         let shapes = self.shapes(home, pop, available.as_ref());
         if shapes.is_empty() {
+            self.reason = "skipped: no vehicle or way to go";
             return Ok(None);
         }
         let mut parties: BTreeMap<Party, Vec<String>> = BTreeMap::new();
@@ -994,6 +1152,10 @@ impl Looker<'_> {
             {
                 destinations.push(index);
             }
+        }
+        if destinations.is_empty() {
+            self.reason = "no plan: no destination";
+            return Ok(None);
         }
         let mut best: Option<(i128, Hours, String, Worked)> = None;
         for destination in destinations {
@@ -1074,17 +1236,24 @@ impl Looker<'_> {
             }
         }
         let Some((_, _, _, worked)) = best else {
+            self.reason = "no plan: no destination gains within the time limit";
             return Ok(None);
         };
         if worked.new.is_empty() {
-            let mut plan = worked.plan;
+            let mut plan = worked.plan.clone();
             self.freeze(home, &worked.shape, worked.paces, &mut plan)?;
+            if self.observer.tracing() {
+                self.chosen = Some(self.chosen_trace("trade", &worked, &plan));
+            }
             return Ok(Some(Decision::Trade(Box::new(plan))));
         }
         if self.opening {
             // The opening gives the vehicles a plan lacks, already built (r141).
-            let mut plan = worked.plan;
+            let mut plan = worked.plan.clone();
             self.freeze(home, &worked.shape, worked.paces, &mut plan)?;
+            if self.observer.tracing() {
+                self.chosen = Some(self.chosen_trace("given", &worked, &plan));
+            }
             let held = worked
                 .shape
                 .held()

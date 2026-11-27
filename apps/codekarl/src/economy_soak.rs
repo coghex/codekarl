@@ -24,6 +24,7 @@ pub(super) fn run(arguments: impl IntoIterator<Item = String>) -> Result<String,
     let mut seed = 1_u64;
     let mut looks = false;
     let mut hours_limit: Option<u64> = None;
+    let mut trace: Option<PathBuf> = None;
     let mut args = arguments.into_iter();
     while let Some(argument) = args.next() {
         match argument.as_str() {
@@ -51,10 +52,11 @@ pub(super) fn run(arguments: impl IntoIterator<Item = String>) -> Result<String,
                         .map_err(|_| "--hours must be a whole number")?,
                 );
             }
+            "--trace" => trace = Some(PathBuf::from(args.next().ok_or("--trace needs a path")?)),
             "--help" => {
                 return Ok(
-                    "Usage: economy-soak [--scenario DIR] [--years N] [--seed N] [--looks [--hours N]]\n\
-                     --looks opens the game with trade under way (CK-434), runs the traders' looks hour by hour (CK-433) and prints what the\n                     opening and looking cost instead of the CSV.\n"
+                    "Usage: economy-soak [--scenario DIR] [--years N] [--seed N] [--looks [--hours N] [--trace FILE]]\n\
+                     --looks opens the game with trade under way (CK-434), runs the traders' looks hour by hour (CK-433) and prints what the\n                     opening and looking cost instead of the CSV. --trace writes the canonical look trace (CK-455: each look's hour, trader\n                     and outcome, what it made, and a digest of the economy after each day) to FILE; building it is not timed work.\n"
                         .to_owned(),
                 );
             }
@@ -63,6 +65,9 @@ pub(super) fn run(arguments: impl IntoIterator<Item = String>) -> Result<String,
     }
     if years == 0 || years > 1000 {
         return Err("--years must be 1..=1000".to_owned());
+    }
+    if trace.is_some() && !looks {
+        return Err("--trace needs --looks".to_owned());
     }
     let scenario = scenario
         .canonicalize()
@@ -117,6 +122,7 @@ pub(super) fn run(arguments: impl IntoIterator<Item = String>) -> Result<String,
             // The tables and the climate the game's day reads, built by the game's own code (CK-434 review 6).
             &tables,
             weather.as_ref(),
+            trace.as_deref(),
         );
     }
     let mut date = Date {
@@ -223,25 +229,66 @@ fn simulate_with_supply(
     Ok(csv)
 }
 
-/// A look report that says on standard error how far the opening has got, for a run that takes a while.
-#[derive(Default)]
-struct ProgressReport {
-    report: ck_economy::LookReport,
-    since: Option<Instant>,
+/// A running 64-bit FNV-1a digest of whatever is written to it.
+struct Digest(u64);
+
+impl Digest {
+    fn new() -> Self {
+        Self(0xcbf2_9ce4_8422_2325)
+    }
 }
 
-impl ck_economy::LookObserver for ProgressReport {
+impl std::fmt::Write for Digest {
+    fn write_str(&mut self, text: &str) -> std::fmt::Result {
+        for byte in text.bytes() {
+            self.0 = (self.0 ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+        }
+        Ok(())
+    }
+}
+
+/// The canonical digest of the whole economy state, trade included, for the look trace after each day (CK-455 section 1): its
+/// `Debug` form has no maps without an order, so equal states give equal digests.
+fn full_digest(state: &EconomyState) -> u64 {
+    let mut digest = Digest::new();
+    write!(digest, "{state:?}").expect("a digest takes any text");
+    digest.0
+}
+
+/// A look observer that counts, says on standard error how far the opening has got (when `progress`), and keeps the look trace
+/// (when `keep`: building it costs time, so a timed run asks for none).
+#[derive(Default)]
+struct Watcher {
+    report: ck_economy::LookReport,
+    since: Option<Instant>,
+    progress: bool,
+    keep: bool,
+    text: String,
+}
+
+impl ck_economy::LookObserver for Watcher {
     fn observe(&mut self, event: ck_economy::LookEvent) {
-        let since = *self.since.get_or_insert_with(Instant::now);
         let looks = self.report.looks;
         self.report.observe(event);
-        if self.report.looks != looks && self.report.looks.is_multiple_of(50) {
-            eprintln!(
-                "opening: {} first looks after {:.1} s",
-                self.report.looks,
-                since.elapsed().as_secs_f64()
-            );
+        if self.progress {
+            let since = *self.since.get_or_insert_with(Instant::now);
+            if self.report.looks != looks && self.report.looks.is_multiple_of(50) {
+                eprintln!(
+                    "opening: {} first looks after {:.1} s",
+                    self.report.looks,
+                    since.elapsed().as_secs_f64()
+                );
+            }
         }
+    }
+
+    fn tracing(&self) -> bool {
+        self.keep
+    }
+
+    fn trace(&mut self, line: &str) {
+        self.text.push_str(line);
+        self.text.push('\n');
     }
 }
 
@@ -302,6 +349,7 @@ fn looks_report(
     hours_limit: Option<u64>,
     tables: &crate::game::setup::DayTables,
     weather: Option<&crate::game::setup::WeatherData>,
+    trace: Option<&Path>,
 ) -> Result<String, String> {
     use crate::game::trade_ways::{NetworkWays, TradeNetwork, starting_states};
     rules.expedition.looks = true;
@@ -366,13 +414,23 @@ fn looks_report(
         None
     };
     // The opening (CK-434, part F): the pops' goods, the fleets and every trader's first look, in one go before the first tick.
-    let mut opening = ProgressReport::default();
+    let keep = trace.is_some();
+    let mut opening = Watcher {
+        progress: true,
+        keep,
+        ..Watcher::default()
+    };
     ways.begin(states.clone());
     let opened = Instant::now();
     let opened_with =
         ck_economy::run_opening(&rules, &mut state, start, seed, &mut ways, &mut opening)
             .map_err(|error| error.to_string())?;
     let opening_time = opened.elapsed();
+    let mut trace_text = std::mem::take(&mut opening.text);
+    if keep {
+        writeln!(trace_text, "opening digest {:016x}", full_digest(&state))
+            .map_err(|error| error.to_string())?;
+    }
     let opening = opening.report;
     let opening_searches = watch.lock().ok().map(|counts| counts.clone());
     let opening_vehicles = opening_tally(&rules, &state)?;
@@ -416,17 +474,33 @@ fn looks_report(
         }
         ways.begin(states.clone());
         let started = Instant::now();
-        let mut report = ck_economy::LookReport::default();
-        ck_economy::run_trade_hour_with_looks(&rules, &mut state, date, &mut ways, &mut report)
+        let mut hour = Watcher {
+            keep,
+            ..Watcher::default()
+        };
+        ck_economy::run_trade_hour_with_looks(&rules, &mut state, date, &mut ways, &mut hour)
             .map_err(|error| error.to_string())?;
         let spent = started.elapsed();
         moved.see(&rules, &state);
+        let report = hour.report;
         year.add(&report);
+        trace_text.push_str(&hour.text);
         if report.looks > 0 {
             day_time += spent;
             daily_total += spent;
         }
         if date.hour == 23 {
+            if keep {
+                writeln!(
+                    trace_text,
+                    "day {}-{:02}-{:02} digest {:016x}",
+                    date.year,
+                    date.month,
+                    date.day,
+                    full_digest(&state)
+                )
+                .map_err(|error| error.to_string())?;
+            }
             if day_time > Duration::ZERO {
                 looking_days += 1;
                 day_max = day_max.max(day_time);
@@ -434,6 +508,10 @@ fn looks_report(
             day_time = Duration::ZERO;
         }
         step_date(&mut date)?;
+    }
+    if let Some(path) = trace {
+        std::fs::write(path, &trace_text)
+            .map_err(|error| format!("trace {}: {error}", path.display()))?;
     }
     let counts = watch
         .lock()
@@ -965,19 +1043,6 @@ mod tests {
             moved.back[0], 10,
             "and only once; the one on the road is not counted"
         );
-    }
-
-    /// A running digest of everything the daily economy changes: prices, stores, herds, wages, staffing, the product carries and
-    /// the production carries in the old unit, and every pop's numbers and stores.
-    struct Digest(u64);
-
-    impl std::fmt::Write for Digest {
-        fn write_str(&mut self, text: &str) -> std::fmt::Result {
-            for byte in text.bytes() {
-                self.0 = (self.0 ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
-            }
-            Ok(())
-        }
     }
 
     /// Production carries come in twelfths of the old unit from CK-406 on.

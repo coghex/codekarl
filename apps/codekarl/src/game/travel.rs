@@ -15,7 +15,7 @@ pub struct Routes {
 
 /// Immutable measurements and water graph for repeated queries with one profile.
 pub struct TravelPlanner {
-    ways: Vec<LandWay>,
+    ways: Arc<Vec<LandWay>>,
     water: Option<WaterGraph>,
     profile: TravelProfile,
     rules: TravelRules,
@@ -31,8 +31,26 @@ impl TravelPlanner {
         profile: &TravelProfile,
         rules: &TravelRules,
     ) -> Result<Self, String> {
+        Self::with_ways(
+            scenario,
+            profile,
+            rules,
+            Arc::new(measure_ways(scenario, rules)?),
+        )
+    }
+
+    /// A planner for a profile over ways already measured for the same scenario and rules (the measurement does not depend on the
+    /// profile, so planners of one network share it: [`measure_ways`] is what [`Self::new`] makes it by).
+    ///
+    /// # Errors
+    /// Returns a message if the scenario or profile cannot form a travel graph.
+    pub fn with_ways(
+        scenario: &ck_map::Scenario,
+        profile: &TravelProfile,
+        rules: &TravelRules,
+        ways: Arc<Vec<LandWay>>,
+    ) -> Result<Self, String> {
         profile.validate()?;
-        let ways = measure_ways(scenario, rules)?;
         let water = if profile.water_class.is_some() {
             Some(water_graph(scenario, profile)?)
         } else {
@@ -476,7 +494,7 @@ pub struct TripLeg {
     pub hours: BigRational,
 }
 
-fn centre(scenario: &ck_map::Scenario, cell: [i32; 2]) -> (BigRational, BigRational) {
+pub(super) fn centre(scenario: &ck_map::Scenario, cell: [i32; 2]) -> (BigRational, BigRational) {
     let origin = scenario.map.data.crop.origin;
     (
         BigRational::from_integer(
@@ -508,7 +526,7 @@ fn joint_position(scenario: &ck_map::Scenario, joint: usize) -> Option<(BigRatio
     ))
 }
 
-fn land_step_length(
+pub(super) fn land_step_length(
     scenario: &ck_map::Scenario,
     from: [i32; 2],
     to: [i32; 2],
@@ -1184,7 +1202,7 @@ impl WaterStep {
         }
     }
     /// Position at a fraction of a water step, in global fixed-point cell units.
-    fn position(
+    pub(super) fn position(
         &self,
         scenario: &ck_map::Scenario,
         proportion: &BigRational,
@@ -1401,6 +1419,8 @@ fn water_graph(scenario: &ck_map::Scenario, profile: &TravelProfile) -> Result<W
             )?;
         }
     }
+    let mut open_hours: std::collections::HashMap<(u64, u64, bool, u64, u64), BigRational> =
+        std::collections::HashMap::new();
     for y in 0..height {
         for x in 0..width {
             let cell = [
@@ -1412,13 +1432,26 @@ fn water_graph(scenario: &ck_map::Scenario, profile: &TravelProfile) -> Result<W
                 let to_speed = speed(next)?;
                 let row = usize::try_from(next[1]).map_err(|_| "negative row")?;
                 let diagonal = cell[0] != next[0] && cell[1] != next[1];
-                let length = cell_step_mm(n.cell_side_mm[y], n.cell_side_mm[row], diagonal);
-                let hours = ck_sim::travel::mixed_water_hours(
-                    &length,
-                    from_speed,
-                    to_speed,
-                    profile.slowing,
-                );
+                // The hours of a move depend only on the sides of the two cells' rows, whether it is diagonal and the two speeds, of
+                // which there are few: each is worked once (CK-455).
+                let hours = open_hours
+                    .entry((
+                        n.cell_side_mm[y],
+                        n.cell_side_mm[row],
+                        diagonal,
+                        from_speed,
+                        to_speed,
+                    ))
+                    .or_insert_with(|| {
+                        let length = cell_step_mm(n.cell_side_mm[y], n.cell_side_mm[row], diagonal);
+                        ck_sim::travel::mixed_water_hours(
+                            &length,
+                            from_speed,
+                            to_speed,
+                            profile.slowing,
+                        )
+                    })
+                    .clone();
                 push(
                     cell_id(cell)?,
                     cell_id(next)?,
@@ -1571,7 +1604,7 @@ mod tests {
             .find(|way| way.land_passable && way.tidal_length_m.is_none())
             .unwrap()
             .clone();
-        planner.ways = vec![one.clone()];
+        planner.ways = Arc::new(vec![one.clone()]);
         let mut current = states;
         let state = current.get_mut(&one.id).unwrap();
         state.road = true;
@@ -2352,7 +2385,7 @@ mod tests {
             })
             .unwrap()
             .clone();
-        planner.ways = vec![way.clone()];
+        planner.ways = Arc::new(vec![way.clone()]);
         let states =
             current_way_states(&super::super::stretch::starting(scenario.network.as_ref()));
         let forward = planner
