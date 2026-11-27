@@ -491,6 +491,7 @@ recruit_range_m=30000
 market_capacity_ml_per_level=50000
 [[buildings.methods]]
 id="mixed_farming"
+grows=true
 jobs=[{ id="peasant_labour", places=10, pop_types=["peasant"], wage_weight_pm=1000, manager=false }]
 resource="usable_land"
 suitability="crops"
@@ -532,6 +533,7 @@ recruit_range_m=100000
 market_capacity_ml_per_level=100000
 [[buildings.methods]]
 id="monastic_farming"
+grows=true
 jobs=[{ id="prior", places=1, pop_types=["monk"], wage_weight_pm=1500, manager=true }, { id="monks", places=5, pop_types=["monk"], wage_weight_pm=1000, manager=false }, { id="field_hands", places=5, pop_types=["labourer"], wage_weight_pm=1000, manager=false }]
 made_by={ vegetables="monks", herbs="monks", beeswax="monks", honey="monks", mead="monks", ale="monks", apples="monks", oats="field_hands", barley="field_hands", peas_beans="field_hands", beef="field_hands", pork="field_hands", mutton="field_hands", dairy="field_hands", hides="field_hands" }
 resource="usable_land"
@@ -556,6 +558,7 @@ recruit_range_m=30000
 market_capacity_ml_per_level=100000
 [[buildings.methods]]
 id="demesne_farming"
+grows=true
 jobs=[{ id="steward", places=1, pop_types=["noble","labourer"], wage_weight_pm=1500, manager=true }, { id="field_hands", places=4, pop_types=["labourer"], wage_weight_pm=1000, manager=false }, { id="milkers", places=2, pop_types=["labourer"], wage_weight_pm=1000, manager=false }, { id="herder", places=1, pop_types=["labourer"], wage_weight_pm=1000, manager=false }, { id="butcher", places=1, pop_types=["labourer"], wage_weight_pm=1000, manager=false }, { id="beekeeper", places=1, pop_types=["labourer"], wage_weight_pm=1000, manager=false }, { id="brewer", places=1, pop_types=["labourer"], wage_weight_pm=1000, manager=false }]
 made_by={ oats="field_hands", barley="field_hands", peas_beans="field_hands", vegetables="field_hands", apples="field_hands", dairy="milkers", beef="butcher", pork="butcher", mutton="butcher", hides="butcher", honey="beekeeper", ale="brewer", mead="brewer" }
 resource="usable_land"

@@ -264,7 +264,7 @@ pub(crate) fn prepare(
                 .time
                 .date()
                 .map_err(|error| format!("save {}: {error}", path.display()))?;
-            ck_economy::validate_switch_years(&save.state.economy, date.year)
+            ck_economy::validate_switch_years(&save.state.economy, date.year, date.month)
                 .map_err(|error| format!("save {}: {error}", path.display()))?;
         }
         validate_weather_list(weather.as_deref(), &save.state.lows)?;
@@ -618,7 +618,7 @@ impl ViewWiring {
             match rules.as_deref() {
                 Some(rules) => {
                     ck_economy::validate_level_records(rules, &quality, &state.economy)?;
-                    ck_economy::validate_switch_years(&state.economy, date.year)
+                    ck_economy::validate_switch_years(&state.economy, date.year, date.month)
                 }
                 None => Ok(()),
             }
@@ -2671,7 +2671,7 @@ mod stretch_save_tests {
                 ground: Some("pasture".to_owned()),
                 paydays: ck_economy::MATURE_PAYDAYS,
                 unpaid_work: unpaid_work.clone(),
-                last_switch_year: None,
+                last_switch: None,
             })
             .collect();
         farm.production_carries[0][0] = 19_800_000_000_000_000_000;
@@ -3594,7 +3594,7 @@ mod stretch_save_tests {
         assert_eq!(
             hashes::rules_hash(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets"))
                 .unwrap(),
-            "5787c2c8956cfb3b"
+            "3146b9118cb8ef24"
         );
         let mut save = source.simulation.save(source.identity.meta(42));
         let weather = source.weather.as_ref().unwrap();
@@ -3782,7 +3782,9 @@ mod stretch_save_tests {
     }
 
     /// Every level of the economy as (place, building, level number) with its method and year of last switch.
-    fn level_methods(prepared: &Prepared) -> Vec<(String, usize, u32, u32, Option<u16>)> {
+    type LevelMethod = (String, usize, u32, u32, Option<(u16, u8)>);
+
+    fn level_methods(prepared: &Prepared) -> Vec<LevelMethod> {
         let mut levels = Vec::new();
         for place in &prepared.simulation.state().economy.places {
             for (index, building) in place.buildings.iter().enumerate() {
@@ -3792,7 +3794,7 @@ mod stretch_save_tests {
                         index,
                         record.number,
                         record.method,
-                        record.last_switch_year,
+                        record.last_switch,
                     ));
                 }
             }
@@ -3957,7 +3959,7 @@ mod stretch_save_tests {
                 let moved = a
                     .level_records
                     .iter()
-                    .any(|r| r.method != 1 && r.paydays == 0 && r.last_switch_year == Some(768));
+                    .any(|r| r.method != 1 && r.last_switch == Some((768, 11)));
                 if moved && b.herds.iter().all(|h| *h == 0) && a.herds.iter().any(|h| *h > 0) {
                     found.push((now.id.clone(), index));
                 }
@@ -4007,7 +4009,7 @@ mod stretch_save_tests {
             &unbroken,
             "13:00 on the first 1st",
         ));
-        // After both loads the new method, the founders, no completed paydays and the lock are what the unbroken game holds.
+        // Both loads preserve the new method, founders, paydays and switch stamp.
         for loaded in &checkpoints[1..] {
             for (place, index) in &founders {
                 let want = unbroken
@@ -4027,20 +4029,22 @@ mod stretch_save_tests {
                         .unwrap();
                     assert_eq!(got.buildings[*index], want.buildings[*index], "{place}");
                     assert!(got.buildings[*index].herds.iter().any(|h| *h > 0));
-                    assert!(got.buildings[*index].level_records.iter().any(|r| {
-                        r.method != 1 && r.paydays == 0 && r.last_switch_year == Some(768)
-                    }));
+                    assert!(
+                        got.buildings[*index]
+                            .level_records
+                            .iter()
+                            .any(|r| { r.method != 1 && r.last_switch == Some((768, 11)) })
+                    );
                 }
             }
         }
-        // The year end, with levels that switched this year locked: saved on 31 December and before and after the noon of 1 January
-        // that tries them again.
+        // Save at year end and around the next monthly look, then compare both load paths.
         step_to(&mut unbroken, 12, 31, 13);
         assert!(
             level_methods(&unbroken)
                 .iter()
-                .any(|level| level.4 == Some(768)),
-            "a level that switched in 768 is locked at the year's end"
+                .any(|level| level.4.is_some_and(|(year, _)| year == 768)),
+            "a level retains a switch stamp from 768"
         );
         checkpoints.push(load_both_ways(&dir.0, &game, &unbroken, "31 December"));
         step_to(&mut unbroken, 1, 1, 11);
@@ -4067,9 +4071,7 @@ mod stretch_save_tests {
         }
     }
 
-    #[test]
-    fn both_load_paths_refuse_a_level_that_last_switched_after_the_games_year_and_keep_the_running_game()
-     {
+    fn reject_switch_stamp_on_both_load_paths(stamp: (u16, u8)) {
         let dir = crate::testing::Dir::new();
         let game = GameConfig {
             scenario: Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -4083,7 +4085,7 @@ mod stretch_save_tests {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         let mut save = source.simulation.save(source.identity.meta(42));
         let farm = target(&mut save);
-        farm.level_records[0].last_switch_year = Some(769);
+        farm.level_records[0].last_switch = Some(stamp);
         let mut archive = fs::File::open(source.storage.path.join("ARCH")).unwrap();
         let mut logs = fs::File::open(source.storage.path.join("LOGS")).unwrap();
         let lengths = (
@@ -4115,7 +4117,7 @@ mod stretch_save_tests {
         assert!(
             message.contains("building farm")
                 && message.contains("level 0")
-                && message.contains("769"),
+                && message.contains(&stamp.0.to_string()),
             "{message}"
         );
         // A load during play refuses it too, and the running game, its storage and its readers are as they were.
@@ -4158,6 +4160,77 @@ mod stretch_save_tests {
             logs.lock().unwrap().as_ref().unwrap(),
             &before_logs
         ));
+    }
+
+    #[test]
+    fn both_load_paths_accept_current_and_previous_december_switch_stamps() {
+        for (date, stamp) in [
+            (
+                Date {
+                    year: 768,
+                    month: 10,
+                    day: 9,
+                    hour: 0,
+                },
+                (768, 10),
+            ),
+            (
+                Date {
+                    year: 769,
+                    month: 1,
+                    day: 1,
+                    hour: 0,
+                },
+                (768, 12),
+            ),
+        ] {
+            let dir = crate::testing::Dir::new();
+            let game = GameConfig {
+                scenario: Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../assets/scenarios/ireland-768"),
+                saves: dir.0.join("saves"),
+                events_fixture: None,
+            };
+            let source = shipped_start(&dir.0, None);
+            let mut save = source.simulation.save(source.identity.meta(42));
+            save.time = GameTime::from_date(date).unwrap();
+            target(&mut save).level_records[0].last_switch = Some(stamp);
+            let path = super::super::saves::quicksave_path(&game.saves);
+            write_save(&source, &save, &path);
+            let started = shipped_start(&dir.0, Some(&path));
+            assert!(
+                level_methods(&started)
+                    .iter()
+                    .any(|level| level.4 == Some(stamp))
+            );
+            let running = shipped_start(&dir.0, None);
+            let mut core = test_core(
+                running,
+                game.saves.clone(),
+                Outputs {
+                    log: Box::new(|_, _| {}),
+                    publish: Box::new(|_| {}),
+                    fail: Box::new(|e| panic!("{e}")),
+                },
+            );
+            core.dispatch(Message::Control(Control::Quickload), Duration::ZERO);
+            assert!(
+                core.state()
+                    .economy
+                    .places
+                    .iter()
+                    .flat_map(|p| &p.buildings)
+                    .flat_map(|b| &b.level_records)
+                    .any(|record| record.last_switch == Some(stamp))
+            );
+        }
+    }
+
+    #[test]
+    fn both_load_paths_refuse_invalid_and_future_switch_months() {
+        for stamp in [(768, 12), (768, 0), (768, 13), (769, 1)] {
+            reject_switch_stamp_on_both_load_paths(stamp);
+        }
     }
 
     #[test]
@@ -4339,7 +4412,7 @@ mod switch_replay_tests {
         }
     }
 
-    /// One fort of 200 peasants and 20 monks, with a farm of ten levels and holdings of four, every level at sea and no animals:
+    /// One fort of 400 peasants and 20 monks, with a farm of fourteen levels and holdings of four, every level at sea and no animals:
     /// the place wants oats, so levels of both buildings move to farming from the first look, and founders arrive.
     fn fort(rules: &Rules) -> ck_economy::EconomyState {
         let data = ScenarioEconomy {
@@ -4349,10 +4422,10 @@ mod switch_replay_tests {
                 BTreeMap::from([(
                     "1".to_owned(),
                     StartDefaults {
-                        peasants: 200,
+                        peasants: 400,
                         monks: 20,
                         labourers: 0,
-                        farm_levels: 10,
+                        farm_levels: 14,
                         holdings_levels: 4,
                         storehouse_levels: 1,
                         pop_stock: BTreeMap::new(),
@@ -4475,7 +4548,7 @@ mod switch_replay_tests {
             ck_economy::mean_fertility(&land()).unwrap(),
         )]);
         ck_economy::validate_level_records(rules, &quality, &state.economy)?;
-        ck_economy::validate_switch_years(&state.economy, date.year)
+        ck_economy::validate_switch_years(&state.economy, date.year, date.month)
     }
 
     /// A start from the saved bytes: the checks of a start, then the simulation.
@@ -4535,11 +4608,13 @@ mod switch_replay_tests {
         playing: Core<GameState, GameCommand>,
     }
 
-    fn methods(state: &GameState) -> Vec<(usize, u32, u32, Option<u16>)> {
+    type MethodSnapshot = (usize, u32, u32, Option<(u16, u8)>);
+
+    fn methods(state: &GameState) -> Vec<MethodSnapshot> {
         let mut all = Vec::new();
         for (index, building) in state.economy.places[0].buildings.iter().enumerate() {
             for record in &building.level_records {
-                all.push((index, record.number, record.method, record.last_switch_year));
+                all.push((index, record.number, record.method, record.last_switch));
             }
         }
         all
@@ -4645,8 +4720,10 @@ mod switch_replay_tests {
                 if years_end && !year_end_done[0] {
                     year_end_done[0] = true;
                     assert!(
-                        current.iter().any(|level| level.3 == Some(after.year)),
-                        "a level that switched this year is locked at its end"
+                        current
+                            .iter()
+                            .any(|level| level.3.is_some_and(|(year, _)| year == after.year)),
+                        "a level retains a switch stamp from this year"
                     );
                     take("31 December", save(&unbroken), &mut branches);
                 } else if jan_eleven && year_end_done[0] && !year_end_done[1] {
@@ -4670,7 +4747,7 @@ mod switch_replay_tests {
                 "13:00 on 1 January"
             ]
         );
-        // The replay moved levels in more than one year, and every move carried its year as its lock.
+        // The replay moved levels in more than one year.
         assert!(moves.len() >= 5, "{moves:?}");
         let years: std::collections::BTreeSet<_> = moves.iter().map(|m| m.0.year).collect();
         assert!(years.len() >= 2, "{years:?}");
@@ -4682,10 +4759,10 @@ mod switch_replay_tests {
             assert_eq!(methods(branch.started.state()), methods(unbroken.state()));
             assert_eq!(methods(branch.playing.state()), methods(unbroken.state()));
         }
-        // No level moved twice in a calendar year.
+        // No level moved twice in a calendar month.
         let mut seen = std::collections::BTreeSet::new();
         for (date, building, level, _, _) in &moves {
-            assert!(seen.insert((date.year, *building, *level)));
+            assert!(seen.insert((date.year, date.month, *building, *level)));
         }
     }
 

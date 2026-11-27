@@ -173,6 +173,9 @@ pub struct ProductionJob {
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Method {
+    /// Whether this method grows seasonal crops.
+    #[serde(default)]
+    pub grows: bool,
     /// Ordered positions offered by this method.
     #[serde(default)]
     pub jobs: Vec<ProductionJob>,
@@ -2786,7 +2789,7 @@ fn assign_building_levels(
             ground: terrain.clone(),
             paydays: MATURE_PAYDAYS,
             unpaid_work: seasonal_accounts(rules, building, method),
-            last_switch_year: None,
+            last_switch: None,
         });
         demand.provide(rules, &level_output);
         if method.resource == "sea" {
@@ -2980,15 +2983,15 @@ pub fn validate_level_records(
 ///
 /// # Errors
 /// Returns a message naming the place, the building and the level whose year of last switch is after `year`.
-pub fn validate_switch_years(state: &EconomyState, year: u16) -> Result<(), String> {
+pub fn validate_switch_years(state: &EconomyState, year: u16, month: u8) -> Result<(), String> {
     for place in &state.places {
         for building in &place.buildings {
             for record in &building.level_records {
-                if let Some(switched) = record.last_switch_year
-                    && switched > year
+                if let Some(switched) = record.last_switch
+                    && (!(1..=12).contains(&switched.1) || switched > (year, month))
                 {
                     return Err(format!(
-                        "place {} building {} level {}: last switched in the year {switched}, after the game's year {year}",
+                        "place {} building {} level {}: invalid last switch {switched:?} for game date {year}-{month}",
                         place.id, building.kind, record.number
                     ));
                 }
@@ -4952,7 +4955,7 @@ pub struct LevelRecord {
     pub unpaid_work: BTreeMap<String, bigint::Big>,
     /// The calendar year of the level's last switch of method, and none for a level that has never switched. A level that
     /// switched in a year does not switch again in that year (owner, S6).
-    pub last_switch_year: Option<u16>,
+    pub last_switch: Option<(u16, u8)>,
 }
 
 /// A building in the initial economy state.
@@ -11510,10 +11513,11 @@ fn encode_level_records(records: &[LevelRecord], out: &mut Vec<u8>) -> Result<()
         }
         record.paydays.encode(out)?;
         record.unpaid_work.encode(out)?;
-        match record.last_switch_year {
-            Some(year) => {
+        match record.last_switch {
+            Some((year, month)) => {
                 true.encode(out)?;
                 year.encode(out)?;
+                month.encode(out)?;
             }
             None => false.encode(out)?,
         }
@@ -11535,8 +11539,8 @@ fn decode_level_records(input: &mut Reader<'_>) -> Result<Vec<LevelRecord>, Cano
             },
             paydays: u8::decode(input)?,
             unpaid_work: BTreeMap::decode(input)?,
-            last_switch_year: if bool::decode(input)? {
-                Some(u16::decode(input)?)
+            last_switch: if bool::decode(input)? {
+                Some((u16::decode(input)?, u8::decode(input)?))
             } else {
                 None
             },
@@ -11860,6 +11864,7 @@ pub(crate) mod tests {
                     recruit_range_m: Some(30_000),
                     market_capacity_ml_per_level: 0,
                     methods: vec![Method {
+                        grows: false,
                         jobs: vec![ProductionJob {
                             id: "peasant_labour".into(),
                             places: 10,
@@ -12112,7 +12117,7 @@ pub(crate) mod tests {
                 ground: Some("pasture".to_owned()),
                 paydays: MATURE_PAYDAYS,
                 unpaid_work: BTreeMap::new(),
-                last_switch_year: None,
+                last_switch: None,
             }],
             herds: vec![0, 1, 0],
             employment: vec![
@@ -12223,7 +12228,7 @@ pub(crate) mod tests {
                     ground: ground.clone(),
                     paydays: MATURE_PAYDAYS,
                     unpaid_work: seasonal_accounts(rules, definition, method),
-                    last_switch_year: None,
+                    last_switch: None,
                 });
             }
         }
@@ -12334,7 +12339,7 @@ pub(crate) mod tests {
                             ground: Some("pasture".to_owned()),
                             paydays: MATURE_PAYDAYS,
                             unpaid_work: BTreeMap::new(),
-                            last_switch_year: None,
+                            last_switch: None,
                         }],
                         herds: (0..rules.herd_species.len())
                             .map(|i| [9, 6, 5].get(i).copied().unwrap_or(0))
@@ -12882,7 +12887,7 @@ pub(crate) mod tests {
                 ground: Some("pasture".to_owned()),
                 paydays: MATURE_PAYDAYS,
                 unpaid_work: BTreeMap::new(),
-                last_switch_year: None,
+                last_switch: None,
             }],
             herds: Vec::new(),
             employment: vec![Employment {
@@ -13038,7 +13043,7 @@ pub(crate) mod tests {
                 ground: Some("pasture".to_owned()),
                 paydays: MATURE_PAYDAYS,
                 unpaid_work: BTreeMap::new(),
-                last_switch_year: None,
+                last_switch: None,
             }],
             herds: Vec::new(),
             employment: vec![
@@ -13661,7 +13666,7 @@ pub(crate) mod tests {
                 ground: Some("pasture".to_owned()),
                 paydays: MATURE_PAYDAYS,
                 unpaid_work: BTreeMap::new(),
-                last_switch_year: None,
+                last_switch: None,
             }],
             herds: vec![0; 3],
             employment: vec![Employment {
@@ -15316,7 +15321,7 @@ pub(crate) mod tests {
                                 "food".to_owned(),
                                 bigint::Big::default()
                             )]),
-                            last_switch_year: None,
+                            last_switch: None,
                         }],
                         herds: Vec::new(),
                         employment: vec![Employment {
@@ -17335,6 +17340,7 @@ pub(crate) mod tests {
             .unwrap()
             .insert("food".to_owned(), 1000);
         rules.buildings[0].methods.push(Method {
+            grows: false,
             jobs: Vec::new(),
             made_by: BTreeMap::new(),
             id: "coastal".to_owned(),
@@ -18559,7 +18565,7 @@ pub(crate) mod tests {
                 ground: Some("pasture".into()),
                 paydays: MATURE_PAYDAYS,
                 unpaid_work: BTreeMap::new(),
-                last_switch_year: None,
+                last_switch: None,
             })
             .collect();
         building.herds = vec![2, 2, 3, 0];
@@ -20689,6 +20695,7 @@ pub(crate) mod tests {
             .unwrap()
             .extend([("food".to_owned(), 700), ("fish".to_owned(), 300)]);
         rules.buildings[0].methods.push(Method {
+            grows: false,
             jobs: Vec::new(),
             made_by: BTreeMap::new(),
             id: "coastal".to_owned(),
@@ -20993,7 +21000,7 @@ pub(crate) mod tests {
                             ground: Some("pasture".to_owned()),
                             paydays: MATURE_PAYDAYS,
                             unpaid_work: BTreeMap::new(),
-                            last_switch_year: None,
+                            last_switch: None,
                         }],
                         herds: vec![9, 6, 5],
                         employment: vec![Employment {
@@ -21415,7 +21422,7 @@ pub(crate) mod tests {
                 ground: Some("pasture".to_owned()),
                 paydays: MATURE_PAYDAYS,
                 unpaid_work: BTreeMap::new(),
-                last_switch_year: None,
+                last_switch: None,
             }],
             herds: Vec::new(),
             employment: vec![
@@ -21572,7 +21579,7 @@ pub(crate) mod tests {
                         ground: Some("pasture".to_owned()),
                         paydays: MATURE_PAYDAYS,
                         unpaid_work: BTreeMap::new(),
-                        last_switch_year: None,
+                        last_switch: None,
                     }],
                     herds: vec![20, 0, 0],
                     employment: vec![Employment::default()],
@@ -21744,7 +21751,7 @@ pub(crate) mod tests {
                 ground: Some("pasture".to_owned()),
                 paydays: MATURE_PAYDAYS,
                 unpaid_work: BTreeMap::new(),
-                last_switch_year: None,
+                last_switch: None,
             }],
             herds: Vec::new(),
             employment: vec![
@@ -22696,7 +22703,7 @@ pub(crate) mod tests {
                 ground: Some("pasture".to_owned()),
                 paydays: MATURE_PAYDAYS,
                 unpaid_work: BTreeMap::new(),
-                last_switch_year: None,
+                last_switch: None,
             }],
             herds: vec![0, 0, 0],
             employment: vec![Employment {
@@ -23009,7 +23016,7 @@ pub(crate) mod tests {
                     ground: Some("pasture".to_owned()),
                     paydays: MATURE_PAYDAYS,
                     unpaid_work: BTreeMap::new(),
-                    last_switch_year: None,
+                    last_switch: None,
                 }],
                 herds: vec![0, 2, 0],
                 employment: vec![Employment {
@@ -23271,7 +23278,7 @@ pub(crate) mod tests {
                 ground: Some("pasture".to_owned()),
                 paydays: MATURE_PAYDAYS,
                 unpaid_work: BTreeMap::new(),
-                last_switch_year: None,
+                last_switch: None,
             }],
             herds: Vec::new(),
             employment: vec![Employment {
@@ -23353,7 +23360,7 @@ pub(crate) mod tests {
                 ground: Some("pasture".to_owned()),
                 paydays: MATURE_PAYDAYS,
                 unpaid_work: BTreeMap::new(),
-                last_switch_year: None,
+                last_switch: None,
             }],
             herds: Vec::new(),
             employment: vec![Employment::default()],
@@ -23850,7 +23857,7 @@ pub(crate) mod tests {
                 ground: Some("pasture".to_owned()),
                 paydays: MATURE_PAYDAYS,
                 unpaid_work: BTreeMap::new(),
-                last_switch_year: None,
+                last_switch: None,
             }],
             herds: Vec::new(),
             employment: vec![Employment::default()],
@@ -25302,7 +25309,7 @@ pub(crate) mod tests {
                 ground: Some("pasture".to_owned()),
                 paydays: MATURE_PAYDAYS,
                 unpaid_work: BTreeMap::new(),
-                last_switch_year: None,
+                last_switch: None,
             }],
             herds: Vec::new(),
             employment: vec![Employment::default(); 3],
@@ -25578,7 +25585,7 @@ pub(crate) mod tests {
             ground: ground.map(str::to_owned),
             paydays,
             unpaid_work: BTreeMap::new(),
-            last_switch_year: None,
+            last_switch: None,
         }
     }
 
@@ -26104,6 +26111,7 @@ pub(crate) mod tests {
         let def = rules.buildings.iter_mut().find(|b| b.id == "farm").unwrap();
         def.herds.clear();
         def.methods[0].annual_output = BTreeMap::from([("oats".into(), 100)]);
+        def.methods[2].grows = true;
         def.methods[2].annual_output = BTreeMap::from([("hardwood".into(), 600)]);
         let mut state = shipped_production_fixture(&rules);
         farm_with(&rules, &mut state, vec![level(0, 0, Some("pasture"), 13)]);
@@ -26841,9 +26849,9 @@ pub(crate) mod tests {
         let sea = result.moves.iter().find(|m| m.method == 1).unwrap();
         assert_eq!(sea.staying.numerator.to_u128(), Some(200));
         assert_eq!(sea.switching.numerator.to_u128(), Some(160));
-        assert_eq!(sea.slow_start.numerator.to_u128(), Some(20));
+        assert_eq!(sea.slow_start.numerator.to_u128(), Some(0));
         assert!(sea.surplus.negative);
-        assert_eq!(sea.surplus.magnitude.numerator.to_u128(), Some(100));
+        assert_eq!(sea.surplus.magnitude.numerator.to_u128(), Some(80));
     }
 
     #[test]
