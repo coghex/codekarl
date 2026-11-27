@@ -1208,6 +1208,32 @@ fn complete_builds(
     Ok((released, built))
 }
 
+/// Gives the pop `pop` of `place` a vehicle of the rules' `kind`, free and already built with its animal, as the opening does (r141: no
+/// inputs, no hands, no herd loses an animal). Returns its number, the next of the economy's.
+///
+/// # Errors
+/// Vehicle numbers used up.
+pub(crate) fn give_vehicle(
+    place: &mut PlaceState,
+    counters: &mut TradeCounters,
+    pop: usize,
+    kind: usize,
+) -> Result<u64, DataError> {
+    let number = counters
+        .vehicles
+        .checked_add(1)
+        .ok_or_else(|| missing_data("trade.vehicles".to_owned(), "vehicle numbers are used up"))?;
+    counters.vehicles = number;
+    place.trade.vehicles.push(Vehicle {
+        number,
+        kind: convert(kind),
+        pop: convert(pop),
+        free: true,
+        materials: None,
+    });
+    Ok(number)
+}
+
 /// Gives up a job that was not started in time: it holds no people, a live animal goes back as 11b.1 says and the rest stays with it
 /// and is on offer, and its goods go back to the trader as room allows (r5 3.4).
 fn give_up(rules: &Rules, place: &mut PlaceState, index: usize, now: u64) -> Result<(), DataError> {

@@ -92,9 +92,28 @@ pub(crate) fn load_rules(asset_root: &Path) -> Result<Option<Rules>, String> {
     if !path.exists() {
         return Ok(None);
     }
-    Rules::load(&path)
-        .map(Some)
-        .map_err(|error| error.to_string())
+    #[cfg_attr(
+        not(test),
+        expect(
+            unused_mut,
+            reason = "only the application's own tests change the rules"
+        )
+    )]
+    let mut rules = Rules::load(&path).map_err(|error| error.to_string())?;
+    // The shipped rules have trade on, which opens every new game with every trader's first look: minutes of work for a game of the real
+    // scenario, and the application's tests start that game by the hundred and run years of it. They run with trade off unless a case
+    // turns it on for its own thread (CK-434).
+    #[cfg(test)]
+    if !TRADE_LOOKS.with(std::cell::Cell::get) {
+        rules.expedition.looks = false;
+    }
+    Ok(Some(rules))
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Whether this test thread's games have the shipped rules' trade on (see [`load_rules`]).
+    pub(crate) static TRADE_LOOKS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Build the scenario's deterministic opening economy; fixture scenarios that

@@ -100,6 +100,66 @@ fn pops_of(state: &GameState, place: &str) -> Vec<(usize, String, String, u64)> 
         .collect()
 }
 
+/// CK-434 review 6: the year witness of `economy-soak --looks` makes the one call the game's daily system makes, with the tables and the
+/// climate the game builds. From the same state at the first noon the economy it leaves is the economy the game's noon leaves (what the
+/// characters' own passes do to the people is theirs: the stores, prices and orders are compared).
+#[test]
+fn the_year_witness_day_gives_the_economy_the_games_day_gives() {
+    use crate::game::setup::{
+        DayInputs, DayTables, WeatherData, degree_hours_for, run_economy_day,
+    };
+    let (_dir, mut prepared, _) = shipped(42);
+    let assets = assets();
+    let rules = ck_economy::Rules::load(assets.join("game/economy.toml")).unwrap();
+    let scenario = prepared.scenario.clone();
+    let tables = DayTables::build(&scenario, Some(&rules)).unwrap();
+    let weather = WeatherData::load(&assets, &scenario).unwrap();
+    while prepared.simulation.date().unwrap().hour != 12 {
+        prepared.simulation.step().unwrap();
+    }
+    let date = prepared.simulation.date().unwrap();
+    let mut witness = prepared.simulation.state().economy.clone();
+    assert!(prepared.simulation.step().unwrap().is_empty());
+    let games = &prepared.simulation.state().economy;
+    let degree_hours = degree_hours_for(Some(&weather), &rules, date).unwrap();
+    assert!(degree_hours.values().any(|hours| *hours > 0), "a cold noon");
+    run_economy_day(
+        &rules,
+        &mut witness,
+        date,
+        &std::collections::BTreeMap::new(),
+        &DayInputs {
+            quality_by_place: &tables.quality_by_place,
+            shelter_by_place: &tables.shelter_by_place,
+            nearby_by_place: &tables.nearby_by_place,
+            land_by_place: &tables.land_by_place,
+            trade_by_place: &tables.trade_by_place,
+            degree_hours: &degree_hours,
+        },
+    )
+    .unwrap();
+    assert_eq!(witness.places.len(), games.places.len());
+    for (mine, theirs) in witness.places.iter().zip(&games.places) {
+        assert_eq!(mine.prices_milli, theirs.prices_milli, "{} prices", mine.id);
+        assert_eq!(
+            mine.last_market_orders, theirs.last_market_orders,
+            "{} orders",
+            mine.id
+        );
+        for (a, b) in mine.pops.iter().zip(&theirs.pops) {
+            assert_eq!(a.stock, b.stock, "{} {} stock", mine.id, a.kind);
+        }
+        for (a, b) in mine.buildings.iter().zip(&theirs.buildings) {
+            assert_eq!(a.stock, b.stock, "{} {} building stock", mine.id, a.kind);
+            assert_eq!(
+                a.method_levels, b.method_levels,
+                "{} {} methods",
+                mine.id, a.kind
+            );
+        }
+    }
+}
+
 #[test]
 fn shipped_herds_follow_seed_and_respect_capacity() {
     let directory = assets().join("scenarios/ireland-768");

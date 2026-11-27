@@ -875,7 +875,9 @@ animals = [
 # Choosing a trade (CK-433, trade spec 3.3 and part D): a trader looks again 720 hours after its last look, or 12 hours after an
 # expedition of its has unloaded; it considers only trips whose round trip is within its type's limit (r137: 7 days for peasant and
 # labourer, 30 for monk and noble); a plan on foot sends one to four people; the yearly test counts 365 days.
-# Off in the shipped game until part F (the opening) turns trade on with its first looks.
+# Part F (CK-434) is built: with this on, a new game opens with trade under way (every trader's first look made before the first tick). It
+# stays OFF in the shipped game: on the real 123-place scenario a first look costs seconds (the exact clipping of every reachable way) and
+# a new game would take the better part of an hour to open (`runtime-m55/ck434-look-profile.md`). It is turned on when looking is cheap.
 looks = false
 look_hours = 720
 rest_hours = 12
@@ -883,3 +885,21 @@ visit_radius_m = 2000
 foot_people = 4
 year_hours = 8760
 limit_hours = { peasant = 168, labourer = 168, monk = 720, noble = 720 }
+
+# The opening (CK-434, trade spec section 10; every number a placeholder the owner tunes, r22). Each pop is given, free, a seeded share
+# (500 to 1000 per-mille) of 30 days of its 240-day target of each good it wants that its place does not make and another does, times
+# `max(0, 1000 - reach_pm * t / limit)` per-mille for `t` hours to the nearest producer (r135, r136); each noble and monastic pop is
+# given its fleet, already built with its animal (r141, r142).
+[expedition.opening]
+goods_days = 30
+target_days = 240
+share_pm = [500, 1000]
+reach_pm = 2000
+
+[expedition.opening.fleets]
+noble_horses = "covered_wagon"
+noble = "ox_cart"
+barge = "simple_barge"
+sea = "currach"
+monastic = "ox_cart"
+monastic_island = "currach"

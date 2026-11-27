@@ -67,6 +67,9 @@ pub(crate) struct Journey {
     pub(crate) arrival: [i64; 2],
 }
 
+/// What clipping a way says when it never leaves the visiting radius of its first place (the opening reads it as a way of no time).
+pub(crate) const WITHIN_RADIUS: &str = "the way never leaves the radius of its first place";
+
 impl Journey {
     /// The point of the map an expedition has reached when `done` of leg `index` of the journey is done, in fixed-point cell units
     /// (32,768 to a cell side), read from the leg's frozen path by its movement, or `None` for a leg that does not exist or has no
@@ -671,7 +674,7 @@ impl Clipper<'_> {
             &outside,
             None,
         )?
-        .ok_or_else(|| "the way never leaves the radius of its first place".to_owned())
+        .ok_or_else(|| WITHIN_RADIUS.to_owned())
     }
 
     /// The first point at or after `start` within the radius of `centre` (rule 10: where the way arrives).
