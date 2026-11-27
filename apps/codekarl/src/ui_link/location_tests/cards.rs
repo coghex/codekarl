@@ -424,7 +424,7 @@ fn building_cards_render_mockup_values_and_empty_or_clamped_bars() {
         card_stacks(&rig).get(1).map(String::as_str),
         Some("gap=3 heights=50,39,39,39,39")
     );
-    for text in ["wage 3.2", "housing 3", "80/88"] {
+    for text in ["offers", "housing 3", "80/88"] {
         assert!(
             recorded.iter().any(|line| line.contains(text)),
             "missing {text}: {recorded:?}"
@@ -432,8 +432,6 @@ fn building_cards_render_mockup_values_and_empty_or_clamped_bars() {
     }
     for (colour, value) in [
         ("#92ddea", "farm"),
-        ("#92ddea", "wage "),
-        ("#5fb35a", "3.2"),
         ("#5fb35a", "27"),
         ("#5fb35a", "36"),
         ("#9a927e", "/"),
@@ -606,7 +604,7 @@ note('wage_hover ' .. last_content.class .. ' ' .. last_content.args.place .. ' 
     rig.opened();
     assert_eq!(
         pnote(&rig, "ppicker "),
-        "ppicker sort default,kind,positions,wage"
+        "ppicker sort default,kind,positions,highest offer"
     );
     ppick_click(&mut rig, "positions");
     rig.opened();

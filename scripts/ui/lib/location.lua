@@ -227,10 +227,15 @@ local function method_texture(id)
   return "ui/location/icon_method_" .. id .. ".png"
 end
 
+local function wage_text(building)
+  if building.has_methods then return "offers" end
+  return "wage " .. milli(building.wage)
+end
+
 local function card_layout(building, width)
   local housing = "housing " .. (building.housing_occupants or 0)
   local housing_left = width - 5 - font.layout(housing).width
-  local wage_left = width - 5 - font.layout("wage " .. milli(building.wage)).width
+  local wage_left = width - 5 - font.layout(wage_text(building)).width
   local kind = (building.abandoned and "abandoned " or "") .. building.kind
   while font.layout(kind).width > wage_left - 17 - 4 and utf8.len(kind) > 1 do
     kind = kind:sub(1, utf8.offset(kind, -1) - 1)
@@ -426,12 +431,15 @@ local function building_card(building, place_id, building_index)
       if within(x, y, 5, 3, 14, 14) or within(x, y, 17, 3, 17 + font.layout(layout.kind).width, 3 + font.layout(layout.kind).height) then
         return explanation_tip(building.kind, "kind")
       end
-      local wage_text = "wage " .. milli(building.wage)
-      local wage_left = card_width - 5 - font.layout(wage_text).width
-      if within(x, y, wage_left, 3, wage_left + font.layout("wage ").width, 3 + font.layout(wage_text).height) then
+      local wage_label = wage_text(building)
+      local wage_left = card_width - 5 - font.layout(wage_label).width
+      if building.has_methods and within(x, y, wage_left, 3, card_width - 5, 3 + font.layout(wage_label).height) then
+        return class_tip("wage", place_id, "building", building_index, "wage")
+      end
+      if not building.has_methods and within(x, y, wage_left, 3, wage_left + font.layout("wage ").width, 3 + font.layout(wage_label).height) then
         return explanation_tip("wage", "wage_word")
       end
-      if within(x, y, wage_left + font.layout("wage ").width, 3, card_width - 5, 3 + font.layout(wage_text).height) then
+      if not building.has_methods and within(x, y, wage_left + font.layout("wage ").width, 3, card_width - 5, 3 + font.layout(wage_label).height) then
         return class_tip("wage", place_id, "building", building_index, "wage")
       end
       local method = layout.method
@@ -490,7 +498,7 @@ local function building_card(building, place_id, building_index)
       if icon ~= nil then draw_icon(result, group, icon, dx + 5, dy + 3, theme.colour("text")) end
       put_term_text(result, group, dx + 17, dy + 3, {term(layout.kind)})
       put_term_text(result, group, dx + w - 5, dy + 3,
-        {term("wage "), {text = milli(building.wage), colour = theme.colour("dim")}}, "right")
+        {{text = wage_text(building), colour = theme.colour("dim")}}, "right")
       if layout.method ~= nil then
         local method_id = #building.methods > 1 and "split" or building.methods[1].id
         local quad = render.create_quad{texture = ui.texture(method_texture(method_id)),
@@ -646,7 +654,7 @@ end
 local function building_row(building, _, place_id, building_index)
   local layout
   local function arrange(width)
-    local wage = milli(building.wage)
+    local wage = building.has_methods and "offers" or milli(building.wage)
     local wage_left = width - 3 - font.layout(wage).width
     local count = building.filled .. "/" .. (building.filled + building.open)
     local count_width = font.layout(count).width
@@ -984,7 +992,13 @@ local function buildings_lines(place)
       lines[#lines + 1] = "  " .. herd.species .. ": " .. herd.head .. " / " .. herd.maximum
     end
     lines[#lines + 1] = "  store: " .. building.store_used_l .. " / " .. building.store_capacity_l .. " L"
-    lines[#lines + 1] = "  wage: " .. building.wage
+    if building.has_methods then
+      for _, offer in ipairs(building.offers or {}) do
+        lines[#lines + 1] = "  " .. offer.id:gsub("_", " ") .. " offer: " .. milli(offer.offer_milli)
+      end
+    else
+      lines[#lines + 1] = "  wage: " .. building.wage
+    end
   end
   return lines
 end
@@ -1362,7 +1376,7 @@ local BARS = {
     sorts = {
       {key = "kind", label = "kind", first = "ascending"},
       {key = "positions", label = "positions", first = "descending"},
-      {key = "wage", label = "wage", first = "descending"},
+      {key = "wage", label = "highest offer", first = "descending"},
     },
     groups = {{key = "kind", label = "kind"}},
   },
@@ -1379,7 +1393,9 @@ local function bar_rows(key, place)
       row.sort = {type = item.kind, people = item.workers + item.dependents, food = item.food_days, mood = item.satisfaction}
       row.filter = {type = item.kind}
     else
-      row.sort = {kind = item.kind, positions = item.filled, wage = item.wage}
+      local highest = item.has_methods and 0 or item.wage
+      for _, offer in ipairs(item.offers or {}) do highest = math.max(highest, offer.offer_milli) end
+      row.sort = {kind = item.kind, positions = item.filled, wage = highest}
       row.filter = {kind = item.kind}
     end
     rows[#rows + 1] = row
@@ -1435,7 +1451,7 @@ local function row_items(self, key, place, shown)
       items[#items + 1] = item
     end
   else
-    header({{text = "building", x = 16}, {text = "positions", right = 44}, {text = "wage", right = 3}})
+    header({{text = "building", x = 16}, {text = "positions", right = 44}, {text = "pay", right = 3}})
     for _, entry in ipairs(shown) do
       local building, index = entry.item, entry.index
       local item = building_row(building, false, place.id, index)

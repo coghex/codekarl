@@ -263,6 +263,8 @@ pub(crate) fn prepare(
         if let Some(rules) = economy_rules.as_deref() {
             ck_economy::validate_fuel_state(rules, &save.state.economy)
                 .map_err(|e| e.to_string())?;
+            ck_economy::validate_wage_state(rules, &save.state.economy)
+                .map_err(|e| e.to_string())?;
             ck_economy::validate_trade_state_at(rules, &save.state.economy, save.time.hours())
                 .map_err(|e| e.to_string())?;
         }
@@ -1085,6 +1087,8 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
                 level_validation(state, date)?;
                 if let Some(rules) = fuel_rules.as_deref() {
                     ck_economy::validate_fuel_state(rules, &state.economy)
+                        .map_err(|e| e.to_string())?;
+                    ck_economy::validate_wage_state(rules, &state.economy)
                         .map_err(|e| e.to_string())?;
                     ck_economy::validate_trade_state_at(rules, &state.economy, hours_of(date)?)
                         .map_err(|e| e.to_string())?;
@@ -4739,7 +4743,7 @@ mod stretch_save_tests {
         assert_eq!(
             hashes::rules_hash(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets"))
                 .unwrap(),
-            "4ccfd68c8f609e5c"
+            "bee97c6c541cd909"
         );
         let mut save = source.simulation.save(source.identity.meta(42));
         let weather = source.weather.as_ref().unwrap();

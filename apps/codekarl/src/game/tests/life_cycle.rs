@@ -565,12 +565,14 @@ fn year_digest(economy: &EconomyState) -> u64 {
                 .collect();
             write!(
                 digest,
-                " {} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?}",
+                " {} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?}",
                 building.kind,
                 building.stock,
                 building.herds,
-                building.wage_carries,
-                building.pay_carries,
+                building.wage_offers,
+                building.wage_arrears,
+                building.wage_current,
+                building.fee_pending,
                 building.wage_history,
                 building.employment,
                 building.herd_product_carries,

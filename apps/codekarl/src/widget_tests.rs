@@ -2733,7 +2733,8 @@ local breakdown = {
       satisfaction = 0, births = 3, deaths = 1, basic_housing = 0, makeshift_housing = 0, crowding_pm = 750},
   },
   buildings = {
-    {kind = "farm", store_used_l = 20, store_capacity_l = 100, filled = 7, open = 2, wage = 3200,
+    {kind = "farm", has_methods = true, store_used_l = 20, store_capacity_l = 100, filled = 7, open = 2, wage = 3200,
+      offers = {{id = "steward", offer_milli = 4200}, {id = "field_hands", offer_milli = 3200}},
       jobs = {{id = "steward", filled = 1, places = 1}, {id = "field_hands", filled = 6, places = 8}},
       wages = {{month = 5, year = 769, wage_milli = 3200, paid = 18}, {month = 4, wage_milli = 2900},
         {month = 3, year = 769, wage_milli = 2900, paid = 10}, {month = 2, year = 769, wage_milli = 2900, paid = 10},
@@ -2744,6 +2745,7 @@ local breakdown = {
       herds = {{species = "cattle", head = 70, maximum = 96}, {species = "pigs", head = 51, maximum = 64},
         {species = "sheep", head = 40, maximum = 56}}},
     {kind = "brewery", store_used_l = 10, store_capacity_l = 50},
+    {kind = "storehouse", has_methods = false, store_used_l = 0, store_capacity_l = 0, wage = 3200, wages = {{month = 5, year = 769, wage_milli = 3200, paid = 18}}},
   },
 }
 game.places = function() return {
@@ -2853,8 +2855,11 @@ expect("store", joined("store", {place = "breakdown", building = 1}), "used 20 L
 assert(tooltip.content("staff", {place = "breakdown", building = 9}) == nil, "missing building staff target")
 assert(tooltip.content("store", {place = "breakdown", building = 9}) == nil, "missing building store target")
 local wage_lines = texts(tooltip.content("wage", {place = "breakdown", building = 1}))
-assert(#wage_lines == 13 and wage_lines[1] == "May 769: 3.2 per ordinary worker (18 paid)"
-  and wage_lines[2] == "Apr: 2.9 per ordinary worker" and wage_lines[13] == "average 3.2", table.concat(wage_lines, "\n"))
+assert(#wage_lines == 2 and wage_lines[1] == "steward: 4.2 per month"
+  and wage_lines[2] == "field hands: 3.2 per month", table.concat(wage_lines, "\n"))
+local fee_lines = texts(tooltip.content("wage", {place = "breakdown", building = 3}))
+assert(#fee_lines == 2 and fee_lines[1] == "May 769: 3.2 per ordinary worker (18 paid)"
+  and fee_lines[2] == "average 3.2", table.concat(fee_lines, "\n"))
 expect("herd", joined("herd", {place = "breakdown", building = 1, species = "pigs"}), "pigs 51 of 64")
 assert(tooltip.content("herd", {place = "breakdown", building = 1, species = "goats"}) == nil, "missing herd species")
 assert(tooltip.content("herd", {place = "breakdown", building = 9, species = "pigs"}) == nil, "missing building")

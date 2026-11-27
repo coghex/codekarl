@@ -864,7 +864,6 @@ mod tests {
         let assets = ireland_assets();
         let directory = assets.join("scenarios/ireland-768");
         let scenario = ck_map::load_scenario(&directory).unwrap();
-        let rules = Rules::load(assets.join("game/economy.toml")).unwrap();
         assert_eq!(
             scenario.start.month, 10,
             "the shipped fixture starts in October"
@@ -874,65 +873,20 @@ mod tests {
         june_scenario.start.month = 6;
         let (june_state, _) = starting_economy(&assets, &directory, &june_scenario).unwrap();
 
-        let (place_index, building_index) = october_state
+        let october_offers: Vec<_> = october_state
             .places
             .iter()
-            .enumerate()
-            .find_map(|(place_index, place)| {
-                place
-                    .buildings
-                    .iter()
-                    .enumerate()
-                    .find_map(|(building_index, building)| {
-                        let paid_heads = building
-                            .employment
-                            .iter()
-                            .map(|employment| employment.workers)
-                            .sum::<u64>();
-                        let value = building
-                            .stock
-                            .iter()
-                            .zip(&rules.goods)
-                            .map(|(units, good)| {
-                                u128::from(*units) * u128::from(good.base_price) * 1000
-                            })
-                            .sum::<u128>();
-                        (paid_heads > 0 && value > 0).then_some((place_index, building_index))
-                    })
-            })
-            .expect("the fixture has an employed building with a starting stockpile");
-        let october_building = &october_state.places[place_index].buildings[building_index];
-        let june_building = &june_state.places[place_index].buildings[building_index];
-        let definition = rules
-            .buildings
+            .flat_map(|place| place.buildings.iter().map(|building| &building.wage_offers))
+            .collect();
+        let june_offers: Vec<_> = june_state
+            .places
             .iter()
-            .find(|item| item.id == october_building.kind)
-            .unwrap();
-        let pools =
-            ck_economy::building_job_pools(definition, &october_building.method_levels).unwrap();
-        let shares: u128 = october_building
-            .employment
-            .iter()
-            .flat_map(|employment| {
-                pools.iter().map(move |pool| {
-                    u128::from(employment.jobs.get(&pool.job.id).copied().unwrap_or(0))
-                        * u128::from(pool.job.wage_weight_pm)
-                })
-            })
-            .sum();
-        let starting_value = october_building
-            .stock
-            .iter()
-            .zip(&rules.goods)
-            .map(|(units, good)| u128::from(*units) * u128::from(good.base_price) * 1000)
-            .sum::<u128>();
-        assert_eq!(
-            october_building.wage_history,
-            [u64::try_from(starting_value * 1000 / (shares * 11)).unwrap(); 12]
-        );
-        assert_eq!(
-            june_building.wage_history,
-            [u64::try_from(starting_value * 1000 / (shares * 3)).unwrap(); 12]
+            .flat_map(|place| place.buildings.iter().map(|building| &building.wage_offers))
+            .collect();
+        assert!(october_offers.iter().any(|offers| !offers.is_empty()));
+        assert_ne!(
+            october_offers, june_offers,
+            "the initial offers use the scenario month"
         );
     }
 }

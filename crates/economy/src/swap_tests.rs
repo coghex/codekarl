@@ -70,8 +70,11 @@ pub(crate) fn building_state(rules: &Rules, kind: &str, levels: u32, pops: usize
         herd_death_carries: Vec::new(),
         herd_product_carries: Vec::new(),
         herd_grazing_sums: Vec::new(),
-        wage_carries: vec![0; goods],
-        pay_carries: vec![0; goods],
+        wage_offers: std::collections::BTreeMap::new(),
+        wage_arrears: std::collections::BTreeMap::new(),
+        wage_current: std::collections::BTreeMap::new(),
+
+        fee_pending: vec![0; goods],
         last_made: Vec::new(),
         fee_carries: Vec::new(),
         wage_history: vec![0; 12],

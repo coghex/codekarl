@@ -311,6 +311,13 @@ tooltip.define("wage", function(args)
   local building = building_view(args)
   if building == nil then return nil end
   local lines = {}
+  if building.has_methods then
+    for _, offer in ipairs(building.offers or {}) do
+      lines[#lines + 1] = {term(offer.id), ": ", wage_value(offer.offer_milli), " per month"}
+    end
+    if #lines == 0 then lines[#lines + 1] = {"no held jobs"} end
+    return lines
+  end
   for _, wage in ipairs(building.wages or {}) do
     local month = MONTHS[wage.month]
     if month ~= nil then

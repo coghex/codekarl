@@ -22,6 +22,27 @@ fn building<'a>(rules: &'a Rules, id: &str) -> &'a BuildingType {
 // ---------------------------------------------------------------- the shipped rules
 
 #[test]
+fn shipped_population_minimum_wage_rates() {
+    let rules = rules();
+    for (id, expected) in [
+        ("peasant", 250),
+        ("labourer", 500),
+        ("monk", 0),
+        ("noble", 3000),
+    ] {
+        assert_eq!(
+            rules
+                .pop_types
+                .iter()
+                .find(|pop| pop.id == id)
+                .unwrap()
+                .min_wage_pm,
+            expected
+        );
+    }
+}
+
+#[test]
 fn the_noble_pop_type_loads_at_exactly_the_approved_values() {
     let rules = rules();
     let noble = rules
@@ -80,7 +101,7 @@ fn the_demesne_loads_at_exactly_the_approved_values_and_the_old_buildings_are_un
     assert_eq!(demesne.land_per_level, 2);
     assert_eq!(demesne.methods[0].jobs[0].id, "steward");
     assert_eq!(demesne.penalty_pm, 500);
-    assert_eq!(demesne.overhead_pm, 300);
+    assert_eq!(demesne.labour_share_pm, 400);
     assert_eq!(demesne.recruit_range_m, Some(30_000));
     assert_eq!(rules.footprint_m2_per_unit["demesne"], 800);
     assert_eq!(rules.housing_milli_per_unit["demesne"], 7400);
@@ -144,7 +165,7 @@ fn the_demesne_loads_at_exactly_the_approved_values_and_the_old_buildings_are_un
         11
     );
     assert_eq!(building(&rules, "holdings").penalty_pm, 500);
-    assert_eq!(building(&rules, "holdings").overhead_pm, 300);
+    assert_eq!(building(&rules, "holdings").labour_share_pm, 400);
 }
 
 #[test]
@@ -616,13 +637,16 @@ fn empty_steward_positions_reduce_output_while_field_hands_still_earn_pay() {
         (scaled_oats * 2..=scaled_oats * 2 + 1).contains(&full_oats),
         "500‰ penalty without stewards: {scaled_oats} against {full_oats}"
     );
-    // The labourers are still paid: they work and earn their share of the output.
+    // The labourers earn their committed wage even when the manager penalty cuts output.
     let paid = without.places[0].pops[labourers].stock[oats] - before;
     assert!(paid > 0, "the labourers' pay arrives without stewards");
     let mut full_paid_state = state.clone();
     let before = full_paid_state.places[0].pops[labourers].stock[oats];
     oats_produced(&rules, &mut full_paid_state);
-    assert!(full_paid_state.places[0].pops[labourers].stock[oats] - before > paid);
+    assert_eq!(
+        full_paid_state.places[0].pops[labourers].stock[oats] - before,
+        paid
+    );
 }
 
 #[test]
@@ -650,7 +674,10 @@ fn monthly_hiring_prefers_available_nobles_for_steward_places() {
     place.buildings[demesne_index].employment[nobles].workers = 0;
     place.pops[nobles].employment[demesne_index] =
         place.buildings[demesne_index].employment[nobles].clone();
-    fill_monthly_hiring(&rules, place).unwrap();
+    place.buildings[demesne_index]
+        .wage_offers
+        .insert("steward".into(), u64::MAX);
+    fill_local_hiring(&rules, place).unwrap();
     assert_eq!(
         place.buildings[demesne_index].employment[nobles]
             .jobs
@@ -676,7 +703,7 @@ fn monthly_hiring_prefers_available_nobles_for_steward_places() {
         0
     );
     for _ in 0..40 {
-        fill_monthly_hiring(&rules, place).unwrap();
+        fill_local_hiring(&rules, place).unwrap();
     }
     assert_eq!(
         place.buildings[demesne_index].employment[nobles]
@@ -986,8 +1013,11 @@ fn building_state(rules: &Rules, kind: &str, levels: u32, pops: usize) -> Buildi
         herd_death_carries: Vec::new(),
         herd_product_carries: Vec::new(),
         herd_grazing_sums: Vec::new(),
-        wage_carries: vec![0; goods],
-        pay_carries: vec![0; goods],
+        wage_offers: std::collections::BTreeMap::new(),
+        wage_arrears: std::collections::BTreeMap::new(),
+        wage_current: std::collections::BTreeMap::new(),
+
+        fee_pending: vec![0; goods],
         last_made: Vec::new(),
         fee_carries: Vec::new(),
         wage_history: vec![0; 12],
@@ -1711,6 +1741,12 @@ fn a_two_month_run_with_rent_is_the_same_twice_and_a_save_load_in_the_middle_cha
 #[test]
 fn the_live_housing_read_keeps_the_months_priority_until_the_next_first_and_survives_a_save() {
     let mut rules = rent_rules();
+    rules
+        .pop_types
+        .iter_mut()
+        .find(|pop| pop.id == "labourer")
+        .unwrap()
+        .min_wage_pm = 0;
     // The demesne has one paid position, held by a third household, and room for two: a workers-first
     // place for the worker and one spare place, so no one else is hired into it.
     rules

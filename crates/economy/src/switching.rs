@@ -134,7 +134,6 @@ use super::{
     add_counter_units, building_job_pools, choose_terrain, derive_level_sums, give, good_staffing,
     herd_supplies, manager_factor, mean_fertility, method_suitability_pm, missing_data,
     mul_div_floor, pool_staffing, projected_pop_order_units, seasonal_accounts, settle_overflow,
-    split_and_pay,
 };
 use std::collections::BTreeMap;
 
@@ -257,6 +256,7 @@ fn forecast_staffing(
 
 // Forecast only hires into jobs new to the building; transfers themselves are exact.
 fn projected_staffing(
+    rules: &Rules,
     place: &PlaceState,
     building: &BuildingState,
     def: &BuildingType,
@@ -280,7 +280,7 @@ fn projected_staffing(
     let mut exact = building.clone();
     exact.method_levels = levels.to_vec();
     let mut pops = place.pops.clone();
-    trim_jobs(&mut pops, &mut exact, def, 0)?;
+    trim_jobs(rules, &place.prices_milli, &mut pops, &mut exact, def, 0)?;
     let pools = building_job_pools(def, levels)?;
     let counts = pool_staffing(
         &pools,
@@ -376,7 +376,7 @@ fn output(
     let mut values = vec![Fraction::integer(0); rules.goods.len()];
     let (_, _, efficiency) = staffing(place, building, def)?;
     let projection = candidate_levels
-        .map(|levels| projected_staffing(place, building, def, levels))
+        .map(|levels| projected_staffing(rules, place, building, def, levels))
         .transpose()?;
     for (good, annual) in &method.annual_output {
         let (workers, positions, factor) = if let Some((pools, forecast, factor)) = &projection {
@@ -908,6 +908,8 @@ fn rescale_carries(
 }
 
 fn trim_jobs(
+    rules: &Rules,
+    prices: &[u64],
     pops: &mut [PopState],
     building: &mut BuildingState,
     definition: &BuildingType,
@@ -964,13 +966,20 @@ fn trim_jobs(
             .iter()
             .zip(pops.iter())
             .map(|(&count, pop)| {
-                if pool.job.pop_types.contains(&pop.kind) {
-                    count
-                } else {
-                    0
-                }
+                let minimum = super::wages::pop_minimum_wage(rules, prices, pop, &pop.kind)
+                    .ok_or_else(|| {
+                        missing_data("wages.minimum".into(), "minimum wage cannot be computed")
+                    })?;
+                let offer = building.wage_offers.get(&pool.job.id).copied().unwrap_or(0);
+                Ok(
+                    if pool.job.pop_types.contains(&pop.kind) && offer >= minimum {
+                        count
+                    } else {
+                        0
+                    },
+                )
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, DataError>>()?;
         let awards = give(pool.places.saturating_sub(occupied), &eligible)?;
         for (i, award) in awards.into_iter().enumerate() {
             if award > 0 {
@@ -1012,6 +1021,7 @@ fn replace_levels(
     grounds: &[Option<String>],
     year: u16,
     month: u8,
+    prices: &[u64],
 ) -> Result<(), DataError> {
     let target = def
         .methods
@@ -1063,7 +1073,7 @@ fn replace_levels(
     }
     rescale_carries(rules, building, def, &counts)?;
     building.method_levels = counts;
-    trim_jobs(pops, building, def, building_index)?;
+    trim_jobs(rules, prices, pops, building, def, building_index)?;
     let (suitability, grazing) = derive_level_sums(rules, def, &building.level_records)?;
     building.method_suitability = suitability;
     building.herd_grazing_sums = grazing;
@@ -1407,11 +1417,18 @@ fn look_capacity(
             let mut exact = building.clone();
             exact.method_levels.clone_from(&levels);
             let mut pops = place.pops.clone();
-            trim_jobs(&mut pops, &mut exact, def, building_index)?;
+            trim_jobs(
+                rules,
+                &place.prices_milli,
+                &mut pops,
+                &mut exact,
+                def,
+                building_index,
+            )?;
             let (heads, gone, founders, dead) =
                 switching_heads_for(rules, &exact, def, &levels, is_land(target))?;
             let old_herd = value(rules, &old_herd_made, &want, prices);
-            let (_, _, factor) = projected_staffing(place, building, def, &levels)?;
+            let (_, _, factor) = projected_staffing(rules, place, building, def, &levels)?;
             let new_herd = value(
                 rules,
                 &herd_output(rules, place, building, def, &heads, Some(&factor))?,
@@ -1620,14 +1637,21 @@ pub fn look_in_year(
             let mut exact = building.clone();
             exact.method_levels.clone_from(&candidate_levels);
             let mut pops = place.pops.clone();
-            trim_jobs(&mut pops, &mut exact, def, building_index)?;
+            trim_jobs(
+                rules,
+                &place.prices_milli,
+                &mut pops,
+                &mut exact,
+                def,
+                building_index,
+            )?;
             // The herd calculation derives the candidate levels from the old record;
             // its staffing, however, is the post-transfer staffing.
             exact.method_levels.clone_from(&building.method_levels);
             let (heads, gone, founders, dead) = switching_heads(rules, &exact, def, level, target)?;
             let old_herd = value(rules, &old_herd_made, want, prices);
             let (_, _, candidate_factor) =
-                projected_staffing(place, building, def, &candidate_levels)?;
+                projected_staffing(rules, place, building, def, &candidate_levels)?;
             let new_herd = value(
                 rules,
                 &herd_output(rules, place, building, def, &heads, Some(&candidate_factor))?,
@@ -1688,12 +1712,8 @@ pub fn look_in_year(
 }
 
 /// Makes the move the look chose for one building, at once: the level changes method and ground and starts over, the building's
-/// sums follow its records, and a herd that no longer fits is slaughtered and its yield paid out that day by payday's own split,
-/// with no wage posted; where a kind has no animals and the new method keeps animals, founders arrive.
-#[expect(
-    clippy::too_many_lines,
-    reason = "The level, the building's sums, the herd and the cull's payment change together, at once."
-)]
+/// sums follow its records, and a herd that no longer fits is slaughtered and its yield goes to stock; where a kind has no
+/// animals and the new method keeps animals, founders arrive.
 fn make_move(
     rules: &Rules,
     place: &mut PlaceState,
@@ -1722,6 +1742,7 @@ fn make_move(
         &plan.grounds,
         year,
         month,
+        &place.prices_milli,
     )?;
     let (_, gone, founders, dead) = switching_heads_for(
         rules,
@@ -1784,27 +1805,18 @@ fn make_move(
             .checked_add(units)
             .ok_or_else(|| missing_data("ledger.production".into(), "production total overflow"))?;
     }
-    let (_, pending) = split_and_pay(
-        rules,
-        &place.id,
-        &place.prices_milli,
-        &mut place.pops,
-        &mut place.buildings[building_index],
-        def,
-        building_index,
-        &output,
-        // A switch's pay-out is of work already accrued: no day of it is counted away.
-        &[],
-        1,
-    )?;
-    for (source, good_index, contributions) in pending {
+    for (good_index, units) in output
+        .into_iter()
+        .enumerate()
+        .filter(|(_, units)| *units > 0)
+    {
         settle_overflow(
             rules,
             &mut place.pops,
             &mut place.buildings,
-            source,
+            building_index,
             good_index,
-            &contributions,
+            &[(None, units)],
             &mut place.counters,
             ledger,
         )?;
@@ -2303,7 +2315,7 @@ mod fraction_tests {
         building.employment[1].jobs.insert("monks".into(), 4);
         building.employment[1].workers = 4;
         let (pools, forecast, factor) =
-            projected_staffing(&place, &place.buildings[0], def, &[1, 0]).unwrap();
+            projected_staffing(&rules, &place, &place.buildings[0], def, &[1, 0]).unwrap();
         let field = pools
             .iter()
             .position(|p| p.job.id == "field_hands")
@@ -2333,7 +2345,15 @@ mod fraction_tests {
         assert_eq!(looked.moves[0].switching, Fraction::integer(114_000));
         let mut exact = place.buildings[0].clone();
         exact.method_levels = vec![1, 0];
-        trim_jobs(&mut place.pops, &mut exact, def, 0).unwrap();
+        trim_jobs(
+            &rules,
+            &place.prices_milli,
+            &mut place.pops,
+            &mut exact,
+            def,
+            0,
+        )
+        .unwrap();
         assert_eq!(exact.employment[0].jobs.get("field_hands"), Some(&2));
     }
 
@@ -2684,9 +2704,9 @@ mod fraction_tests {
         assert_eq!(place.buildings[0].method_levels, vec![1]);
         assert_eq!(place.buildings[0].level_records[0].ground, None);
         assert_eq!(place.buildings[0].employment[0].workers, 0);
-        super::super::fill_monthly_hiring(&rules, &mut place).unwrap();
+        super::super::fill_local_hiring(&rules, &mut place).unwrap();
         assert_eq!(place.buildings[0].employment[0].workers, 1);
-        super::super::fill_monthly_hiring(&rules, &mut place).unwrap();
+        super::super::fill_local_hiring(&rules, &mut place).unwrap();
         assert_eq!(place.buildings[0].employment[0].workers, 2);
         rules.buildings.retain(|building| building.id != "other");
         let mut state = super::super::EconomyState {
@@ -2792,6 +2812,7 @@ mod fraction_tests {
             &[None],
             768,
             5,
+            &place.prices_milli,
         )
         .unwrap();
         let expected_herds = switching_heads_for(&rules, &exact, def, &exact.method_levels, false)
@@ -2900,12 +2921,12 @@ mod fraction_tests {
         let mut levels = vec![0; def.methods.len()];
         levels[0] = 1;
         let (pools, forecast, _) =
-            projected_staffing(&place, &place.buildings[0], &def, &levels).unwrap();
+            projected_staffing(&rules, &place, &place.buildings[0], &def, &levels).unwrap();
         assert_eq!(pools[0].job.id, "steward");
         assert_eq!(forecast, vec![Fraction::integer(1), Fraction::integer(0)]);
         place.pops[0].workers = 2;
         let (_, forecast, _) =
-            projected_staffing(&place, &place.buildings[0], &def, &levels).unwrap();
+            projected_staffing(&rules, &place, &place.buildings[0], &def, &levels).unwrap();
         assert_eq!(forecast, vec![Fraction::integer(1), Fraction::integer(1)]);
         assert!(
             place.buildings[0]
@@ -2940,6 +2961,7 @@ mod fraction_tests {
             &[None],
             768,
             5,
+            &place.prices_milli,
         )
         .unwrap();
         let building = &place.buildings[0];
@@ -2989,7 +3011,7 @@ mod fraction_tests {
         building.employment[0].jobs.insert("field_hands".into(), 1);
         building.employment[0].workers = 1;
         let (_, _, factor) =
-            projected_staffing(&place, &place.buildings[0], &def, &[0, 1]).unwrap();
+            projected_staffing(&rules, &place, &place.buildings[0], &def, &[0, 1]).unwrap();
         assert_eq!(factor, Fraction::integer(667));
     }
 
@@ -3043,7 +3065,15 @@ mod fraction_tests {
         let original = building.clone();
         let mut exact = original.clone();
         exact.method_levels = vec![0, 1];
-        trim_jobs(&mut place.pops, &mut exact, def, 0).unwrap();
+        trim_jobs(
+            &rules,
+            &place.prices_milli,
+            &mut place.pops,
+            &mut exact,
+            def,
+            0,
+        )
+        .unwrap();
         assert_eq!(exact.employment[0].jobs.get("steward"), Some(&1));
         assert_eq!(exact.employment[0].jobs.get("herder"), Some(&1));
         let mut basis = original.clone();
@@ -3057,7 +3087,7 @@ mod fraction_tests {
         )
         .unwrap();
         assert_eq!((heads[0], gone[0], founders[0], dead[0]), (2, 0, 2, 0));
-        let (_, _, factor) = projected_staffing(&place, &original, def, &[0, 1]).unwrap();
+        let (_, _, factor) = projected_staffing(&rules, &place, &original, def, &[0, 1]).unwrap();
         assert_eq!(factor, Fraction::integer(1000));
         let dairy = crate::tests::good_at(&rules, "dairy");
         let present_value = herd_output(&rules, &place, &original, def, &heads, None).unwrap();
@@ -3309,10 +3339,69 @@ mod fraction_tests {
         building.employment[0].workers = 10;
         building.employment[1].jobs.insert("fishermen".into(), 1);
         building.employment[1].workers = 1;
-        trim_jobs(&mut place.pops, building, def, 0).unwrap();
+        trim_jobs(
+            &rules,
+            &place.prices_milli,
+            &mut place.pops,
+            building,
+            def,
+            0,
+        )
+        .unwrap();
         assert_eq!(building.employment[0].jobs.get("field_hands"), Some(&10));
         assert_eq!(building.employment[1].workers, 0);
         assert_eq!(place.pops[1].employment[0].workers, 0);
+    }
+
+    #[test]
+    fn released_workers_skip_a_job_below_their_minimum() {
+        let (mut rules, mut place) = fixture(100, "oats");
+        rules
+            .pop_types
+            .iter_mut()
+            .find(|pop| pop.id == "labourer")
+            .unwrap()
+            .min_wage_pm = 1000;
+        place.pops[0].kind = "labourer".into();
+        place.pops[0].workers = 10;
+        place.pops[0].consumption.necessities_pm = 1000;
+        place.prices_milli = rules
+            .goods
+            .iter()
+            .map(|good| good.base_price * 1000)
+            .collect();
+        assert!(
+            super::super::wages::pop_minimum_wage(
+                &rules,
+                &place.prices_milli,
+                &place.pops[0],
+                "labourer"
+            )
+            .unwrap()
+                > 0
+        );
+        let def = rules.buildings.iter().find(|b| b.id == "holdings").unwrap();
+        let building = &mut place.buildings[0];
+        building.method_levels = vec![2, 0];
+        for entry in &mut building.employment {
+            entry.jobs.clear();
+            entry.workers = 0;
+        }
+        building.employment[0].jobs =
+            BTreeMap::from([("field_hands".into(), 5), ("fishermen".into(), 5)]);
+        building.employment[0].workers = 10;
+        building.wage_offers.insert("field_hands".into(), 0);
+        trim_jobs(
+            &rules,
+            &place.prices_milli,
+            &mut place.pops,
+            building,
+            def,
+            0,
+        )
+        .unwrap();
+        assert_eq!(building.employment[0].jobs.get("field_hands"), Some(&5));
+        assert_eq!(building.employment[0].workers, 5);
     }
 
     #[test]
@@ -3329,7 +3418,15 @@ mod fraction_tests {
         building.employment[0].jobs.clear();
         building.employment[0].jobs.insert("fishermen".into(), 5);
         building.employment[0].workers = 5;
-        trim_jobs(&mut place.pops, building, def, 0).unwrap();
+        trim_jobs(
+            &rules,
+            &place.prices_milli,
+            &mut place.pops,
+            building,
+            def,
+            0,
+        )
+        .unwrap();
         assert_eq!(building.employment[0].jobs.get("field_hands"), Some(&5));
         assert_eq!(building.employment[0].workers, 5);
     }
@@ -3354,7 +3451,15 @@ mod fraction_tests {
                 .employment
                 .resize(count, crate::Employment::default());
         }
-        trim_jobs(&mut place.pops, &mut place.buildings[0], definition, 0).unwrap();
+        trim_jobs(
+            &rules,
+            &place.prices_milli,
+            &mut place.pops,
+            &mut place.buildings[0],
+            definition,
+            0,
+        )
+        .unwrap();
         assert_eq!(place.buildings[0].employment[0].jobs["field_hands"], 2);
         assert_eq!(place.buildings[0].employment[1].jobs["field_hands"], 3);
         assert_eq!(place.pops[1].employment[0].jobs["field_hands"], 3);
@@ -3823,8 +3928,8 @@ mod switch_step_tests {
                 &farm.wage_history,
                 &farm.paid_history,
                 &farm.paid_years,
-                &farm.wage_carries,
-                &farm.pay_carries,
+                &farm.wage_offers,
+                &farm.fee_pending,
                 &farm.stock,
             ),
             (
@@ -3834,8 +3939,8 @@ mod switch_step_tests {
                 &base.wage_history,
                 &base.paid_history,
                 &base.paid_years,
-                &base.wage_carries,
-                &base.pay_carries,
+                &base.wage_offers,
+                &base.fee_pending,
                 &base.stock,
             )
         );
@@ -4399,8 +4504,8 @@ mod switch_step_tests {
             )
         );
         // The farm's overhead is a tenth: 900 of every thousand go to wages, the rest is passed on.
-        assert_eq!(after.wage_carries[beef], before.wage_carries[beef]);
-        assert_eq!(after.pay_carries[beef], 0);
+        assert_eq!(after.wage_arrears, before.wage_arrears);
+        assert_eq!(after.fee_pending[beef], 0);
         // The herd adds up for the pass, for the place and kind.
         let place = &ledger.places[0];
         assert_eq!(
@@ -4428,19 +4533,15 @@ mod switch_step_tests {
             &moved.places[0].buildings[0],
             &baseline.places[0].buildings[0],
         );
-        // A second payday would post a higher wage and pay the crop twice; the paid heads and year are payday's own.
-        assert_eq!(after.wage_history[8], before.wage_history[8]);
-        assert_eq!(after.paid_history[8], before.paid_history[8]);
-        assert_eq!(after.paid_years[8], YEAR);
+        // A cull creates no new wage or claim.
+        assert_eq!(after.wage_arrears, before.wage_arrears);
+        assert_eq!(after.wage_current, before.wage_current);
         assert_eq!(after.production_carries, before.production_carries);
         assert_eq!(
             after.last_made, before.last_made,
             "a switch cull is not payday output"
         );
-        // The beef's wages (900 of every thousand, by the farm's overhead) go to the workers' stores, and what does not fit and
-        // the overhead are passed on; none of it is lost or kept back in a carry.
-        assert_eq!(after.wage_carries[beef], 0);
-        assert_eq!(after.pay_carries[beef], 0);
+        // All cull goods enter the stock route and remain accounted for.
         assert_eq!(held(&moved, beef), held(&baseline, beef) + 2200);
     }
 
@@ -4463,73 +4564,32 @@ mod switch_step_tests {
     }
 
     #[test]
-    fn a_cull_is_paid_by_paydays_split_to_each_recipient_with_the_carry_taken_on() {
-        // The farm keeps a tenth and a half of a tenth of its output for overhead (105 per mille), so a wage is 895 of every
-        // thousand. Its workers are all of the first pop. The mutton's wage carry stood at 400,000 millionths after payday.
-        let (mut rules, mut state, land, _) = culling(118);
-        rules
-            .buildings
-            .iter_mut()
-            .find(|b| b.id == "farm")
-            .unwrap()
-            .overhead_pm = 105;
-        let (beef, mutton, hides) = (
-            good_at(&rules, "beef"),
-            good_at(&rules, "mutton"),
-            good_at(&rules, "hides"),
-        );
-        state.places[0].buildings[0].wage_carries[mutton] = 400_000;
+    fn a_cull_enters_stock_without_creating_wage_claims() {
+        let (rules, state, land, _) = culling(118);
         let mut baseline = state.clone();
         run_monthly_production(&rules, &mut baseline, on(9, YEAR)).unwrap();
         let mut moved = state;
         let ledger = step_at(&rules, &mut moved, &land, on(9, YEAR), 1000);
-        let farm = &moved.places[0].buildings[0];
-        let before = &baseline.places[0].buildings[0];
-        let pop_stock = |state: &EconomyState, good: usize| -> Vec<u64> {
-            state.places[0].pops.iter().map(|p| p.stock[good]).collect()
-        };
-        // (good, the first pop's stock, the farm's stock, the wage carry and the pay carry): 2,200 beef is a wage of 1,969 and
-        // 231 of overhead; 50 mutton and the old carry make a wage of 45, 5 of overhead and a carry of 150,000; 10 hides make
-        // a wage of 8, 2 of overhead and a carry of 950,000. Nothing is lost.
-        for (good, wage, overhead, carry) in [
-            (beef, 1969, 231, 0),
-            (mutton, 45, 5, 150_000),
-            (hides, 8, 2, 950_000),
+        for (good, units) in [
+            (good_at(&rules, "beef"), 2200),
+            (good_at(&rules, "mutton"), 50),
+            (good_at(&rules, "hides"), 10),
         ] {
-            assert_eq!(pop_stock(&moved, good), vec![wage, 0, 0], "{good}");
-            assert_eq!(pop_stock(&baseline, good), vec![0, 0, 0], "{good}");
-            assert_eq!(farm.stock[good], overhead, "{good}");
-            assert_eq!(before.stock[good], 0, "{good}");
-            assert_eq!(ledger.lost[good], 0, "{good}");
-            assert_eq!(farm.wage_carries[good], carry, "{good}");
-            assert_eq!(farm.pay_carries[good], 0, "{good}");
+            assert_eq!(
+                held(&moved, good) + ledger.lost[good],
+                held(&baseline, good) + units
+            );
         }
-        // The posted pay is what payday posted.
         assert_eq!(
-            (&farm.wage_history, &farm.paid_history, &farm.paid_years),
-            (
-                &before.wage_history,
-                &before.paid_history,
-                &before.paid_years
-            )
+            moved.places[0].buildings[0].wage_arrears,
+            baseline.places[0].buildings[0].wage_arrears
         );
     }
 
     #[test]
     fn a_cull_that_overflows_the_workers_store_is_routed_to_the_farm_and_lost_beyond_it() {
-        // Forty workers hold up to 30 lb of beef each, 1,200 lb: 1,000 are held, so there is room for 200. The farm's store takes
-        // 4 lb for each of its 100 workers, 400 lb. No other pop has anyone to hold anything. The cull of 2,200 lb of beef is a
-        // wage of 1,969 and 231 of overhead (105 per mille):
-        //   overhead 231 goes to the farm's store, which then has room for 169;
-        //   the wage 1,969 goes to the workers, who take 200 (their room); the 1,769 over goes to the buildings the pop owns a share
-        //   of, the farm, which takes 169; and the 1,600 that is left is lost.
-        let (mut rules, mut state, land, _) = culling(118);
-        rules
-            .buildings
-            .iter_mut()
-            .find(|b| b.id == "farm")
-            .unwrap()
-            .overhead_pm = 105;
+        // The cull goes to the farm's stock route; no part is a wage.
+        let (rules, mut state, land, _) = culling(118);
         let beef = good_at(&rules, "beef");
         state.places[0].pops[0].workers = 40;
         state.places[0].pops[0].stock[beef] = 1_000;
@@ -4540,23 +4600,23 @@ mod switch_step_tests {
         let place = &moved.places[0];
         assert_eq!(
             place.pops.iter().map(|p| p.stock[beef]).collect::<Vec<_>>(),
-            vec![1_200, 0, 0],
-            "the workers' store is full"
+            vec![1_000, 0, 0],
+            "the cull pays no wages"
         );
         assert_eq!(
             place.buildings[0].stock[beef], 400,
             "the farm's store is full"
         );
-        assert_eq!(ledger.lost[beef], 1_600);
-        assert_eq!(place.counters.current.lost[beef], 1_600);
-        assert_eq!(place.pops[0].counters.current.losses, 1_600);
+        assert_eq!(ledger.lost[beef], 1_800);
+        assert_eq!(place.counters.current.lost[beef], 1_800);
+        assert_eq!(place.pops[0].counters.current.losses, 0);
         assert_eq!(ledger.produced[beef], 2_200);
         // Every unit is somewhere: what the stores gained and what was lost make the yield.
         assert_eq!(held(&moved, beef) - 1_000 + ledger.lost[beef], 2_200);
         // The wage carry stands and the posted pay is what payday posted.
         let farm = &place.buildings[0];
         let before = &baseline.places[0].buildings[0];
-        assert_eq!((farm.wage_carries[beef], farm.pay_carries[beef]), (0, 0));
+        assert_eq!(farm.wage_arrears, before.wage_arrears);
         assert_eq!(
             (&farm.wage_history, &farm.paid_history, &farm.paid_years),
             (
@@ -5174,4 +5234,331 @@ mod switch_step_tests {
         let bytes = state.to_bytes().unwrap();
         assert_eq!(EconomyState::from_bytes(&bytes).unwrap(), state);
     }
+}
+/// Price every job from one building-wide expected profit per weighted place.
+#[expect(
+    clippy::too_many_lines,
+    reason = "The frozen snapshot prices each building and every job before committing any offer."
+)]
+pub(super) fn commit_wage_offers(
+    rules: &Rules,
+    place: &mut PlaceState,
+    land: Option<&LandCounts>,
+    month: u8,
+    quality: u16,
+) -> Result<(), DataError> {
+    if !(1..=12).contains(&month) {
+        return Err(missing_data(
+            "wages.month".into(),
+            "month is outside 1..=12",
+        ));
+    }
+    let usage = land.map(|_| Usage::new(rules, place)).transpose()?;
+    let mut committed = Vec::with_capacity(place.buildings.len());
+    for (building_index, building) in place.buildings.iter().enumerate() {
+        let def = definition(rules, building)?;
+        if def.methods.is_empty() {
+            committed.push(BTreeMap::new());
+            continue;
+        }
+        let all_jobs = building_job_pools(def, &vec![1; def.methods.len()])?;
+        let herd = herd_output(
+            rules,
+            place,
+            building,
+            def,
+            &building.herds,
+            Some(&Fraction::integer(1000)),
+        )?;
+        let herd_value = herd
+            .iter()
+            .zip(&place.prices_milli)
+            .fold(Fraction::integer(0), |sum, (qty, price)| {
+                sum.add(&qty.mul(&Fraction::ratio(u128::from(*price), 12)))
+            });
+        let level_value = |method: &Method, ground: Option<&str>| -> Result<Fraction, DataError> {
+            let mut sum = Fraction::integer(0);
+            for (good, annual) in &method.annual_output {
+                if herd_supplies(rules, def, good) {
+                    continue;
+                }
+                let has_maker = method.jobs.iter().any(|job| {
+                    job.places > 0
+                        && method
+                            .made_by
+                            .get(good)
+                            .map_or(!job.manager, |id| *id == job.id)
+                });
+                if !has_maker {
+                    continue;
+                }
+                let idx = rules
+                    .goods
+                    .iter()
+                    .position(|item| item.id == *good)
+                    .ok_or_else(|| missing_data(format!("goods.{good}"), "missing good"))?;
+                let price = *place
+                    .prices_milli
+                    .get(idx)
+                    .ok_or_else(|| missing_data("wages.prices".into(), "missing price"))?;
+                let suitability = method_suitability_pm(rules, def, method, good, ground);
+                let (q, reference) = if method.resource == "usable_land" {
+                    (quality, rules.fertility_reference_pm)
+                } else {
+                    (1, 1)
+                };
+                if reference == 0 {
+                    return Err(missing_data(
+                        "fertility_reference_pm".into(),
+                        "zero denominator",
+                    ));
+                }
+                let (season, divisor) = if method.grows {
+                    (1_u128, 12_u128)
+                } else {
+                    let key = if ["oats", "barley", "peas_beans"].contains(&good.as_str()) {
+                        "grain"
+                    } else {
+                        good.as_str()
+                    };
+                    let season = rules
+                        .seasons
+                        .get(key)
+                        .ok_or_else(|| missing_data(format!("seasons.{key}"), "missing season"))?;
+                    (u128::from(season[usize::from(month - 1)]), 1000)
+                };
+                sum = sum.add(&amount(
+                    &[
+                        u128::from(*annual),
+                        u128::from(suitability),
+                        u128::from(q),
+                        season,
+                        u128::from(price),
+                    ],
+                    &[1000, u128::from(reference), divisor],
+                ));
+            }
+            Ok(sum)
+        };
+        let pools = building_job_pools(def, &building.method_levels)?;
+        let weighted = pools.iter().fold(0_u128, |sum, pool| {
+            sum + u128::from(pool.places) * u128::from(pool.job.wage_weight_pm)
+        });
+        let p = if weighted > 0 {
+            let mut profit = herd_value.clone();
+            for record in &building.level_records {
+                let method = def
+                    .methods
+                    .get(record.method as usize)
+                    .ok_or_else(|| missing_data("wages.method".into(), "invalid method"))?;
+                profit = profit.add(&level_value(method, record.ground.as_deref())?);
+            }
+            profit.mul(&Fraction::ratio(1000, weighted))
+        } else {
+            let mut best = Fraction::integer(0);
+            if let (Some(land), Some(usage)) = (land, usage.as_ref()) {
+                for method in &def.methods {
+                    if method.size_units > building.units {
+                        continue;
+                    }
+                    let grounds = capacity_grounds(rules, def, land, usage, &[], method, 1);
+                    let Some(ground) = grounds.first() else {
+                        continue;
+                    };
+                    let places = method.jobs.iter().fold(0_u128, |sum, job| {
+                        sum + u128::from(job.places) * u128::from(job.wage_weight_pm)
+                    });
+                    if places == 0 {
+                        continue;
+                    }
+                    let candidate = level_value(method, ground.as_deref())?
+                        .add(&herd_value)
+                        .mul(&Fraction::ratio(1000, places));
+                    if candidate.cmp(&best) == Ordering::Greater {
+                        best = candidate;
+                    }
+                }
+            }
+            best
+        };
+        let mut offers = BTreeMap::new();
+        for pool in &all_jobs {
+            let job = &pool.job;
+            let weight = Fraction::ratio(u128::from(job.wage_weight_pm), 1000);
+            let cap = p.mul(&weight);
+            let share = cap.mul(&Fraction::ratio(u128::from(def.labour_share_pm), 1000));
+            let minimum = place
+                .pops
+                .iter()
+                .filter(|pop| {
+                    job.pop_types.contains(&pop.kind) && (pop.workers > 0 || pop.dependents > 0)
+                })
+                .map(|pop| {
+                    super::wages::pop_minimum_wage(rules, &place.prices_milli, pop, &pop.kind)
+                        .ok_or_else(|| {
+                            missing_data("wages.minimum".into(), "minimum wage cannot be computed")
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .min()
+                .unwrap_or(0);
+            let mut rival = 0;
+            for (other_index, other) in place.buildings.iter().enumerate() {
+                if other_index == building_index {
+                    continue;
+                }
+                let other_def = definition(rules, other)?;
+                if other_def.methods.is_empty() {
+                    continue;
+                }
+                for candidate in building_job_pools(other_def, &other.method_levels)? {
+                    if !candidate
+                        .job
+                        .pop_types
+                        .iter()
+                        .any(|kind| job.pop_types.contains(kind))
+                    {
+                        continue;
+                    }
+                    let filled = other
+                        .employment
+                        .iter()
+                        .map(|entry| entry.jobs.get(&candidate.job.id).copied().unwrap_or(0))
+                        .sum::<u64>();
+                    if candidate.places > filled {
+                        rival = rival.max(
+                            other
+                                .wage_offers
+                                .get(&candidate.job.id)
+                                .copied()
+                                .unwrap_or(0),
+                        );
+                    }
+                }
+            }
+            let floor = Fraction::integer(u128::from(minimum)).mul(&weight);
+            let rival = Fraction::integer(u128::from(rival));
+            let desired = if floor.cmp(&rival) == Ordering::Greater {
+                floor
+            } else {
+                rival
+            };
+            let desired = if share.cmp(&desired) == Ordering::Greater {
+                share
+            } else {
+                desired
+            };
+            let offer = cap.min(&desired);
+            let value = u64::try_from(
+                offer
+                    .numerator
+                    .divmod(&offer.denominator)
+                    .0
+                    .to_u128()
+                    .ok_or_else(|| missing_data("wages.offer".into(), "offer exceeds u128"))?,
+            )
+            .map_err(|_| missing_data("wages.offer".into(), "offer exceeds u64"))?;
+            offers.insert(job.id.clone(), value);
+        }
+        committed.push(offers);
+    }
+    for (building, offers) in place.buildings.iter_mut().zip(committed) {
+        if building.storehouse_accounts.is_none() {
+            building.wage_offers = offers;
+        }
+    }
+    Ok(())
+}
+
+/// Full-staffing annual production plus herd assets and recurring products at base prices.
+pub(super) fn business_value(
+    rules: &Rules,
+    place: &PlaceState,
+    building: &BuildingState,
+    quality: u16,
+) -> Result<u64, DataError> {
+    let def = definition(rules, building)?;
+    let mut total = Fraction::integer(0);
+    for record in &building.level_records {
+        let method = def
+            .methods
+            .get(record.method as usize)
+            .ok_or_else(|| missing_data("business.method".into(), "invalid method"))?;
+        for (good, annual) in &method.annual_output {
+            if herd_supplies(rules, def, good) {
+                continue;
+            }
+            if !method.jobs.iter().any(|job| {
+                job.places > 0
+                    && method
+                        .made_by
+                        .get(good)
+                        .map_or(!job.manager, |id| *id == job.id)
+            }) {
+                continue;
+            }
+            let item = rules
+                .goods
+                .iter()
+                .find(|item| item.id == *good)
+                .ok_or_else(|| missing_data(format!("goods.{good}"), "missing good"))?;
+            let suitability =
+                method_suitability_pm(rules, def, method, good, record.ground.as_deref());
+            let (q, reference) = if method.resource == "usable_land" {
+                (quality, rules.fertility_reference_pm)
+            } else {
+                (1, 1)
+            };
+            if reference == 0 {
+                return Err(missing_data(
+                    "fertility_reference_pm".into(),
+                    "zero denominator",
+                ));
+            }
+            total = total.add(&amount(
+                &[
+                    u128::from(*annual),
+                    u128::from(suitability),
+                    u128::from(q),
+                    u128::from(item.base_price),
+                    1000,
+                ],
+                &[1000, u128::from(reference)],
+            ));
+        }
+    }
+    let products = herd_output(
+        rules,
+        place,
+        building,
+        def,
+        &building.herds,
+        Some(&Fraction::integer(1000)),
+    )?;
+    for (quantity, good) in products.iter().zip(&rules.goods) {
+        total = total.add(&quantity.mul(&Fraction::integer(u128::from(good.base_price) * 1000)));
+    }
+    for (species, heads) in rules.herd_species.iter().zip(&building.herds) {
+        let good = rules
+            .goods
+            .iter()
+            .find(|good| good.id == species.animal)
+            .ok_or_else(|| {
+                missing_data(format!("goods.{}", species.animal), "missing animal good")
+            })?;
+        total = total.add(&amount(
+            &[u128::from(*heads), u128::from(good.base_price), 1000],
+            &[1],
+        ));
+    }
+    u64::try_from(
+        total
+            .numerator
+            .divmod(&total.denominator)
+            .0
+            .to_u128()
+            .ok_or_else(|| missing_data("business.value".into(), "value exceeds u128"))?,
+    )
+    .map_err(|_| missing_data("business.value".into(), "value exceeds u64"))
 }

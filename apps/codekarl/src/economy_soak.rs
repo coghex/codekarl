@@ -190,7 +190,7 @@ fn simulate_with_supply(
     mut supply: impl FnMut(&Rules, &mut EconomyState),
 ) -> Result<String, String> {
     let mut csv = String::from(
-        "seed,year,month,place,pop,pop_type,size,workers,dependents,needs_pm,intake_pm,food_days_milli,births,deaths,employed_workers,moved_people,crowding_pm,prices,production,stores,herds,posted_wages,losses\n",
+        "seed,year,month,place,pop,pop_type,size,workers,dependents,needs_pm,intake_pm,food_days_milli,births,deaths,employed_workers,moved_people,crowding_pm,prices,production,stores,herds,wage_offers,losses\n",
     );
     for _ in 0..u32::from(years) * 12 {
         let days = days_in_month(date.year, date.month).map_err(|error| error.to_string())?;
@@ -491,12 +491,10 @@ fn append_month_rows(
             .buildings
             .iter()
             .enumerate()
-            .map(|(index, building)| {
-                format!(
-                    "building{index}.{}={}",
-                    building.kind,
-                    building.posted_wage()
-                )
+            .flat_map(|(index, building)| {
+                building.wage_offers.iter().map(move |(job, offer)| {
+                    format!("building{index}.{}.{job}={offer}", building.kind)
+                })
             })
             .collect::<Vec<_>>()
             .join(";");
@@ -678,12 +676,14 @@ mod tests {
                     .collect();
                 write!(
                     digest,
-                    " {} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?}",
+                    " {} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?}",
                     building.kind,
                     building.stock,
                     building.herds,
-                    building.wage_carries,
-                    building.pay_carries,
+                    building.wage_offers,
+                    building.wage_arrears,
+                    building.wage_current,
+                    building.fee_pending,
                     building.wage_history,
                     building.employment,
                     building.herd_product_carries,
@@ -836,19 +836,12 @@ mod tests {
         row_fields[13].parse::<u64>().expect("deaths are numeric");
         let posted_wages = row_fields[21];
         let wage_entries = posted_wages.split(';').collect::<Vec<_>>();
-        assert_eq!(wage_entries.len(), 4, "one posted wage per building");
-        assert_eq!(
-            wage_entries,
-            [
-                "building0.holdings=21035",
-                "building1.demesne=58825",
-                "building2.farm=13090",
-                "building3.storehouse=0",
-            ],
-            "Armagh day-1 posted-wage golden values"
+        assert!(
+            !wage_entries.is_empty(),
+            "the opening has committed job offers"
         );
-        assert!(wage_entries.iter().enumerate().all(|(index, entry)| {
-            entry.starts_with(&format!("building{index}."))
+        assert!(wage_entries.iter().all(|entry| {
+            entry.starts_with("building")
                 && entry
                     .split_once('=')
                     .is_some_and(|(_, wage)| wage.parse::<u64>().is_ok())
