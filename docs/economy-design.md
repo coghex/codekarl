@@ -1318,7 +1318,7 @@ herd stays. These are counts, not individual animals, so livestock stays abstrac
     The cases turn `looks` on in their fixtures; the application's tests start the real scenario with it off.
     1. **Goods (r135, r136).** Each pop is given, free, for each good it has a buy order for (a raw want above zero) that no building at
        its place makes and some place does (a method level above zero with an output of it, a herd's recurring product or slaughter yield;
-       never a live animal), `target x 30 / 240 x share x nearness` whole units, rounded down once: the pop's 240-day target, a seeded share
+       never a live animal), `floor(target x 30 / 240) x share x nearness` whole units, the units rounded down: the pop's 240-day target, a seeded share
        of 500 to 1000 per-mille, and the whole per-mille `floor(1000 - 2000 x t / limit)` (none if not above 0) for the nearest producer `t` hours away (the
        clipped one-way way at walking pace by the quickest of the cart, barge and currach profiles) and the pop's round-trip limit. A producer half the limit
        away or farther, or none reachable, gives none. Goods are filled in the data order, each as far as the store takes it. The numbers are
@@ -1339,11 +1339,12 @@ herd stays. These are counts, not individual animals, so livestock stays abstrac
        its arrival, and a trip of an hour or less at 0); the hours' travel, wear, meals from its supplies and its people's days away are
        done as the unbroken game would have done them (a test runs both). Any other job starts the game gathering.
     5. **Last looks (rule 25).** A trader whose first look made no job gets a last look `k` hours before the start, `k` drawn in 0 to 719, so
-       its next look is in the first 30 days; a trader that did look has its last look at the opening's hour.
-    The nearest producer is found without clipping every pair of places: one search for each place and profile gives the centre-to-centre
-    hours (`Ways::place_hours`), which order the producers, and the clipped way is asked of only those within `slack_hours` (4) of the
-    nearest clipped one so far and not past the reach. The opening refuses a scenario that starts less than a look timer after the
-    calendar's first hour.
+       its next look is in the first 30 days; a trader whose first look made a job has its last look at the first tick's hour.
+    The nearest producer is found by the exact clipped hours of the way to every producer (`Ways::clipped_hours`; a way wholly within the
+    visiting radius of home takes none), asked once for each place and producer; nothing is pruned, because no bound on how much clipping
+    shortens a way is proved, so this is part of what makes the opening slow (the look profile). A first look that makes a job saves
+    its last look at the first tick's hour, and the trips it stages are put back from the hour before it. The opening refuses a scenario
+    that starts less than a look timer after the calendar's first hour.
 - **Later:** butchers turn live cattle into more meat than slaughter does, and buildings with room in their herds buy animals (Firm
   direction; out of scope).
 
