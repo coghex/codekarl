@@ -116,7 +116,7 @@ pub(crate) struct BuildingView {
     pub(crate) units: u64,
     pub(crate) free_units: u64,
     /// The levels of each method that has any, in method order.
-    pub(crate) methods: Vec<(String, u64)>,
+    pub(crate) methods: Vec<(String, u64, u64)>,
     /// Paid positions held, and positions open.
     pub(crate) filled: u64,
     pub(crate) open: u64,
@@ -124,6 +124,7 @@ pub(crate) struct BuildingView {
     /// Committed monthly offers for held jobs, in thousandths of value.
     pub(crate) offers: Vec<(String, u64)>,
     pub(crate) abandoned: bool,
+    pub(crate) paused: bool,
     pub(crate) herds: Vec<HerdView>,
     pub(crate) store_used_ml: u64,
     pub(crate) store_capacity_ml: u64,
@@ -363,7 +364,7 @@ fn pop_view(
         let levels = if definition.methods.is_empty() {
             vec![building.levels]
         } else {
-            building.method_levels.clone()
+            ck_economy::working_method_levels(building).unwrap_or_default()
         };
         if let Ok(pools) = ck_economy::building_job_pools(definition, &levels) {
             for pool in pools {
@@ -436,11 +437,11 @@ fn food_view(rules: &Rules, pop: &PopState) -> Vec<FoodView> {
         .collect()
 }
 
-fn building_capacity_ml(building: &BuildingState) -> u64 {
+fn building_capacity_ml(rules: &Rules, building: &BuildingState) -> u64 {
     if building.kind == "storehouse" {
         return u64::from(building.levels).saturating_mul(STOREHOUSE_STORE_ML_PER_LEVEL);
     }
-    ck_economy::store_capacity_ml(building)
+    ck_economy::store_capacity_ml(rules, building)
         .map(|capacity| u64::try_from(capacity).unwrap_or(u64::MAX))
         .unwrap_or_default()
 }
@@ -518,6 +519,31 @@ fn projected_yield(rules: &Rules, building: &BuildingState, mean_fertility_pm: u
     u64::try_from(total).unwrap_or(u64::MAX)
 }
 
+fn building_methods(
+    definition: Option<&ck_economy::BuildingType>,
+    building: &BuildingState,
+) -> Vec<(String, u64, u64)> {
+    definition
+        .map(|definition| {
+            definition
+                .methods
+                .iter()
+                .zip(&building.method_levels)
+                .enumerate()
+                .filter(|(_, (_, levels))| **levels > 0)
+                .map(|(index, (method, levels))| {
+                    let paused = building
+                        .level_records
+                        .iter()
+                        .filter(|record| record.paused && record.method as usize == index)
+                        .count() as u64;
+                    (method.id.clone(), u64::from(*levels), paused)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn building_view(
     rules: &Rules,
     building: &BuildingState,
@@ -528,23 +554,13 @@ fn building_view(
         .buildings
         .iter()
         .find(|candidate| candidate.id == building.kind);
-    let methods = definition
-        .map(|definition| {
-            definition
-                .methods
-                .iter()
-                .zip(&building.method_levels)
-                .filter(|(_, levels)| **levels > 0)
-                .map(|(method, levels)| (method.id.clone(), u64::from(*levels)))
-                .collect()
-        })
-        .unwrap_or_default();
+    let methods = building_methods(definition, building);
     let jobs = definition
         .and_then(|definition| {
             let levels = if definition.methods.is_empty() {
                 vec![building.levels]
             } else {
-                building.method_levels.clone()
+                ck_economy::working_method_levels(building).ok()?
             };
             ck_economy::building_job_pools(definition, &levels).ok()
         })
@@ -604,9 +620,12 @@ fn building_view(
         jobs,
         offers,
         abandoned: building.abandoned,
+        paused: !building.abandoned
+            && !building.level_records.is_empty()
+            && building.level_records.iter().all(|record| record.paused),
         herds,
         store_used_ml: volume_ml(rules, &building.stock),
-        store_capacity_ml: building_capacity_ml(building),
+        store_capacity_ml: building_capacity_ml(rules, building),
         wage: if building.storehouse_accounts.is_some() {
             building.posted_wage()
         } else {
@@ -941,6 +960,7 @@ mod tests {
             }],
             buildings: vec![
                 BuildingState {
+                    paused_owners: std::collections::BTreeMap::new(),
                     heir: None,
                     abandoned: false,
                     kind: "farm".to_owned(),
@@ -976,6 +996,7 @@ mod tests {
                     paid_years: vec![0; 12],
                 },
                 BuildingState {
+                    paused_owners: std::collections::BTreeMap::new(),
                     heir: None,
                     abandoned: false,
                     kind: "storehouse".to_owned(),
@@ -1066,6 +1087,72 @@ mod tests {
         view.place("fixture")
             .expect("the fixture is in the view")
             .clone()
+    }
+
+    #[test]
+    fn building_view_reports_paused_levels_and_working_places() {
+        let rules = shipped_rules();
+        let mut place = fixture(&rules);
+        let farm = &mut place.buildings[0];
+        farm.level_records = (0..3)
+            .map(|number| ck_economy::LevelRecord {
+                number,
+                method: 0,
+                ground: Some("pasture".into()),
+                paydays: 13,
+                unpaid_work: std::collections::BTreeMap::new(),
+                last_switch: None,
+                paused: number == 0,
+            })
+            .collect();
+        farm.employment[0].workers = 10;
+        farm.employment[0].jobs.insert("peasant_labour".into(), 10);
+        let view = building_view(
+            &rules,
+            farm,
+            0,
+            Date {
+                year: 768,
+                month: 1,
+                day: 1,
+                hour: 12,
+            },
+        );
+        assert!(!view.paused);
+        assert_eq!(view.methods, [("mixed_farming".into(), 3, 1)]);
+        let per_level = u64::from(rules.buildings[0].methods[0].jobs[0].places);
+        assert_eq!((view.filled, view.open), (10, 2 * per_level - 10));
+        for record in &mut farm.level_records {
+            record.paused = true;
+        }
+        let view = building_view(
+            &rules,
+            farm,
+            0,
+            Date {
+                year: 768,
+                month: 1,
+                day: 1,
+                hour: 12,
+            },
+        );
+        assert!(view.paused);
+        assert_eq!(view.methods, [("mixed_farming".into(), 3, 3)]);
+        farm.abandoned = true;
+        assert!(
+            !building_view(
+                &rules,
+                farm,
+                0,
+                Date {
+                    year: 768,
+                    month: 1,
+                    day: 1,
+                    hour: 12
+                }
+            )
+            .paused
+        );
     }
 
     #[test]
@@ -1319,6 +1406,7 @@ mod tests {
         holdings.levels = 1;
         holdings.method_levels = vec![1, 0];
         holdings.level_records = vec![ck_economy::LevelRecord {
+            paused: false,
             number: 0,
             method: 0,
             ground: Some("pasture".to_owned()),
@@ -1767,7 +1855,7 @@ mod tests {
         assert_eq!((place.workers, place.dependents), (80, 40));
         // Food: 1,000 oats and 5 more in the pop's storehouse account, 1,800 hundredths each, for 120 people at 100 a day.
         assert_eq!(place.food_days, (1_005 * 1_800) / (120 * 100));
-        // Storage: oats, ale and barley by volume; the pop's 720 L a head, a farm's 100 L per worker, one storehouse level.
+        // Storage: oats, ale and barley by volume; the pop's 720 L a head, a farm's 100 L per standing job place, one storehouse level.
         let volume = |good: &str, units: u64| rules.goods[index_of(&rules, good)].volume_ml * units;
         assert_eq!(
             place.storage_used_ml,
@@ -1775,7 +1863,7 @@ mod tests {
         );
         assert_eq!(
             place.storage_capacity_ml,
-            120 * 720_000 + 25 * 100_000 + 36_000_000
+            120 * 720_000 + 30 * 100_000 + 36_000_000
         );
         assert_eq!(place.overflow_lost, 0);
         assert_eq!(place.footprint_m2, 6_200);
@@ -1822,7 +1910,7 @@ mod tests {
 
         let farm = &place.buildings[0];
         assert_eq!(farm.kind, "farm");
-        assert_eq!(farm.methods, [("mixed_farming".to_owned(), 3)]);
+        assert_eq!(farm.methods, [("mixed_farming".to_owned(), 3, 0)]);
         // 3 levels at the shipped farm's positions per level, 25 of them paid and filled.
         let per_level = u64::from(rules.buildings[0].methods[0].jobs[0].places);
         assert_eq!(rules.buildings[0].id, "farm");
@@ -1848,7 +1936,7 @@ mod tests {
             ]
         );
         assert_eq!(farm.store_used_ml, volume("barley", 20));
-        assert_eq!(farm.store_capacity_ml, 25 * 100_000);
+        assert_eq!(farm.store_capacity_ml, 30 * 100_000);
         assert_eq!(farm.offers, [("peasant_labour".to_owned(), 1_234)]);
         assert!(farm.wages.is_empty());
 
@@ -1859,7 +1947,7 @@ mod tests {
     }
 
     #[test]
-    fn displayed_building_and_place_capacity_uses_workers_only() {
+    fn displayed_building_and_place_capacity_uses_standing_places() {
         let rules = shipped_rules();
         let mut farm = fixture(&rules);
         farm.pops.clear();
@@ -1872,18 +1960,19 @@ mod tests {
         farm.buildings[0].stock.fill(0);
         farm.buildings[0].stock[index_of(&rules, "oats")] = 10;
         let view = view_for_place(&rules, farm);
-        assert_eq!(view.buildings[0].store_capacity_ml, 1_000_000);
-        assert_eq!(view.storage_capacity_ml, 1_000_000);
+        assert_eq!(view.buildings[0].store_capacity_ml, 3_000_000);
+        assert_eq!(view.storage_capacity_ml, 3_000_000);
         assert_eq!(view.storage_used_ml, 350_000);
         assert_eq!(
             ck_map::stockpile_value(view.storage_used_ml, view.storage_capacity_ml),
-            350
+            116
         );
 
         let mut holdings = fixture(&rules);
         holdings.pops.clear();
         holdings.buildings.truncate(1);
         holdings.buildings[0].kind = "holdings".to_owned();
+        holdings.buildings[0].method_levels = vec![3, 0];
         holdings.buildings[0].employment = vec![Employment {
             jobs: std::collections::BTreeMap::new(),
 
@@ -1891,8 +1980,8 @@ mod tests {
         }];
         holdings.buildings[0].stock.fill(0);
         let view = view_for_place(&rules, holdings);
-        assert_eq!(view.buildings[0].store_capacity_ml, 11_700_000);
-        assert_eq!(view.storage_capacity_ml, 11_700_000);
+        assert_eq!(view.buildings[0].store_capacity_ml, 38_610_000);
+        assert_eq!(view.storage_capacity_ml, 38_610_000);
 
         let mut owners_only = fixture(&rules);
         owners_only.pops.clear();
@@ -1904,7 +1993,7 @@ mod tests {
         }];
         assert_eq!(
             view_for_place(&rules, owners_only).buildings[0].store_capacity_ml,
-            0
+            3_000_000
         );
 
         let mut no_employees = fixture(&rules);
@@ -1913,7 +2002,7 @@ mod tests {
         no_employees.buildings[0].employment.clear();
         assert_eq!(
             view_for_place(&rules, no_employees).buildings[0].store_capacity_ml,
-            0
+            3_000_000
         );
 
         let mut saturating = fixture(&rules);
@@ -1926,7 +2015,7 @@ mod tests {
         }];
         assert_eq!(
             view_for_place(&rules, saturating).buildings[0].store_capacity_ml,
-            u64::MAX
+            3_000_000
         );
 
         let mut invalid_worker_total = fixture(&rules);
@@ -1946,7 +2035,7 @@ mod tests {
         ];
         assert_eq!(
             view_for_place(&rules, invalid_worker_total).buildings[0].store_capacity_ml,
-            0
+            3_000_000
         );
     }
 

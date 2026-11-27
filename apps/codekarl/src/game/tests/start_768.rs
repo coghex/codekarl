@@ -360,7 +360,7 @@ fn app_long_a_year_of_the_shipped_game_with_seeded_herds_and_levels_that_switch(
         noons, 366,
         "every noon from 9 October 768 through 9 October 769"
     );
-    assert_eq!(lines, include_str!("shipped_game_year_accepted.txt"));
+    assert_eq!(lines, include_str!("shipped_game_pause_year.txt"));
 }
 
 #[test]

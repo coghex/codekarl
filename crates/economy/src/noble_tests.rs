@@ -731,16 +731,17 @@ fn an_employed_demesne_keeps_its_overhead_in_the_holdings_sized_store() {
     let demesne_index = building_index(place, "demesne");
     let oats = good(&rules, "oats");
 
-    // The same capacities as a holdings with the same workers, in volume and per good.
+    // The same capacities as a holdings with the same full-staffing places, in volume and per good.
     let mut as_holdings = place.buildings[demesne_index].clone();
     as_holdings.kind = "holdings".to_owned();
+    as_holdings.method_levels = vec![1, 0];
     assert_eq!(
-        store_capacity_ml(&place.buildings[demesne_index]),
+        store_capacity_ml(&rules, &place.buildings[demesne_index]),
         Ok(11 * 1_170_000)
     );
     assert_eq!(
-        store_capacity_ml(&place.buildings[demesne_index]),
-        store_capacity_ml(&as_holdings)
+        store_capacity_ml(&rules, &place.buildings[demesne_index]),
+        store_capacity_ml(&rules, &as_holdings)
     );
     for index in 0..rules.goods.len() {
         assert_eq!(
@@ -995,13 +996,18 @@ impl Tenant {
 fn building_state(rules: &Rules, kind: &str, levels: u32, pops: usize) -> BuildingState {
     let goods = rules.goods.len();
     let methods = building(rules, kind).methods.len();
+    let mut method_levels = vec![0; methods];
+    if let Some(first) = method_levels.first_mut() {
+        *first = levels;
+    }
     BuildingState {
+        paused_owners: std::collections::BTreeMap::new(),
         heir: None,
         abandoned: false,
         kind: kind.to_owned(),
         levels,
         units: if methods == 0 { 0 } else { levels * 5 },
-        method_levels: vec![0; methods],
+        method_levels,
         level_records: Vec::new(),
         herds: Vec::new(),
         employment: vec![Employment::default(); pops],

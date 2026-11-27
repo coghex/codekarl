@@ -3313,13 +3313,13 @@ mod stretch_save_tests {
                 b.level_records[0].ground = Some("pasture".to_owned());
             }),
             ("missing unpaid work account", |b| {
-                let good = b.level_records[0]
-                    .unpaid_work
-                    .keys()
-                    .next()
-                    .unwrap()
-                    .clone();
-                b.level_records[0].unpaid_work.remove(&good);
+                let record = b
+                    .level_records
+                    .iter_mut()
+                    .find(|record| record.method == 0)
+                    .unwrap();
+                let good = record.unpaid_work.keys().next().unwrap().clone();
+                record.unpaid_work.remove(&good);
             }),
             ("unexpected unpaid work account", |b| {
                 b.level_records[0]
@@ -3554,6 +3554,7 @@ mod stretch_save_tests {
             .collect::<std::collections::BTreeMap<_, _>>();
         farm.level_records = (0..levels)
             .map(|number| ck_economy::LevelRecord {
+                paused: false,
                 number,
                 method: 0,
                 ground: Some("pasture".to_owned()),
@@ -4999,8 +5000,17 @@ mod stretch_save_tests {
                     if let (Some(actual), Some(expected)) =
                         (a.unpaid_work.get("oats"), b.unpaid_work.get("oats"))
                     {
-                        assert_eq!(actual, expected, "level {}", a.number);
-                        positive += usize::from(actual != &ck_economy::bigint::Big::default());
+                        if b.paused {
+                            assert_eq!(
+                                expected,
+                                &ck_economy::bigint::Big::default(),
+                                "paused level {}",
+                                b.number
+                            );
+                        } else {
+                            assert_eq!(actual, expected, "level {}", a.number);
+                            positive += usize::from(actual != &ck_economy::bigint::Big::default());
+                        }
                     }
                 }
             }
@@ -5190,10 +5200,7 @@ mod stretch_save_tests {
                 for record in &mut farm.level_records {
                     record.method = 1;
                     record.ground = None;
-                    record.unpaid_work = ["fish", "seabirds"]
-                        .into_iter()
-                        .map(|good| (good.to_owned(), ck_economy::bigint::Big::default()))
-                        .collect();
+                    record.unpaid_work.clear();
                 }
                 farm.method_levels = vec![0; definition.methods.len()];
                 farm.method_levels[1] = farm.levels;
@@ -5727,18 +5734,11 @@ mod switch_replay_tests {
                 .iter()
                 .find(|b| b.id == building.kind)
                 .unwrap();
-            // The goods a sea level is paid by season: those its method makes that no herd of the building supplies.
-            let accounts: BTreeMap<String, ck_economy::bigint::Big> = definition.methods[1]
-                .annual_output
-                .keys()
-                .filter(|good| !ck_economy::herd_supplies(rules, definition, good))
-                .map(|good| (good.clone(), ck_economy::bigint::Big::default()))
-                .collect();
             for record in &mut building.level_records {
                 record.method = 1;
                 record.ground = None;
                 record.paydays = ck_economy::MATURE_PAYDAYS;
-                record.unpaid_work.clone_from(&accounts);
+                record.unpaid_work.clear();
             }
             building.method_levels = vec![0; definition.methods.len()];
             building.method_levels[1] = building.levels;

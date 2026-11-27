@@ -173,10 +173,16 @@ local function explanation_tip(key, part)
   return tooltip.explanation(key), part
 end
 
+local function method_label(method)
+  local label = method.id .. " " .. method.levels
+  if (method.paused or 0) > 0 then label = label .. " (" .. method.paused .. " paused)" end
+  return label
+end
+
 local function method_tip(building, x, y, origin_x, origin_y)
   local left, top = origin_x or 17, origin_y or 14
   for _, method in ipairs(building.methods) do
-    local label = method.id .. " " .. method.levels
+    local label = method_label(method)
     local right = left + font.layout(label).width
     if within(x, y, left, top, right, top + font.layout(label).height) then
       return explanation_tip(method.id, method.id)
@@ -213,7 +219,7 @@ local function methods_text(building)
   if #building.methods == 0 then return "storage" end
   local methods = {}
   for _, method in ipairs(building.methods) do
-    methods[#methods + 1] = method.id .. " " .. method.levels
+    methods[#methods + 1] = method_label(method)
   end
   return table.concat(methods, ", ")
 end
@@ -236,7 +242,7 @@ local function card_layout(building, width)
   local housing = "housing " .. (building.housing_occupants or 0)
   local housing_left = width - 5 - font.layout(housing).width
   local wage_left = width - 5 - font.layout(wage_text(building)).width
-  local kind = (building.abandoned and "abandoned " or "") .. building.kind
+  local kind = (building.abandoned and "abandoned " or (building.paused and "paused " or "")) .. building.kind
   while font.layout(kind).width > wage_left - 17 - 4 and utf8.len(kind) > 1 do
     kind = kind:sub(1, utf8.offset(kind, -1) - 1)
   end
@@ -264,7 +270,7 @@ local function card_method_tip(building)
   local lines = {title = "methods"}
   for _, method in ipairs(building.methods) do
     lines[#lines + 1] = {{icon = method_texture(method.id)}, " ",
-      {text = method.id:gsub("_", " "), term = method.id}, " level " .. method.levels}
+      {text = method.id:gsub("_", " "), term = method.id}, " level " .. method.levels .. ((method.paused or 0) > 0 and (" (" .. method.paused .. " paused)") or "")}
   end
   return lines, "methods"
 end
@@ -660,7 +666,7 @@ local function building_row(building, _, place_id, building_index)
     local count_width = font.layout(count).width
     local method = #building.methods > 0
     local positions = true
-    local name = (building.abandoned and "abandoned " or "") .. building.kind
+    local name = (building.abandoned and "abandoned " or (building.paused and "paused " or "")) .. building.kind
     local function needed() return 16 + font.layout(name).width + (method and 13 or 0) + (positions and count_width + 4 or 0) + 4 end
     if needed() > wage_left then positions = false end
     if needed() > wage_left then method = false end
@@ -971,14 +977,14 @@ local function buildings_lines(place)
     if index > 1 then
       lines[#lines + 1] = ""
     end
-    lines[#lines + 1] = building.kind
+    lines[#lines + 1] = (building.abandoned and "abandoned " or (building.paused and "paused " or "")) .. building.kind
     if building.has_methods then
       local line = "  units: " .. building.units
       if building.free_units > 0 then line = line .. ", free: " .. building.free_units end
       if #building.methods > 0 then
         local methods = {}
         for _, method in ipairs(building.methods) do
-          methods[#methods + 1] = method.id .. " " .. method.levels
+          methods[#methods + 1] = method_label(method)
         end
         line = line .. ", levels: " .. table.concat(methods, ", ")
       end

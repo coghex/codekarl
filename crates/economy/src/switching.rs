@@ -193,7 +193,10 @@ fn staffing(
     building: &BuildingState,
     def: &BuildingType,
 ) -> Result<(u64, u64, u64), DataError> {
-    let positions = u64::from(building.levels);
+    let positions = super::working_method_levels(building)?
+        .into_iter()
+        .map(u64::from)
+        .sum();
     let workers = building
         .employment
         .iter()
@@ -212,7 +215,7 @@ fn forecast_staffing(
     good: &str,
     levels: &[u32],
 ) -> Result<(u64, u64), DataError> {
-    let current = building_job_pools(def, &building.method_levels)?;
+    let current = building_job_pools(def, &super::working_method_levels(building)?)?;
     let future = building_job_pools(def, levels)?;
     let staffed = pool_staffing(
         &current,
@@ -255,6 +258,7 @@ fn forecast_staffing(
 }
 
 // Forecast only hires into jobs new to the building; transfers themselves are exact.
+#[cfg(test)]
 fn projected_staffing(
     rules: &Rules,
     place: &PlaceState,
@@ -262,7 +266,20 @@ fn projected_staffing(
     def: &BuildingType,
     levels: &[u32],
 ) -> Result<(Vec<super::JobPool>, Vec<Fraction>, Fraction), DataError> {
-    let before = building_job_pools(def, &building.method_levels)?;
+    let mut exact = building.clone();
+    exact.method_levels = levels.to_vec();
+    let mut pops = place.pops.clone();
+    trim_jobs(rules, &place.prices_milli, &mut pops, &mut exact, def, 0)?;
+    projected_staffing_candidate(place, building, def, &exact)
+}
+
+fn projected_staffing_candidate(
+    place: &PlaceState,
+    building: &BuildingState,
+    def: &BuildingType,
+    exact: &BuildingState,
+) -> Result<(Vec<super::JobPool>, Vec<Fraction>, Fraction), DataError> {
+    let before = building_job_pools(def, &super::working_method_levels(building)?)?;
     let current = pool_staffing(
         &before,
         &building.employment,
@@ -277,11 +294,8 @@ fn projected_staffing(
             Some((f.checked_add(*count)?, p.checked_add(pool.places)?))
         })
         .ok_or_else(|| missing_data("look.jobs".into(), "staffing overflow"))?;
-    let mut exact = building.clone();
-    exact.method_levels = levels.to_vec();
-    let mut pops = place.pops.clone();
-    trim_jobs(rules, &place.prices_milli, &mut pops, &mut exact, def, 0)?;
-    let pools = building_job_pools(def, levels)?;
+    let levels = super::working_method_levels(exact)?;
+    let pools = building_job_pools(def, &levels)?;
     let counts = pool_staffing(
         &pools,
         &exact.employment,
@@ -371,12 +385,12 @@ fn output(
     month: u8,
     quality: u16,
     full: bool,
-    candidate_levels: Option<&[u32]>,
+    candidate: Option<&BuildingState>,
 ) -> Result<Vec<Fraction>, DataError> {
     let mut values = vec![Fraction::integer(0); rules.goods.len()];
     let (_, _, efficiency) = staffing(place, building, def)?;
-    let projection = candidate_levels
-        .map(|levels| projected_staffing(rules, place, building, def, levels))
+    let projection = candidate
+        .map(|exact| projected_staffing_candidate(place, building, def, exact))
         .transpose()?;
     for (good, annual) in &method.annual_output {
         let (workers, positions, factor) = if let Some((pools, forecast, factor)) = &projection {
@@ -399,8 +413,13 @@ fn output(
                 .ok_or_else(|| missing_data("look.jobs".into(), "capacity overflow"))?;
             (workers, places, factor.clone())
         } else {
-            let (workers, places) =
-                forecast_staffing(def, building, method, good, &building.method_levels)?;
+            let (workers, places) = forecast_staffing(
+                def,
+                building,
+                method,
+                good,
+                &super::working_method_levels(building)?,
+            )?;
             (
                 Fraction::integer(u128::from(workers)),
                 places,
@@ -552,7 +571,11 @@ fn wanted_base(
     let mut produced = vec![zero; rules.goods.len()];
     for building in &place.buildings {
         let def = definition(rules, building)?;
-        for record in &building.level_records {
+        for record in building
+            .level_records
+            .iter()
+            .filter(|record| !record.paused)
+        {
             let method = &def.methods[record.method as usize];
             let made = output(
                 rules,
@@ -622,19 +645,23 @@ fn own_output(
     month: u8,
     quality: u16,
 ) -> Result<Vec<Fraction>, DataError> {
-    let mut own = output(
-        rules,
-        place,
-        building,
-        def,
-        &def.methods[record.method as usize],
-        record.ground.as_deref(),
-        record.paydays,
-        month,
-        quality,
-        false,
-        None,
-    )?;
+    let mut own = if record.paused {
+        vec![Fraction::integer(0); rules.goods.len()]
+    } else {
+        output(
+            rules,
+            place,
+            building,
+            def,
+            &def.methods[record.method as usize],
+            record.ground.as_deref(),
+            record.paydays,
+            month,
+            quality,
+            false,
+            None,
+        )?
+    };
     for (total, item) in own.iter_mut().zip(herd_output(
         rules,
         place,
@@ -872,6 +899,7 @@ fn target_ground(
     )
     .map(Some))
 }
+#[cfg(test)]
 fn rescale_carries(
     rules: &Rules,
     building: &mut BuildingState,
@@ -907,6 +935,7 @@ fn rescale_carries(
     Ok(())
 }
 
+#[cfg(test)]
 fn trim_jobs(
     rules: &Rules,
     prices: &[u64],
@@ -1022,7 +1051,9 @@ fn replace_levels(
     year: u16,
     month: u8,
     prices: &[u64],
+    quality: u16,
 ) -> Result<(), DataError> {
+    let old_working = super::working_method_levels(building)?;
     let target = def
         .methods
         .get(target_index)
@@ -1050,6 +1081,7 @@ fn replace_levels(
         building.level_records.insert(
             insertion + offset,
             LevelRecord {
+                paused: false,
                 number: 0,
                 method: u32::try_from(target_index).map_err(|_| {
                     missing_data("switch.method".into(), "method index exceeds u32")
@@ -1071,13 +1103,58 @@ fn replace_levels(
     for record in &building.level_records {
         counts[record.method as usize] += 1;
     }
-    rescale_carries(rules, building, def, &counts)?;
     building.method_levels = counts;
-    trim_jobs(rules, prices, pops, building, def, building_index)?;
+    let new_working = super::working_method_levels(building)?;
+    rescale_carries_between(rules, building, def, &old_working, &new_working)?;
+    trim_and_rank_jobs(
+        rules,
+        prices,
+        pops,
+        building,
+        def,
+        building_index,
+        month,
+        quality,
+    )?;
     let (suitability, grazing) = derive_level_sums(rules, def, &building.level_records)?;
     building.method_suitability = suitability;
     building.herd_grazing_sums = grazing;
     Ok(())
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "A forecast carries the exact candidate transition inputs."
+)]
+fn candidate_for_move(
+    rules: &Rules,
+    place: &PlaceState,
+    building: &BuildingState,
+    def: &BuildingType,
+    building_index: usize,
+    sources: &[u32],
+    target: usize,
+    grounds: &[Option<String>],
+    month: u8,
+    quality: u16,
+) -> Result<BuildingState, DataError> {
+    let mut exact = building.clone();
+    let mut pops = place.pops.clone();
+    replace_levels(
+        rules,
+        &mut pops,
+        &mut exact,
+        def,
+        building_index,
+        sources,
+        target,
+        grounds,
+        0,
+        month,
+        &place.prices_milli,
+        quality,
+    )?;
+    Ok(exact)
 }
 
 type HerdSwitch = (Vec<u64>, Vec<u64>, Vec<u64>, Vec<u64>);
@@ -1280,19 +1357,23 @@ fn look_capacity(
                 for record in members {
                     let own = own_output(rules, place, building, def, record, month, quality)?;
                     let want = wanted_without(rules, &base, &own);
-                    let old = output(
-                        rules,
-                        place,
-                        building,
-                        def,
-                        source,
-                        record.ground.as_deref(),
-                        record.paydays,
-                        month,
-                        quality,
-                        true,
-                        None,
-                    )?;
+                    let old = if record.paused {
+                        vec![Fraction::integer(0); rules.goods.len()]
+                    } else {
+                        output(
+                            rules,
+                            place,
+                            building,
+                            def,
+                            source,
+                            record.ground.as_deref(),
+                            record.paydays,
+                            month,
+                            quality,
+                            true,
+                            None,
+                        )?
+                    };
                     ranked.push((
                         record,
                         value(rules, &old, &want, prices)
@@ -1340,6 +1421,9 @@ fn look_capacity(
             let mut old = vec![Fraction::integer(0); rules.goods.len()];
             let mut unpaid = Fraction::integer(0);
             for source in &sources {
+                if source.paused {
+                    continue;
+                }
                 let method = &def.methods[source.method as usize];
                 add_quantities(
                     &mut own,
@@ -1377,6 +1461,22 @@ fn look_capacity(
             }
             let want = wanted_without(rules, &base, &own);
             let old_value = value(rules, &old, &want, prices);
+            let source_numbers = sources
+                .iter()
+                .map(|record| record.number)
+                .collect::<Vec<_>>();
+            let exact = candidate_for_move(
+                rules,
+                place,
+                building,
+                def,
+                building_index,
+                &source_numbers,
+                target_index,
+                &grounds,
+                month,
+                quality,
+            )?;
             let mut mature = vec![Fraction::integer(0); rules.goods.len()];
             let mut ramped = mature.clone();
             for ground in &grounds {
@@ -1393,7 +1493,7 @@ fn look_capacity(
                         month,
                         quality,
                         true,
-                        Some(&levels),
+                        Some(&exact),
                     )?,
                 );
                 add_quantities(
@@ -1409,26 +1509,15 @@ fn look_capacity(
                         month,
                         quality,
                         false,
-                        Some(&levels),
+                        Some(&exact),
                     )?,
                 );
             }
             let new_value = value(rules, &mature, &want, prices);
-            let mut exact = building.clone();
-            exact.method_levels.clone_from(&levels);
-            let mut pops = place.pops.clone();
-            trim_jobs(
-                rules,
-                &place.prices_milli,
-                &mut pops,
-                &mut exact,
-                def,
-                building_index,
-            )?;
             let (heads, gone, founders, dead) =
                 switching_heads_for(rules, &exact, def, &levels, is_land(target))?;
             let old_herd = value(rules, &old_herd_made, &want, prices);
-            let (_, _, factor) = projected_staffing(rules, place, building, def, &levels)?;
+            let (_, _, factor) = projected_staffing_candidate(place, building, def, &exact)?;
             let new_herd = value(
                 rules,
                 &herd_output(rules, place, building, def, &heads, Some(&factor))?,
@@ -1587,26 +1676,39 @@ pub fn look_in_year(
             {
                 let own = own_output(rules, place, building, def, level, month, quality)?;
                 let want = wanted_without(rules, &base, &own);
-                let old = output(
-                    rules,
-                    place,
-                    building,
-                    def,
-                    &def.methods[level.method as usize],
-                    level.ground.as_deref(),
-                    level.paydays,
-                    month,
-                    quality,
-                    true,
-                    None,
-                )?;
+                let old = if level.paused {
+                    vec![Fraction::integer(0); rules.goods.len()]
+                } else {
+                    output(
+                        rules,
+                        place,
+                        building,
+                        def,
+                        &def.methods[level.method as usize],
+                        level.ground.as_deref(),
+                        level.paydays,
+                        month,
+                        quality,
+                        true,
+                        None,
+                    )?
+                };
                 let old_value = value(rules, &old, &want, prices);
                 slot.insert((want, old, old_value));
             }
             let (want, _, old_value) = &per_level[&level.number];
-            let mut candidate_levels = building.method_levels.clone();
-            candidate_levels[level.method as usize] -= 1;
-            candidate_levels[target_index] += 1;
+            let exact = candidate_for_move(
+                rules,
+                place,
+                building,
+                def,
+                building_index,
+                &[level.number],
+                target_index,
+                std::slice::from_ref(&ground),
+                month,
+                quality,
+            )?;
             let new = output(
                 rules,
                 place,
@@ -1618,7 +1720,7 @@ pub fn look_in_year(
                 month,
                 quality,
                 true,
-                Some(&candidate_levels),
+                Some(&exact),
             )?;
             let slow = output(
                 rules,
@@ -1631,27 +1733,20 @@ pub fn look_in_year(
                 month,
                 quality,
                 false,
-                Some(&candidate_levels),
+                Some(&exact),
             )?;
             let new_value = value(rules, &new, want, prices);
-            let mut exact = building.clone();
-            exact.method_levels.clone_from(&candidate_levels);
-            let mut pops = place.pops.clone();
-            trim_jobs(
-                rules,
-                &place.prices_milli,
-                &mut pops,
-                &mut exact,
-                def,
-                building_index,
-            )?;
             // The herd calculation derives the candidate levels from the old record;
-            // its staffing, however, is the post-transfer staffing.
-            exact.method_levels.clone_from(&building.method_levels);
-            let (heads, gone, founders, dead) = switching_heads(rules, &exact, def, level, target)?;
+            // its staffing is the post-transfer staffing.
+            let mut herd_candidate = exact.clone();
+            herd_candidate
+                .method_levels
+                .clone_from(&building.method_levels);
+            let (heads, gone, founders, dead) =
+                switching_heads(rules, &herd_candidate, def, level, target)?;
             let old_herd = value(rules, &old_herd_made, want, prices);
             let (_, _, candidate_factor) =
-                projected_staffing(rules, place, building, def, &candidate_levels)?;
+                projected_staffing_candidate(place, building, def, &exact)?;
             let new_herd = value(
                 rules,
                 &herd_output(rules, place, building, def, &heads, Some(&candidate_factor))?,
@@ -1711,9 +1806,52 @@ pub fn look_in_year(
     Ok(Look { moves, answer })
 }
 
+#[cfg(test)]
+pub(super) fn look_with_test_offers(
+    rules: &Rules,
+    place: &PlaceState,
+    land: &LandCounts,
+    building: usize,
+    month: u8,
+    prices: &[u64],
+    jobs: &BTreeMap<String, u64>,
+) -> Result<Look, DataError> {
+    look_in_year_with_test_offers(rules, place, land, building, month, None, prices, jobs)
+}
+#[cfg(test)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The fixture wrapper preserves the forecast API."
+)]
+fn look_in_year_with_test_offers(
+    rules: &Rules,
+    place: &PlaceState,
+    land: &LandCounts,
+    building: usize,
+    month: u8,
+    year: Option<u16>,
+    prices: &[u64],
+    jobs: &BTreeMap<String, u64>,
+) -> Result<Look, DataError> {
+    let mut place = place.clone();
+    for building in &mut place.buildings {
+        let def = definition(rules, building)?;
+        for method in &def.methods {
+            for job in &method.jobs {
+                building.wage_offers.entry(job.id.clone()).or_insert(0);
+            }
+        }
+    }
+    look_in_year(rules, &place, land, building, month, year, prices, jobs)
+}
+
 /// Makes the move the look chose for one building, at once: the level changes method and ground and starts over, the building's
 /// sums follow its records, and a herd that no longer fits is slaughtered and its yield goes to stock; where a kind has no
 /// animals and the new method keeps animals, founders arrive.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Settlement needs the chosen move and its dated price snapshot."
+)]
 fn make_move(
     rules: &Rules,
     place: &mut PlaceState,
@@ -1721,6 +1859,7 @@ fn make_move(
     entry: &MoveLook,
     year: u16,
     month: u8,
+    quality: u16,
     ledger: &mut super::PlaceProductionLedger,
 ) -> Result<(), DataError> {
     let def = definition(rules, &place.buildings[building_index])?;
@@ -1743,6 +1882,7 @@ fn make_move(
         year,
         month,
         &place.prices_milli,
+        quality,
     )?;
     let (_, gone, founders, dead) = switching_heads_for(
         rules,
@@ -1871,6 +2011,7 @@ pub(super) fn run_place_switches(
                 &result.moves[answer],
                 date.year,
                 date.month,
+                mean_fertility(land)?,
                 ledger,
             )?;
         }
@@ -1882,6 +2023,73 @@ pub(super) fn run_place_switches(
 mod fraction_tests {
     use super::*;
     use ck_sim::Canonical;
+    fn test_look(
+        rules: &Rules,
+        place: &PlaceState,
+        land: &LandCounts,
+        building: usize,
+        month: u8,
+        prices: &[u64],
+        jobs: &BTreeMap<String, u64>,
+    ) -> Result<Look, DataError> {
+        let mut place = place.clone();
+        for building in &mut place.buildings {
+            if let Ok(def) = definition(rules, building) {
+                test_offers(def, building);
+            }
+        }
+        look(rules, &place, land, building, month, prices, jobs)
+    }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The wrapper preserves the forecast API while supplying test offers."
+    )]
+    fn test_look_in_year(
+        rules: &Rules,
+        place: &PlaceState,
+        land: &LandCounts,
+        building: usize,
+        month: u8,
+        year: Option<u16>,
+        prices: &[u64],
+        jobs: &BTreeMap<String, u64>,
+    ) -> Result<Look, DataError> {
+        let mut place = place.clone();
+        for building in &mut place.buildings {
+            if let Ok(def) = definition(rules, building) {
+                test_offers(def, building);
+            }
+        }
+        look_in_year(rules, &place, land, building, month, year, prices, jobs)
+    }
+
+    fn test_offers(def: &BuildingType, building: &mut BuildingState) {
+        for method in &def.methods {
+            for job in &method.jobs {
+                building.wage_offers.entry(job.id.clone()).or_insert(0);
+            }
+        }
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The test wrapper supplies the complete offer table before the switch."
+    )]
+    fn test_make_move(
+        rules: &Rules,
+        place: &mut PlaceState,
+        index: usize,
+        entry: &MoveLook,
+        year: u16,
+        month: u8,
+        quality: u16,
+        ledger: &mut super::super::PlaceProductionLedger,
+    ) -> Result<(), DataError> {
+        let def = definition(rules, &place.buildings[index])?;
+        test_offers(def, &mut place.buildings[index]);
+        make_move(rules, place, index, entry, year, month, quality, ledger)
+    }
+
     fn fixture(annual: u64, good: &str) -> (Rules, PlaceState) {
         let mut rules = crate::tests::level_rules();
         rules.fertility_reference_pm = 1000;
@@ -1912,6 +2120,723 @@ mod fraction_tests {
             pop.dependents = 0;
         }
         (rules, state.places.remove(0))
+    }
+
+    #[test]
+    fn paid_share_uses_pooled_owners_and_charges_missing_labour() {
+        let (rules, mut place) = fixture(100, "oats");
+        let def = rules.buildings.iter().find(|def| def.id == "farm").unwrap();
+        let job = &def.methods[0].jobs[0];
+        let building = &mut place.buildings[0];
+        for entry in &mut building.employment {
+            *entry = super::super::Employment::default();
+        }
+        building.employment[0].jobs.insert(job.id.clone(), 1);
+        building.employment[1].jobs.insert(job.id.clone(), 1);
+        assert_eq!(
+            paid_share(&place.pops, building, job, &[1000, 0, 0]),
+            Fraction::ratio(1, 2)
+        );
+        for entry in &mut building.employment {
+            *entry = super::super::Employment::default();
+        }
+        assert_eq!(
+            paid_share(&place.pops, building, job, &[1000, 0, 0]),
+            Fraction::integer(1)
+        );
+        place.pops[0].workers = 1;
+        place.pops[0].kind = job.pop_types[0].clone();
+        assert_eq!(
+            paid_share(&place.pops, building, job, &[1000, 0, 0]),
+            Fraction::integer(0)
+        );
+    }
+
+    fn ranked_transfer_fixture() -> (Rules, PlaceState, BuildingType) {
+        let (mut rules, mut place) = fixture(100, "oats");
+        place.buildings.truncate(1);
+        for pop in &mut place.pops {
+            pop.employment.truncate(1);
+        }
+        place.pops[0].kind = "peasant".into();
+        place.pops[1].kind = "peasant".into();
+        place.pops[0].workers = 1;
+        place.pops[1].workers = 1;
+        place.prices_milli.fill(1000);
+        let def = rules
+            .buildings
+            .iter_mut()
+            .find(|def| def.id == "farm")
+            .unwrap();
+        let base = def.methods[0].clone();
+        def.methods = [("high", 240_000), ("middle", 120_000), ("low", 1200)]
+            .into_iter()
+            .map(|(id, output)| {
+                let mut method = base.clone();
+                method.id = id.into();
+                method.jobs = vec![super::super::ProductionJob {
+                    id: id.into(),
+                    places: 1,
+                    pop_types: vec!["peasant".into()],
+                    wage_weight_pm: 1000,
+                    manager: false,
+                }];
+                method.annual_output = BTreeMap::from([("oats".into(), output)]);
+                method.made_by = BTreeMap::from([("oats".into(), id.into())]);
+                method
+            })
+            .collect();
+        let def = def.clone();
+        let building = &mut place.buildings[0];
+        building.abandoned = false;
+        building.heir = Some(0);
+        let record = building.level_records[0].clone();
+        building.level_records = (0..3)
+            .map(|method| {
+                let mut record = record.clone();
+                record.number = method;
+                record.method = method;
+                record
+            })
+            .collect();
+        building.method_levels = vec![1, 1, 1];
+        building.levels = 3;
+        building.wage_offers = ["high", "middle", "low"]
+            .into_iter()
+            .map(|id| (id.into(), 1_000_000))
+            .collect();
+        building
+            .employment
+            .fill(super::super::Employment::default());
+        (rules, place, def)
+    }
+
+    #[test]
+    fn placement_moves_the_lowest_ranked_source_first() {
+        let (rules, mut place, def) = ranked_transfer_fixture();
+        place.buildings[0].employment[0]
+            .jobs
+            .insert("middle".into(), 1);
+        place.buildings[0].employment[1]
+            .jobs
+            .insert("low".into(), 1);
+        for (pop, entry) in place
+            .pops
+            .iter_mut()
+            .zip(&mut place.buildings[0].employment)
+        {
+            entry.workers = entry.jobs.values().sum();
+            pop.employment[0] = entry.clone();
+        }
+        place_internal(
+            &rules,
+            &place.prices_milli,
+            &mut place.pops,
+            &mut place.buildings[0],
+            &def,
+            0,
+            1,
+            1000,
+        )
+        .unwrap();
+        assert_eq!(
+            place.buildings[0].employment[0].jobs.get("middle"),
+            Some(&1)
+        );
+        assert_eq!(place.buildings[0].employment[1].jobs.get("high"), Some(&1));
+    }
+
+    #[test]
+    fn placement_passes_over_a_worker_whose_minimum_exceeds_the_offer() {
+        let (rules, mut place, mut def) = ranked_transfer_fixture();
+        def.methods[2].jobs[0].places = 2;
+        place.pops[0].consumption.necessities_pm = 1000;
+        place.pops[1].consumption.necessities_pm = 0;
+        let minimum = super::super::wages::pop_minimum_wage(
+            &rules,
+            &place.prices_milli,
+            &place.pops[0],
+            "peasant",
+        )
+        .unwrap();
+        assert!(minimum > 0);
+        place.buildings[0]
+            .wage_offers
+            .insert("high".into(), minimum - 1);
+        for i in 0..2 {
+            place.buildings[0].employment[i]
+                .jobs
+                .insert("low".into(), 1);
+            place.buildings[0].employment[i].workers = 1;
+            place.pops[i].employment[0] = place.buildings[0].employment[i].clone();
+        }
+        // Keep the intermediate job full so only the high vacancy can accept a worker.
+        def.methods[1].jobs[0].places = 0;
+        place_internal(
+            &rules,
+            &place.prices_milli,
+            &mut place.pops,
+            &mut place.buildings[0],
+            &def,
+            0,
+            1,
+            1000,
+        )
+        .unwrap();
+        assert_eq!(place.buildings[0].employment[0].jobs.get("low"), Some(&1));
+        assert_eq!(place.buildings[0].employment[1].jobs.get("high"), Some(&1));
+    }
+
+    #[test]
+    fn manager_rank_precedes_a_more_profitable_job() {
+        let (rules, mut place, mut def) = ranked_transfer_fixture();
+        def.methods[1].jobs[0].manager = true;
+        place.buildings[0].employment[0]
+            .jobs
+            .insert("low".into(), 1);
+        place.buildings[0].employment[0].workers = 1;
+        place.pops[0].employment[0] = place.buildings[0].employment[0].clone();
+        let profit = |method: usize| {
+            monthly_level_profit(
+                &rules,
+                &place.pops,
+                &place.prices_milli,
+                &place.buildings[0],
+                &def,
+                &place.buildings[0].level_records[method],
+                &[1000, 0, 0],
+                1,
+                1000,
+            )
+            .unwrap()
+        };
+        assert_eq!(profit(0).cmp(&profit(1)), Ordering::Greater);
+        place_internal(
+            &rules,
+            &place.prices_milli,
+            &mut place.pops,
+            &mut place.buildings[0],
+            &def,
+            0,
+            1,
+            1000,
+        )
+        .unwrap();
+        assert_eq!(
+            place.buildings[0].employment[0].jobs.get("middle"),
+            Some(&1)
+        );
+        assert!(!place.buildings[0].employment[0].jobs.contains_key("high"));
+    }
+
+    #[test]
+    fn released_workers_fill_higher_ranked_jobs_before_lower_ones() {
+        let (rules, mut place, mut def) = ranked_transfer_fixture();
+        place.pops[1].kind = "labourer".into();
+        def.methods[2].jobs[0].pop_types.push("labourer".into());
+        def.methods[1].jobs[0].places = 0;
+        for i in 0..2 {
+            place.buildings[0].employment[i]
+                .jobs
+                .insert("removed".into(), 1);
+            place.buildings[0].employment[i].workers = 1;
+            place.pops[i].employment[0] = place.buildings[0].employment[i].clone();
+        }
+        trim_and_rank_jobs(
+            &rules,
+            &place.prices_milli,
+            &mut place.pops,
+            &mut place.buildings[0],
+            &def,
+            0,
+            1,
+            1000,
+        )
+        .unwrap();
+        assert_eq!(place.buildings[0].employment[0].jobs.get("high"), Some(&1));
+        assert_eq!(place.buildings[0].employment[1].jobs.get("low"), Some(&1));
+    }
+
+    #[test]
+    fn released_worker_skips_unaffordable_high_rank_for_the_next_job() {
+        let (mut rules, mut place) = fixture(100, "oats");
+        place.buildings.truncate(1);
+        for pop in &mut place.pops {
+            pop.employment.truncate(1);
+        }
+        place.pops[0].workers = 1;
+        place.pops[0].consumption.necessities_pm = 1000;
+        place.pops[0].kind = "peasant".into();
+        place.pops[1].workers = 1;
+        place.prices_milli.fill(1000);
+        let def = rules
+            .buildings
+            .iter_mut()
+            .find(|def| def.id == "farm")
+            .unwrap();
+        let mut top = def.methods[0].clone();
+        top.jobs = vec![super::super::ProductionJob {
+            id: "top".into(),
+            places: 1,
+            pop_types: vec!["peasant".into()],
+            wage_weight_pm: 1000,
+            manager: false,
+        }];
+        top.annual_output = BTreeMap::from([("oats".into(), 240_000_000)]);
+        let mut next = top.clone();
+        next.jobs[0].id = "next".into();
+        next.annual_output.insert("oats".into(), 12);
+        def.methods = vec![top, next];
+        let def = def.clone();
+        let building = &mut place.buildings[0];
+        building.abandoned = false;
+        building.heir = Some(1);
+        let mut other = building.level_records[0].clone();
+        other.number = 1;
+        other.method = 1;
+        building.level_records.push(other);
+        building.levels = 2;
+        building.method_levels = vec![1, 1];
+        building.wage_offers = BTreeMap::from([("top".into(), 0), ("next".into(), 1_000_000)]);
+        building
+            .employment
+            .fill(super::super::Employment::default());
+        building.employment[0].jobs.insert("old".into(), 1);
+        building.employment[0].workers = 1;
+        place.pops[0].employment[0] = building.employment[0].clone();
+        trim_and_rank_jobs(
+            &rules,
+            &place.prices_milli,
+            &mut place.pops,
+            &mut place.buildings[0],
+            &def,
+            0,
+            1,
+            1000,
+        )
+        .unwrap();
+        assert_eq!(
+            place.buildings[0].employment[0].jobs,
+            BTreeMap::from([("next".into(), 1)])
+        );
+    }
+
+    #[test]
+    fn released_farm_owner_can_take_a_new_job_without_abandonment() {
+        let (mut rules, mut place) = fixture(100, "oats");
+        place.buildings.truncate(1);
+        for pop in &mut place.pops {
+            pop.employment.truncate(1);
+        }
+        place.pops[0].workers = 1;
+        place.pops[0].kind = "peasant".into();
+        place.prices_milli.fill(1000);
+        let def = rules
+            .buildings
+            .iter_mut()
+            .find(|def| def.id == "farm")
+            .unwrap();
+        def.methods.truncate(1);
+        def.methods[0].jobs[0].id = "new".into();
+        def.methods[0].jobs[0].places = 1;
+        def.methods[0].jobs[0].pop_types = vec!["peasant".into()];
+        let def = def.clone();
+        let building = &mut place.buildings[0];
+        building.abandoned = false;
+        building.heir = None;
+        building.method_levels = vec![1];
+        building.wage_offers = BTreeMap::from([("new".into(), 1_000_000)]);
+        building
+            .employment
+            .fill(super::super::Employment::default());
+        building.employment[0].jobs.insert("old".into(), 1);
+        building.employment[0].workers = 1;
+        place.pops[0].employment[0] = building.employment[0].clone();
+        trim_and_rank_jobs(
+            &rules,
+            &place.prices_milli,
+            &mut place.pops,
+            &mut place.buildings[0],
+            &def,
+            0,
+            1,
+            1000,
+        )
+        .unwrap();
+        assert_eq!(
+            place.buildings[0].employment[0].jobs,
+            BTreeMap::from([("new".into(), 1)])
+        );
+        assert!(!place.buildings[0].abandoned);
+        assert_eq!(
+            super::super::resolve_owner_shares(&mut place, 0).unwrap()[0],
+            1000
+        );
+    }
+
+    #[test]
+    fn placement_freezes_mixed_owner_ranking_without_a_move_back() {
+        let (mut rules, mut place) = fixture(100, "oats");
+        place.buildings.truncate(1);
+        for pop in &mut place.pops {
+            pop.employment.truncate(1);
+        }
+        place.pops[0].workers = 1;
+        place.pops[1].workers = 2;
+        place.pops[0].kind = "peasant".into();
+        place.pops[1].kind = "peasant".into();
+        place.prices_milli.fill(1000);
+        let def = rules
+            .buildings
+            .iter_mut()
+            .find(|def| def.id == "farm")
+            .unwrap();
+        let mut a = def.methods[0].clone();
+        a.jobs = vec![super::super::ProductionJob {
+            id: "a".into(),
+            places: 2,
+            pop_types: vec!["peasant".into()],
+            wage_weight_pm: 1000,
+            manager: false,
+        }];
+        a.annual_output = BTreeMap::from([("oats".into(), 240_000_000)]);
+        let mut b = a.clone();
+        b.jobs[0].id = "b".into();
+        def.methods = vec![a, b];
+        let def = def.clone();
+        let building = &mut place.buildings[0];
+        building.abandoned = false;
+        building.heir = Some(1);
+        let mut other = building.level_records[0].clone();
+        other.number = 1;
+        other.method = 1;
+        building.level_records.push(other);
+        building.method_levels = vec![1, 1];
+        building.levels = 2;
+        building.wage_offers = BTreeMap::from([("a".into(), 8_000_000), ("b".into(), 8_000_000)]);
+        building
+            .employment
+            .fill(super::super::Employment::default());
+        building.employment[0].jobs.insert("a".into(), 1);
+        building.employment[0].workers = 1;
+        building.employment[1].jobs = BTreeMap::from([("a".into(), 1), ("b".into(), 1)]);
+        building.employment[1].workers = 2;
+        for (pop, entry) in place.pops.iter_mut().zip(&building.employment) {
+            pop.employment[0] = entry.clone();
+        }
+        for record in &place.buildings[0].level_records {
+            assert!(
+                monthly_level_profit(
+                    &rules,
+                    &place.pops,
+                    &place.prices_milli,
+                    &place.buildings[0],
+                    &def,
+                    record,
+                    &[0, 1000, 0],
+                    1,
+                    1000
+                )
+                .unwrap()
+                .positive()
+            );
+        }
+        place_internal(
+            &rules,
+            &place.prices_milli,
+            &mut place.pops,
+            &mut place.buildings[0],
+            &def,
+            0,
+            1,
+            1000,
+        )
+        .unwrap();
+        assert_eq!(
+            place.buildings[0].employment[0].jobs,
+            BTreeMap::from([("b".into(), 1)])
+        );
+        assert_eq!(
+            place.buildings[0].employment[1].jobs,
+            BTreeMap::from([("a".into(), 1), ("b".into(), 1)])
+        );
+    }
+
+    #[test]
+    fn placement_skips_a_blocked_manager_and_promotes_to_fillable_job() {
+        let (mut rules, mut place) = fixture(100, "oats");
+        place.buildings.truncate(1);
+        for pop in &mut place.pops {
+            pop.employment.truncate(1);
+        }
+        place.pops[0].workers = 10;
+        place.pops[0].kind = "peasant".into();
+        place.prices_milli.fill(1000);
+        let def = rules
+            .buildings
+            .iter_mut()
+            .find(|def| def.id == "farm")
+            .unwrap();
+        let base = def.methods[0].clone();
+        let mut manager = base.clone();
+        manager.jobs = vec![super::super::ProductionJob {
+            id: "manager".into(),
+            places: 1,
+            pop_types: vec!["noble".into()],
+            wage_weight_pm: 1000,
+            manager: true,
+        }];
+        let mut maker = base.clone();
+        maker.jobs = vec![super::super::ProductionJob {
+            id: "maker".into(),
+            places: 1,
+            pop_types: vec!["peasant".into()],
+            wage_weight_pm: 1000,
+            manager: false,
+        }];
+        maker.annual_output = BTreeMap::from([("oats".into(), 1000)]);
+        let mut low = maker.clone();
+        low.jobs[0].id = "low".into();
+        low.annual_output.insert("oats".into(), 1);
+        def.methods = vec![manager, maker, low];
+        let def = def.clone();
+        let building = &mut place.buildings[0];
+        building.abandoned = false;
+        building.heir = None;
+        let record = building.level_records[0].clone();
+        building.level_records = (0..3)
+            .map(|method| {
+                let mut r = record.clone();
+                r.number = method;
+                r.method = method;
+                r
+            })
+            .collect();
+        building.method_levels = vec![1, 1, 1];
+        building.levels = 3;
+        building.wage_offers = BTreeMap::from([
+            ("manager".into(), 1_000_000),
+            ("maker".into(), 1_000_000),
+            ("low".into(), 1_000_000),
+        ]);
+        building
+            .employment
+            .fill(super::super::Employment::default());
+        building.employment[0].jobs.insert("low".into(), 1);
+        building.employment[0].workers = 1;
+        place.pops[0].employment[0] = building.employment[0].clone();
+        place_internal(
+            &rules,
+            &place.prices_milli,
+            &mut place.pops,
+            &mut place.buildings[0],
+            &def,
+            0,
+            1,
+            1000,
+        )
+        .unwrap();
+        assert_eq!(place.buildings[0].employment[0].jobs.get("maker"), Some(&1));
+        assert!(!place.buildings[0].employment[0].jobs.contains_key("low"));
+        assert!(
+            !place.buildings[0].employment[0]
+                .jobs
+                .contains_key("manager")
+        );
+    }
+
+    #[test]
+    fn paused_source_contributes_only_the_live_herd_to_its_own_output() {
+        let (rules, mut place) = fixture(100, "oats");
+        place.buildings[0].level_records[0].paused = true;
+        let building = &place.buildings[0];
+        let def = rules
+            .buildings
+            .iter()
+            .find(|def| def.id == building.kind)
+            .unwrap();
+        let actual = own_output(
+            &rules,
+            &place,
+            building,
+            def,
+            &building.level_records[0],
+            1,
+            1000,
+        )
+        .unwrap();
+        let herd = herd_output(&rules, &place, building, def, &building.herds, None).unwrap();
+        assert_eq!(actual, herd);
+    }
+
+    #[test]
+    fn fully_paused_level_prices_its_occupied_ground_without_spare_land() {
+        let (rules, mut place) = fixture(100, "oats");
+        place.buildings.truncate(1);
+        for pop in &mut place.pops {
+            pop.employment.truncate(1);
+        }
+        place.prices_milli.fill(1000);
+        let building = &mut place.buildings[0];
+        building.herds.fill(0);
+        building.level_records[0].paused = true;
+        building
+            .employment
+            .fill(super::super::Employment::default());
+        commit_wage_offers(&rules, &mut place, Some(&LandCounts::default()), 1, 1000).unwrap();
+        assert!(place.buildings[0].wage_offers["peasant_labour"] > 0);
+    }
+
+    #[test]
+    fn zero_monthly_profit_keeps_the_previous_pause_state() {
+        let (mut rules, mut place) = fixture(100, "oats");
+        place.buildings.truncate(1);
+        for pop in &mut place.pops {
+            pop.employment.truncate(1);
+        }
+        place.pops[0].workers = 1;
+        place.pops[1].workers = 1;
+        place.prices_milli.fill(1000);
+        let def = rules
+            .buildings
+            .iter_mut()
+            .find(|def| def.id == "farm")
+            .unwrap();
+        def.methods[0].jobs[0].places = 1;
+        def.methods[0].annual_output = BTreeMap::from([("oats".into(), 12)]);
+        let job = def.methods[0].jobs[0].id.clone();
+        let building = &mut place.buildings[0];
+        building.abandoned = false;
+        building.heir = Some(1);
+        building.wage_offers = BTreeMap::from([(job.clone(), 1000)]);
+        building
+            .employment
+            .fill(super::super::Employment::default());
+        building.employment[0].jobs.insert(job, 1);
+        building.employment[0].workers = 1;
+        place.pops[0].employment[0] = building.employment[0].clone();
+        monthly_pause(&rules, &mut place, 1, 1000).unwrap();
+        assert!(!place.buildings[0].level_records[0].paused);
+        place.buildings[0].level_records[0].paused = true;
+        place.buildings[0]
+            .employment
+            .fill(super::super::Employment::default());
+        place.pops[0].employment[0] = super::super::Employment::default();
+        place.buildings[0].paused_owners = BTreeMap::from([(1, 1000)]);
+        monthly_pause(&rules, &mut place, 1, 1000).unwrap();
+        assert!(place.buildings[0].level_records[0].paused);
+    }
+
+    #[test]
+    fn pause_and_reopening_rescale_carry_of_the_working_level() {
+        let (mut rules, mut place) = fixture(100, "oats");
+        place.buildings.truncate(1);
+        for pop in &mut place.pops {
+            pop.employment.truncate(1);
+        }
+        place.pops[0].workers = 2;
+        place.pops[1].workers = 1;
+        place.prices_milli.fill(1000);
+        let def = rules
+            .buildings
+            .iter_mut()
+            .find(|def| def.id == "farm")
+            .unwrap();
+        let mut low = def.methods[0].clone();
+        low.jobs[0].places = 1;
+        low.annual_output = BTreeMap::from([("oats".into(), 12)]);
+        let mut high = low.clone();
+        high.annual_output.insert("oats".into(), 240_000_000);
+        def.methods = vec![low, high];
+        let def = def.clone();
+        let building = &mut place.buildings[0];
+        building.abandoned = false;
+        building.heir = Some(1);
+        let mut second = building.level_records[0].clone();
+        second.number = 1;
+        second.method = 1;
+        building.level_records.push(second);
+        building.method_levels = vec![1, 1];
+        building.levels = 2;
+        building.production_carries = vec![vec![0; rules.goods.len()]; 2];
+        let oats = crate::tests::good_at(&rules, "oats");
+        building.production_carries[1][oats] = 10_000;
+        let job = def.methods[0].jobs[0].id.clone();
+        building.wage_offers = BTreeMap::from([(job.clone(), 1_000_000)]);
+        building
+            .employment
+            .fill(super::super::Employment::default());
+        building.employment[0].jobs.insert(job, 2);
+        building.employment[0].workers = 2;
+        place.pops[0].employment[0] = building.employment[0].clone();
+        monthly_pause(&rules, &mut place, 1, 1000).unwrap();
+        assert!(place.buildings[0].level_records[0].paused);
+        assert!(!place.buildings[0].level_records[1].paused);
+        assert_eq!(place.buildings[0].production_carries[1][oats], 5000);
+        place.buildings[0]
+            .wage_offers
+            .values_mut()
+            .for_each(|offer| *offer = 0);
+        monthly_pause(&rules, &mut place, 1, 1000).unwrap();
+        assert!(!place.buildings[0].level_records[0].paused);
+        assert_eq!(place.buildings[0].production_carries[1][oats], 10_000);
+    }
+
+    #[test]
+    fn monthly_pause_and_reopening_keep_farm_owner_until_new_hire() {
+        let (rules, mut place) = fixture(100, "oats");
+        place.prices_milli.fill(1000);
+        place.buildings.truncate(1);
+        for pop in &mut place.pops {
+            pop.employment.truncate(1);
+        }
+        place.pops[0].workers = 10;
+        place.pops[1].workers = 1;
+        let def = rules.buildings.iter().find(|b| b.id == "farm").unwrap();
+        let job = def.methods[0].jobs[0].id.clone();
+        let building = &mut place.buildings[0];
+        building.abandoned = false;
+        building.heir = Some(1);
+        building.wage_offers = building_job_pools(def, &vec![1; def.methods.len()])
+            .unwrap()
+            .into_iter()
+            .map(|pool| (pool.job.id, u64::MAX / 100))
+            .collect();
+        building
+            .employment
+            .fill(super::super::Employment::default());
+        building.employment[0].jobs.insert(job, 1);
+        building.employment[0].workers = 1;
+        *building.level_records[0]
+            .unpaid_work
+            .values_mut()
+            .next()
+            .unwrap() = Big::new(42);
+        place.pops[0].employment[0] = place.buildings[0].employment[0].clone();
+        monthly_pause(&rules, &mut place, 1, 1000).unwrap();
+        assert!(place.buildings[0].level_records[0].paused);
+        assert_eq!(
+            place.buildings[0].paused_owners,
+            BTreeMap::from([(1, 1000)])
+        );
+        assert_eq!(place.buildings[0].employment[0].workers, 0);
+        assert!(
+            place.buildings[0].level_records[0]
+                .unpaid_work
+                .values()
+                .all(|v| *v == Big::default())
+        );
+        place.buildings[0]
+            .wage_offers
+            .values_mut()
+            .for_each(|offer| *offer = 0);
+        monthly_pause(&rules, &mut place, 1, 1000).unwrap();
+        assert!(!place.buildings[0].level_records[0].paused);
+        assert_eq!(place.buildings[0].level_records[0].paydays, 0);
+        assert_eq!(
+            place.buildings[0].paused_owners,
+            BTreeMap::from([(1, 1000)])
+        );
     }
 
     fn capacity_review_fixture() -> (Rules, PlaceState, LandCounts, Vec<u64>) {
@@ -1982,6 +2907,196 @@ mod fraction_tests {
     }
 
     #[test]
+    fn multi_source_plan_selects_highest_numbered_paused_level_first() {
+        let (mut rules, mut place, land, prices) = capacity_review_fixture();
+        let def = rules
+            .buildings
+            .iter_mut()
+            .find(|def| def.id == "farm")
+            .unwrap();
+        def.methods[0].annual_output.insert("oats".into(), 1200);
+        def.methods[1].size_units = 10;
+        let farm = &mut place.buildings[0];
+        let mut second = farm.level_records[0].clone();
+        second.number = 1;
+        let mut paused = second.clone();
+        paused.number = 2;
+        paused.paused = true;
+        farm.level_records.extend([second, paused]);
+        for record in &mut farm.level_records {
+            record.unpaid_work.clear();
+        }
+        farm.levels = 3;
+        farm.units = 15;
+        farm.method_levels[0] = 3;
+        let looked = test_look_in_year(
+            &rules,
+            &place,
+            &land,
+            0,
+            5,
+            Some(768),
+            &prices,
+            &BTreeMap::from([("oats".into(), 100_000)]),
+        )
+        .unwrap();
+        let merge = looked.moves.iter().find(|entry| entry.method == 1).unwrap();
+        assert_eq!(merge.plan.as_ref().unwrap().sources, [0, 2]);
+        assert_eq!(merge.plan.as_ref().unwrap().grounds.len(), 1);
+    }
+
+    #[test]
+    fn switching_with_a_paused_level_rescales_using_working_pools() {
+        let (rules, mut place, _, prices) = capacity_review_fixture();
+        let def = rules.buildings.iter().find(|def| def.id == "farm").unwrap();
+        let oats = crate::tests::good_at(&rules, "oats");
+        let building = &mut place.buildings[0];
+        let mut second = building.level_records[0].clone();
+        second.number = 1;
+        let mut paused = second.clone();
+        paused.number = 2;
+        paused.paused = true;
+        building.level_records.extend([second, paused]);
+        building.levels = 3;
+        building.units = 15;
+        building.method_levels[0] = 3;
+        building.production_carries[0][oats] = 10_000;
+        test_offers(def, building);
+        replace_levels(
+            &rules,
+            &mut place.pops,
+            building,
+            def,
+            0,
+            &[0],
+            1,
+            &[None],
+            768,
+            5,
+            &prices,
+            1000,
+        )
+        .unwrap();
+        assert!(building.level_records.iter().any(|record| record.paused));
+        assert_eq!(building.production_carries[0][oats], 6000);
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "The same staffed fixture compares both switch paths and their settlements."
+    )]
+    fn paused_source_switch_scores_zero_in_single_and_capacity_looks() {
+        let (mut rules, mut place, land, prices) = capacity_review_fixture();
+        let def = rules
+            .buildings
+            .iter_mut()
+            .find(|def| def.id == "farm")
+            .unwrap();
+        def.methods[0].annual_output.insert("oats".into(), 1200);
+        def.methods[1].size_units = 5;
+        def.methods[1].jobs[0].places = 5;
+        let building = &mut place.buildings[0];
+        let mut working = building.level_records[0].clone();
+        working.number = 1;
+        building.level_records.push(working);
+        building.level_records[0].paused = true;
+        building.method_levels[0] = 2;
+        building.levels = 2;
+        building.units = 10;
+        let def = def.clone();
+        let active_output = output(
+            &rules,
+            &place,
+            &place.buildings[0],
+            &def,
+            &def.methods[0],
+            Some("pasture"),
+            13,
+            5,
+            1000,
+            true,
+            None,
+        )
+        .unwrap();
+        let oats = crate::tests::good_at(&rules, "oats");
+        assert!(active_output[oats].cmp(&Fraction::integer(0)) == Ordering::Greater);
+        assert_eq!(
+            own_output(
+                &rules,
+                &place,
+                &place.buildings[0],
+                &def,
+                &place.buildings[0].level_records[0],
+                5,
+                1000
+            )
+            .unwrap()[oats],
+            Fraction::integer(0)
+        );
+        let orders = BTreeMap::from([("oats".into(), 100_000)]);
+        let single =
+            test_look_in_year(&rules, &place, &land, 0, 5, Some(768), &prices, &orders).unwrap();
+        let paused = single
+            .moves
+            .iter()
+            .find(|entry| entry.method == 1 && entry.level == 0)
+            .unwrap();
+        let working = single
+            .moves
+            .iter()
+            .find(|entry| entry.method == 1 && entry.level == 1)
+            .unwrap();
+        assert!(paused.plan.is_none());
+        assert_eq!(paused.staying, Fraction::integer(0));
+        assert!(working.staying.cmp(&Fraction::integer(0)) == Ordering::Greater);
+        let mut switched = place.clone();
+        let mut ledger = super::super::PlaceProductionLedger::new(
+            &place.id,
+            rules.goods.len(),
+            rules.herd_species.len(),
+        );
+        test_make_move(&rules, &mut switched, 0, paused, 768, 5, 1000, &mut ledger).unwrap();
+        assert!(!switched.buildings[0].level_records[0].paused);
+
+        rules
+            .buildings
+            .iter_mut()
+            .find(|def| def.id == "farm")
+            .unwrap()
+            .methods[1]
+            .size_units = 1;
+        let planned =
+            test_look_in_year(&rules, &place, &land, 0, 5, Some(768), &prices, &orders).unwrap();
+        let paused = planned
+            .moves
+            .iter()
+            .find(|entry| {
+                entry.method == 1 && entry.plan.as_ref().is_some_and(|plan| plan.sources == [0])
+            })
+            .unwrap();
+        let working = planned
+            .moves
+            .iter()
+            .find(|entry| {
+                entry.method == 1 && entry.plan.as_ref().is_some_and(|plan| plan.sources == [1])
+            })
+            .unwrap();
+        assert_eq!(paused.staying, Fraction::integer(0));
+        assert!(working.staying.cmp(&Fraction::integer(0)) == Ordering::Greater);
+        let mut switched = place.clone();
+        test_make_move(&rules, &mut switched, 0, paused, 768, 5, 1000, &mut ledger).unwrap();
+        assert_eq!(switched.buildings[0].method_levels[1], 5);
+        assert!(
+            switched.buildings[0]
+                .level_records
+                .iter()
+                .filter(|record| record.method == 1)
+                .all(|record| !record.paused)
+        );
+    }
+
+    #[test]
     fn capacity_split_charges_one_combined_ramp_under_the_demand_cap() {
         let (mut rules, place, land, prices) = capacity_review_fixture();
         rules
@@ -1991,7 +3106,7 @@ mod fraction_tests {
             .unwrap()
             .methods[1]
             .grows = true;
-        let look = look_in_year(
+        let look = test_look_in_year(
             &rules,
             &place,
             &land,
@@ -2030,7 +3145,7 @@ mod fraction_tests {
         farm.method_levels[0] = 2;
         farm.levels = 2;
         farm.units = 11; // Free capacity forces look_capacity for the equal-size alternatives.
-        let look = look_in_year(
+        let look = test_look_in_year(
             &rules,
             &place,
             &land,
@@ -2090,7 +3205,7 @@ mod fraction_tests {
             .unwrap()
             .herds
             .clear();
-        let without = look_in_year(
+        let without = test_look_in_year(
             &no_herd_rules,
             &place,
             &land,
@@ -2102,7 +3217,8 @@ mod fraction_tests {
         )
         .unwrap();
         place.buildings[0].herds[0] = 1;
-        let with = look_in_year(&rules, &place, &land, 0, 5, Some(768), &prices, &jobs).unwrap();
+        let with =
+            test_look_in_year(&rules, &place, &land, 0, 5, Some(768), &prices, &jobs).unwrap();
         let a = without
             .moves
             .iter()
@@ -2120,7 +3236,7 @@ mod fraction_tests {
             .unwrap();
         def.methods[1].resource = "none".into();
         let shrinking =
-            look_in_year(&rules, &place, &land, 0, 5, Some(768), &prices, &jobs).unwrap();
+            test_look_in_year(&rules, &place, &land, 0, 5, Some(768), &prices, &jobs).unwrap();
         let c = shrinking
             .moves
             .iter()
@@ -2154,7 +3270,7 @@ mod fraction_tests {
         farm.method_levels[0] = 2;
         farm.levels = 2;
         farm.units = 10;
-        let looked = look_in_year(
+        let looked = test_look_in_year(
             &rules,
             &place,
             &land,
@@ -2172,7 +3288,7 @@ mod fraction_tests {
             rules.goods.len(),
             rules.herd_species.len(),
         );
-        make_move(&rules, &mut place, 0, chosen, 768, 5, &mut ledger).unwrap();
+        test_make_move(&rules, &mut place, 0, chosen, 768, 5, 1000, &mut ledger).unwrap();
         assert_eq!(place.buildings[0].method_levels, vec![1, 5]);
         assert!(place.buildings[0].herds.iter().all(|heads| *heads == 0));
         assert!(ledger.herd_arrivals.iter().all(|heads| *heads == 0));
@@ -2329,7 +3445,7 @@ mod fraction_tests {
             fertile_cells_by_terrain: BTreeMap::from([("pasture".into(), 10)]),
             sea: 10,
         };
-        let looked = look_in_year(
+        let looked = test_look_in_year(
             &rules,
             &place,
             &land,
@@ -2467,7 +3583,7 @@ mod fraction_tests {
             .push(vec![0; demand_rules.goods.len()]);
         farm.level_records[0].unpaid_work.clear();
         let one_prices = vec![1; demand_rules.goods.len()];
-        let demand = look_in_year(
+        let demand = test_look_in_year(
             &demand_rules,
             &demand_place,
             &land,
@@ -2484,7 +3600,7 @@ mod fraction_tests {
         assert_eq!(c.switching, Fraction::integer(20));
         assert_eq!(demand.moves[demand.answer.unwrap()].method, 2);
         demand_place.buildings[0].units = 6;
-        let tied = look_in_year(
+        let tied = test_look_in_year(
             &demand_rules,
             &demand_place,
             &land,
@@ -2511,7 +3627,7 @@ mod fraction_tests {
             .methods[1]
             .size_units = 2;
         let mut leftover_place = place.clone();
-        let leftover = look_in_year(
+        let leftover = test_look_in_year(
             &leftover_rules,
             &leftover_place,
             &land,
@@ -2529,13 +3645,14 @@ mod fraction_tests {
             leftover_rules.goods.len(),
             leftover_rules.herd_species.len(),
         );
-        make_move(
+        test_make_move(
             &leftover_rules,
             &mut leftover_place,
             0,
             chosen,
             768,
             5,
+            1000,
             &mut ledger,
         )
         .unwrap();
@@ -2548,7 +3665,7 @@ mod fraction_tests {
             1
         );
 
-        let looked = look_in_year(
+        let looked = test_look_in_year(
             &rules,
             &place,
             &land,
@@ -2569,7 +3686,7 @@ mod fraction_tests {
             rules.goods.len(),
             rules.herd_species.len(),
         );
-        make_move(&rules, &mut place, 0, chosen, 768, 5, &mut ledger).unwrap();
+        test_make_move(&rules, &mut place, 0, chosen, 768, 5, 1000, &mut ledger).unwrap();
         let building = &place.buildings[0];
         assert_eq!(building.units, 5);
         assert_eq!(building.method_levels, vec![0, 5]);
@@ -2601,13 +3718,7 @@ mod fraction_tests {
         def.methods[1].annual_output.insert("oats".into(), 1);
         let mut weighted = place.clone();
         weighted.buildings[0].units = 7;
-        for (index, record) in weighted.buildings[0].level_records.iter_mut().enumerate() {
-            record.unpaid_work.insert(
-                "oats".into(),
-                Big::new(if index == 0 { 1_000_000 } else { index as u128 }),
-            );
-        }
-        let ranked = look_in_year(
+        let ranked = test_look_in_year(
             &rules,
             &weighted,
             &land,
@@ -2619,17 +3730,17 @@ mod fraction_tests {
         )
         .unwrap();
         let chosen = &ranked.moves[ranked.answer.unwrap()];
-        assert_eq!(chosen.plan.as_ref().unwrap().sources, vec![1, 2, 3]);
+        assert_eq!(chosen.plan.as_ref().unwrap().sources, vec![0, 1, 2]);
         let mut ledger = super::super::PlaceProductionLedger::new(
             &weighted.id,
             rules.goods.len(),
             rules.herd_species.len(),
         );
-        make_move(&rules, &mut weighted, 0, chosen, 768, 6, &mut ledger).unwrap();
+        test_make_move(&rules, &mut weighted, 0, chosen, 768, 6, 1000, &mut ledger).unwrap();
         assert_eq!(weighted.buildings[0].method_levels, vec![1, 2]);
         assert_eq!(weighted.buildings[0].employment[0].workers, 1);
 
-        let looked = look_in_year(
+        let looked = test_look_in_year(
             &rules,
             &place,
             &land,
@@ -2648,7 +3759,7 @@ mod fraction_tests {
             rules.goods.len(),
             rules.herd_species.len(),
         );
-        make_move(&rules, &mut place, 0, chosen, 768, 6, &mut ledger).unwrap();
+        test_make_move(&rules, &mut place, 0, chosen, 768, 6, 1000, &mut ledger).unwrap();
         assert_eq!(place.buildings[0].method_levels, vec![1, 0]);
         assert_eq!(place.buildings[0].units, 5);
         assert_eq!(
@@ -2800,6 +3911,8 @@ mod fraction_tests {
             .find(|item| item.id == "farm")
             .unwrap();
         let mut exact = farm.clone();
+        test_offers(def, &mut exact);
+        test_offers(def, &mut place.buildings[0]);
         let mut pops = place.pops.clone();
         replace_levels(
             &rules,
@@ -2813,6 +3926,7 @@ mod fraction_tests {
             768,
             5,
             &place.prices_milli,
+            1000,
         )
         .unwrap();
         let expected_herds = switching_heads_for(&rules, &exact, def, &exact.method_levels, false)
@@ -2847,7 +3961,7 @@ mod fraction_tests {
             rules.goods.len(),
             rules.herd_species.len(),
         );
-        make_move(&rules, &mut place, 0, &entry, 768, 5, &mut ledger).unwrap();
+        test_make_move(&rules, &mut place, 0, &entry, 768, 5, 1000, &mut ledger).unwrap();
         assert_eq!(place.buildings[0].employment, exact.employment);
         assert_eq!(place.buildings[0].herds, expected_herds);
         assert_eq!(place.buildings[0].herds[0], 0);
@@ -2950,6 +4064,7 @@ mod fraction_tests {
         place.buildings[0].levels = 2;
         place.buildings[0].units = 10;
         place.buildings[0].method_levels[0] = 2;
+        test_offers(def, &mut place.buildings[0]);
         replace_levels(
             &rules,
             &mut place.pops,
@@ -2962,6 +4077,7 @@ mod fraction_tests {
             768,
             5,
             &place.prices_milli,
+            1000,
         )
         .unwrap();
         let building = &place.buildings[0];
@@ -3106,7 +4222,7 @@ mod fraction_tests {
             sea: 0,
         };
         let prices = vec![1000; rules.goods.len()];
-        let looked = look_in_year(
+        let looked = test_look_in_year(
             &rules,
             &place,
             &land,
@@ -3138,7 +4254,7 @@ mod fraction_tests {
             rules.goods.len(),
             rules.herd_species.len(),
         );
-        make_move(&rules, &mut place, 0, &entry, 768, 5, &mut ledger).unwrap();
+        test_make_move(&rules, &mut place, 0, &entry, 768, 5, 1000, &mut ledger).unwrap();
         assert_eq!(place.buildings[0].employment, exact.employment);
         assert_eq!(place.buildings[0].herds[0], 2);
         assert_eq!(ledger.herd_arrivals[0], 2);
@@ -3162,11 +4278,7 @@ mod fraction_tests {
         building.production_carries = vec![vec![0; rules.goods.len()]; 2];
         building.level_records = vec![crate::tests::level(0, 1, None, 13)];
         building.level_records[0].unpaid_work = seasonal_accounts(&rules, def, &def.methods[1]);
-        building.level_records[0]
-            .unpaid_work
-            .get_mut("fish")
-            .unwrap()
-            .clone_from(&Big::new(42));
+        assert!(building.level_records[0].unpaid_work.is_empty());
         building.herds.fill(0);
         for entry in &mut building.employment {
             entry.jobs.clear();
@@ -3192,7 +4304,7 @@ mod fraction_tests {
             rules.goods.len(),
             rules.herd_species.len(),
         );
-        make_move(&rules, &mut place, 0, &entry, 768, 5, &mut ledger).unwrap();
+        test_make_move(&rules, &mut place, 0, &entry, 768, 5, 1000, &mut ledger).unwrap();
         let building = &place.buildings[0];
         assert_eq!(building.employment[0].jobs.get("field_hands"), Some(&5));
         assert_eq!(building.employment[0].workers, 5);
@@ -3200,12 +4312,12 @@ mod fraction_tests {
         assert!(!building.level_records[0].unpaid_work.contains_key("fish"));
         entry.method = 1;
         entry.ground = None;
-        make_move(&rules, &mut place, 0, &entry, 768, 6, &mut ledger).unwrap();
+        test_make_move(&rules, &mut place, 0, &entry, 768, 6, 1000, &mut ledger).unwrap();
         let building = &place.buildings[0];
         assert_eq!(building.employment[0].jobs.get("fishermen"), Some(&5));
         assert_eq!(building.employment[0].workers, 5);
         assert_eq!(building.level_records[0].paydays, 13);
-        assert!(!building.level_records[0].unpaid_work.contains_key("oats"));
+        assert!(building.level_records[0].unpaid_work.is_empty());
     }
 
     #[test]
@@ -3255,7 +4367,7 @@ mod fraction_tests {
             fertile_cells_by_terrain: BTreeMap::from([("pasture".into(), 10)]),
             sea: 1,
         };
-        let look = look_in_year(
+        let look = test_look_in_year(
             &rules,
             &place,
             &land,
@@ -3287,7 +4399,7 @@ mod fraction_tests {
             rules.goods.len(),
             rules.herd_species.len(),
         );
-        make_move(&rules, &mut place, 0, &entry, 768, 4, &mut ledger).unwrap();
+        test_make_move(&rules, &mut place, 0, &entry, 768, 4, 1000, &mut ledger).unwrap();
         rules.buildings.retain(|b| b.id != "other");
         let mut state = crate::tests::shipped_production_fixture(&rules);
         state.places = vec![place];
@@ -3487,7 +4599,7 @@ mod fraction_tests {
             fertile_cells_by_terrain: BTreeMap::new(),
             sea: 1,
         };
-        let result = look(
+        let result = test_look(
             &rules,
             &place,
             &land,
@@ -3901,11 +5013,12 @@ mod switch_step_tests {
         assert_eq!(
             farm.level_records,
             vec![LevelRecord {
+                paused: false,
                 number: 0,
                 method: 2,
                 ground: Some("forest".into()),
                 paydays: 13,
-                unpaid_work: BTreeMap::from([("hardwood".to_owned(), Big::default())]),
+                unpaid_work: BTreeMap::new(),
                 last_switch: Some((YEAR, 3)),
             }]
         );
@@ -3975,7 +5088,7 @@ mod switch_step_tests {
         ] {
             let mut case = state.clone();
             case.places[0].buildings[0].level_records[0].last_switch = switched;
-            let looked = look_in_year(
+            let looked = look_in_year_with_test_offers(
                 &rules,
                 &case.places[0],
                 &land,
@@ -4007,7 +5120,7 @@ mod switch_step_tests {
             ((YEAR, 12), YEAR + 1, 1, true),
         ] {
             state.places[0].buildings[0].level_records[0].last_switch = Some(stamp);
-            let result = look_in_year(
+            let result = look_in_year_with_test_offers(
                 &rules,
                 &state.places[0],
                 &land,
@@ -4043,7 +5156,7 @@ mod switch_step_tests {
             .unpaid_work
             .insert("oats".into(), Big::new(50 * 144_000));
         let prices = vec![1; rules.goods.len()];
-        let result = look_in_year(
+        let result = look_in_year_with_test_offers(
             &rules,
             &state.places[0],
             &land,
@@ -4252,7 +5365,7 @@ mod switch_step_tests {
         land: &LandCounts,
         month: u8,
     ) -> (bool, u128, u128) {
-        let looked = look_in_year(
+        let looked = look_in_year_with_test_offers(
             rules,
             &state.places[0],
             land,
@@ -4353,7 +5466,7 @@ mod switch_step_tests {
         land.fertility_pm = BTreeMap::from([("forest".into(), 2000)]);
         land.fertile_cells = 4;
         // Before the move the field holds the room: the second building cannot try the field.
-        let blocked = look_in_year(
+        let blocked = look_in_year_with_test_offers(
             &rules,
             &state.places[0],
             &land,
@@ -4907,7 +6020,7 @@ mod switch_step_tests {
     fn where_no_move_passes_two_years_are_day_for_day_the_build_without_switching() {
         let (rules, state, land) = quiet();
         // Wood is tried, and no move passes.
-        let tried = look(
+        let tried = look_with_test_offers(
             &rules,
             &state.places[0],
             &land,
@@ -4996,7 +6109,7 @@ mod switch_step_tests {
         let closing = moved_prices.places[0].prices_milli.clone();
         assert_eq!((closing[wood], closing[oats]), (6_000, 28_500));
         let asks = |prices: &[u64]| {
-            look_in_year(
+            look_in_year_with_test_offers(
                 &rules,
                 &state.places[0],
                 &land,
@@ -5235,6 +6348,565 @@ mod switch_step_tests {
         assert_eq!(EconomyState::from_bytes(&bytes).unwrap(), state);
     }
 }
+fn monthly_level_value(
+    rules: &Rules,
+    def: &BuildingType,
+    prices: &[u64],
+    method: &Method,
+    ground: Option<&str>,
+    month: u8,
+    quality: u16,
+) -> Result<Fraction, DataError> {
+    let mut sum = Fraction::integer(0);
+    for (good, annual) in &method.annual_output {
+        if herd_supplies(rules, def, good) {
+            continue;
+        }
+        let has_maker = method.jobs.iter().any(|job| {
+            job.places > 0
+                && method
+                    .made_by
+                    .get(good)
+                    .map_or(!job.manager, |id| *id == job.id)
+        });
+        if !has_maker {
+            continue;
+        }
+        let idx = rules
+            .goods
+            .iter()
+            .position(|item| item.id == *good)
+            .ok_or_else(|| missing_data(format!("goods.{good}"), "missing good"))?;
+        let price = *prices
+            .get(idx)
+            .ok_or_else(|| missing_data("wages.prices".into(), "missing price"))?;
+        let suitability = method_suitability_pm(rules, def, method, good, ground);
+        let (q, reference) = if method.resource == "usable_land" {
+            (quality, rules.fertility_reference_pm)
+        } else {
+            (1, 1)
+        };
+        if reference == 0 {
+            return Err(missing_data(
+                "fertility_reference_pm".into(),
+                "zero denominator",
+            ));
+        }
+        let (season, divisor) = if method.grows {
+            (1_u128, 12_u128)
+        } else {
+            let key = if ["oats", "barley", "peas_beans"].contains(&good.as_str()) {
+                "grain"
+            } else {
+                good.as_str()
+            };
+            let season = rules
+                .seasons
+                .get(key)
+                .ok_or_else(|| missing_data(format!("seasons.{key}"), "missing season"))?;
+            (u128::from(season[usize::from(month - 1)]), 1000)
+        };
+        sum = sum.add(&amount(
+            &[
+                u128::from(*annual),
+                u128::from(suitability),
+                u128::from(q),
+                season,
+                u128::from(price),
+            ],
+            &[1000, u128::from(reference), divisor],
+        ));
+    }
+    Ok(sum)
+}
+
+fn paid_share(
+    pops: &[PopState],
+    building: &BuildingState,
+    job: &super::ProductionJob,
+    owners: &[u64],
+) -> Fraction {
+    let mut filled = 0_u128;
+    let mut paid = 0_u128;
+    for (index, entry) in building.employment.iter().enumerate() {
+        let count = u128::from(entry.jobs.get(&job.id).copied().unwrap_or(0));
+        filled += count;
+        if owners.get(index).copied().unwrap_or(0) == 0 {
+            paid += count;
+        }
+    }
+    if filled > 0 {
+        return Fraction::ratio(paid, filled);
+    }
+    let eligible = pops
+        .iter()
+        .enumerate()
+        .filter(|(_, pop)| pop.workers > 0 && job.pop_types.contains(&pop.kind))
+        .collect::<Vec<_>>();
+    if !eligible.is_empty()
+        && eligible
+            .iter()
+            .all(|(index, _)| owners.get(*index).copied().unwrap_or(0) > 0)
+    {
+        Fraction::integer(0)
+    } else {
+        Fraction::integer(1)
+    }
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The decision uses one frozen building, ownership and price snapshot."
+)]
+fn monthly_level_profit(
+    rules: &Rules,
+    pops: &[PopState],
+    prices: &[u64],
+    building: &BuildingState,
+    def: &BuildingType,
+    record: &LevelRecord,
+    owners: &[u64],
+    month: u8,
+    quality: u16,
+) -> Result<SignedFraction, DataError> {
+    let method = def
+        .methods
+        .get(record.method as usize)
+        .ok_or_else(|| missing_data("pause.method".into(), "unknown method"))?;
+    let value = monthly_level_value(
+        rules,
+        def,
+        prices,
+        method,
+        record.ground.as_deref(),
+        month,
+        quality,
+    )?;
+    let mut wages = Fraction::integer(0);
+    for job in &method.jobs {
+        let offer = building
+            .wage_offers
+            .get(&job.id)
+            .copied()
+            .ok_or_else(|| missing_data("pause.offer".into(), "missing committed offer"))?;
+        let cost = Fraction::integer(u128::from(job.places) * u128::from(offer))
+            .mul(&paid_share(pops, building, job, owners));
+        wages = wages.add(&cost);
+    }
+    Ok(SignedFraction::difference(&value, &wages))
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The rank pass uses the same frozen decision inputs for every job."
+)]
+fn ranked_jobs(
+    rules: &Rules,
+    pops: &[PopState],
+    prices: &[u64],
+    building: &BuildingState,
+    def: &BuildingType,
+    owners: &[u64],
+    month: u8,
+    quality: u16,
+) -> Result<Vec<String>, DataError> {
+    let levels = super::working_method_levels(building)?;
+    let pools = building_job_pools(def, &levels)?;
+    let mut ranked = Vec::new();
+    for (order, pool) in pools.iter().enumerate() {
+        let mut best: Option<SignedFraction> = None;
+        for record in building
+            .level_records
+            .iter()
+            .filter(|record| !record.paused)
+        {
+            let method = def
+                .methods
+                .get(record.method as usize)
+                .ok_or_else(|| missing_data("pause.method".into(), "unknown method"))?;
+            if !method.jobs.iter().any(|job| job.id == pool.job.id) {
+                continue;
+            }
+            let weight = method
+                .jobs
+                .iter()
+                .map(|job| u128::from(job.places) * u128::from(job.wage_weight_pm))
+                .sum::<u128>();
+            if weight == 0 {
+                continue;
+            }
+            let profit = monthly_level_profit(
+                rules, pops, prices, building, def, record, owners, month, quality,
+            )?;
+            let per_place = SignedFraction {
+                negative: profit.negative,
+                magnitude: profit.magnitude.mul(&Fraction::ratio(1000, weight)),
+            };
+            if best
+                .as_ref()
+                .is_none_or(|old| per_place.cmp(old) == Ordering::Greater)
+            {
+                best = Some(per_place);
+            }
+        }
+        ranked.push((pool.job.manager, order, pool.job.id.clone(), best));
+    }
+    ranked.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then_with(|| match (&a.3, &b.3) {
+                (Some(left), Some(right)) => right.cmp(left),
+                (Some(_), None) => Ordering::Less,
+                (None, Some(_)) => Ordering::Greater,
+                (None, None) => Ordering::Equal,
+            })
+            .then_with(|| a.1.cmp(&b.1))
+    });
+    Ok(ranked.into_iter().map(|(_, _, id, _)| id).collect())
+}
+
+fn rescale_carries_between(
+    rules: &Rules,
+    building: &mut BuildingState,
+    definition: &BuildingType,
+    old_levels: &[u32],
+    levels: &[u32],
+) -> Result<(), DataError> {
+    let old = building_job_pools(definition, old_levels)?;
+    let new = building_job_pools(definition, levels)?;
+    let old_zero = vec![0; old.len()];
+    let new_zero = vec![0; new.len()];
+    for (method_index, row) in building.production_carries.iter_mut().enumerate() {
+        let method = definition.methods.get(method_index).ok_or_else(|| {
+            missing_data(
+                "production.carries".into(),
+                "method dimensions do not match",
+            )
+        })?;
+        for (index, carry) in row.iter_mut().enumerate() {
+            let good = rules.goods.get(index).ok_or_else(|| {
+                missing_data("production.carries".into(), "good dimensions do not match")
+            })?;
+            let (_, before) = good_staffing(method, &good.id, &old, &old_zero, 1)?;
+            let (_, after) = good_staffing(method, &good.id, &new, &new_zero, 1)?;
+            *carry = if before == 0 || after == 0 {
+                0
+            } else {
+                mul_div_floor(*carry, u128::from(after), u128::from(before)).ok_or_else(|| {
+                    missing_data("production.carries".into(), "carry rescale overflow")
+                })?
+            };
+        }
+    }
+    Ok(())
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "One transfer releases excess, freezes ranks and places the released workers."
+)]
+fn trim_and_rank_jobs(
+    rules: &Rules,
+    prices: &[u64],
+    pops: &mut [PopState],
+    building: &mut BuildingState,
+    definition: &BuildingType,
+    building_index: usize,
+    month: u8,
+    quality: u16,
+) -> Result<(), DataError> {
+    let mut pools = building_job_pools(definition, &super::working_method_levels(building)?)?;
+    if building.employment.len() != pops.len() {
+        return Err(missing_data(
+            "employment.jobs".into(),
+            "employment dimensions do not match",
+        ));
+    }
+    let mut released = vec![0_u64; pops.len()];
+    let ids = building
+        .employment
+        .iter()
+        .flat_map(|entry| entry.jobs.keys().cloned())
+        .collect::<std::collections::BTreeSet<_>>();
+    for id in ids {
+        let counts = building
+            .employment
+            .iter()
+            .map(|entry| entry.jobs.get(&id).copied().unwrap_or(0))
+            .collect::<Vec<_>>();
+        let total = counts
+            .iter()
+            .try_fold(0_u64, |sum, count| sum.checked_add(*count))
+            .ok_or_else(|| missing_data("employment.jobs".into(), "job worker total overflow"))?;
+        let places = pools
+            .iter()
+            .find(|pool| pool.job.id == id)
+            .map_or(0, |pool| pool.places);
+        let excess = give(total.saturating_sub(places), &counts)?;
+        for (i, entry) in building.employment.iter_mut().enumerate() {
+            released[i] = released[i]
+                .checked_add(excess[i])
+                .ok_or_else(|| missing_data("employment.jobs".into(), "release overflow"))?;
+            let remaining = counts[i] - excess[i];
+            if remaining == 0 {
+                entry.jobs.remove(&id);
+            } else {
+                entry.jobs.insert(id.clone(), remaining);
+            }
+        }
+    }
+    for entry in &mut building.employment {
+        entry.workers = entry
+            .jobs
+            .values()
+            .try_fold(0_u64, |sum, count| sum.checked_add(*count))
+            .ok_or_else(|| missing_data("employment.jobs".into(), "worker count overflow"))?;
+    }
+    // Resolving the temporary, post-release snapshot must not abandon a farm
+    // before its released workers have had a chance to take the new jobs.
+    let mut snapshot = building.clone();
+    let owners = super::resolve_owner_shares_for(pops, std::slice::from_mut(&mut snapshot), 0)?;
+    let order = ranked_jobs(
+        rules, pops, prices, building, definition, &owners, month, quality,
+    )?;
+    pools.sort_by_key(|pool| {
+        order
+            .iter()
+            .position(|id| *id == pool.job.id)
+            .unwrap_or(usize::MAX)
+    });
+    for pool in &pools {
+        let occupied = building
+            .employment
+            .iter()
+            .map(|entry| entry.jobs.get(&pool.job.id).copied().unwrap_or(0))
+            .try_fold(0_u64, u64::checked_add)
+            .ok_or_else(|| missing_data("employment.jobs".into(), "job worker total overflow"))?;
+        let eligible = released
+            .iter()
+            .zip(pops.iter())
+            .map(|(&count, pop)| {
+                let minimum = super::wages::pop_minimum_wage(rules, prices, pop, &pop.kind)
+                    .ok_or_else(|| {
+                        missing_data("wages.minimum".into(), "minimum wage cannot be computed")
+                    })?;
+                let offer = building.wage_offers.get(&pool.job.id).copied().unwrap_or(0);
+                Ok(
+                    if pool.job.pop_types.contains(&pop.kind) && offer >= minimum {
+                        count
+                    } else {
+                        0
+                    },
+                )
+            })
+            .collect::<Result<Vec<_>, DataError>>()?;
+        let awards = give(pool.places.saturating_sub(occupied), &eligible)?;
+        for (i, award) in awards.into_iter().enumerate() {
+            if award > 0 {
+                *building.employment[i]
+                    .jobs
+                    .entry(pool.job.id.clone())
+                    .or_default() += award;
+                released[i] -= award;
+            }
+        }
+    }
+    for (pop, entry) in pops.iter_mut().zip(&mut building.employment) {
+        entry
+            .jobs
+            .retain(|id, _| pools.iter().any(|pool| pool.job.id == *id));
+        entry.workers = entry
+            .jobs
+            .values()
+            .try_fold(0_u64, |sum, count| sum.checked_add(*count))
+            .ok_or_else(|| missing_data("employment.jobs".into(), "worker count overflow"))?;
+        pop.employment[building_index] = entry.clone();
+    }
+    super::resolve_owner_shares_for(pops, std::slice::from_mut(building), 0)?;
+    Ok(())
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Placement uses a frozen building and monthly price snapshot."
+)]
+pub(super) fn place_internal(
+    rules: &Rules,
+    prices: &[u64],
+    pops: &mut [PopState],
+    building: &mut BuildingState,
+    def: &BuildingType,
+    building_index: usize,
+    month: u8,
+    quality: u16,
+) -> Result<(), DataError> {
+    let pools = building_job_pools(def, &super::working_method_levels(building)?)?;
+    let owners = super::resolve_owner_shares_for(pops, std::slice::from_mut(building), 0)?;
+    let order = ranked_jobs(rules, pops, prices, building, def, &owners, month, quality)?;
+    loop {
+        let mut chosen = None;
+        for (dest_rank, dest_id) in order.iter().enumerate() {
+            let dest = pools
+                .iter()
+                .find(|pool| pool.job.id == *dest_id)
+                .expect("ranked pool exists");
+            let filled = building
+                .employment
+                .iter()
+                .try_fold(0_u64, |sum, entry| {
+                    sum.checked_add(entry.jobs.get(dest_id).copied().unwrap_or(0))
+                })
+                .ok_or_else(|| missing_data("employment.jobs".into(), "filled count overflow"))?;
+            if filled >= dest.places {
+                continue;
+            }
+            let offer = building
+                .wage_offers
+                .get(dest_id)
+                .copied()
+                .ok_or_else(|| missing_data("wages.offer".into(), "missing committed offer"))?;
+            for source_id in order[dest_rank + 1..].iter().rev() {
+                for (pop_index, pop) in pops.iter().enumerate() {
+                    if !dest.job.pop_types.contains(&pop.kind)
+                        || building.employment[pop_index]
+                            .jobs
+                            .get(source_id)
+                            .copied()
+                            .unwrap_or(0)
+                            == 0
+                    {
+                        continue;
+                    }
+                    let minimum = super::wages::pop_minimum_wage(rules, prices, pop, &pop.kind)
+                        .ok_or_else(|| {
+                            missing_data("wages.minimum".into(), "minimum wage cannot be computed")
+                        })?;
+                    if offer >= minimum {
+                        chosen = Some((dest_id.clone(), source_id.clone(), pop_index));
+                        break;
+                    }
+                }
+                if chosen.is_some() {
+                    break;
+                }
+            }
+            if chosen.is_some() {
+                break;
+            }
+        }
+        let Some((dest, source, pop)) = chosen else {
+            break;
+        };
+        let entry = &mut building.employment[pop];
+        let remaining = entry.jobs[&source] - 1;
+        if remaining == 0 {
+            entry.jobs.remove(&source);
+        } else {
+            entry.jobs.insert(source, remaining);
+        }
+        *entry.jobs.entry(dest).or_default() += 1;
+        pops[pop].employment[building_index] = entry.clone();
+    }
+    Ok(())
+}
+
+pub(super) fn monthly_pause(
+    rules: &Rules,
+    place: &mut PlaceState,
+    month: u8,
+    quality: u16,
+) -> Result<(), DataError> {
+    for building_index in 0..place.buildings.len() {
+        if place.buildings[building_index].abandoned {
+            continue;
+        }
+        let owners = super::resolve_owner_shares(place, building_index)?;
+        let building = &place.buildings[building_index];
+        if building.abandoned {
+            continue;
+        }
+        let def = definition(rules, building)?;
+        if def.methods.is_empty() {
+            continue;
+        }
+        let mut decisions = Vec::with_capacity(building.level_records.len());
+        for record in &building.level_records {
+            let profit = monthly_level_profit(
+                rules,
+                &place.pops,
+                &place.prices_milli,
+                building,
+                def,
+                record,
+                &owners,
+                month,
+                quality,
+            )?;
+            decisions.push(if profit.magnitude.numerator == Big::default() {
+                record.paused
+            } else {
+                profit.negative
+            });
+        }
+        if decisions
+            .iter()
+            .zip(&building.level_records)
+            .all(|(paused, record)| *paused == record.paused)
+        {
+            continue;
+        }
+        let old_working = super::working_method_levels(building)?;
+        let last_paused =
+            !building.level_records.is_empty() && decisions.iter().all(|paused| *paused);
+        let building = &mut place.buildings[building_index];
+        if last_paused && building.kind == "farm" && building.paused_owners.is_empty() {
+            building.paused_owners = owners
+                .iter()
+                .enumerate()
+                .filter(|(_, share)| **share > 0)
+                .map(|(index, share)| {
+                    u32::try_from(index)
+                        .map(|slot| (slot, *share))
+                        .map_err(|_| missing_data("ownership".into(), "pop slot overflow"))
+                })
+                .collect::<Result<_, _>>()?;
+        }
+        for (record, paused) in building.level_records.iter_mut().zip(decisions) {
+            if paused == record.paused {
+                continue;
+            }
+            record.paused = paused;
+            if paused {
+                for account in record.unpaid_work.values_mut() {
+                    *account = Big::default();
+                }
+            } else {
+                record.paydays = if def.methods[record.method as usize].grows {
+                    0
+                } else {
+                    super::MATURE_PAYDAYS
+                };
+            }
+        }
+        let new_working = super::working_method_levels(building)?;
+        rescale_carries_between(rules, building, def, &old_working, &new_working)?;
+        let (suitability, grazing) = derive_level_sums(rules, def, &building.level_records)?;
+        building.method_suitability = suitability;
+        building.herd_grazing_sums = grazing;
+        trim_and_rank_jobs(
+            rules,
+            &place.prices_milli,
+            &mut place.pops,
+            building,
+            def,
+            building_index,
+            month,
+            quality,
+        )?;
+    }
+    Ok(())
+}
+
 /// Price every job from one building-wide expected profit per weighted place.
 #[expect(
     clippy::too_many_lines,
@@ -5276,77 +6948,28 @@ pub(super) fn commit_wage_offers(
             .fold(Fraction::integer(0), |sum, (qty, price)| {
                 sum.add(&qty.mul(&Fraction::ratio(u128::from(*price), 12)))
             });
-        let level_value = |method: &Method, ground: Option<&str>| -> Result<Fraction, DataError> {
-            let mut sum = Fraction::integer(0);
-            for (good, annual) in &method.annual_output {
-                if herd_supplies(rules, def, good) {
-                    continue;
-                }
-                let has_maker = method.jobs.iter().any(|job| {
-                    job.places > 0
-                        && method
-                            .made_by
-                            .get(good)
-                            .map_or(!job.manager, |id| *id == job.id)
-                });
-                if !has_maker {
-                    continue;
-                }
-                let idx = rules
-                    .goods
-                    .iter()
-                    .position(|item| item.id == *good)
-                    .ok_or_else(|| missing_data(format!("goods.{good}"), "missing good"))?;
-                let price = *place
-                    .prices_milli
-                    .get(idx)
-                    .ok_or_else(|| missing_data("wages.prices".into(), "missing price"))?;
-                let suitability = method_suitability_pm(rules, def, method, good, ground);
-                let (q, reference) = if method.resource == "usable_land" {
-                    (quality, rules.fertility_reference_pm)
-                } else {
-                    (1, 1)
-                };
-                if reference == 0 {
-                    return Err(missing_data(
-                        "fertility_reference_pm".into(),
-                        "zero denominator",
-                    ));
-                }
-                let (season, divisor) = if method.grows {
-                    (1_u128, 12_u128)
-                } else {
-                    let key = if ["oats", "barley", "peas_beans"].contains(&good.as_str()) {
-                        "grain"
-                    } else {
-                        good.as_str()
-                    };
-                    let season = rules
-                        .seasons
-                        .get(key)
-                        .ok_or_else(|| missing_data(format!("seasons.{key}"), "missing season"))?;
-                    (u128::from(season[usize::from(month - 1)]), 1000)
-                };
-                sum = sum.add(&amount(
-                    &[
-                        u128::from(*annual),
-                        u128::from(suitability),
-                        u128::from(q),
-                        season,
-                        u128::from(price),
-                    ],
-                    &[1000, u128::from(reference), divisor],
-                ));
-            }
-            Ok(sum)
+        let level_value = |method: &Method, ground: Option<&str>| {
+            monthly_level_value(
+                rules,
+                def,
+                &place.prices_milli,
+                method,
+                ground,
+                month,
+                quality,
+            )
         };
-        let pools = building_job_pools(def, &building.method_levels)?;
+        let pools = building_job_pools(def, &super::working_method_levels(building)?)?;
         let weighted = pools.iter().fold(0_u128, |sum, pool| {
             sum + u128::from(pool.places) * u128::from(pool.job.wage_weight_pm)
         });
         let p = if weighted > 0 {
             let mut profit = herd_value.clone();
-            for record in &building.level_records {
+            for record in building
+                .level_records
+                .iter()
+                .filter(|record| !record.paused)
+            {
                 let method = def
                     .methods
                     .get(record.method as usize)
@@ -5356,21 +6979,42 @@ pub(super) fn commit_wage_offers(
             profit.mul(&Fraction::ratio(1000, weighted))
         } else {
             let mut best = Fraction::integer(0);
-            if let (Some(land), Some(usage)) = (land, usage.as_ref()) {
-                for method in &def.methods {
-                    if method.size_units > building.units {
-                        continue;
+            let free = free_capacity(def, building)?;
+            for (method_index, method) in def.methods.iter().enumerate() {
+                let places = method.jobs.iter().fold(0_u128, |sum, job| {
+                    sum + u128::from(job.places) * u128::from(job.wage_weight_pm)
+                });
+                if places == 0 || method.size_units > building.units {
+                    continue;
+                }
+                let mut grounds = building
+                    .level_records
+                    .iter()
+                    .filter(|record| record.method as usize == method_index)
+                    .map(|record| record.ground.clone())
+                    .collect::<Vec<_>>();
+                if let (Some(land), Some(usage)) = (land, usage.as_ref()) {
+                    if free >= u64::from(method.size_units) {
+                        grounds.extend(capacity_grounds(rules, def, land, usage, &[], method, 1));
                     }
-                    let grounds = capacity_grounds(rules, def, land, usage, &[], method, 1);
-                    let Some(ground) = grounds.first() else {
-                        continue;
-                    };
-                    let places = method.jobs.iter().fold(0_u128, |sum, job| {
-                        sum + u128::from(job.places) * u128::from(job.wage_weight_pm)
-                    });
-                    if places == 0 {
-                        continue;
+                    for source in &building.level_records {
+                        let source_method = &def.methods[source.method as usize];
+                        if free + u64::from(source_method.size_units)
+                            >= u64::from(method.size_units)
+                        {
+                            grounds.extend(capacity_grounds(
+                                rules,
+                                def,
+                                land,
+                                usage,
+                                &[source],
+                                method,
+                                1,
+                            ));
+                        }
                     }
+                }
+                for ground in grounds {
                     let candidate = level_value(method, ground.as_deref())?
                         .add(&herd_value)
                         .mul(&Fraction::ratio(1000, places));
@@ -5412,7 +7056,9 @@ pub(super) fn commit_wage_offers(
                 if other_def.methods.is_empty() {
                     continue;
                 }
-                for candidate in building_job_pools(other_def, &other.method_levels)? {
+                for candidate in
+                    building_job_pools(other_def, &super::working_method_levels(other)?)?
+                {
                     if !candidate
                         .job
                         .pop_types
