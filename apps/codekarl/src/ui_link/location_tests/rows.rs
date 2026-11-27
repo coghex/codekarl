@@ -147,15 +147,15 @@ fn overflowing_building_rows_draw_their_header_and_numbers_5_pixels_narrower_and
  {
     let (fits, fit_tip) = building_rows_drawing(900);
     let (over, over_tip) = building_rows_drawing(260);
-    // The header: `building` is at the left and `positions` and `wage` are right-aligned.
+    // The header: `building` is at the left and `positions` and `pay` are right-aligned.
     assert_eq!(text_x_of(&over, "building"), text_x_of(&fits, "building"));
     assert_eq!(
         text_x_of(&over, "positions"),
         text_x_of(&fits, "positions") - 10
     );
-    assert_eq!(text_x_of(&over, "wage"), text_x_of(&fits, "wage") - 10);
-    // The first building's row: its wage is right-aligned too, and its kind is at the left.
-    assert_eq!(text_x_of(&over, "3.2"), text_x_of(&fits, "3.2") - 10);
+    assert_eq!(text_x_of(&over, "pay"), text_x_of(&fits, "pay") - 10);
+    // The first building's offer label is right-aligned too, and its kind is at the left.
+    assert_eq!(text_x_of(&over, "offers"), text_x_of(&fits, "offers") - 10);
     assert_eq!(text_x_of(&over, "farm"), text_x_of(&fits, "farm"));
     // The tooltip of the wage follows the drawn wage: at the narrower edge it answers, at the old edge it does not.
     let field = |tip: &str, name: &str| {
@@ -289,7 +289,7 @@ b.methods={{id='mixed_farming', levels=15}}
 time(1, 1); select_place('cards', 'Cards'); tabs_by_title.Cards:select('buildings', true)
 look_buttons.rows.on_click()
 local row = card_object.items[2]; local width = card_object.row_w // require('lib.ui').P
-local wage = '1234567.89'; local count = '999/1000'; local kind = 'demesne'
+local wage = 'offers'; local count = '999/1000'; local kind = 'demesne'
 local wage_left = width - 3 - font.layout(wage).width
 local need = 16 + font.layout(kind).width + 13 + font.layout(count).width + 8
 local positions = need <= wage_left

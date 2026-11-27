@@ -25,6 +25,7 @@ buildable_base_m2 = 20000
 starting_development_pm = 1000
 fertility_reference_pm = 550
 hire_pm = 100
+quit_margin_pm = 200
 leave_pm = 50
 
 [herd_opening]
@@ -446,6 +447,7 @@ fuel_need_milli_day=20
 fuel_heat_micro_per_degree_day=9400
 fuel_comfort_niceties_pm=50
 id="peasant"
+min_wage_pm=250
 dependent_pm=400
 births_pm_year=67
 worker_deaths_pm_year=20
@@ -458,6 +460,7 @@ fuel_need_milli_day=20
 fuel_heat_micro_per_degree_day=9400
 fuel_comfort_niceties_pm=50
 id="labourer"
+min_wage_pm=500
 dependent_pm=400
 births_pm_year=67
 worker_deaths_pm_year=20
@@ -470,6 +473,7 @@ fuel_need_milli_day=20
 fuel_heat_micro_per_degree_day=9400
 fuel_comfort_niceties_pm=50
 id="monk"
+min_wage_pm=0
 dependent_pm=120
 births_pm_year=0
 worker_deaths_pm_year=25
@@ -484,6 +488,7 @@ fuel_need_milli_day=20
 fuel_heat_micro_per_degree_day=9400
 fuel_comfort_niceties_pm=50
 id="noble"
+min_wage_pm=3000
 dependent_pm=400
 births_pm_year=67
 worker_deaths_pm_year=20
@@ -501,10 +506,10 @@ noble=[1000,700,300]   # start content, at their expectations
 
 [[buildings]]
 id="farm"
+labour_share_pm=400
 herds={ cattle={maximum=12}, pigs={maximum=8}, sheep={maximum=7} }
 land_per_level=2
 penalty_pm=500
-overhead_pm=100
 recruit_range_m=30000
 market_capacity_ml_per_unit=10000
 [[buildings.methods]]
@@ -546,11 +551,11 @@ annual_output={ peat=4000, beef=1100, pork=970, mutton=165, dairy=860, wool=10, 
 score_share_pm={ peat=930, beef=25, pork=20, mutton=5, dairy=10, wool=5, hides=5 }
 [[buildings]]
 id="holdings"
+labour_share_pm=400
 church=true
 herds={ cattle={maximum=12}, pigs={maximum=8}, sheep={maximum=7} }
 land_per_level=2
 penalty_pm=500
-overhead_pm=300
 recruit_range_m=100000
 market_capacity_ml_per_unit=20000
 [[buildings.methods]]
@@ -574,10 +579,10 @@ annual_output={ fish=8000, seabirds=1500, vegetables=20, herbs=10 }
 score_share_pm={ fish=800, seabirds=150, vegetables=30, herbs=20 }
 [[buildings]]
 id="demesne"
+labour_share_pm=400
 herds={ cattle={maximum=12}, pigs={maximum=8}, sheep={maximum=7}, horses={maximum=3} }
 land_per_level=2
 penalty_pm=500
-overhead_pm=300
 recruit_range_m=30000
 market_capacity_ml_per_unit=20000
 [[buildings.methods]]
@@ -596,7 +601,6 @@ id="storehouse"
 jobs=[{ id="keepers", places=2, pop_types=[], wage_weight_pm=1000, manager=false }]
 land_per_level=0
 penalty_pm=0
-overhead_pm=0
 recruit_range_m=0
 
 [seasons]

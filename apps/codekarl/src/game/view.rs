@@ -121,6 +121,8 @@ pub(crate) struct BuildingView {
     pub(crate) filled: u64,
     pub(crate) open: u64,
     pub(crate) jobs: Vec<(String, u64, u64)>,
+    /// Committed monthly offers for held jobs, in thousandths of value.
+    pub(crate) offers: Vec<(String, u64)>,
     pub(crate) abandoned: bool,
     pub(crate) herds: Vec<HerdView>,
     pub(crate) store_used_ml: u64,
@@ -561,6 +563,7 @@ fn building_view(
     let filled = jobs
         .iter()
         .fold(0_u64, |sum, (_, filled, _)| sum.saturating_add(*filled));
+    let offers = held_offers(building, &jobs);
     let maxima = ck_economy::herd_maximums(rules, building).unwrap_or_default();
     let herds = rules
         .herd_species
@@ -599,14 +602,35 @@ fn building_view(
         filled,
         open: positions.saturating_sub(filled),
         jobs,
+        offers,
         abandoned: building.abandoned,
         herds,
         store_used_ml: volume_ml(rules, &building.stock),
         store_capacity_ml: building_capacity_ml(building),
-        wage: building.posted_wage(),
-        wages: wage_views(building, date),
+        wage: if building.storehouse_accounts.is_some() {
+            building.posted_wage()
+        } else {
+            0
+        },
+        wages: if building.storehouse_accounts.is_some() {
+            wage_views(building, date)
+        } else {
+            Vec::new()
+        },
         housing_occupants,
     }
+}
+
+fn held_offers(building: &BuildingState, jobs: &[(String, u64, u64)]) -> Vec<(String, u64)> {
+    jobs.iter()
+        .filter(|(_, filled, _)| *filled > 0)
+        .filter_map(|(id, _, _)| {
+            building
+                .wage_offers
+                .get(id)
+                .map(|offer| (id.clone(), *offer))
+        })
+        .collect()
 }
 
 fn wage_views(building: &BuildingState, date: Date) -> Vec<WageView> {
@@ -937,8 +961,14 @@ mod tests {
                     herd_death_carries: vec![0; 4],
                     herd_product_carries: vec![0; 2],
                     herd_grazing_sums: vec![0; 4],
-                    wage_carries: vec![0; goods],
-                    pay_carries: vec![0; goods],
+                    wage_offers: std::collections::BTreeMap::from([(
+                        "peasant_labour".into(),
+                        1_234,
+                    )]),
+                    wage_arrears: std::collections::BTreeMap::new(),
+                    wage_current: std::collections::BTreeMap::new(),
+
+                    fee_pending: vec![0; goods],
                     last_made: Vec::new(),
                     fee_carries: Vec::new(),
                     wage_history: vec![1_234; 12],
@@ -963,8 +993,11 @@ mod tests {
                     herd_death_carries: Vec::new(),
                     herd_product_carries: Vec::new(),
                     herd_grazing_sums: Vec::new(),
-                    wage_carries: vec![0; goods],
-                    pay_carries: vec![0; goods],
+                    wage_offers: std::collections::BTreeMap::new(),
+                    wage_arrears: std::collections::BTreeMap::new(),
+                    wage_current: std::collections::BTreeMap::new(),
+
+                    fee_pending: vec![0; goods],
                     last_made: Vec::new(),
                     fee_carries: vec![vec![0; goods]; 2],
                     wage_history: vec![0; 12],
@@ -1135,7 +1168,7 @@ mod tests {
     fn payday_view_orders_calendar_slots_by_date_and_keeps_the_written_year() {
         let rules = shipped_rules();
         let mut place = fixture(&rules);
-        let farm = &mut place.buildings[0];
+        let farm = &mut place.buildings[1];
         farm.wage_history = (1..=12).map(|month| 2_000 + month).collect();
         farm.paid_history = vec![15; 12];
         farm.paid_years = vec![768; 12];
@@ -1149,7 +1182,7 @@ mod tests {
             build(Some(&rules), &state, &["fixture".to_owned()], date)
                 .place("fixture")
                 .unwrap()
-                .buildings[0]
+                .buildings[1]
                 .wages
                 .clone()
         };
@@ -1207,12 +1240,12 @@ mod tests {
         );
         assert_eq!(
             skipped.iter().map(|row| row.wage_milli).sum::<u64>() / 12,
-            place.buildings[0].posted_wage()
+            place.buildings[1].posted_wage()
         );
         let seeded = fixture(&rules);
         let seeded_view = view_for_place(&rules, seeded);
         assert!(
-            seeded_view.buildings[0]
+            seeded_view.buildings[1]
                 .wages
                 .iter()
                 .all(|row| row.year.is_none() && row.paid.is_none())
@@ -1303,8 +1336,7 @@ mod tests {
         holdings.herd_birth_carries = vec![0; 4];
         holdings.herd_death_carries = vec![0; 4];
         holdings.herd_product_carries = vec![0; 2];
-        holdings.wage_carries = vec![0; goods];
-        holdings.pay_carries = vec![0; goods];
+        holdings.fee_pending = vec![0; goods];
         holdings.fee_carries.clear();
         holdings.wage_history = vec![100; 12];
 
@@ -1817,7 +1849,8 @@ mod tests {
         );
         assert_eq!(farm.store_used_ml, volume("barley", 20));
         assert_eq!(farm.store_capacity_ml, 25 * 100_000);
-        assert_eq!(farm.wage, 1_234);
+        assert_eq!(farm.offers, [("peasant_labour".to_owned(), 1_234)]);
+        assert!(farm.wages.is_empty());
 
         let storehouse = &place.buildings[1];
         assert_eq!(storehouse.levels, 1);

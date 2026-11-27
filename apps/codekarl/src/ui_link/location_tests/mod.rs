@@ -68,7 +68,7 @@ cards_place.pops = {
     basic_housing = 0, makeshift_housing = 0, crowding_pm = false},
 }
 cards_place.buildings = {
-    {kind = "farm", levels = 8, methods = {{id = "mixed_farming", levels = 8}, {id = "coastal_subsistence", levels = 1}}, filled = 80, open = 8,
+    {kind = "farm", has_methods = true, offers = {{id = "peasant_labour", offer_milli = 3200}}, levels = 8, methods = {{id = "mixed_farming", levels = 8}, {id = "coastal_subsistence", levels = 1}}, filled = 80, open = 8,
     herds = {{species = "cattle", head = 27, maximum = 36}, {species = "sheep", head = 10, maximum = 20},
       {species = "pigs", head = 64, maximum = 64}}, store_used_l = 6400, store_capacity_l = 8000, wage = 3200,
     wages = {{month = 5, year = 769, wage_milli = 3200, paid = 18}, {month = 4, wage_milli = 2900},

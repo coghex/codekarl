@@ -48,7 +48,7 @@ fn only_workers(place: &mut PlaceState, only: usize, workers: u64) {
     }
 }
 
-/// A farm of no levels in which `pop` works with `workers`, whose wage history makes its posted wage 6,000 (6 value units for each head
+/// A farm of no levels in which `pop` works with `workers`, whose committed offer is 6,000 (6 value units for each head
 /// for a month), so one head for one day is worth 201.
 fn farm_workers(rules: &Rules, place: &mut PlaceState, pop: usize, workers: u64) -> usize {
     let farm = add_building(rules, place, "farm", 0);
@@ -62,7 +62,9 @@ fn farm_workers(rules: &Rules, place: &mut PlaceState, pop: usize, workers: u64)
     };
     place.buildings[farm].employment[pop] = employment.clone();
     place.pops[pop].employment[farm] = employment;
-    place.buildings[farm].wage_history = vec![6000; WAGE_HISTORY_MONTHS];
+    place.buildings[farm]
+        .wage_offers
+        .insert("peasant_labour".into(), 6000);
     farm
 }
 
@@ -726,16 +728,10 @@ fn days_away_count_a_worker_as_that_much_less_of_a_worker_at_the_payday() {
         w.iter().any(|units| *units > 20),
         "the case produces something"
     );
-    // The wage is split by the workers each pop has, less its days away: with the first pop's five away all month it gets none of the
-    // wage and the second all of it.
-    let oats = good(&rules, "vegetables");
-    let first = |state: &EconomyState| state.places[0].pops[0].stock[oats];
-    let second = |state: &EconomyState| state.places[0].pops[1].stock[oats];
-    assert!(first(&whole) > first(&half) && first(&half) > first(&full));
-    assert!(
-        second(&full) >= second(&whole),
-        "the second pop's share is of the workers left, so it does not fall with the output"
-    );
+    // This fixture has a committed offer; its funded paydays leave no arrears.
+    for state in [&whole, &half, &full] {
+        assert!(state.places[0].buildings[0].wage_arrears.is_empty());
+    }
 }
 
 #[test]

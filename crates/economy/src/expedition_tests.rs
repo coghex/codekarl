@@ -992,7 +992,9 @@ fn hired_hands_are_paid_when_the_trip_starts_held_while_away_and_counted_as_days
     state.places[0].pops[MONK].employment[farm]
         .jobs
         .insert("peasant_labour".into(), 600);
-    state.places[0].buildings[farm].wage_history = vec![6000; 12];
+    state.places[0].buildings[farm]
+        .wage_offers
+        .insert("peasant_labour".into(), 6000);
     let mut plan = the_plan(&rules, 6, 5);
     plan.people = vec![
         (u32::try_from(PEASANT).unwrap(), 1),
@@ -1946,7 +1948,9 @@ fn hired_hands_are_paid_for_both_days_of_a_thirty_five_hour_trip() {
     state.places[0].pops[MONK].employment[farm]
         .jobs
         .insert("peasant_labour".into(), 600);
-    state.places[0].buildings[farm].wage_history = vec![6000; 12];
+    state.places[0].buildings[farm]
+        .wage_offers
+        .insert("peasant_labour".into(), 6000);
     state.places[0].prices_milli.fill(100);
     let mut plan = the_plan(&rules, 30, 5);
     plan.people = vec![
@@ -2033,7 +2037,9 @@ fn a_noon_departure_that_reaches_the_destination_at_eleven_pays_no_extra_wait() 
     state.places[0].pops[MONK].employment[farm]
         .jobs
         .insert("peasant_labour".into(), 600);
-    state.places[0].buildings[farm].wage_history = vec![6000; 12];
+    state.places[0].buildings[farm]
+        .wage_offers
+        .insert("peasant_labour".into(), 6000);
     state.places[0].prices_milli.fill(100);
     let mut plan = the_plan(&rules, 24, 1);
     plan.people = vec![

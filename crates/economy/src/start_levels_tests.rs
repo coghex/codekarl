@@ -141,7 +141,8 @@ fn building(id: &str, mut methods: Vec<Method>) -> BuildingType {
         land_per_level: 2,
 
         penalty_pm: 500,
-        overhead_pm: 100,
+
+        labour_share_pm: 400,
         recruit_range_m: Some(30_000),
         market_capacity_ml_per_unit: 0,
         // The land buildings keep cattle, so the startup estimate applies the herd-good factor to beef.
@@ -158,6 +159,7 @@ fn pop_type(id: &str, fuel_need_milli_day: u64) -> PopType {
     PopType {
         id: id.to_owned(),
         dependent_pm: 400,
+        min_wage_pm: 0,
         births_pm_year: 67,
         worker_deaths_pm_year: 20,
         dependent_deaths_pm_year: 60,

@@ -1252,6 +1252,7 @@ fn building_table(building: &BuildingView) -> ConfigValue {
                     .collect(),
             ),
         ),
+        ("offers", offer_rows(building)),
         ("abandoned", ConfigValue::Bool(building.abandoned)),
         ("open", integer(building.open)),
         (
@@ -1299,6 +1300,16 @@ fn building_table(building: &BuildingView) -> ConfigValue {
         ),
         ("housing_occupants", integer(building.housing_occupants)),
     ])
+}
+
+fn offer_rows(building: &BuildingView) -> ConfigValue {
+    ConfigValue::Array(
+        building
+            .offers
+            .iter()
+            .map(|(id, offer)| table([("id", text(id)), ("offer_milli", integer(*offer))]))
+            .collect(),
+    )
 }
 
 /// A place's view as the table `game.place` returns. Volumes are whole litres, prices are in thousandths of a value unit.
@@ -2869,6 +2880,7 @@ mod tests {
             }],
             buildings: vec![BuildingView {
                 jobs: Vec::new(),
+                offers: vec![("field_hands".into(), 4_200)],
                 abandoned: false,
                 stock: Vec::new(),
                 made: Vec::new(),
@@ -2984,6 +2996,14 @@ mod tests {
             panic!("a table");
         };
         assert_eq!(farm["store_used_l"], ConfigValue::Integer(1));
+        let ConfigValue::Array(offers) = &farm["offers"] else {
+            panic!("an offer array");
+        };
+        let ConfigValue::Table(offer) = &offers[0] else {
+            panic!("an offer row");
+        };
+        assert_eq!(offer["id"], ConfigValue::String("field_hands".into()));
+        assert_eq!(offer["offer_milli"], ConfigValue::Integer(4_200));
         let ConfigValue::Array(wages) = &farm["wages"] else {
             panic!("a wage array");
         };

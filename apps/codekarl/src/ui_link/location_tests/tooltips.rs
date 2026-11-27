@@ -405,10 +405,9 @@ local count_x = positions_bar_x + positions_bar_width + 4
 local storage_x = count_x + count_width + 12
 local storage_bar_x = storage_x + storage_width + 4
 tip("building_kind", building, 20, 4)
-local wage_text = "wage 3.2"
+local wage_text = "offers"
 local wage_left = width - 5 - font.layout(wage_text).width
-tip("building_wage_word", building, wage_left + 1, 4)
-tip("building_wage_value", building, wage_left + font.layout("wage ").width + 1, 4)
+tip("building_wage_value", building, wage_left + 1, 4)
 local method_x = 17 + font.layout("farm").width + 4
 tip("building_method_one", building, method_x + 1, 4)
 tip("building_housing", building, width - 28, 15)
@@ -426,8 +425,7 @@ tip("building_pigs_count", building, pigs_x + 12, 19)"#]);
     let captured = notes(&rig);
     for expected in [
         "building_kind title=farm part=kind",
-        "building_wage_word title=wage part=wage_word",
-        "building_wage_value May 769: 3.2 per ordinary worker (18 paid)|... 13 lines part=wage",
+        "building_wage_value peasant labour: 3.2 per month part=wage",
         "building_method_one title=methods part=methods",
         "building_housing title=housing part=housing",
         "building_positions_word title=position part=positions",

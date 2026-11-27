@@ -146,7 +146,7 @@ local function building_items(self, building, width)
   items[#items + 1] = relations.item_of({section = section}, 35 + (#herd_rows > 0 and (row + 1) * 11 or 0), function(result, group, y, _, hits)
     draw.text(result, group, 0, y, "at ", theme.colour("dim"), "small")
     draw.text(result, group, draw.width("at ", "small"), y, self.name, theme.colour("term"), "small")
-    draw.text(result, group, 0, y + 11, "wage " .. milli(building.wage), theme.colour("text"), "small")
+    draw.text(result, group, 0, y + 11, building.has_methods and "offers" or ("wage " .. milli(building.wage)), theme.colour("text"), "small")
     draw.text(result, group, width, y + 11, "housing " .. building.housing_occupants, theme.colour("text"), "small", "right")
     draw.text(result, group, 0, y + 22, "positions", theme.colour("term"), "small")
     local bar_x = draw.width("positions", "small") + 4

@@ -227,8 +227,12 @@ fn economy_digest(economy: &EconomyState) -> u64 {
                 building.herd_death_carries,
                 building.herd_product_carries,
                 building.herd_grazing_sums,
-                building.wage_carries,
-                building.pay_carries,
+                (
+                    &building.wage_offers,
+                    &building.wage_arrears,
+                    &building.wage_current
+                ),
+                building.fee_pending,
                 (
                     &building.fee_carries,
                     &building.wage_history,

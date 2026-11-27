@@ -798,25 +798,52 @@ fn job_heads(rules: &Rules, building: &BuildingState, pop: usize, manager: bool)
         .fold(0_u64, |sum, (_, count)| sum.saturating_add(*count))
 }
 
-/// The ordinary posted wage of the building from which a hand is drawn.
+/// The committed offer of the most-held job at the building from which a hand is drawn.
 pub(crate) fn pop_wage(rules: &Rules, place: &PlaceState, pop: usize) -> u64 {
     let ordinary = place
         .buildings
         .iter()
         .any(|building| job_heads(rules, building, pop, false) > 0);
-    place
+    let building = place
         .buildings
         .iter()
-        .map(|building| {
+        .map(|building| job_heads(rules, building, pop, !ordinary))
+        .enumerate()
+        .filter(|(_, workers)| *workers > 0)
+        .max_by(|(a, left), (b, right)| left.cmp(right).then_with(|| b.cmp(a)))
+        .map(|(index, _)| &place.buildings[index]);
+    let Some(building) = building else {
+        return 0;
+    };
+    if building.storehouse_accounts.is_some() {
+        return building.posted_wage();
+    }
+    let Some(definition) = rules.buildings.iter().find(|item| item.id == building.kind) else {
+        return 0;
+    };
+    let Ok(pools) = crate::building_job_pools(definition, &vec![1; definition.methods.len()])
+    else {
+        return 0;
+    };
+    let Some(employment) = building.employment.get(pop) else {
+        return 0;
+    };
+    pools
+        .iter()
+        .enumerate()
+        .filter(|(_, pool)| pool.job.manager != ordinary)
+        .map(|(index, pool)| {
             (
-                job_heads(rules, building, pop, !ordinary),
-                building.posted_wage(),
+                index,
+                employment.jobs.get(&pool.job.id).copied().unwrap_or(0),
+                &pool.job.id,
             )
         })
-        .enumerate()
-        .filter(|(_, (workers, _))| *workers > 0)
-        .max_by(|(a, (left, _)), (b, (right, _))| left.cmp(right).then_with(|| b.cmp(a)))
-        .map_or(0, |(_, (_, wage))| wage)
+        .filter(|(_, count, _)| *count > 0)
+        .max_by(|(a, left, _), (b, right, _)| left.cmp(right).then_with(|| b.cmp(a)))
+        .and_then(|(_, _, id)| building.wage_offers.get(id))
+        .copied()
+        .unwrap_or(0)
 }
 
 /// Allocate hands to ordinary jobs first, or managers when no ordinary job is held.
