@@ -217,12 +217,14 @@ dependencies = [
  "ck-window",
  "ck-window-cocoa",
  "ck-window-glfw",
+ "flate2",
  "libc",
  "num-bigint",
  "num-rational",
  "png",
  "serde",
  "serde_json",
+ "sha2",
  "toml",
 ]
 

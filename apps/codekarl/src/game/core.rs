@@ -130,6 +130,7 @@ pub(crate) type ViewBuilder<S> = Box<dyn Fn(&S, Date) -> EconomyView + Send>;
 pub(crate) type WeatherBuilder<S> = Box<dyn Fn(&S, Date) -> super::slot::HourlyWeather + Send>;
 type ExpeditionBuilder<S> = Box<dyn Fn(&S) -> Vec<super::expedition_map::ExpeditionMap> + Send>;
 type TradeBuilder<S> = Box<dyn Fn(&S) -> Vec<super::trade_panel::PopTrade> + Send>;
+pub(super) type HistoryBuilder<S> = Box<dyn Fn(&S, u16, u8) -> super::history::MonthRecord + Send>;
 
 type ExternalStorage<S> = (
     super::character_storage::Storage,
@@ -162,6 +163,7 @@ pub(crate) struct Core<S, C> {
     weather: Option<WeatherBuilder<S>>,
     expeditions: Option<ExpeditionBuilder<S>>,
     pop_trade: Option<TradeBuilder<S>>,
+    history: Option<(super::history::Recorder, HistoryBuilder<S>)>,
     /// The revision of `view`; `0` while the core has no view.
     revision: u64,
     view: Option<Arc<EconomyView>>,
@@ -194,7 +196,7 @@ where
         self
     }
     fn write_save(
-        &self,
+        &mut self,
         path: &std::path::Path,
         name: Option<String>,
         replace: bool,
@@ -206,6 +208,10 @@ where
             save.meta.name = name;
             save.meta.written = saves::utc_now_rfc3339();
         }
+        let trailer = self
+            .history
+            .as_mut()
+            .and_then(|(history, _)| history.trailer());
         saves::write_stream_atomically(path, replace, |file| {
             if let Some((storage, _)) = &self.external {
                 let mut archive = std::fs::File::open(storage.path.join("ARCH"))?;
@@ -215,11 +221,16 @@ where
                 save.write_with_sections(
                     file,
                     &mut [(*b"ARCH", a, &mut archive), (*b"LOGS", l, &mut logs)],
-                )
+                )?;
             } else {
                 use std::io::Write;
-                file.write_all(&save.to_bytes().map_err(std::io::Error::other)?)
+                file.write_all(&save.to_bytes().map_err(std::io::Error::other)?)?;
             }
+            if let Some(trailer) = &trailer {
+                use std::io::Write;
+                file.write_all(trailer)?;
+            }
+            Ok(())
         })
     }
     /// A game over `simulation`, paused at speed 1 with the reason `load`. It publishes its first snapshot at once.
@@ -320,6 +331,7 @@ where
             weather,
             expeditions: None,
             pop_trade: None,
+            history: None,
             revision: 0,
             view: None,
             world: 0,
@@ -389,6 +401,29 @@ where
     ) -> Self {
         self.pop_trade = Some(Box::new(build));
         self.publish_if_changed();
+        self
+    }
+
+    pub(super) fn with_history(
+        mut self,
+        history: super::history::Recorder,
+        builder: HistoryBuilder<S>,
+    ) -> Self {
+        history.collect_async();
+        self.history = Some((history, builder));
+        self
+    }
+
+    #[cfg(test)]
+    pub(super) fn history_months(&self) -> &[super::history::MonthRecord] {
+        self.history
+            .as_ref()
+            .map_or(&[], |(history, _)| history.months())
+    }
+
+    #[cfg(test)]
+    pub(super) fn without_history(mut self) -> Self {
+        self.history = None;
         self
     }
 
@@ -648,6 +683,18 @@ where
                 if let Ok(date) = began
                     && date.hour == ECONOMY_HOUR
                 {
+                    if date.day == 1
+                        && let Some((history, build)) = &mut self.history
+                    {
+                        let (year, month) = if date.month == 1 {
+                            (date.year.saturating_sub(1), 12)
+                        } else {
+                            (date.year, date.month - 1)
+                        };
+                        if year > 0 {
+                            history.record(build(self.simulation.state(), year, month));
+                        }
+                    }
                     self.refresh_view();
                 }
                 if let Ok(date) = began
@@ -759,6 +806,9 @@ where
         }
         self.write_save(&path, Some(entry.name.clone()), true)
             .map_err(|error| format!("cannot replace {filename}: {error}"))?;
+        if let Some((history, _)) = &self.history {
+            history.collect_async();
+        }
         self.log(
             Level::Info,
             format!("saved over {} ({})", entry.name, filename),
@@ -770,6 +820,9 @@ where
         let path = saves::regular_save(&self.saves, filename)?;
         std::fs::remove_file(&path)
             .map_err(|error| format!("cannot delete {filename}: {error}"))?;
+        if let Some((history, _)) = &self.history {
+            history.collect_async();
+        }
         self.log(Level::Info, format!("deleted {filename}"));
         Ok(())
     }
@@ -810,6 +863,9 @@ where
             .map_err(|error| format!("cannot write {}: {error}", path.display()));
         match result {
             Ok(()) => {
+                if let Some((history, _)) = &self.history {
+                    history.collect_async();
+                }
                 self.unsaved = false;
                 self.log(Level::Info, format!("saved {} at {date}", path.display()));
             }
@@ -844,6 +900,14 @@ where
     ) -> Result<(Simulation<S, C>, MapLayers, ck_sim::LogChoices), String> {
         let mut file = saves::open_regular(path)
             .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+        let handoff = if self.history.is_some() {
+            use std::io::{Seek, SeekFrom};
+            let handoff = super::history::Handoff::begin(&mut file, &self.saves);
+            file.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
+            Some(handoff)
+        } else {
+            None
+        };
         if let Some((storage, validate)) = &self.external {
             let parent = storage.path.parent().ok_or("storage has no parent")?;
             let staging =
@@ -871,6 +935,16 @@ where
             let simulation =
                 Simulation::from_save(save, (self.rebuild.scheduler)(), self.rebuild.apply)
                     .map_err(|e| e.to_string())?;
+            if let Some(handoff) = handoff {
+                let date = simulation.date().map_err(|e| e.to_string())?;
+                let mut history = handoff
+                    .finish(&mut file, &self.saves, date)
+                    .map_err(|e| e.to_string())?;
+                if let Some((current, _)) = &mut self.history {
+                    history.inherit_start(current);
+                    *current = history;
+                }
+            }
             staged.publish();
             self.external = Some((staged, *validate));
             Ok((simulation, layers, choices))

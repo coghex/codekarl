@@ -968,7 +968,7 @@ fn unsupported_saves_are_delete_only_and_file_arguments_cannot_escape_the_saves_
         })
         .collect::<Vec<_>>()
         .join("\n")
-        .replace("format = 3", "format = 1")
+        .replace("format = 4", "format = 1")
         .replace("build = \"test-build\"", "build = \"previous-build\"");
     let mut old = bytes[..12].to_vec();
     old[8..12].copy_from_slice(&u32::try_from(old_header.len()).unwrap().to_le_bytes());
@@ -1043,7 +1043,7 @@ fn install_catalog_header_fixtures(harness: &mut Harness) {
         harness.saves.join("future.cksave"),
         with_header(&format!(
             "{}future_key = true\n",
-            header.replace("format = 3", "format = 8")
+            header.replace("format = 4", "format = 8")
         )),
     )
     .unwrap();

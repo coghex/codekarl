@@ -24,7 +24,7 @@ use crate::{
 };
 
 const MAGIC: [u8; 8] = *b"CKSAVE\x00\x01";
-const FORMAT: i64 = 3;
+const FORMAT: i64 = 4;
 const CLOCK: [u8; 4] = *b"CLCK";
 const STATE: [u8; 4] = *b"STAT";
 const PENDING: [u8; 4] = *b"PEND";
@@ -932,6 +932,7 @@ impl<S: Canonical> Save<S> {
     }
 
     /// Read external sections into a newly created staging directory, removing it on any failure.
+    /// Leaves the input positioned just after the verified END frame for a trailer reader.
     /// # Errors
     /// Returns an I/O error naming a corrupt or truncated section, or an invalid save.
     #[expect(
@@ -1077,10 +1078,6 @@ impl<S: Canonical> Save<S> {
                 || u64::from_le_bytes(end[4..].try_into().map_err(Error::other)?) != total.finish()
             {
                 return Err(Error::new(ErrorKind::InvalidData, "end checksum mismatch"));
-            }
-            let mut trailing = [0];
-            if input.read(&mut trailing)? != 0 {
-                return Err(Error::new(ErrorKind::InvalidData, "trailing bytes"));
             }
             let checksum = fnv1a(&core);
             core.extend_from_slice(&END);

@@ -272,7 +272,7 @@ fn size_of(pop: &PopState) -> u64 {
 }
 
 /// Food held, in hundredths of a person-day: the pop's own store and its account at every storehouse.
-fn food_centi(rules: &Rules, place: &PlaceState, pop_index: usize) -> u64 {
+pub(super) fn food_centi(rules: &Rules, place: &PlaceState, pop_index: usize) -> u64 {
     let held = |stock: &[u64]| {
         rules
             .goods
@@ -299,7 +299,7 @@ fn food_centi(rules: &Rules, place: &PlaceState, pop_index: usize) -> u64 {
 }
 
 /// Whole days of full eating that `centi` hundredths of a person-day feed `size` people; no people eat for no days.
-fn days_of(centi: u64, size: u64) -> u64 {
+pub(super) fn days_of(centi: u64, size: u64) -> u64 {
     centi.checked_div(size.saturating_mul(100)).unwrap_or(0)
 }
 
