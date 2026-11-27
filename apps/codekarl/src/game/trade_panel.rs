@@ -39,7 +39,7 @@ pub(crate) fn build(state: &EconomyState, rules: &Rules) -> Vec<PopTrade> {
                 .filter(|job| job.pop == pop && job.given_up.is_none())
             {
                 let label = match &job.kind {
-                    JobKind::Build { vehicle } => rules
+                    JobKind::Build { vehicle, .. } => rules
                         .vehicles
                         .get(*vehicle as usize)
                         .map(|v| format!("building {}", v.id)),

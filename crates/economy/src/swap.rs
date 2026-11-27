@@ -101,30 +101,7 @@ fn take_visits(
             }
             let destination = expedition.plan.destination as usize;
             let expedition = state.places[home].trade.expeditions.remove(index);
-            let trader = expedition.trader as usize;
-            let people = {
-                let pop = &state.places[home].pops[trader];
-                pop.workers.checked_add(pop.dependents).ok_or_else(|| {
-                    missing_data("swap.pop.size".to_owned(), "population size overflow")
-                })?
-            };
-            let mut holds = Vec::with_capacity(rules.goods.len());
-            for good in 0..rules.goods.len() {
-                holds.push(
-                    pop_market_holding(&state.places[home], trader, good)?
-                        .saturating_add(u128::from(expedition.cargo[good]))
-                        .saturating_add(u128::from(expedition.supplies[good])),
-                );
-            }
-            let cargo = expedition.cargo.clone();
-            visits[destination].push(Visit {
-                home,
-                expedition,
-                cargo,
-                received: vec![0; rules.goods.len()],
-                holds,
-                people,
-            });
+            visits[destination].push(Visit::new(rules, &state.places[home], home, expedition)?);
         }
     }
     for list in &mut visits {
@@ -2150,6 +2127,45 @@ fn capacity_bound(rules: &Rules, expedition: &Expedition, good: usize) -> u128 {
 }
 
 impl Visit {
+    /// A visitor made of an expedition of the pop `expedition.trader` of `home_place` (the place at index `home`): what it has to trade is
+    /// its cargo, what it holds for its wealth is its pop's holding and what it carries (T45).
+    pub(crate) fn new(
+        rules: &Rules,
+        home_place: &PlaceState,
+        home: usize,
+        expedition: Expedition,
+    ) -> Result<Self, DataError> {
+        let trader = expedition.trader as usize;
+        let people = {
+            let pop = &home_place.pops[trader];
+            pop.workers.checked_add(pop.dependents).ok_or_else(|| {
+                missing_data("swap.pop.size".to_owned(), "population size overflow")
+            })?
+        };
+        let mut holds = Vec::with_capacity(rules.goods.len());
+        for good in 0..rules.goods.len() {
+            holds.push(
+                pop_market_holding(home_place, trader, good)?
+                    .saturating_add(u128::from(expedition.cargo[good]))
+                    .saturating_add(u128::from(expedition.supplies[good])),
+            );
+        }
+        let cargo = expedition.cargo.clone();
+        Ok(Self {
+            home,
+            expedition,
+            cargo,
+            received: vec![0; rules.goods.len()],
+            holds,
+            people,
+        })
+    }
+
+    /// What it traded for, which with any unsold cargo that fits is what it brings home.
+    pub(crate) fn received(&self) -> &[u64] {
+        &self.received
+    }
+
     /// Whether it can bring home `units` more of a good beside what it has traded for: the units and what it holds from the trade, with
     /// the supplies, must still assign on every leg home (11b.3 rule 9). Unsold cargo gives way and is not counted (r5 3.6).
     fn fits(&self, rules: &Rules, good: usize, units: u128) -> bool {
@@ -2632,6 +2648,219 @@ impl PlaceDay {
         }
         Ok(())
     }
+}
+
+/// The exchange a visitor would find at `place` as it stands, worked on a copy of the place: nothing in the real state moves (r5 3.5 item
+/// 2: the swap of 3.7 worked forward against the destination's pops as they stand today, at its prices). The visitor comes back as the
+/// exchange leaves it: what it received, and what it loads for home.
+pub(crate) fn forecast_exchange(
+    rules: &Rules,
+    place: &PlaceState,
+    visit: Visit,
+) -> Result<Visit, DataError> {
+    let mut copy = place.clone();
+    let opening = place.prices_milli.clone();
+    let mut done = run_place_exchange(rules, &mut copy, &opening, vec![visit])?;
+    done.pop()
+        .ok_or_else(|| missing_data("swap.forecast".to_owned(), "the visitor was lost"))
+}
+
+/// Takes the goods that trips already under way are to take from a place out of what it could offer, on a copy (r5 3.5 item 9: a
+/// forecast moves no goods and reserves none in the game, so this is only for the copy a look works on). Only the goods the place's
+/// owners and pops would offer today go: a building's share of its stock that it sells, then each pop's spare above its own target,
+/// never what they keep. A storehouse's goods leave its accounts as well as its physical stock, so the copy still passes the market's
+/// accounting; the pop's own store goes before its account.
+pub(crate) fn take_spoken(
+    rules: &Rules,
+    place: &mut PlaceState,
+    spoken: &[u64],
+) -> Result<(), DataError> {
+    let opening = place.prices_milli.clone();
+    let sells = building_market_sells(rules, place, &opening)?;
+    let book = Book::new_with(rules, place, &opening, &[])?;
+    let live = live_species(rules);
+    for (good, units) in spoken.iter().enumerate().take(rules.goods.len()) {
+        let mut left = *units;
+        if let Some(species) = live[good] {
+            // A live animal is offered from a herd above its standard level and from the animals given-up jobs hold (CK-430, 11b.1), never
+            // from a stock: the herd and the jobs' animals fall by what is spoken for, within what is on offer.
+            for (index, building) in place.buildings.iter_mut().enumerate() {
+                let offer = u64::try_from(sells[index][good]).unwrap_or(u64::MAX);
+                let Some(herd) = building.herds.get_mut(species) else {
+                    continue;
+                };
+                let taken = left.min(offer).min(*herd);
+                *herd -= taken;
+                left -= taken;
+            }
+            for job in place
+                .trade
+                .jobs
+                .iter_mut()
+                .filter(|job| job.given_up.is_some())
+            {
+                let taken = left.min(job.animals[species]);
+                job.animals[species] -= taken;
+                left -= taken;
+            }
+            continue;
+        }
+        for (index, building) in place.buildings.iter_mut().enumerate() {
+            if left == 0 {
+                break;
+            }
+            let offer = u64::try_from(sells[index][good]).unwrap_or(u64::MAX);
+            let held = building
+                .storehouse_accounts
+                .as_ref()
+                .map_or(building.stock[good], |accounts| accounts.communal[good]);
+            let taken = left.min(offer).min(held).min(building.stock[good]);
+            building.stock[good] -= taken;
+            if let Some(accounts) = &mut building.storehouse_accounts {
+                accounts.communal[good] -= taken;
+            }
+            left -= taken;
+        }
+        for pop in 0..place.pops.len() {
+            if left == 0 {
+                break;
+            }
+            let spare = u64::try_from(book.position(pop, good).spare).unwrap_or(u64::MAX);
+            let owed = left.min(spare);
+            left -= owed - take_from_pop(place, pop, good, owed);
+        }
+    }
+    Ok(())
+}
+
+/// Takes up to `units` of a good out of a pop's holding on a copy: its own store first, then its account in a storehouse (whose physical
+/// stock falls with it, so the accounts still balance). Returns how many it could not take.
+fn take_from_pop(place: &mut PlaceState, pop: usize, good: usize, units: u64) -> u64 {
+    let own = units.min(place.pops[pop].stock[good]);
+    place.pops[pop].stock[good] -= own;
+    let mut owed = units - own;
+    for building in &mut place.buildings {
+        if owed == 0 {
+            break;
+        }
+        if let Some(accounts) = &mut building.storehouse_accounts {
+            let taken = owed.min(accounts.pops[pop][good]).min(building.stock[good]);
+            accounts.pops[pop][good] -= taken;
+            building.stock[good] -= taken;
+            owed -= taken;
+        }
+    }
+    owed
+}
+
+/// Stages the departure of an expedition of the pop `pop` on a copy of its home: what the job gathers from the pop (its cargo and its
+/// supplies, as far as it holds them) has left its holding, as it has by the time the expedition stands at the destination, so the visit
+/// counts it once, aboard, and not also at home (T45).
+///
+/// # Errors
+/// A holding that cannot be read.
+pub(crate) fn stage_departure(
+    rules: &Rules,
+    place: &mut PlaceState,
+    pop: usize,
+    cargo: &[u64],
+    supplies: &[u64],
+) -> Result<(), DataError> {
+    for good in 0..rules.goods.len() {
+        let wanted = cargo[good].saturating_add(supplies[good]);
+        let held = u64::try_from(pop_market_holding(place, pop, good)?).unwrap_or(u64::MAX);
+        take_from_pop(place, pop, good, wanted.min(held));
+    }
+    Ok(())
+}
+
+/// What a place's pops want of each good and what they can offer of it today, in rules order, as the exchange counts them (positions
+/// against targets, the buildings' shares of spare stock included in what can be offered): where a trader may sell and where it may buy.
+pub(crate) fn place_totals(
+    rules: &Rules,
+    place: &PlaceState,
+) -> Result<(Vec<u128>, Vec<u128>), DataError> {
+    let book = Book::new_with(rules, place, &place.prices_milli, &[])?;
+    let parts = BuildingParts::new_with(rules, place, &place.prices_milli, 0)?;
+    let goods = rules.goods.len();
+    let (mut want, mut spare) = (vec![0_u128; goods], vec![0_u128; goods]);
+    for pop in 0..place.pops.len() {
+        for good in 0..goods {
+            want[good] = want[good].saturating_add(book.position(pop, good).want);
+            spare[good] = spare[good].saturating_add(parts.total(&book, pop, good));
+        }
+    }
+    Ok((want, spare))
+}
+
+/// One pop's position for every good as the exchange counts it, without what its jobs lack (which is not a want of its own): what it
+/// wants (a deficit against its target) and what it can offer (its spare and its shares of the buildings'), and whether it is hungry
+/// (under 60 days of food, rule 18).
+pub(crate) struct TraderView {
+    /// The deficit against its target, by good.
+    pub(crate) deficit: Vec<u128>,
+    /// The target, by good.
+    pub(crate) target: Vec<u128>,
+    /// What it could offer, by good.
+    pub(crate) spare: Vec<u128>,
+    /// Whether it holds less than 60 days of food.
+    pub(crate) hungry: bool,
+}
+
+pub(crate) fn trader_view(
+    rules: &Rules,
+    place: &PlaceState,
+    pop: usize,
+) -> Result<TraderView, DataError> {
+    let book = Book::new_with(rules, place, &place.prices_milli, &[])?;
+    let parts = BuildingParts::new_with(rules, place, &place.prices_milli, 0)?;
+    let goods = rules.goods.len();
+    let (mut deficit, mut target, mut spare) = (
+        vec![0_u128; goods],
+        vec![0_u128; goods],
+        vec![0_u128; goods],
+    );
+    let live = live_species(rules);
+    let (_, job_animals) = trade::lacks(rules, place);
+    for good in 0..goods {
+        // The trader's own shortfall against its own target (r5 3.5 item 1), not what its market budget funds: the look plans from the raw
+        // want, less the waiting jobs' lack (which stays the jobs' own want and never cancels the household's of the same good). A live
+        // good's raw target also holds the jobs' lack of the animal (a waiting ox-cart's draught cattle: `Book::new_with` adds it so the
+        // exchange can fund it), which is no deficit against the trader's own herd and no share of its target: both come from its own herd
+        // position, and the exchange keeps the funded claim of the build.
+        let waiting_draught = live[good].map_or(0, |species| u128::from(job_animals[pop][species]));
+        let position = book.raw_position(pop, good);
+        deficit[good] = position
+            .want
+            .saturating_sub(book.lack[pop][good])
+            .saturating_sub(waiting_draught);
+        target[good] = book.target[pop][good].saturating_sub(waiting_draught);
+        spare[good] = parts.total(&book, pop, good);
+    }
+    Ok(TraderView {
+        deficit,
+        target,
+        spare,
+        hungry: book.hungry[pop],
+    })
+}
+
+/// What the other pops of a place want of each good in its market, on the funded basis the market's own totals use ([`place_totals`]): what
+/// a trader's home market has to give it is what is offered less what these pops claim.
+pub(crate) fn market_claims_of_others(
+    rules: &Rules,
+    place: &PlaceState,
+    pop: usize,
+) -> Result<Vec<u128>, DataError> {
+    let book = Book::new_with(rules, place, &place.prices_milli, &[])?;
+    let goods = rules.goods.len();
+    let mut claims = vec![0_u128; goods];
+    for other in (0..place.pops.len()).filter(|other| *other != pop) {
+        for (good, claim) in claims.iter_mut().enumerate() {
+            *claim = claim.saturating_add(book.position(other, good).want);
+        }
+    }
+    Ok(claims)
 }
 
 fn run_place_exchange(

@@ -265,6 +265,10 @@ pub enum JobKind {
     Build {
         /// The vehicle kind.
         vehicle: u32,
+        /// The trip the vehicle is built for, when a trader's look chose the build for one (CK-433, 11b.4 rule 14): its destination
+        /// and amounts, which count as a forecast from the hour the job is made (r5 3.5 item 9) and which the trader decides afresh
+        /// when the vehicle is built.
+        trip: Option<Box<Trip>>,
     },
     /// Carry out a plan: gather the cargo, the animals and the supplies, and when its people can be had and its legs assign, send
     /// the expedition (CK-432; its stockpile becomes the expedition's).
@@ -278,6 +282,26 @@ pub enum JobKind {
         /// The head put on offer, by herd species, kept after the slaughter so what its yield can be is bounded by it.
         origin: Vec<u64>,
     },
+}
+
+/// The trip a build is for: the plan's destination and what the plan would take and bring back, in rules order (CK-433).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Trip {
+    /// The destination's place index.
+    pub destination: u32,
+    /// What the trip would take to trade.
+    pub cargo: Vec<u64>,
+    /// What the trip would bring back.
+    pub wanted: Vec<u64>,
+}
+
+/// When a trader last looked, and a look still to come after a trip (CK-433, 11b.4 rule 16).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Look {
+    /// The hour of its last look.
+    pub last: u64,
+    /// The hour a look is pending after an expedition of its unloaded (that hour plus the rest), if one is.
+    pub rest: Option<u64>,
 }
 
 /// The hands a started job holds.
@@ -371,6 +395,9 @@ pub struct PlaceTrade {
     pub days_away: BTreeMap<(u32, u32), u64>,
     /// The expeditions of the place's pops that are away, in the order they were made (CK-432). Saved.
     pub expeditions: Vec<Expedition>,
+    /// When each pop last looked at the places it might trade with, by the pop's slot; a pop with no entry has never looked (CK-433).
+    /// Saved.
+    pub looks: BTreeMap<u32, Look>,
 }
 
 impl PlaceTrade {
@@ -728,6 +755,7 @@ impl EconomyState {
             pop: convert(pop),
             kind: JobKind::Build {
                 vehicle: convert(kind),
+                trip: None,
             },
             made: now,
             need_goods,
@@ -967,7 +995,7 @@ fn try_start(
         return Ok(false);
     }
     let vehicle = match &job.kind {
-        JobKind::Build { vehicle } => *vehicle,
+        JobKind::Build { vehicle, .. } => *vehicle,
         JobKind::Trade { .. } => {
             return crate::expedition::start_trade(rules, place, counters, index, now, moves_now);
         }
@@ -1048,6 +1076,20 @@ pub(crate) fn start_ready(
     Ok(())
 }
 
+/// Starts what the hour's looks have made ready at a place: a job whose goods its trader already held starts in the hour it was made
+/// (part B rule 3), moving from the next tick.
+pub(crate) fn start_new_job(
+    rules: &Rules,
+    state: &mut EconomyState,
+    place: usize,
+    now: u64,
+) -> Result<(), DataError> {
+    let mut counters = state.trade.clone();
+    start_ready(rules, &mut state.places[place], &mut counters, now, false)?;
+    state.trade = counters;
+    Ok(())
+}
+
 /// Counts the noon just spent on one job's hands as a day away from the other work of each, in the building that hand works in (r5
 /// 3.6): it counts towards the building's next payday. A hand of a given building that `counted` says a build has just released was
 /// counted at this noon in that build, so each such absence is matched once and not counted again.
@@ -1080,14 +1122,19 @@ pub(crate) fn count_days_away(place: &mut PlaceState) {
     crate::expedition::count_noon_all(place);
 }
 
+/// The hands a completed build releases, by `(building, pop)`, and the pops whose builds are done.
+type Completed = (BTreeMap<(u32, u32), u64>, Vec<u32>);
+
 /// Completes the builds whose time is up: the inputs are gone, the vehicle belongs to the trader pop, free, its animal part of it from
-/// then on, and the job ends (r5 3.4, 11b.2 rule 4). Returns the hands released, by pop.
+/// then on, and the job ends (r5 3.4, 11b.2 rule 4). Returns the hands released, by pop, and the pops whose builds are done, which look
+/// again at once (11b.4 rule 14).
 fn complete_builds(
     place: &mut PlaceState,
     counters: &mut TradeCounters,
     now: u64,
-) -> Result<BTreeMap<(u32, u32), u64>, DataError> {
+) -> Result<Completed, DataError> {
     let mut released = BTreeMap::new();
+    let mut built = Vec::new();
     let mut index = 0;
     while index < place.trade.jobs.len() {
         let done = place.trade.jobs[index]
@@ -1110,7 +1157,7 @@ fn complete_builds(
                 *held = held.saturating_add(*count);
             }
         }
-        let JobKind::Build { vehicle } = job.kind else {
+        let JobKind::Build { vehicle, .. } = job.kind else {
             return Err(missing_data(
                 "trade.builds".to_owned(),
                 "a job that is not a build holds hands",
@@ -1126,8 +1173,9 @@ fn complete_builds(
                 animals: job.animals,
             }),
         });
+        built.push(job.pop);
     }
-    Ok(released)
+    Ok((released, built))
 }
 
 /// Gives up a job that was not started in time: it holds no people, a live animal goes back as 11b.1 says and the rest stays with it
@@ -1214,25 +1262,62 @@ pub fn run_trade_hour(
     state: &mut EconomyState,
     date: Date,
 ) -> Result<(), DataError> {
+    run_hour(rules, state, date).map(|_| ())
+}
+
+/// One game hour of the trade systems as [`run_trade_hour`] has it, followed by the hour's looks (CK-433, 11b.2 rule 4 step 6): every
+/// trader that is due, in the order of places and then of pops, looks at the places the network reaches and makes a job if a trip
+/// pays. `observer` is told of each look and each plan as it happens, for the evidence's harness and the cases (`&mut ()` watches
+/// nothing).
+///
+/// # Errors
+/// A malformed saved job or place, or a way the network cannot give: the hour's jobs and the looks made before the error stand, each
+/// whole.
+pub fn run_trade_hour_with_looks(
+    rules: &Rules,
+    state: &mut EconomyState,
+    date: Date,
+    ways: &mut dyn crate::choose::Ways,
+    observer: &mut dyn crate::choose::LookObserver,
+) -> Result<(), DataError> {
+    let built = run_hour(rules, state, date)?;
+    if !rules.expedition.looks {
+        return Ok(());
+    }
+    let now = GameTime::from_date(date)
+        .map_err(|_| missing_data("trade.hour".to_owned(), "the date is outside the calendar"))?
+        .hours();
+    crate::choose::run_looks(rules, state, now, &built, ways, observer)
+}
+
+/// The hour's builds, jobs and expeditions, without the looks; returns the `(place, pop)` of each build that completed.
+fn run_hour(
+    rules: &Rules,
+    state: &mut EconomyState,
+    date: Date,
+) -> Result<Vec<(usize, u32)>, DataError> {
     let now = GameTime::from_date(date)
         .map_err(|_| missing_data("trade.hour".to_owned(), "the date is outside the calendar"))?
         .hours();
     // Only a place with a job has anything to do this hour; its changes are worked on a copy and committed together.
     let mut counters = state.trade.clone();
     let mut worked: Vec<(usize, PlaceState)> = Vec::new();
+    let mut built = Vec::new();
     for (index, original) in state.places.iter().enumerate() {
         if original.trade.jobs.is_empty() && original.trade.expeditions.is_empty() {
             continue;
         }
         let mut place = original.clone();
-        hour_of_place(rules, &mut place, &mut counters, date, now)?;
+        for pop in hour_of_place(rules, &mut place, &mut counters, date, now)? {
+            built.push((index, pop));
+        }
         worked.push((index, place));
     }
     state.trade = counters;
     for (index, place) in worked {
         state.places[index] = place;
     }
-    Ok(())
+    Ok(built)
 }
 
 fn hour_of_place(
@@ -1241,8 +1326,8 @@ fn hour_of_place(
     counters: &mut TradeCounters,
     date: Date,
     now: u64,
-) -> Result<(), DataError> {
-    let mut released = complete_builds(place, counters, now)?;
+) -> Result<Vec<u32>, DataError> {
+    let (mut released, built) = complete_builds(place, counters, now)?;
     // Expeditions move one hour, arrive and unload, before the day's jobs start (11c.1 rule 2), so the people and vehicles that come
     // home this hour can be hired and reserved by a job that starts in it.
     let came_home = crate::expedition::move_expeditions(rules, place, counters, now)?;
@@ -1290,7 +1375,7 @@ fn hour_of_place(
             || job.stock.iter().any(|units| *units > 0)
             || job.animals.iter().any(|head| *head > 0)
     });
-    Ok(())
+    Ok(built)
 }
 
 /// The days a building's workers were away since its last payday, by pop, and clears them (the payday has counted them).
@@ -1334,9 +1419,18 @@ impl Canonical for PlaceTrade {
             job.number.encode(out)?;
             job.pop.encode(out)?;
             match &job.kind {
-                JobKind::Build { vehicle } => {
+                JobKind::Build { vehicle, trip } => {
                     0_u8.encode(out)?;
                     vehicle.encode(out)?;
+                    match trip {
+                        Some(trip) => {
+                            true.encode(out)?;
+                            trip.destination.encode(out)?;
+                            trip.cargo.encode(out)?;
+                            trip.wanted.encode(out)?;
+                        }
+                        None => false.encode(out)?,
+                    }
                 }
                 JobKind::Trade { plan } => {
                     1_u8.encode(out)?;
@@ -1386,9 +1480,26 @@ impl Canonical for PlaceTrade {
             pop.encode(out)?;
             days.encode(out)?;
         }
-        self.expeditions.encode(out)
+        self.expeditions.encode(out)?;
+        encode_length(self.looks.len(), out)?;
+        for (pop, look) in &self.looks {
+            pop.encode(out)?;
+            look.last.encode(out)?;
+            match look.rest {
+                Some(hour) => {
+                    true.encode(out)?;
+                    hour.encode(out)?;
+                }
+                None => false.encode(out)?,
+            }
+        }
+        Ok(())
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "One decode of each saved field of a place's trade state, in the order they are encoded."
+    )]
     fn decode(input: &mut Reader<'_>) -> Result<Self, CanonicalError> {
         let count = input.length()?;
         let mut vehicles = Vec::with_capacity(count);
@@ -1416,6 +1527,15 @@ impl Canonical for PlaceTrade {
             let kind = match u8::decode(input)? {
                 0 => JobKind::Build {
                     vehicle: u32::decode(input)?,
+                    trip: if bool::decode(input)? {
+                        Some(Box::new(Trip {
+                            destination: u32::decode(input)?,
+                            cargo: Vec::<u64>::decode(input)?,
+                            wanted: Vec::<u64>::decode(input)?,
+                        }))
+                    } else {
+                        None
+                    },
                 },
                 1 => JobKind::Trade {
                     plan: Box::new(Plan::decode(input)?),
@@ -1480,11 +1600,30 @@ impl Canonical for PlaceTrade {
             let key = (u32::decode(input)?, u32::decode(input)?);
             days_away.insert(key, u64::decode(input)?);
         }
+        let expeditions = Vec::<Expedition>::decode(input)?;
+        let count = input.length()?;
+        let mut looks = BTreeMap::new();
+        for _ in 0..count {
+            let pop = u32::decode(input)?;
+            let last = u64::decode(input)?;
+            let rest = if bool::decode(input)? {
+                Some(u64::decode(input)?)
+            } else {
+                None
+            };
+            if looks.insert(pop, Look { last, rest }).is_some() {
+                return Err(CanonicalError::BadTag {
+                    ty: "PlaceTrade.looks",
+                    tag: 0,
+                });
+            }
+        }
         Ok(Self {
             vehicles,
             jobs,
             days_away,
-            expeditions: Vec::<Expedition>::decode(input)?,
+            expeditions,
+            looks,
         })
     }
 }
@@ -1596,7 +1735,26 @@ pub fn validate_trade_state_at(
             }
             last_job = job.number;
             let vehicle = match &job.kind {
-                JobKind::Build { vehicle } => *vehicle,
+                JobKind::Build { vehicle, trip } => {
+                    if let Some(trip) = trip
+                        && (trip.destination as usize >= state.places.len()
+                            || trip.destination as usize == place_index
+                            || [trip.cargo.len(), trip.wanted.len()]
+                                .iter()
+                                .any(|len| *len != rules.goods.len())
+                            || trip
+                                .cargo
+                                .iter()
+                                .chain(&trip.wanted)
+                                .any(|units| *units > crate::expedition::MOST_UNITS))
+                    {
+                        return Err(refuse(
+                            entry(),
+                            "is built for a trip whose destination or amounts are not those of a plan",
+                        ));
+                    }
+                    *vehicle
+                }
                 JobKind::Trade { .. } | JobKind::Held { .. } => {
                     crate::expedition::validate_other_job(rules, state, place_index, job, now)?;
                     continue;
@@ -1764,6 +1922,20 @@ pub fn validate_trade_state_at(
             &mut expedition_numbers,
             now,
         )?;
+        // A look is of a pop that exists, at an hour the clock has reached, and a pending look is after it and within the calendar.
+        for (pop, look) in &place.trade.looks {
+            if *pop as usize >= pops
+                || look.last > now.min(last)
+                || look
+                    .rest
+                    .is_some_and(|rest| rest < look.last || !in_calendar(rest, 0))
+            {
+                return Err(refuse(
+                    "looks".to_owned(),
+                    "names a pop that does not exist, a look that has not happened, or a pending look before its last",
+                ));
+            }
+        }
         // Days away are person-days since a building's last payday, kept after the people they were of have changed (a worker who built a
         // cart and died keeps the days until the payday), so they are bounded by what no population reaches, a month of every person the
         // game can hold, which also keeps every sum of them inside 64 bits.

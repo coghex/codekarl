@@ -14,6 +14,7 @@ use start_levels::{Candidate, StartDemand};
 
 pub mod bigint;
 mod budget;
+mod choose;
 pub mod events;
 mod expedition;
 mod fuel;
@@ -26,6 +27,7 @@ mod swap;
 /// Read-only comparisons of production methods.
 pub mod switching;
 mod trade;
+pub use choose::{Journey, LookEvent, LookObserver, LookReport, Paces, Party, Way, Ways};
 pub use events::{Epithet, EpithetScope, EpithetTrigger, EventRules};
 pub use expedition::{
     Assigned, Delays, DrivenAnimal, Expedition, ExpeditionRules, ExpeditionVehicle, Group, Hours,
@@ -36,9 +38,9 @@ pub use lifecycle::LifeCycle;
 pub use peoples::Peoples;
 pub use personality::Personality;
 pub use trade::{
-    Hands, Job, JobKind, PlaceTrade, TradeCounters, Vehicle, VehicleAnimal, VehicleInput,
-    VehicleKind, VehicleMaterials, VehicleWear, run_trade_hour, validate_trade_state,
-    validate_trade_state_at,
+    Hands, Job, JobKind, Look, PlaceTrade, TradeCounters, Trip, Vehicle, VehicleAnimal,
+    VehicleInput, VehicleKind, VehicleMaterials, VehicleWear, run_trade_hour,
+    run_trade_hour_with_looks, validate_trade_state, validate_trade_state_at,
 };
 
 const WAGE_HISTORY_MONTHS: usize = 12;
@@ -11642,9 +11644,14 @@ fn decode_employment(input: &mut Reader<'_>) -> Result<Vec<Employment>, Canonica
 }
 
 #[cfg(test)]
+mod choose_tests;
+#[cfg(test)]
 mod events_tests;
 #[cfg(test)]
 mod expedition_tests;
+/// The fixture places and rules of the economy's own tests, which the application's tests of what reads the economy share (CK-433).
+#[doc(hidden)]
+pub mod fixtures;
 #[cfg(test)]
 mod genetics_tests;
 #[cfg(test)]
@@ -19188,7 +19195,10 @@ pub(crate) mod tests {
         place.trade.jobs.push(Job {
             number: 1,
             pop: 0,
-            kind: JobKind::Build { vehicle: 0 },
+            kind: JobKind::Build {
+                vehicle: 0,
+                trip: None,
+            },
             made: 0,
             need_goods: vec![0; rules.goods.len()],
             need_animals: vec![0; rules.herd_species.len()],

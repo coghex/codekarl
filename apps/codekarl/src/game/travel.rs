@@ -72,6 +72,32 @@ impl TravelPlanner {
             &self.rules,
             start,
             self.water.as_ref(),
+            false,
+        )
+    }
+
+    /// The reverse single-source search (CK-433, trade spec 11d.2 rule 3): the quickest way from every place **to** `target`, found
+    /// over the same transitions as [`Self::routes_from`] with each reversed, by the same exact-time ordering and fixed tie order. Its
+    /// itineraries are read in travel order, from the place to the target, so the way home of an expedition is reckoned in its own
+    /// direction (a climb is counted going up, a road's condition as it is).
+    ///
+    /// # Errors
+    /// Returns a message if the target or current stretch states are invalid.
+    pub fn routes_to(
+        &self,
+        scenario: &ck_map::Scenario,
+        states: &BTreeMap<u64, ck_sim::travel::WayState>,
+        target: u64,
+    ) -> Result<Routes, String> {
+        routes_from_inner(
+            scenario,
+            &self.ways,
+            states,
+            &self.profile,
+            &self.rules,
+            target,
+            self.water.as_ref(),
+            true,
         )
     }
 }
@@ -636,7 +662,7 @@ fn format_itinerary(
     output
 }
 
-fn current_way_states(
+pub(super) fn current_way_states(
     states: &BTreeMap<u64, super::stretch::StretchState>,
 ) -> BTreeMap<u64, ck_sim::travel::WayState> {
     states
@@ -759,12 +785,13 @@ pub fn routes_from(
     rules: &TravelRules,
     start: u64,
 ) -> Result<Routes, String> {
-    routes_from_inner(scenario, ways, states, profile, rules, start, None)
+    routes_from_inner(scenario, ways, states, profile, rules, start, None, false)
 }
 
 #[expect(
     clippy::too_many_lines,
-    reason = "This builds the connected land, water and boat-only transfer states for one search."
+    clippy::too_many_arguments,
+    reason = "This builds the connected land, water and boat-only transfer states for one search, forward or reverse."
 )]
 fn routes_from_inner(
     scenario: &ck_map::Scenario,
@@ -774,6 +801,7 @@ fn routes_from_inner(
     rules: &TravelRules,
     start: u64,
     prepared_water: Option<&WaterGraph>,
+    reverse: bool,
 ) -> Result<Routes, String> {
     profile.validate()?;
     let n = scenario.network.as_ref().ok_or("scenario has no network")?;
@@ -1001,6 +1029,19 @@ fn routes_from_inner(
             )?;
         }
     }
+    if reverse {
+        return reverse_routes(
+            source,
+            start,
+            &edges,
+            transitions,
+            transition_hours,
+            water_steps,
+            endings,
+            next_leg,
+            &node_ids,
+        );
+    }
     let search = ck_sim::travel::itinerary_search(source, &edges);
     let mut answers = node_ids
         .iter()
@@ -1025,6 +1066,57 @@ fn routes_from_inner(
             answers.insert(node, candidate);
         }
     }
+    Ok(Routes {
+        answers,
+        transitions,
+        water_steps,
+        transition_hours,
+    })
+}
+
+/// The reverse search over the edges a forward search would use, into `source`: for every node a quickest itinerary home (exact time,
+/// then the legs in the order they are travelled, `ck_sim::travel::itinerary_search_to`, whose fixed tie rule is documented there), in
+/// travel order. Its time and legs are a forward search's from that node; among ways of equal time and legs its own rule chooses, and
+/// the itinerary it gives is the one evaluated and the one frozen. The terminal landing of a boat-only way, which a forward search
+/// considers only at the queried place, ends the way at the target.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The search's edges, transitions, water pieces and terminal landings are all the graph the reversal needs."
+)]
+fn reverse_routes(
+    source: u64,
+    target: u64,
+    edges: &[ck_sim::travel::ItineraryEdge],
+    mut transitions: Vec<Transition>,
+    mut transition_hours: Vec<BigRational>,
+    water_steps: Arc<Vec<WaterStep>>,
+    endings: Vec<(u64, u64, usize, BigRational)>,
+    mut next_leg: u64,
+    node_ids: &BTreeMap<u64, u64>,
+) -> Result<Routes, String> {
+    let mut into = edges.to_vec();
+    for (node, water, landing, transfer) in endings {
+        if node != target {
+            continue;
+        }
+        let id = u64::try_from(transitions.len()).map_err(|_| "too many transitions")?;
+        transitions.push(Transition::LandAt { landing });
+        transition_hours.push(transfer.clone());
+        into.push(ck_sim::travel::ItineraryEdge {
+            from: water,
+            to: source,
+            id,
+            hours: transfer,
+            leg_ids: vec![next_leg],
+            water_step: false,
+        });
+        next_leg = next_leg.checked_add(1).ok_or("too many legs")?;
+    }
+    let search = ck_sim::travel::itinerary_search_to(source, &into);
+    let answers = node_ids
+        .iter()
+        .filter_map(|(&node, &id)| Some((node, search.path(id)?)))
+        .collect::<BTreeMap<_, _>>();
     Ok(Routes {
         answers,
         transitions,
@@ -2442,6 +2534,53 @@ mod tests {
                 .filter(|leg| matches!(leg.kind, TripKind::Transfer { .. }))
                 .count(),
             4
+        );
+    }
+
+    /// Two ways home of equal time and equal length whose legs are [1, 9] and [2, 3] in the order they are travelled: the reverse search
+    /// into home chooses, for the place they start from, what the forward search from that place chooses (a search that compared the
+    /// legs from home back would take the second).
+    #[test]
+    fn a_tied_way_home_is_the_one_the_forward_search_from_the_place_chooses() {
+        let edge = |from, to, id, leg| ck_sim::travel::ItineraryEdge {
+            from,
+            to,
+            id,
+            hours: BigRational::from_integer(1.into()),
+            leg_ids: vec![leg],
+            water_step: false,
+        };
+        let edges = [
+            edge(0, 1, 0, 1),
+            edge(1, 3, 1, 9),
+            edge(0, 2, 2, 2),
+            edge(2, 3, 3, 3),
+        ];
+        let node_ids: BTreeMap<u64, u64> = (0..4).map(|node| (node + 100, node)).collect();
+        let transitions = (0..4)
+            .map(|_| Transition::Strait {
+                index: 0,
+                backward: false,
+            })
+            .collect();
+        let reverse = reverse_routes(
+            3,
+            103,
+            &edges,
+            transitions,
+            vec![BigRational::from_integer(1.into()); 4],
+            Arc::new(Vec::new()),
+            Vec::new(),
+            50,
+            &node_ids,
+        )
+        .unwrap();
+        let forward = ck_sim::travel::itinerary_search(0, &edges).path(3).unwrap();
+        let chosen = reverse.to(100).expect("a way home");
+        assert_eq!(forward.legs, [1, 9]);
+        assert_eq!(
+            (&chosen.legs, &chosen.edges, &chosen.hours),
+            (&forward.legs, &forward.edges, &forward.hours)
         );
     }
 }

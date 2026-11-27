@@ -41,6 +41,7 @@ mod stretch;
 #[cfg(test)]
 pub(crate) mod tests;
 pub(crate) mod trade_panel;
+pub(crate) mod trade_ways;
 pub mod travel;
 pub(crate) mod view;
 pub(crate) mod weather_trial;

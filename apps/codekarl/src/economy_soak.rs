@@ -13,10 +13,17 @@ const DEFAULT_SCENARIO: &str = concat!(
 );
 
 /// Run the deterministic headless production soak against a real scenario.
+#[expect(
+    clippy::too_many_lines,
+    reason = "The options, the scenario's load and the two modes (the CSV soak and the looks' report) are read in one place."
+)]
 pub(super) fn run(arguments: impl IntoIterator<Item = String>) -> Result<String, String> {
     let mut scenario = PathBuf::from(DEFAULT_SCENARIO);
     let mut years = 1_u16;
     let mut seed = 1_u64;
+    let mut looks = false;
+    let mut hours_limit: Option<u64> = None;
+    let mut sample: Option<usize> = None;
     let mut args = arguments.into_iter();
     while let Some(argument) = args.next() {
         match argument.as_str() {
@@ -35,9 +42,28 @@ pub(super) fn run(arguments: impl IntoIterator<Item = String>) -> Result<String,
                     .parse()
                     .map_err(|_| "--seed must be an unsigned integer")?;
             }
+            "--looks" => looks = true,
+            "--sample" => {
+                sample = Some(
+                    args.next()
+                        .ok_or("--sample needs a number")?
+                        .parse()
+                        .map_err(|_| "--sample must be a whole number of places")?,
+                );
+            }
+            "--hours" => {
+                hours_limit = Some(
+                    args.next()
+                        .ok_or("--hours needs a number")?
+                        .parse()
+                        .map_err(|_| "--hours must be a whole number")?,
+                );
+            }
             "--help" => {
                 return Ok(
-                    "Usage: economy-soak [--scenario DIR] [--years N] [--seed N]\n".to_owned(),
+                    "Usage: economy-soak [--scenario DIR] [--years N] [--seed N] [--looks [--hours N] [--sample PLACES]]\n\
+                     --looks runs the traders' looks hour by hour (CK-433) and prints what looking cost instead of the CSV; --sample lets only\n                     the first PLACES places' traders look at the opening, to measure the cost of one.\n"
+                        .to_owned(),
                 );
             }
             other => return Err(format!("unknown argument `{other}`; use --help")),
@@ -80,6 +106,22 @@ pub(super) fn run(arguments: impl IntoIterator<Item = String>) -> Result<String,
     let nearby_by_place =
         crate::game::setup::nearby_places(&map, crate::game::setup::max_recruit_range_m(&rules));
     let trade_by_place = crate::game::setup::trade_neighbours(&map);
+    if looks {
+        return looks_report(
+            assets,
+            &map,
+            rules,
+            state,
+            seed,
+            years,
+            hours_limit,
+            sample,
+            &quality_by_place,
+            &shelter_by_place,
+            &nearby_by_place,
+            &trade_by_place,
+        );
+    }
     let mut date = Date {
         year: map.start.year,
         month: map.start.month,
@@ -182,6 +224,202 @@ fn simulate_with_supply(
         advance_month(&mut date)?;
     }
     Ok(csv)
+}
+
+/// What a run of the traders' looks cost (CK-433, trade spec 11d.2 rule 3 and section 13): the shipped scenario's economy stepped hour
+/// by hour with looks on, read-only evidence and not a game. The opening is the first hour, in which every trader looks; the year is
+/// every hour after it.
+#[expect(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "The harness passes each map-derived economy input explicitly, as the soak's own loop does, and reports each of its counts."
+)]
+fn looks_report(
+    assets: &Path,
+    map: &ck_map::Scenario,
+    mut rules: Rules,
+    mut state: EconomyState,
+    seed: u64,
+    years: u16,
+    hours_limit: Option<u64>,
+    sample: Option<usize>,
+    quality_by_place: &BTreeMap<String, u16>,
+    shelter_by_place: &BTreeMap<String, u64>,
+    nearby_by_place: &BTreeMap<String, Vec<ck_economy::NearbyPlace>>,
+    trade_by_place: &BTreeMap<String, Vec<ck_economy::NearbyPlace>>,
+) -> Result<String, String> {
+    use crate::game::trade_ways::{NetworkWays, TradeNetwork, starting_states};
+    use std::time::{Duration, Instant};
+
+    rules.expedition.looks = true;
+    let travel = std::fs::read_to_string(assets.join("game/travel.toml"))
+        .map_err(|error| format!("travel.toml: {error}"))?;
+    let network = std::sync::Arc::new(TradeNetwork {
+        scenario: map.clone(),
+        rules: ck_sim::travel::TravelRules::parse(&travel)?,
+        neighbours: trade_by_place.clone(),
+        radius_m: rules.expedition.visit_radius_m,
+    });
+    let watch = crate::game::trade_ways::SearchWatch::default();
+    let mut ways = NetworkWays::new(network, Some(std::sync::Arc::clone(&watch)));
+    let states = starting_states(map);
+    let mut date = Date {
+        year: map.start.year,
+        month: map.start.month,
+        day: map.start.day,
+        hour: 0,
+    };
+    let hours = hours_limit.unwrap_or(u64::from(years) * 365 * 24);
+    if let Some(places) = sample {
+        // The traders of the other places have looked at the start, so only the sampled places' look at the opening.
+        let start = ck_sim::GameTime::from_date(date)
+            .map_err(|error| error.to_string())?
+            .hours();
+        for place in state.places.iter_mut().skip(places) {
+            for pop in 0..place.pops.len() {
+                place.trade.looks.insert(
+                    u32::try_from(pop).map_err(|error| error.to_string())?,
+                    ck_economy::Look {
+                        last: start,
+                        rest: None,
+                    },
+                );
+            }
+        }
+    }
+    let (mut opening, mut year) = (
+        ck_economy::LookReport::default(),
+        ck_economy::LookReport::default(),
+    );
+    let (mut opening_time, mut day_time, mut day_max) =
+        (Duration::ZERO, Duration::ZERO, Duration::ZERO);
+    let (mut looking_days, mut daily_total) = (0_u64, Duration::ZERO);
+    let mut opening_searches = None;
+    for hour in 0..hours {
+        if date.hour == 12 {
+            ck_economy::run_daily_economy_with_trade_neighbours(
+                &rules,
+                &mut state,
+                date,
+                quality_by_place,
+                shelter_by_place,
+                nearby_by_place,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                trade_by_place,
+            )
+            .map_err(|error| error.to_string())?;
+        }
+        ways.begin(states.clone());
+        let started = Instant::now();
+        let mut report = ck_economy::LookReport::default();
+        ck_economy::run_trade_hour_with_looks(&rules, &mut state, date, &mut ways, &mut report)
+            .map_err(|error| error.to_string())?;
+        let spent = started.elapsed();
+        if hour == 0 {
+            opening = report;
+            opening_time = spent;
+            opening_searches = watch.lock().ok().map(|counts| counts.clone());
+        } else {
+            year.add(&report);
+            if report.looks > 0 {
+                day_time += spent;
+                daily_total += spent;
+            }
+        }
+        if date.hour == 23 {
+            if day_time > Duration::ZERO {
+                looking_days += 1;
+                day_max = day_max.max(day_time);
+            }
+            day_time = Duration::ZERO;
+        }
+        // The next hour.
+        date.hour += 1;
+        if date.hour == 24 {
+            date.hour = 0;
+            date.day += 1;
+            if date.day > days_in_month(date.year, date.month).map_err(|error| error.to_string())? {
+                advance_month(&mut date)?;
+                date.hour = 0;
+            }
+        }
+    }
+    let counts = watch
+        .lock()
+        .map_err(|_| "the search tally is poisoned".to_owned())?
+        .clone();
+    let counts = &counts;
+    let shown = |report: &ck_economy::LookReport| {
+        format!(
+            "looks {} (first {}, timer {}, rest {}, build {}), destinations evaluated {}, plans worked {}, plans refused early {}, trade jobs {}, builds {}",
+            report.looks,
+            report.by_first,
+            report.by_timer,
+            report.by_rest,
+            report.by_build,
+            report.destinations,
+            report.plans,
+            report.refused,
+            report.trades,
+            report.builds,
+        )
+    };
+    let mut out = String::new();
+    writeln!(
+        out,
+        "trade looks: seed {seed}, {hours} hours from {date_start}",
+        date_start = format_args!(
+            "{}-{:02}-{:02}",
+            map.start.year, map.start.month, map.start.day
+        )
+    )
+    .map_err(|error| error.to_string())?;
+    writeln!(out, "opening (hour 0): {}", shown(&opening)).map_err(|error| error.to_string())?;
+    if let Some(counts) = &opening_searches {
+        writeln!(
+            out,
+            "opening searches: forward {} ({:.1} s), reverse {} ({:.1} s), planners {} ({:.1} s), ways asked {} ({:.1} s, of which {} clipped in {:.1} s); the opening hour took {:.1} s",
+            counts.forward,
+            counts.forward_time.as_secs_f64(),
+            counts.reverse,
+            counts.reverse_time.as_secs_f64(),
+            counts.planners,
+            counts.planner_time.as_secs_f64(),
+            counts.journeys,
+            counts.journey_time.as_secs_f64(),
+            counts.clips,
+            counts.clip_time.as_secs_f64(),
+            opening_time.as_secs_f64()
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    writeln!(out, "after the opening: {}", shown(&year)).map_err(|error| error.to_string())?;
+    writeln!(
+        out,
+        "all searches: forward {}, reverse {}, planners {}, ways {}",
+        counts.forward, counts.reverse, counts.planners, counts.journeys
+    )
+    .map_err(|error| error.to_string())?;
+    let mean = if looking_days == 0 {
+        0.0
+    } else {
+        daily_total.as_secs_f64() / f64::from(u32::try_from(looking_days).unwrap_or(u32::MAX))
+    };
+    writeln!(
+        out,
+        "a day's looks after the opening: {looking_days} days with looks, largest {:.3} s, mean {mean:.3} s",
+        day_max.as_secs_f64()
+    )
+    .map_err(|error| error.to_string())?;
+    let (mut away, mut jobs) = (0_usize, 0_usize);
+    for place in &state.places {
+        away += place.trade.expeditions.len();
+        jobs += place.trade.jobs.len();
+    }
+    writeln!(out, "at the end: {away} expeditions away, {jobs} jobs")
+        .map_err(|error| error.to_string())?;
+    Ok(out)
 }
 
 fn advance_month(date: &mut Date) -> Result<(), String> {

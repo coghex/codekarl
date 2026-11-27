@@ -71,6 +71,8 @@ pub(crate) struct Prepared {
     log_cell: super::character_storage::LogCell,
     /// Where the scheduler's daily system finds the character storage (CK-363).
     characters_io: super::character_storage::Handle,
+    /// The travel network the traders' looks read, when the rules have looks on (CK-433); none otherwise.
+    trade_network: Option<Arc<super::trade_ways::TradeNetwork>>,
 }
 
 /// Eight bytes from the operating system, as a seed.
@@ -216,6 +218,12 @@ pub(crate) fn prepare(
         .any(|vm| vm.name == GAMEPLAY_VM)
         .then(|| Gameplay::new(0));
     let place_names = place_names(&scenario);
+    let trade_network = trade_network(
+        &scenario,
+        asset_root,
+        economy_rules.as_deref(),
+        &trade_by_place,
+    )?;
     let characters_io = super::character_storage::Handle::default();
     let archive_cell = super::character_storage::SourceCell::default();
     let log_cell = super::character_storage::LogCell::default();
@@ -232,6 +240,7 @@ pub(crate) fn prepare(
             place_names.clone(),
             weather.clone(),
             Some(Arc::clone(&characters_io)),
+            trade_network.clone(),
         )
     };
     let storage_parent = request.game.saves.parent().unwrap_or(Path::new("."));
@@ -353,6 +362,7 @@ pub(crate) fn prepare(
         houses,
         slots,
         shelter_by_place,
+        trade_network,
         saves: request.game.saves.clone(),
         history,
         storage,
@@ -848,6 +858,7 @@ struct SchedulerInputs {
     place_names: BTreeMap<String, String>,
     weather: Option<Arc<WeatherData>>,
     characters_io: super::character_storage::Handle,
+    trade_network: Option<Arc<super::trade_ways::TradeNetwork>>,
 }
 
 impl SchedulerInputs {
@@ -883,6 +894,7 @@ impl SchedulerInputs {
             place_names: place_names(&prepared.scenario),
             weather: wiring.weather.clone(),
             characters_io: Arc::clone(&prepared.characters_io),
+            trade_network: prepared.trade_network.clone(),
             shelter_by_place: prepared.shelter_by_place.clone(),
             rules,
             quality_by_place,
@@ -903,6 +915,7 @@ impl SchedulerInputs {
             self.place_names.clone(),
             self.weather.clone(),
             Some(Arc::clone(&self.characters_io)),
+            self.trade_network.clone(),
         )
     }
 }
@@ -1043,6 +1056,7 @@ fn gameplay_scheduler_with_rules(
     place_names: BTreeMap<String, String>,
     weather: Option<Arc<WeatherData>>,
     characters_io: Option<super::character_storage::Handle>,
+    trade_network: Option<Arc<super::trade_ways::TradeNetwork>>,
 ) -> Scheduler<GameState> {
     let mut scheduler = Scheduler::<GameState>::new();
     if let Some(weather) = weather.clone() {
@@ -1054,7 +1068,7 @@ fn gameplay_scheduler_with_rules(
             .expect("weather system name is unique");
     }
     if let Some(rules) = rules {
-        register_trade_hourly(&mut scheduler, Arc::clone(&rules));
+        register_trade_hourly(&mut scheduler, Arc::clone(&rules), trade_network);
         register_economy_callback_with_context(
             &mut scheduler,
             rules,
@@ -1083,12 +1097,59 @@ fn gameplay_scheduler_with_rules(
     scheduler
 }
 
+/// The travel network the traders' looks read (CK-433): loaded only when the rules have looks on, which the shipped rules do not until
+/// part F opens a game with its first looks, so a game without them reads no travel rules and holds no copy of the map.
+fn trade_network(
+    scenario: &ck_map::Scenario,
+    asset_root: &Path,
+    rules: Option<&Rules>,
+    neighbours: &BTreeMap<String, Vec<ck_economy::NearbyPlace>>,
+) -> Result<Option<Arc<super::trade_ways::TradeNetwork>>, String> {
+    let Some(rules) = rules.filter(|rules| rules.expedition.looks) else {
+        return Ok(None);
+    };
+    if scenario.network.is_none() {
+        return Ok(None);
+    }
+    let travel = std::fs::read_to_string(asset_root.join("game/travel.toml"))
+        .map_err(|error| format!("[game] game/travel.toml: {error}"))?;
+    Ok(Some(Arc::new(super::trade_ways::TradeNetwork {
+        scenario: scenario.clone(),
+        rules: ck_sim::travel::TravelRules::parse(&travel)
+            .map_err(|error| format!("[game] game/travel.toml: {error}"))?,
+        neighbours: neighbours.clone(),
+        radius_m: rules.expedition.visit_radius_m,
+    })))
+}
+
 /// The trade systems' hour (CK-431, trade spec 11c.1): builds that are done complete, ready jobs start, expired jobs are given up. The
 /// scheduler runs a tick's daily systems before its hourly ones, so at noon this follows the economy's daily step.
-pub(crate) fn register_trade_hourly(scheduler: &mut Scheduler<GameState>, rules: Arc<Rules>) {
+pub(crate) fn register_trade_hourly(
+    scheduler: &mut Scheduler<GameState>,
+    rules: Arc<Rules>,
+    network: Option<Arc<super::trade_ways::TradeNetwork>>,
+) {
+    // The traders' looks (CK-433, part D) run after the hour's jobs when the rules have them on and the game has a network to look at;
+    // the searches they share are kept for the hour in `ways`.
+    let mut ways = network
+        .filter(|_| rules.expedition.looks)
+        .map(|network| super::trade_ways::NetworkWays::new(network, None));
     scheduler
         .register("economy.trade", Cadence::Hourly, move |state, tick| {
-            ck_economy::run_trade_hour(&rules, &mut state.economy, tick.date())
+            let result = match ways.as_mut() {
+                Some(ways) => {
+                    ways.begin(super::travel::current_way_states(&state.stretches));
+                    ck_economy::run_trade_hour_with_looks(
+                        &rules,
+                        &mut state.economy,
+                        tick.date(),
+                        ways,
+                        &mut (),
+                    )
+                }
+                None => ck_economy::run_trade_hour(&rules, &mut state.economy, tick.date()),
+            };
+            result
                 .map_err(io::Error::other)
                 .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>)
         })
@@ -3781,6 +3842,7 @@ mod stretch_save_tests {
                 BTreeMap::new(),
                 data,
                 None,
+                None,
             )
         };
         let mut baseline = Simulation::<GameState, GameCommand>::new(
@@ -3828,6 +3890,7 @@ mod stretch_save_tests {
             BTreeMap::new(),
             None,
             prepared.storage.handle.clone(),
+            None,
         );
         let mut game = Simulation::<GameState, GameCommand>::new(
             prepared.simulation.time(),
@@ -3950,6 +4013,72 @@ mod stretch_save_tests {
         .unwrap()
     }
 
+    /// CK-433 (11c.8 rule 25): a save written under other travel rules is refused by the same build, though nothing but `game/travel.toml`
+    /// differs: the rules hash it carries is the hash of the rules it was played under, and the travel rules are in it.
+    #[test]
+    fn a_same_build_save_under_other_travel_rules_is_refused_at_start() {
+        let dir = crate::testing::Dir::new();
+        let source = shipped_start(&dir.0, None);
+        let assets = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+        // The rules files the hash covers, with the travel rules edited.
+        let other = dir.0.join("other-assets");
+        fs::create_dir_all(other.join("map/ireland")).unwrap();
+        copy_tree(&assets.join("game"), &other.join("game"));
+        fs::copy(
+            assets.join("map/ireland/terrain.toml"),
+            other.join("map/ireland/terrain.toml"),
+        )
+        .unwrap();
+        let travel = fs::read_to_string(other.join("game/travel.toml")).unwrap();
+        fs::write(
+            other.join("game/travel.toml"),
+            format!("{travel}\n# slower\n"),
+        )
+        .unwrap();
+        let mut meta = source.identity.meta(42);
+        assert_eq!(
+            hashes::rules_hash(&assets).unwrap(),
+            meta.rules_hash,
+            "the save's own rules are the shipped ones"
+        );
+        meta.rules_hash = hashes::rules_hash(&other).unwrap();
+        assert_ne!(meta.rules_hash, source.identity.rules_hash);
+        let save = source.simulation.save(meta);
+        let path = super::super::saves::quicksave_path(&dir.0.join("saves"));
+        write_save(&source, &save, &path);
+        let game = GameConfig {
+            scenario: assets.join("scenarios/ireland-768"),
+            saves: dir.0.join("saves"),
+            events_fixture: None,
+        };
+        let refused = prepare(
+            &Request {
+                game: &game,
+                vms: &[],
+                load: Some(&path),
+                seed: None,
+            },
+            || Ok(42),
+            &mut |_, _| {},
+        );
+        let message = refused.err().expect("the save is refused");
+        assert!(message.contains("rules"), "{message}");
+    }
+
+    /// A directory copied with its files and folders.
+    fn copy_tree(from: &Path, to: &Path) {
+        fs::create_dir_all(to).unwrap();
+        for entry in fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let target = to.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy_tree(&entry.path(), &target);
+            } else {
+                fs::copy(entry.path(), target).unwrap();
+            }
+        }
+    }
+
     #[test]
     fn recorder_copies_the_completed_month_without_changing_the_simulation() {
         let dir = crate::testing::Dir::new();
@@ -4068,7 +4197,10 @@ mod stretch_save_tests {
             .push(ck_economy::Job {
                 number: 1,
                 pop: 0,
-                kind: ck_economy::JobKind::Build { vehicle: 99 },
+                kind: ck_economy::JobKind::Build {
+                    vehicle: 99,
+                    trip: None,
+                },
                 made: 0,
                 need_goods: vec![0; goods],
                 need_animals: Vec::new(),
@@ -4329,7 +4461,7 @@ mod stretch_save_tests {
         assert_eq!(
             hashes::rules_hash(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets"))
                 .unwrap(),
-            "cbcf9ce5f9d58690"
+            "3ac20aa81d7d61c3"
         );
         let mut save = source.simulation.save(source.identity.meta(42));
         let weather = source.weather.as_ref().unwrap();
@@ -5246,6 +5378,7 @@ mod switch_replay_tests {
                 BTreeMap::new(),
                 BTreeMap::new(),
                 names.clone(),
+                None,
                 None,
                 None,
             )
