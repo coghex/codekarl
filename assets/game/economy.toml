@@ -9,6 +9,10 @@ held_animal_hours = 720
 # Shared M9 economy rules. Quantities are integer native units;
 # hunger/tier values are integer hundredths of a person-day.
 # are hundredths of a person-day, storage limits are thousandths of a unit/person.
+# Near-term shares of the 240-day food, comfort and fuel targets.
+food_near_pm = 125
+comfort_near_pm = 125
+fuel_near_pm = 125
 price_k_pm = 500
 method_switch_margin_pm = 200
 swap_loss_limit_pm = 100

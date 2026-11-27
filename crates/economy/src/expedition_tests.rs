@@ -396,6 +396,8 @@ pub(crate) fn two_places(rules: &mut Rules) -> EconomyState {
     home.pops[PEASANT].stock[good(rules, "oats")] += 8;
     want(rules, &mut dest, MONK, "barley", 10);
     dest.pops[MONK].stock[good(rules, "fish")] += 10;
+    // Keep the resident's payment order funded at base values as the visiting cargo trades at local prices.
+    spare(rules, &mut dest, MONK, "herbs", 1000);
     home.trade.vehicles.push(Vehicle {
         number: 1,
         kind: kind(rules, "ox_cart"),

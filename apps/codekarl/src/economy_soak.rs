@@ -602,8 +602,8 @@ mod tests {
         assert_eq!(
             wage_entries,
             [
-                "building0.holdings=21623",
-                "building1.demesne=59184",
+                "building0.holdings=21035",
+                "building1.demesne=58825",
                 "building2.farm=10218",
                 "building3.storehouse=0",
             ],

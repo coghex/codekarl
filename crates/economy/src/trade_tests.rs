@@ -341,7 +341,7 @@ fn a_job_that_cannot_pay_does_not_start() {
 }
 
 #[test]
-fn an_ox_cart_gets_its_cattle_by_a_swap_and_an_older_job_outranks_two_herds_below_standard() {
+fn a_funded_herd_receives_cattle_before_the_older_job() {
     let rules = herd_rules();
     let mut rules = rules;
     let mut place = place(&rules, 3);
@@ -350,6 +350,8 @@ fn an_ox_cart_gets_its_cattle_by_a_swap_and_an_older_job_outranks_two_herds_belo
     settle_the_rest(&rules, &mut place, &["oats"]);
     spare(&rules, &mut place, THIRD, "oats", 1000);
     want(&rules, &mut place, MONK, "oats", 100);
+    // Herd animals do not fund orders: the seller needs other surplus to fund its payment want.
+    spare(&rules, &mut place, MONK, "honey", 1000);
     capacity(&mut rules, &mut place, THIRD, 100_000_000);
     let seller = cattle_farm(&rules, &mut place, 8, &[(MONK, 1)]);
     // The buyer's two herds are below standard: shortfalls 3 and 2.
@@ -371,13 +373,16 @@ fn an_ox_cart_gets_its_cattle_by_a_swap_and_an_older_job_outranks_two_herds_belo
     swap::run_daily_swaps(&rules, &mut state).unwrap();
     let place = &state.places[0];
     assert_eq!(head(place, seller), 7, "one head left the seller's offer");
-    assert_eq!(place.trade.jobs[0].animals[0], 1, "the older job took it");
+    assert_eq!(
+        place.trade.jobs[0].animals[0], 0,
+        "the job remains unfed until the herds' tier"
+    );
     assert_eq!(
         (head(place, first), head(place, second)),
-        (4, 5),
-        "neither herd below standard did"
+        (5, 5),
+        "the first funded herd received the head"
     );
-    assert!(place.trade.jobs[0].ready());
+    assert!(!place.trade.jobs[0].ready());
     assert_eq!(place.pops[THIRD].stock[cattle], 0, "never in a store");
 }
 
@@ -473,6 +478,8 @@ fn an_animal_on_offer_is_sold_in_the_exchange_like_a_herds() {
     let buyer = cattle_farm(&rules, &mut place, 4, &[(PEASANT, 1)]);
     place.pops[THIRD].stock[good(&rules, "oats")] = 0;
     want(&rules, &mut place, THIRD, "oats", 100);
+    // The held animal is an offer, not a source of budget for its seller.
+    spare(&rules, &mut place, THIRD, "wool", 1000);
     let mut state = state_of(place);
     state.order_build(&rules, 0, THIRD, "ox_cart", 0).unwrap();
     state.places[0].trade.jobs[0].animals[0] = 1;
@@ -838,6 +845,78 @@ fn hides_for_a_job(starter: usize) -> (Rules, EconomyState) {
     let mut state = state_of(place);
     state.order_build(&rules, 0, THIRD, "currach", 0).unwrap();
     (rules, state)
+}
+
+#[test]
+fn funded_household_oats_are_received_before_a_waiting_jobs_oats() {
+    let mut rules = herd_rules();
+    let honey = good(&rules, "honey");
+    let oats = good(&rules, "oats");
+    rules.goods[honey].base_price = rules.goods[oats].base_price;
+    let mut place = place(&rules, 2);
+    settle_the_rest(&rules, &mut place, &[]);
+    // Four oats of household need are funded, but the job's four oats are not.
+    let payment = (4 * rules.goods[oats].base_price).div_ceil(rules.goods[honey].base_price);
+    assert!(payment * rules.goods[honey].base_price < 8 * rules.goods[oats].base_price);
+    want(&rules, &mut place, PEASANT, "oats", 4);
+    spare(&rules, &mut place, PEASANT, "honey", payment);
+    spare(&rules, &mut place, MONK, "oats", 4);
+    want(&rules, &mut place, MONK, "honey", payment);
+    capacity(&mut rules, &mut place, PEASANT, 100_000_000);
+    let mut needs = vec![0; rules.goods.len()];
+    needs[oats] = 4;
+    place.trade.jobs.push(Job {
+        number: 1,
+        pop: u32::try_from(PEASANT).unwrap(),
+        kind: JobKind::Build { vehicle: 0 },
+        made: 0,
+        need_goods: needs,
+        need_animals: vec![0; rules.herd_species.len()],
+        stock: vec![0; rules.goods.len()],
+        animals: vec![0; rules.herd_species.len()],
+        hands: None,
+        given_up: None,
+    });
+    let target = swap_tests::target(&rules, &place, PEASANT, "oats");
+    let mut state = state_of(place);
+    swap::run_daily_swaps(&rules, &mut state).unwrap();
+    assert_eq!(state.places[0].pops[PEASANT].stock[oats], target);
+    assert_eq!(state.places[0].trade.jobs[0].stock[oats], 0);
+}
+
+#[test]
+fn a_full_household_is_skipped_for_the_funded_part_of_a_job() {
+    let mut rules = herd_rules();
+    let oats = good(&rules, "oats");
+    let honey = good(&rules, "honey");
+    rules.goods[honey].base_price = rules.goods[oats].base_price;
+    let mut place = place(&rules, 2);
+    settle_the_rest(&rules, &mut place, &[]);
+    want(&rules, &mut place, PEASANT, "oats", 4);
+    spare(&rules, &mut place, PEASANT, "honey", 6);
+    spare(&rules, &mut place, MONK, "oats", 4);
+    want(&rules, &mut place, MONK, "honey", 4);
+    let held = place.pops[PEASANT].stock[oats];
+    rules.goods[oats].pop_limit_milli = held;
+    capacity(&mut rules, &mut place, PEASANT, 100_000_000);
+    let mut needs = vec![0; rules.goods.len()];
+    needs[oats] = 4;
+    place.trade.jobs.push(Job {
+        number: 1,
+        pop: u32::try_from(PEASANT).unwrap(),
+        kind: JobKind::Build { vehicle: 0 },
+        made: 0,
+        need_goods: needs,
+        need_animals: vec![0; rules.herd_species.len()],
+        stock: vec![0; rules.goods.len()],
+        animals: vec![0; rules.herd_species.len()],
+        hands: None,
+        given_up: None,
+    });
+    let mut state = state_of(place);
+    swap::run_daily_swaps(&rules, &mut state).unwrap();
+    assert_eq!(state.places[0].pops[PEASANT].stock[oats], held);
+    assert_eq!(state.places[0].trade.jobs[0].stock[oats], 2);
 }
 
 #[test]

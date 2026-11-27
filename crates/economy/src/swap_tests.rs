@@ -314,10 +314,28 @@ fn example_a(starter: usize, ml: u64) -> (Rules, PlaceState) {
 
 /// Puts every good a case did not set at each pop's target, so it is neither spare nor wanted.
 pub(crate) fn settle_the_rest(rules: &Rules, place: &mut PlaceState, set: &[&str]) {
+    let fuel_is_set = rules
+        .goods
+        .iter()
+        .any(|item| item.category_supplied("fuel", 1) > 0 && set.contains(&item.id.as_str()));
     for pop in 0..place.pops.len() {
         for item in &rules.goods {
             if !set.contains(&item.id.as_str()) {
                 place.pops[pop].stock[good(rules, &item.id)] = target(rules, place, pop, &item.id);
+            }
+        }
+        if !fuel_is_set {
+            let heat = fuel::fuel_daily_need(rules, &place.pops[pop]).unwrap() * 240;
+            let (index, supply) = rules
+                .goods
+                .iter()
+                .enumerate()
+                .map(|(i, good)| (i, good.category_supplied("fuel", 1)))
+                .max_by_key(|(_, supply)| *supply)
+                .unwrap();
+            if supply > 0 {
+                place.pops[pop].stock[index] = u64::try_from(heat / supply).unwrap();
+                place.pops[pop].consumption.hearth_milli = u64::try_from(heat % supply).unwrap();
             }
         }
     }
@@ -327,6 +345,9 @@ pub(crate) fn settle_the_rest(rules: &Rules, place: &mut PlaceState, set: &[&str
 fn scarce_fish_is_shared_between_both_buyers() {
     for reverse in [false, true] {
         let mut rules = rules();
+        let oats = good(&rules, "oats");
+        let fish = good(&rules, "fish");
+        rules.goods[fish].base_price = rules.goods[oats].base_price;
         let mut place = place(&rules, 3);
         set_price(&rules, &mut place, "oats", 1);
         set_price(&rules, &mut place, "fish", 1);
@@ -364,6 +385,9 @@ fn scarce_fish_is_shared_between_both_buyers() {
 #[test]
 fn personal_source_is_followed_by_building_source() {
     let mut rules = rules();
+    let base = rules.goods[good(&rules, "oats")].base_price;
+    let other = good(&rules, "fish");
+    rules.goods[other].base_price = base;
     let mut place = place(&rules, 2);
     set_price(&rules, &mut place, "oats", 1);
     set_price(&rules, &mut place, "fish", 1);
@@ -414,7 +438,10 @@ fn building_fish_pays_for_six_oats_at_the_example_prices() {
 
 /// C1--C6 share the same holder and two buyers.
 fn sharing_case() -> (Rules, PlaceState) {
-    let rules = rules();
+    let mut rules = rules();
+    let oats = good(&rules, "oats");
+    let fish = good(&rules, "fish");
+    rules.goods[fish].base_price = rules.goods[oats].base_price;
     let mut place = place(&rules, 3);
     set_price(&rules, &mut place, "oats", 1);
     set_price(&rules, &mut place, "fish", 1);
@@ -575,6 +602,9 @@ fn communal_stock_is_reserved_for_its_owners() {
 #[test]
 fn each_owner_can_only_give_its_part_of_a_building() {
     let mut rules = rules();
+    let base = rules.goods[good(&rules, "oats")].base_price;
+    let other = good(&rules, "fish");
+    rules.goods[other].base_price = base;
     let mut place = place(&rules, 3);
     for id in ["oats", "fish"] {
         set_price(&rules, &mut place, id, 1);
@@ -803,6 +833,9 @@ fn a_receipt_does_not_spill_into_a_storehouse_or_building() {
 #[test]
 fn second_share_excludes_a_buyer_that_has_run_out_of_payment() {
     let mut rules = rules();
+    let oats = good(&rules, "oats");
+    let fish = good(&rules, "fish");
+    rules.goods[fish].base_price = rules.goods[oats].base_price;
     let mut place = place(&rules, 3);
     place.pops.push(place.pops[THIRD].clone());
     for id in ["oats", "fish"] {
@@ -900,7 +933,7 @@ fn a_store_and_an_account_together_are_the_holding() {
 }
 
 #[test]
-fn the_places_sell_orders_now_hold_a_pops_spare_wool_and_the_other_orders_are_what_they_were() {
+fn a_spare_wool_sell_order_does_not_fund_another_pops_oats() {
     let rules = rules();
     let mut place = place(&rules, 2);
     settle_the_rest(&rules, &mut place, &["wool", "oats"]);
@@ -912,9 +945,9 @@ fn the_places_sell_orders_now_hold_a_pops_spare_wool_and_the_other_orders_are_wh
     let oats = good(&rules, "oats");
     assert_eq!(orders.sell_units[wool], 1);
     assert_eq!(orders.buy_units[wool], 0);
-    // Food: the peasants' spare is offered and the monks' want is bought, as before.
+    // The monks have no surplus of their own, so their oats shortfall is unfunded.
     assert_eq!(orders.sell_units[oats], 8);
-    assert_eq!(orders.buy_units[oats], 5);
+    assert_eq!(orders.buy_units[oats], 0);
     // Herbs, held at the target by both: no order either way.
     let herbs = good(&rules, "herbs");
     assert_eq!((orders.sell_units[herbs], orders.buy_units[herbs]), (0, 0));
@@ -1108,6 +1141,9 @@ fn a_an_ordinary_swap_is_six_bushels_for_twenty_pounds() {
 #[test]
 fn b1_equal_prices_ten_for_ten() {
     let mut rules = rules();
+    let oats = good(&rules, "oats");
+    let barley = good(&rules, "barley");
+    rules.goods[barley].base_price = rules.goods[oats].base_price;
     let mut place = place(&rules, 2);
     set_price(&rules, &mut place, "oats", 50);
     set_price(&rules, &mut place, "barley", 50);
@@ -1128,6 +1164,10 @@ fn b1_equal_prices_ten_for_ten() {
 /// and want oats for.
 fn example_b2(honey: u64) -> (Rules, PlaceState) {
     let mut rules = rules();
+    let oats = good(&rules, "oats");
+    let honey_good = good(&rules, "honey");
+    rules.goods[oats].base_price = 100;
+    rules.goods[honey_good].base_price = 70;
     let mut place = place(&rules, 2);
     set_price(&rules, &mut place, "oats", 100);
     set_price(&rules, &mut place, "honey", 70);
@@ -1136,6 +1176,8 @@ fn example_b2(honey: u64) -> (Rules, PlaceState) {
     spare(&rules, &mut place, MONK, "honey", honey);
     want(&rules, &mut place, MONK, "oats", 3);
     settle_the_rest(&rules, &mut place, &["oats", "honey"]);
+    // The seller's additional surplus funds the small loss permitted by the barter rule.
+    spare(&rules, &mut place, MONK, "herbs", 1);
     capacity(&mut rules, &mut place, PEASANT, 10_000_000);
     (rules, place)
 }
@@ -1172,6 +1214,9 @@ fn b2_the_honeys_holder_with_capacity_and_a_turn_gives_three_pounds_for_two_bush
 fn b3_one_unit_each_one_for_one_and_none_when_the_honeys_holder_must_start() {
     // Oats 1,001, honey 1,000, one unit spare on each side. The oats' holder starts: one for one.
     let mut rules = rules();
+    let oats = good(&rules, "oats");
+    let honey = good(&rules, "honey");
+    rules.goods[honey].base_price = rules.goods[oats].base_price;
     let mut place = place(&rules, 2);
     set_price(&rules, &mut place, "oats", 1001);
     set_price(&rules, &mut place, "honey", 1000);
@@ -1493,6 +1538,11 @@ fn scarce_fish_goes_to_the_wealthier_claimant_before_want_order() {
     // A holder wants barley first and oats second. Both buyers want its one fish and can pay; equal wealth gives it to the earlier buyer.
     for third_has_capacity in [false, true] {
         let mut rules = rules();
+        let base = rules.goods[good(&rules, "oats")].base_price;
+        let index = good(&rules, "fish");
+        rules.goods[index].base_price = base;
+        let index = good(&rules, "barley");
+        rules.goods[index].base_price = base;
         let mut place = place(&rules, 3);
         set_price(&rules, &mut place, "oats", 100);
         set_price(&rules, &mut place, "barley", 100);
@@ -1507,6 +1557,11 @@ fn scarce_fish_goes_to_the_wealthier_claimant_before_want_order() {
         want(&rules, &mut place, THIRD, "fish", 1);
         spare(&rules, &mut place, THIRD, "barley", 1);
         settle_the_rest(&rules, &mut place, &["oats", "barley", "fish"]);
+        // The other payment good is at target for each buyer.
+        place.pops[MONK].stock[good(&rules, "barley")] = target(&rules, &place, MONK, "barley");
+        place.pops[THIRD].stock[good(&rules, "oats")] = target(&rules, &place, THIRD, "oats");
+        // Fund both of the holder's possible payment orders.
+        spare(&rules, &mut place, PEASANT, "herbs", 10);
         capacity(&mut rules, &mut place, PEASANT, 10_000_000);
         if third_has_capacity {
             capacity(&mut rules, &mut place, THIRD, 10_000_000);
@@ -1571,6 +1626,9 @@ fn wants_go_food_first_then_the_least_bulky_for_its_worth_then_the_goods_order()
 fn a_starter_tries_the_partners_in_the_places_order_and_each_try_makes_the_swap() {
     // The first pop wants fish, and both others want its oats. The scarce oats are shared even though it tries partners in order.
     let mut rules = rules();
+    let base = rules.goods[good(&rules, "oats")].base_price;
+    let index = good(&rules, "fish");
+    rules.goods[index].base_price = base;
     let mut place = place(&rules, 3);
     set_price(&rules, &mut place, "oats", 100);
     set_price(&rules, &mut place, "fish", 100);
@@ -1602,13 +1660,19 @@ struct Hunger {
 }
 
 fn hunger_place() -> Hunger {
-    let rules = hunger_rules();
+    let mut rules = hunger_rules();
+    let wool = good(&rules, "wool");
+    rules.goods[wool].stacked_outside = true;
     let mut place = place(&rules, 3);
     small(&mut place, 6);
     for id in ["fish", "herbs", "beeswax"] {
         set_price(&rules, &mut place, id, 10);
     }
     settle_the_rest(&rules, &mut place, &[]);
+    // These cases isolate the visit-order rule, so all needs have sufficient budget.
+    for pop in 0..place.pops.len() {
+        spare(&rules, &mut place, pop, "wool", 100_000);
+    }
     let house = storehouse(&rules, &mut place);
     // The cases give capacity to the pops that have turns.
     Hunger {
@@ -1875,7 +1939,9 @@ fn without_capacity(rules: &Rules) -> Rules {
 
 #[test]
 fn a_pop_that_swaps_for_food_at_noon_eats_it_the_same_day() {
-    let rules = hunger_rules();
+    let mut rules = hunger_rules();
+    let wool = good(&rules, "wool");
+    rules.goods[wool].stacked_outside = true;
     let mut state = fort(&rules);
     let place = &mut state.places[0];
     let (labourers, nobles) = (kind_of(place, "labourer"), kind_of(place, "noble"));
@@ -1883,6 +1949,7 @@ fn a_pop_that_swaps_for_food_at_noon_eats_it_the_same_day() {
     for pop in 0..place.pops.len() {
         place.pops[pop].stock = vec![0; rules.goods.len()];
     }
+    spare(&rules, place, nobles, "wool", 100_000);
     let fish_target = |place: &PlaceState, pop: usize| target(&rules, place, pop, "fish");
     spare(&rules, place, labourers, "beeswax", 6);
     want(&rules, place, nobles, "beeswax", 6);
@@ -2007,6 +2074,9 @@ fn a_short_good_is_shared_across_turns() {
     // The first two pops each want 5 fish and have oats to give; the third has only 5 fish. The indivisible unit goes to the earlier equal-wealth buyer.
     for (first, second) in [(PEASANT, MONK), (MONK, PEASANT)] {
         let mut rules = rules();
+        let oats = good(&rules, "oats");
+        let fish = good(&rules, "fish");
+        rules.goods[fish].base_price = rules.goods[oats].base_price;
         let mut place = place(&rules, 3);
         set_price(&rules, &mut place, "oats", 100);
         set_price(&rules, &mut place, "fish", 100);
@@ -2063,6 +2133,9 @@ fn a_huge_want_and_spare_with_a_small_allowance_is_one_for_one_at_once() {
 /// and fish at 100: 6 for 6 takes 6 x 35 + 6 = 216 litres).
 fn two_partners(starter_ml: u64) -> (Rules, PlaceState) {
     let mut rules = rules();
+    let base = rules.goods[good(&rules, "oats")].base_price;
+    let other = good(&rules, "fish");
+    rules.goods[other].base_price = base;
     let mut place = place(&rules, 3);
     set_price(&rules, &mut place, "oats", 100);
     set_price(&rules, &mut place, "fish", 100);
@@ -2107,6 +2180,11 @@ fn a_partner_is_not_charged_and_keeps_its_own_allowance_for_its_own_turn() {
     // The first pop's swap with the second uses the first's 216 litres and none of the second's 36, which the second then spends
     // in its own turn on a swap of one bushel of barley for one pound of fish (35 + 1).
     let mut rules = rules();
+    let base = rules.goods[good(&rules, "oats")].base_price;
+    let index = good(&rules, "fish");
+    rules.goods[index].base_price = base;
+    let index = good(&rules, "barley");
+    rules.goods[index].base_price = base;
     let mut place = place(&rules, 3);
     for id in ["oats", "barley", "fish"] {
         set_price(&rules, &mut place, id, 100);
@@ -2119,6 +2197,8 @@ fn a_partner_is_not_charged_and_keeps_its_own_allowance_for_its_own_turn() {
     spare(&rules, &mut place, THIRD, "barley", 1);
     want(&rules, &mut place, THIRD, "fish", 1);
     settle_the_rest(&rules, &mut place, &["oats", "barley", "fish"]);
+    place.pops[PEASANT].stock[good(&rules, "barley")] = target(&rules, &place, PEASANT, "barley");
+    place.pops[THIRD].stock[good(&rules, "oats")] = target(&rules, &place, THIRD, "oats");
     capacity(&mut rules, &mut place, PEASANT, 216_000);
     capacity(&mut rules, &mut place, MONK, 36_000);
     exchange(&rules, &mut place);
@@ -2155,7 +2235,7 @@ fn nothing_to_swap() -> (Rules, EconomyState) {
 }
 
 #[test]
-fn a_day_with_no_swap_and_no_new_order_ends_exactly_as_the_accepted_build_did() {
+fn a_day_with_no_swap_keeps_the_expected_stocks_and_prices() {
     let (rules, mut state) = nothing_to_swap();
     let place = &state.places[0];
     // No swap is possible, and the orders are what they were: food only, since nobody holds a good without a hunger value above target.
@@ -2168,8 +2248,7 @@ fn a_day_with_no_swap_and_no_new_order_ends_exactly_as_the_accepted_build_did() 
             assert_eq!(orders.sell_units[index], 0, "{}", item.id);
         }
     }
-    // The whole day through the economy's own entry point, to the stores, prices and price carries the accepted build (before this
-    // slice) gave for this fixture on the same day.
+    // The whole day includes the fuel reserve added to keep unrelated fuel demand at target.
     run_daily_economy_with_context(
         &rules,
         &mut state,
@@ -2198,22 +2277,22 @@ fn a_day_with_no_swap_and_no_new_order_ends_exactly_as_the_accepted_build_did() 
     assert!(place.price_drift_carries.iter().all(|carry| *carry == 0));
 }
 
-// What the accepted build (the build before this slice) left of the day above, taken by running the same fixture there: each pop's
-// non-zero stock and every price in thousandths. The prices are keyed by good and cover the 22 goods every build has; the accepted build
-// with CK-392 also has linen and hemp, at their base prices, which no order here moves.
-const ACCEPTED_PEASANTS: [(&str, u64); 5] = [
+// The day's non-zero stocks and prices for this fixture. The fuel reserve supplies the day's burn.
+const ACCEPTED_PEASANTS: [(&str, u64); 6] = [
     ("oats", 5321),
     ("barley", 1707),
     ("fish", 79661),
     ("honey", 68286),
     ("herbs", 11999),
+    ("hardwood", 4780),
 ];
-const ACCEPTED_MONKS: [(&str, u64); 5] = [
+const ACCEPTED_MONKS: [(&str, u64); 6] = [
     ("oats", 5314),
     ("barley", 1707),
     ("fish", 79659),
     ("honey", 68286),
     ("herbs", 11994),
+    ("hardwood", 4780),
 ];
 const ACCEPTED_PRICES: [(&str, u64); 22] = [
     ("oats", 95_000),
@@ -2323,12 +2402,7 @@ fn a_receipt_that_only_volume_rules_out_is_not_searched_pair_by_pair() {
     rules.goods[wool].volume_ml = 1;
     // The monks can take oats again; only the starter's volume is in the way.
     rules.goods[oats].pop_limit_milli = 1_000_000_000;
-    let held: u128 = rules
-        .goods
-        .iter()
-        .zip(&place.pops[PEASANT].stock)
-        .map(|(item, units)| u128::from(item.volume_ml) * u128::from(*units))
-        .sum();
+    let held = volume_used(&rules, &place.pops[PEASANT].stock, None).unwrap();
     assert!(held < 720_000_000);
     place.pops[PEASANT].stock[wool] = u64::try_from(720_000_000 - held).unwrap();
     rules.buildings.iter_mut().for_each(|item| {
@@ -2457,6 +2531,9 @@ fn paying_from_the_account_and_a_storehouse_over_its_capacity_change_no_swap() {
     for starter in [PEASANT, MONK] {
         for over_capacity in [false, true] {
             let mut rules = rules();
+            let oats = good(&rules, "oats");
+            let barley = good(&rules, "barley");
+            rules.goods[barley].base_price = rules.goods[oats].base_price;
             let mut place = place(&rules, 2);
             small(&mut place, 10);
             set_price(&rules, &mut place, "oats", 100);
@@ -2555,7 +2632,7 @@ fn fuel_orders_are_unchanged_by_its_participation_in_exchange() {
             orders.sell_units[wood],
             orders.sell_units[peat]
         ),
-        (0, 7, 1, 0)
+        (0, 6, 1, 0)
     );
 }
 
@@ -2578,20 +2655,23 @@ fn fuel_for_oats_moves_whole_loads_and_leaves_hearth_untouched() {
     place.pops[PEASANT].consumption.hearth_milli = u64::try_from(target - 2_000).unwrap();
     place.pops[MONK].consumption.hearth_milli = u64::try_from(target).unwrap();
     place.pops[MONK].stock[peat] = 3;
+    let wool_index = good(&rules, "wool");
+    rules.goods[wool_index].stacked_outside = true;
+    spare(&rules, &mut place, MONK, "wool", 1000);
     set_price(&rules, &mut place, "oats", 100);
     set_price(&rules, &mut place, "peat", 100);
     set_price(&rules, &mut place, "hardwood", 100);
     let before_oats = place.pops[PEASANT].stock[oats];
     let mut expected = goods_everywhere(&place);
-    expected[PEASANT][oats] -= 3;
-    expected[MONK][oats] += 3;
-    expected[PEASANT][peat] += 3;
-    expected[MONK][peat] -= 3;
+    expected[PEASANT][oats] -= 2;
+    expected[MONK][oats] += 2;
+    expected[PEASANT][peat] += 2;
+    expected[MONK][peat] -= 2;
     exchange(&rules, &mut place);
     assert_eq!(goods_everywhere(&place), expected);
-    assert_eq!(place.pops[PEASANT].stock[oats], before_oats - 3);
-    assert_eq!(place.pops[PEASANT].stock[peat], 3);
-    assert_eq!(place.pops[MONK].stock[peat], 0);
+    assert_eq!(place.pops[PEASANT].stock[oats], before_oats - 2);
+    assert_eq!(place.pops[PEASANT].stock[peat], 2);
+    assert_eq!(place.pops[MONK].stock[peat], 1);
     assert_eq!(place.pops[PEASANT].stock[wood], 0);
     assert_eq!(
         place.pops[PEASANT].consumption.hearth_milli,
@@ -2606,6 +2686,8 @@ fn fuel_for_oats_moves_whole_loads_and_leaves_hearth_untouched() {
 /// Each pop has enough food, no fuel above its hearth target, and the starter has oats to exchange.
 fn fuel_fixture(pops: usize) -> (Rules, PlaceState, u64) {
     let mut rules = rules();
+    let wool_index = good(&rules, "wool");
+    rules.goods[wool_index].stacked_outside = true;
     let mut place = place(&rules, pops);
     small(&mut place, 10);
     for kind in &mut rules.pop_types {
@@ -2620,8 +2702,11 @@ fn fuel_fixture(pops: usize) -> (Rules, PlaceState, u64) {
         place.pops[pop].consumption.hearth_milli = u64::try_from(target).unwrap();
     }
     spare(&rules, &mut place, PEASANT, "oats", 50);
+    spare(&rules, &mut place, PEASANT, "wool", 1000);
     for pop in 1..pops {
         want(&rules, &mut place, pop, "oats", 30);
+        // An offered fuel load funds a bounded order; extra stock isolates fuel routing from the order budget.
+        spare(&rules, &mut place, pop, "wool", 1000);
     }
     set_price(&rules, &mut place, "oats", 10);
     set_price(&rules, &mut place, "peat", 60);
@@ -2632,8 +2717,7 @@ fn fuel_fixture(pops: usize) -> (Rules, PlaceState, u64) {
 
 #[test]
 fn either_fuel_follows_the_live_deficit_and_cheaper_unit_first() {
-    for (wood_price, expected_oats, expected_peat, expected_wood) in
-        [(100, 16, 1, 1), (80, 16, 0, 2)]
+    for (wood_price, expected_oats, expected_peat, expected_wood) in [(100, 6, 1, 0), (80, 8, 0, 1)]
     {
         let (rules, mut place, target) = fuel_fixture(3);
         let peat = good(&rules, "peat");
@@ -2672,14 +2756,19 @@ fn a_partner_can_spare_only_the_whole_load_that_preserves_its_fuel_target() {
 
 #[test]
 fn a_hungry_starter_seeks_food_even_when_fuel_is_offered() {
-    let (rules, mut place, target) = fuel_fixture(2);
+    let (mut rules, mut place, target) = fuel_fixture(2);
+    let herbs = good(&rules, "herbs");
+    rules.goods[herbs].stacked_outside = true;
+    let wool = good(&rules, "wool");
+    rules.goods[wool].stacked_outside = true;
+    spare(&rules, &mut place, MONK, "wool", 1000);
     let fish = good(&rules, "fish");
     let peat = good(&rules, "peat");
     for id in ["oats", "barley", "fish", "honey"] {
         place.pops[PEASANT].stock[good(&rules, id)] = 0;
     }
     // Pay with a comfort good, while holding less than 60 days of food.
-    spare(&rules, &mut place, PEASANT, "herbs", 50);
+    spare(&rules, &mut place, PEASANT, "herbs", 1000);
     want(&rules, &mut place, MONK, "herbs", 20);
     spare(&rules, &mut place, MONK, "fish", 30);
     place.pops[PEASANT].consumption.hearth_milli = target - 1_000;
@@ -2756,6 +2845,9 @@ fn a_buildings_spare_fuel_is_paid_from_it_into_the_buyers_store() {
     let wood = good(&rules, "hardwood");
     let oats = good(&rules, "oats");
     place.pops[MONK].workers = 30;
+    for id in ["barley", "fish", "honey"] {
+        spare(&rules, &mut place, MONK, id, 0);
+    }
     let monk_target = fuel::fuel_daily_need(&rules, &place.pops[MONK]).unwrap() * 240;
     place.pops[MONK].consumption.hearth_milli = u64::try_from(monk_target).unwrap();
     want(&rules, &mut place, MONK, "oats", 30);
@@ -2765,16 +2857,16 @@ fn a_buildings_spare_fuel_is_paid_from_it_into_the_buyers_store() {
     place.pops[PEASANT].consumption.hearth_milli = target - 2_000;
     let before = place.pops[PEASANT].stock[oats];
     let mut expected = goods_everywhere(&place);
-    expected[PEASANT][wood] += 2;
-    expected[PEASANT][oats] -= 20;
-    expected[MONK][oats] += 20;
-    expected[place.pops.len() + farm][wood] -= 2;
+    expected[PEASANT][wood] += 1;
+    expected[PEASANT][oats] -= 10;
+    expected[MONK][oats] += 10;
+    expected[place.pops.len() + farm][wood] -= 1;
     exchange(&rules, &mut place);
     assert_eq!(goods_everywhere(&place), expected);
-    assert_eq!(place.pops[PEASANT].stock[wood], 2);
+    assert_eq!(place.pops[PEASANT].stock[wood], 1);
     assert_eq!(place.pops[MONK].stock[wood], 0);
-    assert_eq!(place.buildings[farm].stock[wood], 4);
-    assert_eq!(before - place.pops[PEASANT].stock[oats], 20);
+    assert_eq!(place.buildings[farm].stock[wood], 5);
+    assert_eq!(before - place.pops[PEASANT].stock[oats], 10);
     assert_eq!(place.pops[PEASANT].consumption.hearth_milli, target - 2_000);
 }
 
@@ -2803,7 +2895,7 @@ fn scarce_peat_is_shared_and_neither_buyer_exceeds_its_want() {
 
 #[test]
 fn full_store_takes_fuel_up_to_its_limit_and_capacity_counts_load_volume() {
-    for (held, capacity_ml, expected) in [(2, 200_000, 2), (2, 300_000, 3), (5, 300_000, 0)] {
+    for (held, capacity_ml, expected) in [(2, 200_000, 2), (2, 300_000, 2), (5, 300_000, 0)] {
         let (mut rules, mut place, target) = fuel_fixture(2);
         let wood = good(&rules, "hardwood");
         let oats = good(&rules, "oats");
@@ -2955,7 +3047,7 @@ fn a_fuel_share_cannot_make_a_buyer_take_peat_after_wood_met_the_need() {
     capacity(&mut rules, &mut place, MONK, 10_000_000);
     let wood = good(&rules, "hardwood");
     let peat = good(&rules, "peat");
-    place.pops[PEASANT].consumption.hearth_milli = target - 1_000;
+    place.pops[PEASANT].consumption.hearth_milli = target - 1_400;
     place.pops[MONK].consumption.hearth_milli = target - 2_000;
     spare(&rules, &mut place, PEASANT, "oats", 100);
     spare(&rules, &mut place, MONK, "oats", 30);
@@ -2967,7 +3059,7 @@ fn a_fuel_share_cannot_make_a_buyer_take_peat_after_wood_met_the_need() {
     assert_eq!(place.pops[PEASANT].stock[wood], 1);
     assert_eq!(place.pops[PEASANT].stock[peat], 0);
     assert!(place.pops[MONK].stock[peat] > 0);
-    assert_eq!(place.pops[PEASANT].consumption.hearth_milli, target - 1_000);
+    assert_eq!(place.pops[PEASANT].consumption.hearth_milli, target - 1_400);
 }
 
 #[test]
@@ -3097,6 +3189,8 @@ fn cattle_case(seller_head: u64, seller_owners: &[(usize, u64)]) -> (Rules, Plac
     spare(&rules, &mut place, THIRD, "oats", 1000);
     for &(pop, _) in seller_owners {
         want(&rules, &mut place, pop, "oats", 100);
+        // An offered animal cannot fund its own payment order.
+        spare(&rules, &mut place, pop, "honey", 1000);
     }
     capacity(&mut rules, &mut place, THIRD, 100_000_000);
     let seller = cattle_farm(&rules, &mut place, seller_head, seller_owners);
@@ -3207,6 +3301,20 @@ fn one_head_into_a_pop_with_two_herds_below_standard_goes_to_the_first_and_is_pa
 }
 
 #[test]
+fn an_unfunded_herd_seller_cannot_be_paid_in_oats() {
+    let (rules, mut place, seller) = cattle_case(8, &[(MONK, 1)]);
+    let honey = good(&rules, "honey");
+    place.pops[MONK].stock[honey] = target(&rules, &place, MONK, "honey");
+    let buyer = cattle_farm(&rules, &mut place, 6, &[(THIRD, 1)]);
+    let oats = good(&rules, "oats");
+    let before = place.buildings[seller].stock[oats];
+    exchange(&rules, &mut place);
+    assert_eq!(head(&place, seller), 8);
+    assert_eq!(head(&place, buyer), 6);
+    assert_eq!(place.buildings[seller].stock[oats], before);
+}
+
+#[test]
 fn a_payment_the_sellers_building_cannot_store_is_no_deal() {
     let (rules, mut place, seller) = cattle_case(8, &[(MONK, 1)]);
     let buyer = cattle_farm(&rules, &mut place, 4, &[(THIRD, 1)]);
@@ -3233,6 +3341,8 @@ fn a_herd_at_its_standard_level_with_no_buyer_changes_nothing() {
 fn the_want_for_an_animal_is_a_buy_order_that_moves_the_places_price() {
     let rules = herd_rules();
     let mut place = place(&rules, 3);
+    settle_the_rest(&rules, &mut place, &[]);
+    spare(&rules, &mut place, PEASANT, "oats", 10_000);
     let cattle = good(&rules, "cattle");
     cattle_farm(&rules, &mut place, 4, &[(PEASANT, 1)]);
     let orders = daily_market_orders(&rules, &place).unwrap();
@@ -3326,6 +3436,15 @@ fn a_fuel_payment_into_a_building_also_spends_the_owners_want_once() {
     settle_the_rest(&rules, &mut place, &[]);
     capacity(&mut rules, &mut place, THIRD, 100_000_000);
     let peat = good(&rules, "peat");
+    let wood = good(&rules, "hardwood");
+    let wool_index = good(&rules, "wool");
+    rules.goods[wool_index].stacked_outside = true;
+    spare(&rules, &mut place, MONK, "wool", 1000);
+    spare(&rules, &mut place, THIRD, "wool", 1000);
+    for pop in [MONK, THIRD] {
+        place.pops[pop].stock[peat] = 0;
+        place.pops[pop].stock[wood] = 0;
+    }
     let supply = rules.goods[peat].category_supplied("fuel", 1);
     // The owner's hearth lacks exactly 24 loads of peat; the buyer holds 100 spare ones and a full hearth.
     let need = |place: &PlaceState, pop: usize| {
@@ -3370,6 +3489,15 @@ fn two_fuels_case(loads: u64) -> (Rules, PlaceState, [usize; 3], u128) {
     settle_the_rest(&rules, &mut place, &[]);
     capacity(&mut rules, &mut place, THIRD, 100_000_000);
     let peat = good(&rules, "peat");
+    let wood = good(&rules, "hardwood");
+    let wool_index = good(&rules, "wool");
+    rules.goods[wool_index].stacked_outside = true;
+    spare(&rules, &mut place, MONK, "wool", 1000);
+    spare(&rules, &mut place, THIRD, "wool", 1000);
+    for pop in [MONK, THIRD] {
+        place.pops[pop].stock[peat] = 0;
+        place.pops[pop].stock[wood] = 0;
+    }
     let supply = rules.goods[peat].category_supplied("fuel", 1);
     let owner_need = fuel::fuel_daily_need(&rules, &place.pops[MONK]).unwrap() * 240;
     place.pops[MONK].consumption.hearth_milli =
@@ -3438,6 +3566,10 @@ fn a_larger_fuel_shortfall_is_spent_by_heat_across_both_fuels_and_no_further() {
 #[test]
 fn neighbour_exchange_uses_each_sellers_price_and_does_not_cross_a_chain() {
     let mut rules = rules();
+    let oats = good(&rules, "oats");
+    let barley = good(&rules, "barley");
+    rules.goods[oats].base_price = 100;
+    rules.goods[barley].base_price = 50;
     let mut a = place(&rules, 1);
     let mut b = place(&rules, 1);
     let mut c = place(&rules, 1);
@@ -3499,6 +3631,7 @@ fn neighbour_herd_sale_pays_its_building_and_delivers_the_head() {
     settle_the_rest(&rules, &mut seller, &["oats"]);
     settle_the_rest(&rules, &mut buyer, &["oats"]);
     want(&rules, &mut seller, 0, "oats", 100);
+    spare(&rules, &mut seller, 0, "honey", 1000);
     spare(&rules, &mut buyer, 0, "oats", 1000);
     let source = cattle_farm(&rules, &mut seller, 8, &[(0, 1)]);
     let destination = cattle_farm(&rules, &mut buyer, 6, &[(0, 1)]);
@@ -3548,6 +3681,7 @@ fn neighbour_scarcity_remainder_goes_to_the_wealthier_claimant_across_pairs() {
     spare(&rules, &mut a, 0, "oats", 100);
     spare(&rules, &mut c, 0, "oats", 1000);
     want(&rules, &mut b, 0, "oats", 100);
+    spare(&rules, &mut b, 0, "honey", 1000);
     let ah = cattle_farm(&rules, &mut a, 6, &[(0, 1)]);
     let bh = cattle_farm(&rules, &mut b, 8, &[(0, 1)]);
     let ch = cattle_farm(&rules, &mut c, 6, &[(0, 1)]);
@@ -3592,6 +3726,9 @@ fn neighbour_scarcity_remainder_goes_to_the_wealthier_claimant_across_pairs() {
 fn neighbour_relation_is_strict_and_not_transitive() {
     for (via_b, metres, trades) in [(false, 3999, true), (false, 4000, false), (true, 1, false)] {
         let mut rules = rules();
+        let base = rules.goods[good(&rules, "oats")].base_price;
+        let other = good(&rules, "barley");
+        rules.goods[other].base_price = base;
         let mut a = place(&rules, 1);
         a.id = "a".into();
         let mut b = place(&rules, 1);
@@ -3682,6 +3819,7 @@ fn neighbour_worked_sheep_example_uses_one_share_and_the_starters_capacity() {
     spare(&rules, &mut c, 0, "barley", 100_000);
     want(&rules, &mut b, 0, "barley", 10);
     want(&rules, &mut b, 0, "oats", 10);
+    spare(&rules, &mut b, 0, "honey", 1000);
     let mut farms = Vec::new();
     for (p, count) in [(&mut a, 6), (&mut b, 8), (&mut c, 6)] {
         let building = add_building(&rules, p, "farm", 1);
@@ -3748,6 +3886,9 @@ fn neighbour_worked_sheep_example_uses_one_share_and_the_starters_capacity() {
 #[test]
 fn local_then_neighbour_pairs_spend_one_shared_capacity() {
     let mut rules = rules();
+    let oats = good(&rules, "oats");
+    let fish = good(&rules, "fish");
+    rules.goods[fish].base_price = rules.goods[oats].base_price;
     let mut a = place(&rules, 1);
     a.id = "a".into();
     let mut b = place(&rules, 2);
@@ -3815,6 +3956,9 @@ fn local_then_neighbour_pairs_spend_one_shared_capacity() {
 #[test]
 fn second_pass_reallocates_an_unspent_local_share_to_a_neighbour() {
     let mut rules = rules();
+    let oats = good(&rules, "oats");
+    let fish = good(&rules, "fish");
+    rules.goods[fish].base_price = rules.goods[oats].base_price;
     let mut a = place(&rules, 1);
     a.id = "a".into();
     let mut b = place(&rules, 2);
@@ -3860,4 +4004,53 @@ fn second_pass_reallocates_an_unspent_local_share_to_a_neighbour() {
         "the full local store cannot receive its share"
     );
     assert_eq!(position(&rules, &state.places[1], 0, "fish").0, 0);
+}
+
+#[test]
+fn funded_herds_barter_live_animals_for_live_animals() {
+    let mut rules = herd_rules();
+    rules
+        .buildings
+        .iter_mut()
+        .find(|b| b.id == "farm")
+        .unwrap()
+        .herds
+        .insert("sheep".into(), HerdCapacity { maximum: 10 });
+    let cattle = good(&rules, "cattle");
+    let sheep = good(&rules, "sheep");
+    rules.goods[sheep].base_price = rules.goods[cattle].base_price;
+    let sheep_index = rules
+        .herd_species
+        .iter()
+        .position(|s| s.animal == "sheep")
+        .unwrap();
+    let mut place = place(&rules, 2);
+    settle_the_rest(&rules, &mut place, &[]);
+    spare(&rules, &mut place, PEASANT, "oats", 1000);
+    spare(&rules, &mut place, MONK, "oats", 1000);
+    capacity(&mut rules, &mut place, PEASANT, 100_000_000);
+    let a = cattle_farm(&rules, &mut place, 8, &[(PEASANT, 1)]);
+    let b = cattle_farm(&rules, &mut place, 6, &[(MONK, 1)]);
+    place.buildings[a].herds[sheep_index] = 6;
+    place.buildings[b].herds[sheep_index] = 8;
+    let building_stocks = (
+        place.buildings[a].stock.clone(),
+        place.buildings[b].stock.clone(),
+    );
+    exchange(&rules, &mut place);
+    assert_eq!(
+        (head(&place, a), place.buildings[a].herds[sheep_index]),
+        (7, 7)
+    );
+    assert_eq!(
+        (head(&place, b), place.buildings[b].herds[sheep_index]),
+        (7, 7)
+    );
+    assert_eq!(
+        (
+            place.buildings[a].stock.clone(),
+            place.buildings[b].stock.clone()
+        ),
+        building_stocks
+    );
 }

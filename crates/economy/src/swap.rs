@@ -423,6 +423,8 @@ pub(crate) struct Book {
     hungry: Vec<bool>,
     fuel: Vec<Vec<Option<Position>>>,
     fuel_prices: Vec<u64>,
+    funded: Option<Vec<Vec<crate::budget::Want>>>,
+    fuel_data: Vec<(u128, u64)>,
     /// Whether each good is a live animal: a pop's want for one is its herds' shortfall, it holds none, and what it receives joins a
     /// herd (CK-430).
     live: Vec<bool>,
@@ -448,6 +450,8 @@ impl Book {
             holding,
             fuel,
             fuel_prices: Vec::new(),
+            funded: None,
+            fuel_data: Vec::new(),
             hungry,
             live,
             communal: vec![vec![0; target_width]; target_height],
@@ -476,6 +480,12 @@ impl Book {
             hungry: Vec::with_capacity(rows),
             fuel: Vec::new(),
             fuel_prices: opening.to_vec(),
+            funded: Some(crate::budget::orders(rules, place, opening)?),
+            fuel_data: rules
+                .goods
+                .iter()
+                .map(|g| (g.category_supplied("fuel", 1), g.base_price))
+                .collect(),
             live: live_species(rules).iter().map(Option::is_some).collect(),
             communal: vec![vec![0; rules.goods.len()]; rows],
             lack: vec![vec![0; rules.goods.len()]; rows],
@@ -588,20 +598,51 @@ impl Book {
         Ok(())
     }
 
-    pub(crate) fn position(&self, pop: usize, good: usize) -> Position {
+    fn raw_position(&self, pop: usize, good: usize) -> Position {
         let lack = self.lack[pop][good];
         if let Some(position) = self.fuel[pop][good] {
-            // A fuel's want already counts what the pop was paid into a building (see `refresh_fuel`).
-            return Position {
+            Position {
                 spare: position.spare,
                 want: position.want + lack,
-            };
+            }
+        } else {
+            let paid = self.communal[pop][good];
+            let (target, holding) = (self.target[pop][good], self.holding[pop][good]);
+            Position {
+                spare: holding.saturating_sub(target),
+                want: target.saturating_sub(holding).saturating_sub(paid) + lack,
+            }
         }
-        let paid = self.communal[pop][good];
-        let (target, holding) = (self.target[pop][good], self.holding[pop][good]);
+    }
+
+    pub(crate) fn position(&self, pop: usize, good: usize) -> Position {
+        let old = self.raw_position(pop, good);
+        let Some(rows) = self.funded.as_ref().and_then(|rows| rows.get(pop)) else {
+            return old;
+        };
+        let (supply, base) = self.fuel_data[good];
+        let mut heat = 0_u128;
+        let mut value = 0_u128;
+        let mut want = 0_u128;
+        for row in rows {
+            match row.destination {
+                crate::budget::Destination::Fuel if supply > 0 => {
+                    heat = heat.saturating_add(row.funded);
+                    value = value.saturating_add(row.funded_value);
+                }
+                crate::budget::Destination::Household(g)
+                | crate::budget::Destination::Herd { good: g, .. }
+                | crate::budget::Destination::Job { good: g, .. }
+                    if g == good =>
+                {
+                    want = want.saturating_add(row.funded);
+                }
+                _ => {}
+            }
+        }
         Position {
-            spare: holding.saturating_sub(target),
-            want: (target.saturating_sub(holding).saturating_sub(paid)) + lack,
+            spare: old.spare,
+            want: want.saturating_add(crate::budget::fuel_loads(heat, value, supply, base)),
         }
     }
 
@@ -638,7 +679,8 @@ impl Book {
         }
         if to_building {
             self.communal[pop][get_good] += u128::from(get);
-        } else {
+        } else if pop >= self.pops || self.funded.is_none() || !self.live[get_good] {
+            // A resident's purchased head belongs to its funded herd or job, not its offer.
             self.holding[pop][get_good] += u128::from(get);
         }
     }
@@ -666,8 +708,8 @@ impl Book {
 }
 
 /// Building shares are fixed at the start of the exchange and only decrease.
-struct BuildingParts {
-    spare: Vec<Vec<Vec<u128>>>,
+pub(super) struct BuildingParts {
+    pub(super) spare: Vec<Vec<Vec<u128>>>,
     held: Vec<Vec<Vec<u128>>>,
 }
 
@@ -678,7 +720,7 @@ impl BuildingParts {
     }
 
     /// The buildings' shares with `visitors` rows after the pops' that hold none.
-    fn new_with(
+    pub(super) fn new_with(
         rules: &Rules,
         place: &PlaceState,
         opening: &[u64],
@@ -1403,6 +1445,148 @@ impl Exchange<'_> {
         Ok(by_limit.min(free / volume))
     }
 
+    fn funded_route(
+        &self,
+        place: &PlaceState,
+        book: &Book,
+        pop: usize,
+        good: usize,
+        limit: u128,
+        to_building: Option<usize>,
+    ) -> Result<Option<crate::budget::Route>, DataError> {
+        let Some(rows) = book.funded.as_ref().and_then(|rows| rows.get(pop)) else {
+            return Ok(None);
+        };
+        let room = if let Some(building) = to_building {
+            self.building_room(place, building, good)?
+        } else {
+            self.store_room(place, pop, good)?
+        };
+        let data = &self.rules.goods[good];
+        let route = crate::budget::route(
+            rows,
+            good,
+            data.category_supplied("fuel", 1),
+            data.base_price,
+            limit,
+            room,
+            to_building.is_some(),
+            |destination| match destination {
+                crate::budget::Destination::Job { job, good, species } => {
+                    place.trade.jobs.get(job).map_or(0, |job| {
+                        u128::from(
+                            species
+                                .map_or_else(|| job.lack(good), |species| job.animal_lack(species)),
+                        )
+                    })
+                }
+                crate::budget::Destination::Herd { .. } => u128::MAX,
+                _ => 0,
+            },
+        )?;
+        Ok(Some(route))
+    }
+
+    fn ensure_route(route: Option<&crate::budget::Route>, units: u64) -> Result<(), DataError> {
+        if route.is_some_and(|route| route.units != u128::from(units)) {
+            return Err(missing_data(
+                "swap.route".into(),
+                "funded route is shorter than the swap",
+            ));
+        }
+        Ok(())
+    }
+
+    fn funded_room(
+        &self,
+        place: &PlaceState,
+        book: &Book,
+        pop: usize,
+        good: usize,
+        building: Option<usize>,
+    ) -> Result<u128, DataError> {
+        if let Some(route) = self.funded_route(place, book, pop, good, u128::MAX, building)? {
+            return Ok(route.units);
+        }
+        if let Some(building) = building {
+            self.building_room(place, building, good)
+        } else {
+            self.room(place, pop, good)
+        }
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The fixed route names the book, place, receipt and destination together."
+    )]
+    fn receive_funded(
+        &self,
+        place: &mut PlaceState,
+        book: &mut Book,
+        herds: &mut HerdWants,
+        pop: usize,
+        good: usize,
+        units: u64,
+        to_building: Option<usize>,
+        route: Option<crate::budget::Route>,
+    ) -> Result<u64, DataError> {
+        let Some(route) = route else {
+            return self.receive(place, herds, pop, good, units, to_building);
+        };
+        if route.units != u128::from(units) {
+            return Err(missing_data(
+                "swap.route".into(),
+                "funded route is shorter than the swap",
+            ));
+        }
+        let mut job_goods = 0_u64;
+        for (destination, amount) in route.deliveries {
+            let amount = u64::try_from(amount)
+                .map_err(|_| missing_data("swap.route".into(), "receipt exceeds u64"))?;
+            match destination {
+                crate::budget::Destination::Fuel | crate::budget::Destination::Household(_) => {
+                    let rejected = if let Some(building) = to_building {
+                        receive_building(self.rules, &mut place.buildings[building], good, amount)?
+                    } else {
+                        receive_pop(self.rules, &mut place.pops[pop], good, amount)?
+                    };
+                    if rejected != 0 {
+                        return Err(missing_data("swap.route".into(), "destination lost room"));
+                    }
+                }
+                crate::budget::Destination::Job { job, good, species } => {
+                    let job = &mut place.trade.jobs[job];
+                    if let Some(species) = species {
+                        job.animals[species] =
+                            job.animals[species].checked_add(amount).ok_or_else(|| {
+                                missing_data("swap.route".into(), "job animals overflow")
+                            })?;
+                    } else {
+                        job.stock[good] = job.stock[good].checked_add(amount).ok_or_else(|| {
+                            missing_data("swap.route".into(), "job stock overflow")
+                        })?;
+                        job_goods = job_goods.checked_add(amount).ok_or_else(|| {
+                            missing_data("swap.route".into(), "job receipts overflow")
+                        })?;
+                    }
+                }
+                crate::budget::Destination::Herd {
+                    building, species, ..
+                } => {
+                    place.buildings[building].herds[species] = place.buildings[building].herds
+                        [species]
+                        .checked_add(amount)
+                        .ok_or_else(|| missing_data("swap.route".into(), "herd overflow"))?;
+                    herds[building][pop][species] = herds[building][pop][species]
+                        .checked_sub(amount)
+                        .ok_or_else(|| missing_data("swap.route".into(), "herd want underflow"))?;
+                }
+            }
+        }
+        book.funded.as_mut().expect("funded route has a book")[pop] = route.rows;
+        Ok(job_goods)
+    }
+
     /// The herd species a good is the live animal of.
     fn live(&self, good_index: usize) -> Option<usize> {
         let id = &self.rules.goods.get(good_index)?.id;
@@ -1530,9 +1714,28 @@ impl Exchange<'_> {
     fn apply(
         &self,
         place: &mut PlaceState,
+        book: &mut Book,
         herds: &mut HerdWants,
         trade: Trade,
     ) -> Result<[u64; 2], DataError> {
+        let starter_route = self.funded_route(
+            place,
+            book,
+            trade.starter,
+            trade.get_good,
+            u128::from(trade.get_units),
+            trade.get_to_building,
+        )?;
+        let partner_route = self.funded_route(
+            place,
+            book,
+            trade.partner,
+            trade.give_good,
+            u128::from(trade.give_units),
+            trade.give_to_building,
+        )?;
+        Self::ensure_route(starter_route.as_ref(), trade.get_units)?;
+        Self::ensure_route(partner_route.as_ref(), trade.give_units)?;
         self.pay_source(
             place,
             trade.starter_source,
@@ -1547,21 +1750,25 @@ impl Exchange<'_> {
             trade.get_good,
             trade.get_units,
         )?;
-        let starter = self.receive(
+        let starter = self.receive_funded(
             place,
+            book,
             herds,
             trade.starter,
             trade.get_good,
             trade.get_units,
             trade.get_to_building,
+            starter_route,
         )?;
-        let partner = self.receive(
+        let partner = self.receive_funded(
             place,
+            book,
             herds,
             trade.partner,
             trade.give_good,
             trade.give_units,
             trade.give_to_building,
+            partner_route,
         )?;
         Ok([starter, partner])
     }
@@ -1780,7 +1987,7 @@ fn best_pair_rooms(
     [give_good, get_good]: [usize; 2],
     capacity_left: u128,
     [give_stock, get_stock, give_limit, get_limit]: [u128; 4],
-    [get_room, give_room]: [Option<u128>; 2],
+    [get_building, give_building]: [Option<usize>; 2],
 ) -> Result<Option<(u64, u64)>, DataError> {
     let rules = exchange.rules;
     let prices = Prices {
@@ -1794,17 +2001,11 @@ fn best_pair_rooms(
         .want
         .min(get_stock)
         .min(get_limit)
-        .min(match get_room {
-            Some(room) => room,
-            None => exchange.room(place, starter, get_good)?,
-        });
+        .min(exchange.funded_room(place, book, starter, get_good, get_building)?);
     let most_give = give_stock
         .min(give_limit)
         .min(book.position(partner, give_good).want)
-        .min(match give_room {
-            Some(room) => room,
-            None => exchange.room(place, partner, give_good)?,
-        });
+        .min(exchange.funded_room(place, book, partner, give_good, give_building)?);
     size_pair(
         prices,
         most_get,
@@ -2159,10 +2360,8 @@ impl PlaceDay {
         let (give_live, get_live) = (self.book.live[visitor_gives], self.book.live[visitor_gets]);
         let to_building =
             (get_live && !give_live && resident_source > 0).then(|| resident_source - 1);
-        let resident_room = match to_building {
-            Some(building) => exchange.building_room(place, building, visitor_gives)?,
-            None => exchange.room(place, resident, visitor_gives)?,
-        };
+        let resident_room =
+            exchange.funded_room(place, &self.book, resident, visitor_gives, to_building)?;
         let resident_most = self
             .book
             .position(resident, visitor_gives)
@@ -2226,14 +2425,25 @@ impl PlaceDay {
                 return Ok(false);
             }
         };
-        exchange.pay_source(place, resident_source, resident, visitor_gets, get)?;
-        let delivered = exchange.receive(
+        let route = exchange.funded_route(
             place,
+            &self.book,
+            resident,
+            visitor_gives,
+            u128::from(give),
+            to_building,
+        )?;
+        Exchange::ensure_route(route.as_ref(), give)?;
+        exchange.pay_source(place, resident_source, resident, visitor_gets, get)?;
+        let delivered = exchange.receive_funded(
+            place,
+            &mut self.book,
             &mut self.herds,
             resident,
             visitor_gives,
             give,
             to_building,
+            route,
         )?;
         let visit = &mut self.visitors[visitor];
         visit.cargo[visitor_gives] -= give;
@@ -2263,6 +2473,34 @@ impl PlaceDay {
         Ok(true)
     }
 
+    /// Free cargo follows unbudgeted need and does not spend purchase orders.
+    fn give_unsold(
+        &mut self,
+        exchange: &Exchange<'_>,
+        place: &mut PlaceState,
+        good: usize,
+        mut left: u64,
+    ) -> Result<u64, DataError> {
+        let mut takers: Vec<(u128, usize)> = (0..self.book.pops)
+            .filter_map(|pop| {
+                let want = self.book.raw_position(pop, good).want;
+                (want > 0).then_some((want, pop))
+            })
+            .collect();
+        takers.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        for (want, pop) in takers {
+            let room = exchange.room(place, pop, good)?;
+            let give = u128::from(left).min(want).min(room);
+            if give == 0 {
+                continue;
+            }
+            let give = u64::try_from(give).unwrap_or(0);
+            exchange.receive(place, &mut self.herds, pop, good, give, None)?;
+            left -= give;
+        }
+        Ok(left)
+    }
+
     /// After the exchange each visitor loads for home and turns back, in the same noon step (r5 3.6): what it traded for is already
     /// aboard; then its unsold cargo as far as it fits, the goods worth most for their bulk first; what does not fit is given for
     /// nothing to the pops there that want it and have room, the neediest first, and thrown away only when nobody does (T38).
@@ -2274,7 +2512,6 @@ impl PlaceDay {
                 .iter()
                 .position(|b| b.storehouse_accounts.is_some()),
         };
-        let pops = self.book.pops;
         let goods = rules.goods.len();
         for visitor in 0..self.visitors.len() {
             let mut loaded = self.visitors[visitor].received.clone();
@@ -2311,23 +2548,7 @@ impl PlaceDay {
                 if left == 0 {
                     continue;
                 }
-                let mut takers: Vec<(u128, usize)> = (0..pops)
-                    .filter_map(|pop| {
-                        let want = self.book.position(pop, good).want;
-                        (want > 0).then_some((want, pop))
-                    })
-                    .collect();
-                takers.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-                for (want, pop) in takers {
-                    let room = exchange.room(place, pop, good)?;
-                    let give = u128::from(left).min(want).min(room);
-                    if give == 0 {
-                        continue;
-                    }
-                    let give = u64::try_from(give).unwrap_or(0);
-                    exchange.receive(place, &mut self.herds, pop, good, give, None)?;
-                    left -= give;
-                }
+                left = self.give_unsold(&exchange, place, good, left)?;
                 if left > 0 {
                     place.counters.current.losses = place
                         .counters
@@ -2498,14 +2719,20 @@ fn neighbour_turn(
                                 && !partner_day.book.live[give_good]
                                 && ps > 0)
                                 .then(|| ps - 1);
-                            let get_room = match gb {
-                                Some(b) => se.building_room(starter_place, b, get_good)?,
-                                None => se.room(starter_place, starter, get_good)?,
-                            };
-                            let give_room = match pb {
-                                Some(b) => pe.building_room(partner_place, b, give_good)?,
-                                None => pe.room(partner_place, partner, give_good)?,
-                            };
+                            let get_room = se.funded_room(
+                                starter_place,
+                                &starter_day.book,
+                                starter,
+                                get_good,
+                                gb,
+                            )?;
+                            let give_room = pe.funded_room(
+                                partner_place,
+                                &partner_day.book,
+                                partner,
+                                give_good,
+                                pb,
+                            )?;
                             let get_limit = if shares.scarce[partner_index][get_good] {
                                 shares.left[partner_index][starter_index][starter][get_good]
                             } else {
@@ -2544,23 +2771,45 @@ fn neighbour_turn(
                             else {
                                 continue;
                             };
+                            let starter_route = se.funded_route(
+                                starter_place,
+                                &starter_day.book,
+                                starter,
+                                get_good,
+                                u128::from(get),
+                                gb,
+                            )?;
+                            let partner_route = pe.funded_route(
+                                partner_place,
+                                &partner_day.book,
+                                partner,
+                                give_good,
+                                u128::from(give),
+                                pb,
+                            )?;
+                            Exchange::ensure_route(starter_route.as_ref(), get)?;
+                            Exchange::ensure_route(partner_route.as_ref(), give)?;
                             se.pay_source(starter_place, ss, starter, give_good, give)?;
                             pe.pay_source(partner_place, ps, partner, get_good, get)?;
-                            let starter_delivered = se.receive(
+                            let starter_delivered = se.receive_funded(
                                 starter_place,
+                                &mut starter_day.book,
                                 &mut starter_day.herds,
                                 starter,
                                 get_good,
                                 get,
                                 gb,
+                                starter_route,
                             )?;
-                            let partner_delivered = pe.receive(
+                            let partner_delivered = pe.receive_funded(
                                 partner_place,
+                                &mut partner_day.book,
                                 &mut partner_day.herds,
                                 partner,
                                 give_good,
                                 give,
                                 pb,
+                                partner_route,
                             )?;
                             starter_day.book.settle_side(
                                 starter,
@@ -2675,18 +2924,6 @@ impl Turn<'_> {
                             .then(|| starter_source - 1);
                         let give_to_building = (get_live && !give_live && partner_source > 0)
                             .then(|| partner_source - 1);
-                        let rooms = [
-                            get_to_building
-                                .map(|building| {
-                                    self.exchange.building_room(place, building, self.get_good)
-                                })
-                                .transpose()?,
-                            give_to_building
-                                .map(|building| {
-                                    self.exchange.building_room(place, building, give_good)
-                                })
-                                .transpose()?,
-                        ];
                         let Some((give, get)) = best_pair_rooms(
                             self.exchange,
                             place,
@@ -2700,7 +2937,7 @@ impl Turn<'_> {
                                 shares.limit(partner, give_good, false),
                                 shares.limit(self.starter, self.get_good, false),
                             ],
-                            rooms,
+                            [get_to_building, give_to_building],
                         )?
                         else {
                             continue;
@@ -2717,7 +2954,7 @@ impl Turn<'_> {
                             get_to_building,
                             give_to_building,
                         };
-                        let delivered = self.exchange.apply(place, herds, trade)?;
+                        let delivered = self.exchange.apply(place, book, herds, trade)?;
                         book.settle(trade);
                         book.deliver(self.starter, self.get_good, delivered[0]);
                         book.deliver(partner, give_good, delivered[1]);
@@ -2752,6 +2989,43 @@ impl Turn<'_> {
 mod share_tests {
     use super::*;
     use crate::swap_tests;
+
+    #[test]
+    fn a_residents_received_head_does_not_become_an_offer() {
+        let mut book = Book::from_parts(vec![vec![0, 0]], vec![vec![0, 1]]);
+        book.live[0] = true;
+        book.funded = Some(vec![vec![]]);
+        book.fuel_data = vec![(0, 1), (0, 1)];
+        book.settle_side(0, 1, 1, true, 0, 1, false);
+        assert_eq!(book.holding[0][0], 0);
+        assert_eq!(book.position(0, 0).spare, 0);
+    }
+
+    #[test]
+    fn exchange_fuel_wants_use_the_same_funded_heat_and_value_as_price_orders() {
+        let rules = swap_tests::rules();
+        let wood = swap_tests::good(&rules, "hardwood");
+        let peat = swap_tests::good(&rules, "peat");
+        let width = rules.goods.len();
+        let mut book = Book::from_parts(vec![vec![0; width]], vec![vec![0; width]]);
+        book.fuel_data = rules
+            .goods
+            .iter()
+            .map(|g| (g.category_supplied("fuel", 1), g.base_price))
+            .collect();
+        book.funded = Some(vec![vec![crate::budget::Want {
+            tier: 0,
+            units: 1050,
+            value: 9000,
+            funded: 1050,
+            funded_value: 9000,
+            destination: crate::budget::Destination::Fuel,
+        }]]);
+        assert_eq!(book.position(0, wood).want, 0);
+        assert_eq!(book.position(0, peat).want, 1);
+        book.funded.as_mut().unwrap()[0][0].funded_value = 10_000;
+        assert_eq!(book.position(0, wood).want, 1);
+    }
 
     #[test]
     fn food_then_opening_price_fuel_then_comfort() {
@@ -2845,22 +3119,28 @@ mod share_tests {
     }
 
     #[test]
-    fn fuel_wants_are_recomputed_from_one_deficit() {
+    fn fuel_wants_use_one_fixed_funded_deficit() {
         let rules = swap_tests::rules();
         let mut place = swap_tests::place(&rules, 1);
-        let wood = swap_tests::good(&rules, "hardwood");
-        let peat = swap_tests::good(&rules, "peat");
         place.pops[0].workers = 1;
         place.pops[0].dependents = 0;
+        swap_tests::settle_the_rest(&rules, &mut place, &[]);
+        swap_tests::spare(&rules, &mut place, 0, "wool", 1000);
+        let wood = swap_tests::good(&rules, "hardwood");
+        let peat = swap_tests::good(&rules, "peat");
         let target = fuel::fuel_daily_need(&rules, &place.pops[0]).unwrap() * 240;
+        let supply = rules.goods[wood].category_supplied("fuel", 1);
         for (deficit, w, p) in [
-            (1, 1, 1),
-            (700, 1, 1),
-            (701, 1, 2),
-            (1000, 1, 2),
-            (1400, 2, 2),
+            (1, 0, 0),
+            (700, 0, 1),
+            (701, 0, 1),
+            (1000, 0, 1),
+            (1400, 1, 2),
         ] {
-            place.pops[0].consumption.hearth_milli = u64::try_from(target - deficit).unwrap();
+            let held = target - deficit;
+            place.pops[0].stock[wood] = u64::try_from(held / supply).unwrap();
+            place.pops[0].stock[peat] = 0;
+            place.pops[0].consumption.hearth_milli = u64::try_from(held % supply).unwrap();
             let mut book = Book::new(&rules, &place, &place.prices_milli).unwrap();
             assert_eq!(
                 (book.position(0, wood).want, book.position(0, peat).want),
@@ -2871,16 +3151,14 @@ mod share_tests {
                 book.refresh_fuel(&rules, &place, 0).unwrap();
                 assert_eq!(
                     (book.position(0, wood).want, book.position(0, peat).want),
-                    (1, 1)
+                    (0, 1),
+                    "refresh never refills or spends fixed orders"
                 );
-                place.pops[0].stock[peat] = 0;
-                place.pops[0].stock[wood] = 1;
-                book.refresh_fuel(&rules, &place, 0).unwrap();
+                let next = Book::new(&rules, &place, &place.prices_milli).unwrap();
                 assert_eq!(
-                    (book.position(0, wood).want, book.position(0, peat).want),
+                    (next.position(0, wood).want, next.position(0, peat).want),
                     (0, 0)
                 );
-                place.pops[0].stock[wood] = 0;
             }
         }
     }
@@ -2956,6 +3234,77 @@ mod visit_tests {
     use super::*;
     use crate::expedition_tests::{at, hours, the_plan, tick, two_places};
     use crate::swap_tests::{PEASANT, THIRD, good, herd_rules, set_price, spare, target, want};
+
+    #[test]
+    fn free_unsold_food_follows_raw_need_without_spending_buy_orders() {
+        let rules = crate::swap_tests::rules();
+        let fish = good(&rules, "fish");
+        let wool = good(&rules, "wool");
+        for with_surplus in [false, true] {
+            let mut place = crate::swap_tests::place(&rules, 1);
+            place.pops[0].stock.fill(0);
+            if with_surplus {
+                place.pops[0].stock[wool] = 10_000;
+            }
+            let opening = place.prices_milli.clone();
+            let mut day = PlaceDay::new_with(&rules, &place, &opening, vec![]).unwrap();
+            let funded = |book: &Book| {
+                book.funded.as_ref().unwrap()[0]
+                    .iter()
+                    .map(|row| (row.destination, row.funded, row.funded_value))
+                    .collect::<Vec<_>>()
+            };
+            let before = funded(&day.book);
+            if with_surplus {
+                assert!(before.iter().any(|row| row.1 > 0));
+            } else {
+                assert!(before.iter().all(|row| row.1 == 0));
+                assert_eq!(day.book.position(0, fish).want, 0);
+            }
+            assert!(day.book.raw_position(0, fish).want >= 3);
+            let exchange = Exchange {
+                rules: &rules,
+                house: None,
+            };
+            assert_eq!(day.give_unsold(&exchange, &mut place, fish, 3).unwrap(), 0);
+            assert_eq!(place.pops[0].stock[fish], 3);
+            assert_eq!(funded(&day.book), before, "a gift spends no funded rows");
+        }
+    }
+
+    #[test]
+    fn visitor_gives_unsold_food_to_a_resident_with_no_surplus() {
+        let mut rules = herd_rules();
+        let mut state = two_places(&mut rules);
+        let fish = good(&rules, "fish");
+        state
+            .order_trade(&rules, 0, PEASANT, the_plan(&rules, 6, 5), hours(at(10, 5)))
+            .unwrap();
+        for hour in 5..=11 {
+            tick(&rules, &mut state, at(10, hour));
+        }
+        let mut visits = take_visits(&rules, &mut state, hours(at(10, 12))).unwrap();
+        let place = &mut state.places[1];
+        place.buildings.clear();
+        for pop in &mut place.pops {
+            pop.stock.fill(0);
+        }
+        assert_eq!(visits[1].len(), 1);
+        visits[1][0].cargo.fill(0);
+        visits[1][0].cargo[fish] = 1_000_000;
+        let opening = place.prices_milli.clone();
+        let day =
+            PlaceDay::new_with(&rules, place, &opening, std::mem::take(&mut visits[1])).unwrap();
+        assert_eq!(
+            day.book.position(0, fish).want,
+            0,
+            "no surplus means no buy order"
+        );
+        assert!(day.book.raw_position(0, fish).want > 0);
+        let returned = day.finish(&rules, place).unwrap();
+        assert!(returned[0].expedition.cargo[fish] < 1_000_000);
+        assert!(place.pops[0].stock[fish] > 0, "unsold food was given free");
+    }
 
     /// A pop of the place can start a swap with a waiting expedition, as any pop may start one (r5 3.7), and neither side spends capacity.
     #[test]

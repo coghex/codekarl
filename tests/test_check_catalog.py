@@ -2942,6 +2942,8 @@ GUARDS: tuple[Guard, ...] = (
         "economy.core",
         ("assets/game/economy.toml", "assets/scenarios/ireland-768/economy.toml"),
     ),
+    # CK-445: budget tests exercise the shipped near-tier rules.
+    Guard("crates/economy/src/budget.rs", "economy.core", ("assets/game/economy.toml",)),
     # CK-398: fuel ordering tests read the shipped economy rules.
     Guard("crates/economy/src/fuel.rs", "economy.core", ("assets/game/economy.toml",)),
     # CK-404: the start-by-need tests check the shipped fuel-rate and method data.
