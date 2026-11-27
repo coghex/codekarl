@@ -297,6 +297,31 @@ impl WeatherPlace {
         }
         Ok(self.mean + self.seasonal(rules, offset)? + swing)
     }
+
+    /// Tenths of degree-hours below `base` in the 24 hours ending at noon.
+    ///
+    /// # Errors
+    /// Returns an error if a temperature cannot be computed or the sum overflows.
+    pub fn noon_degree_hours(
+        self,
+        rules: &WeatherRules,
+        offset: i64,
+        base: i64,
+    ) -> Result<u64, String> {
+        let previous = offset.checked_sub(1).ok_or("weather day underflow")?;
+        let mut total = 0_u64;
+        for (day, hours) in [(previous, 12..24), (offset, 0..12)] {
+            for hour in hours {
+                let temperature = self.hour(rules, day, hour)?;
+                let difference = (i128::from(base) - i128::from(temperature)).max(0);
+                let difference = u64::try_from(difference).map_err(|_| "degree-hours overflow")?;
+                total = total
+                    .checked_add(difference)
+                    .ok_or("degree-hours overflow")?;
+            }
+        }
+        Ok(total)
+    }
 }
 
 #[cfg(test)]
@@ -305,6 +330,28 @@ mod tests {
 
     fn rules() -> WeatherRules {
         WeatherRules::parse(include_str!("../../../assets/game/weather.toml")).unwrap()
+    }
+
+    #[test]
+    fn noon_degree_hours_uses_the_previous_afternoon_and_current_morning() {
+        let rules = rules();
+        let place = WeatherPlace {
+            latitude_e4: 530_000,
+            longitude_e4: -80_000,
+            mean: 90,
+            half_range: 50,
+            nearness: 500,
+            phase: 0,
+        };
+        let expected: u64 =
+            (12..24)
+                .map(|h| u64::try_from((140 - place.hour(&rules, -1, h).unwrap()).max(0)).unwrap())
+                .chain((0..12).map(|h| {
+                    u64::try_from((140 - place.hour(&rules, 0, h).unwrap()).max(0)).unwrap()
+                }))
+                .sum();
+        assert_eq!(place.noon_degree_hours(&rules, 0, 140).unwrap(), expected);
+        assert_eq!(place.noon_degree_hours(&rules, 0, -10_000).unwrap(), 0);
     }
 
     #[test]

@@ -52,6 +52,12 @@ pub(super) fn fuel_holding(rules: &Rules, stock: &[u64], hearth: u64) -> Result<
         })
 }
 
+pub(super) fn debit_comfort_first(rules: &Rules, pop: &mut PopState, good: usize, units: u64) {
+    let heat = rules.goods[good].category_supplied("fuel", u128::from(units));
+    let debit = heat.min(u128::from(pop.consumption.comfort_milli));
+    pop.consumption.comfort_milli -= u64::try_from(debit).expect("bounded by comfort balance");
+}
+
 pub(super) fn fuel_spare(
     rules: &Rules,
     stock: &[u64],
@@ -72,17 +78,141 @@ pub(super) fn fuel_spare(
     Ok(spare)
 }
 
+#[cfg(test)]
 pub(super) fn fuel_daily_need(rules: &Rules, pop: &PopState) -> Result<u128, DataError> {
+    fuel_daily_need_at(rules, pop, 0)
+}
+
+fn fuel_daily_need_at(rules: &Rules, pop: &PopState, degree_hours: u64) -> Result<u128, DataError> {
     let people = u128::from(pop.workers) + u128::from(pop.dependents);
-    let rate = rules
+    let kind = rules
         .pop_types
         .iter()
         .find(|kind| kind.id == pop.kind)
-        .ok_or_else(|| missing_data(format!("pop_types.{}", pop.kind), "definition is missing"))?
-        .fuel_need_milli_day;
+        .ok_or_else(|| missing_data(format!("pop_types.{}", pop.kind), "definition is missing"))?;
+    seasonal_need(
+        people,
+        u128::from(kind.fuel_need_milli_day),
+        u128::from(kind.fuel_heat_micro_per_degree_day),
+        u128::from(degree_hours),
+    )
+}
+
+// Degree-hours are in tenths; heat is in millionths per degree-day.
+fn seasonal_need(
+    people: u128,
+    flat: u128,
+    heat: u128,
+    degree_hours: u128,
+) -> Result<u128, DataError> {
+    let overflow = || missing_data("fuel.need".to_owned(), "daily need overflow");
+    let cooking = people.checked_mul(flat).ok_or_else(overflow)?;
+    let heating = people
+        .checked_mul(heat)
+        .and_then(|v| v.checked_mul(degree_hours))
+        .ok_or_else(overflow)?
+        / 240_000;
+    cooking.checked_add(heating).ok_or_else(overflow)
+}
+
+pub(super) fn fuel_year_need(
+    rules: &Rules,
+    pop: &PopState,
+    days: u64,
+    degree_hours: u64,
+) -> Result<u128, DataError> {
+    let kind = rules
+        .pop_types
+        .iter()
+        .find(|kind| kind.id == pop.kind)
+        .ok_or_else(|| missing_data(format!("pop_types.{}", pop.kind), "definition is missing"))?;
+    let overflow = || missing_data("fuel.year".to_owned(), "year target overflow");
+    let flat = u128::from(kind.fuel_need_milli_day)
+        .checked_mul(u128::from(days))
+        .ok_or_else(overflow)?;
+    let heat = u128::from(kind.fuel_heat_micro_per_degree_day)
+        .checked_mul(u128::from(degree_hours))
+        .ok_or_else(overflow)?
+        / 240_000;
+    let people = u128::from(pop.workers) + u128::from(pop.dependents);
     people
-        .checked_mul(u128::from(rate))
-        .ok_or_else(|| missing_data("fuel.need".to_owned(), "daily need overflow"))
+        .checked_mul(flat.checked_add(heat).ok_or_else(overflow)?)
+        .ok_or_else(overflow)
+}
+
+pub(super) fn fuel_year_target(
+    rules: &Rules,
+    place: &PlaceState,
+    pop: &PopState,
+) -> Result<u128, DataError> {
+    let overflow = || missing_data(format!("places.{}.fuel", place.id), "year record overflow");
+    if place.dh_months.len() != 12 || place.dh_month_days.len() != 12 {
+        return Err(missing_data(
+            format!("places.{}.fuel", place.id),
+            "expected twelve months",
+        ));
+    }
+    let degree_hours = place
+        .dh_months
+        .iter()
+        .try_fold(0_u64, |sum, value| sum.checked_add(*value))
+        .ok_or_else(overflow)?;
+    let days = place
+        .dh_month_days
+        .iter()
+        .map(|days| u64::from(*days))
+        .sum();
+    fuel_year_need(rules, pop, days, degree_hours)
+}
+
+pub(super) fn comfort_target(
+    rules: &Rules,
+    place: &PlaceState,
+    pop: &PopState,
+) -> Result<u128, DataError> {
+    let kind = rules
+        .pop_types
+        .iter()
+        .find(|kind| kind.id == pop.kind)
+        .ok_or_else(|| missing_data(format!("pop_types.{}", pop.kind), "definition is missing"))?;
+    let overflow = || {
+        missing_data(
+            format!("places.{}.fuel.comfort", place.id),
+            "comfort target overflow",
+        )
+    };
+    let dh = place
+        .dh_months
+        .iter()
+        .try_fold(0_u128, |sum, v| sum.checked_add(u128::from(*v)))
+        .ok_or_else(overflow)?;
+    (u128::from(pop.workers) + u128::from(pop.dependents))
+        .checked_mul(u128::from(kind.fuel_heat_micro_per_degree_day))
+        .and_then(|v| v.checked_mul(dh))
+        .and_then(|v| v.checked_mul(u128::from(rules.comfort_heat_pm)))
+        .map(|v| v / 240_000_000)
+        .ok_or_else(overflow)
+}
+
+pub(super) fn assign_comfort(rules: &Rules, place: &mut PlaceState) -> Result<(), DataError> {
+    for index in 0..place.pops.len() {
+        let pop = &place.pops[index];
+        let holding = fuel_holding(rules, &pop.stock, pop.consumption.hearth_milli)?;
+        let survival = fuel_year_target(rules, place, pop)?;
+        let comfort = comfort_target(rules, place, pop)?;
+        let assigned = u128::from(pop.consumption.comfort_milli)
+            .min(holding)
+            .min(comfort);
+        let surplus = holding.saturating_sub(assigned).saturating_sub(survival);
+        let new = assigned + surplus.min(comfort - assigned);
+        place.pops[index].consumption.comfort_milli = u64::try_from(new).map_err(|_| {
+            missing_data(
+                format!("places.{}.fuel.comfort", place.id),
+                "set-aside exceeds u64",
+            )
+        })?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -102,9 +232,14 @@ pub(super) fn draw_and_burn(
         ledger,
         &owners,
         &mut allowances,
+        0,
     )
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The daily draw shares ownership, allowances, prices, ledger and weather."
+)]
 pub(super) fn draw_and_burn_with_owners(
     rules: &Rules,
     place: &mut PlaceState,
@@ -113,10 +248,11 @@ pub(super) fn draw_and_burn_with_owners(
     ledger: &mut DailyConsumptionLedger,
     owners: &[Vec<u64>],
     allowances: &mut [Vec<u64>],
+    degree_hours: u64,
 ) -> Result<(), DataError> {
-    let need = fuel_daily_need(rules, &place.pops[pop_index])?;
-    let target = need
-        .checked_mul(60)
+    let need = fuel_daily_need_at(rules, &place.pops[pop_index], degree_hours)?;
+    let target = fuel_year_target(rules, place, &place.pops[pop_index])?
+        .checked_add(comfort_target(rules, place, &place.pops[pop_index])?)
         .ok_or_else(|| missing_data("fuel.draw".to_owned(), "target overflow"))?;
     let ranking = fuel_ranking(rules, prices, false)?;
     let mut holding = fuel_holding(
@@ -165,6 +301,7 @@ pub(super) fn draw_and_burn_with_owners(
             holding += u128::from(moved) * supply;
         }
     }
+    assign_comfort(rules, place)?;
     let pop = &mut place.pops[pop_index];
     let mut balance = u128::from(pop.consumption.hearth_milli);
     for &index in &ranking {
@@ -202,13 +339,86 @@ pub(super) fn draw_and_burn_with_owners(
         .fuel_burned_month
         .checked_add(burned)
         .ok_or_else(|| missing_data("fuel.burned_month".to_owned(), "total overflow"))?;
+    burn_comfort(rules, pop, &ranking, ledger, degree_hours)
+}
+
+fn burn_comfort(
+    rules: &Rules,
+    pop: &mut PopState,
+    ranking: &[usize],
+    ledger: &mut DailyConsumptionLedger,
+    degree_hours: u64,
+) -> Result<(), DataError> {
+    let holding = fuel_holding(rules, &pop.stock, pop.consumption.hearth_milli)?;
+    pop.consumption.comfort_milli =
+        u64::try_from(u128::from(pop.consumption.comfort_milli).min(holding))
+            .map_err(|_| missing_data("fuel.comfort".to_owned(), "set-aside overflow"))?;
+    let kind = rules
+        .pop_types
+        .iter()
+        .find(|kind| kind.id == pop.kind)
+        .ok_or_else(|| missing_data(format!("pop_types.{}", pop.kind), "definition is missing"))?;
+    let people = u128::from(pop.workers) + u128::from(pop.dependents);
+    let overflow = || missing_data("fuel.comfort".to_owned(), "comfort arithmetic overflow");
+    let allowance = people
+        .checked_mul(u128::from(kind.fuel_heat_micro_per_degree_day))
+        .and_then(|v| v.checked_mul(u128::from(degree_hours)))
+        .and_then(|v| v.checked_mul(u128::from(rules.comfort_heat_pm)))
+        .ok_or_else(overflow)?
+        / 240_000_000;
+    let comfort_burn = allowance.min(u128::from(pop.consumption.comfort_milli));
+    let mut balance = u128::from(pop.consumption.hearth_milli);
+    for &index in ranking {
+        if balance >= comfort_burn {
+            break;
+        }
+        let supply = rules.goods[index].category_supplied("fuel", 1);
+        let opened = (comfort_burn - balance)
+            .div_ceil(supply)
+            .min(u128::from(pop.stock[index]));
+        let opened = u64::try_from(opened).map_err(|_| overflow())?;
+        pop.stock[index] -= opened;
+        ledger.opened[index] = ledger.opened[index]
+            .checked_add(opened)
+            .ok_or_else(overflow)?;
+        balance = balance
+            .checked_add(u128::from(opened) * supply)
+            .ok_or_else(overflow)?;
+    }
+    pop.consumption.hearth_milli = u64::try_from(balance - comfort_burn).map_err(|_| overflow())?;
+    pop.consumption.comfort_milli -= u64::try_from(comfort_burn).map_err(|_| overflow())?;
+    if allowance != 0 {
+        let niceties = 100_u128
+            .checked_mul(people)
+            .and_then(|v| v.checked_mul(u128::from(kind.fuel_comfort_niceties_pm)))
+            .and_then(|v| v.checked_mul(comfort_burn))
+            .ok_or_else(overflow)?
+            / allowance.checked_mul(1000).ok_or_else(overflow)?;
+        let niceties = u64::try_from(niceties).map_err(|_| overflow())?;
+        pop.consumption.niceties_centi = pop
+            .consumption
+            .niceties_centi
+            .checked_add(niceties)
+            .ok_or_else(overflow)?;
+    }
     Ok(())
 }
 
+#[cfg(test)]
 pub(super) fn seed_starting_fuel(
     rules: &Rules,
     pops: &mut [PopState],
     buildings: &[BuildingState],
+) -> Result<(), DataError> {
+    seed_starting_fuel_for_year(rules, pops, buildings, 365, 0)
+}
+
+pub(super) fn seed_starting_fuel_for_year(
+    rules: &Rules,
+    pops: &mut [PopState],
+    buildings: &[BuildingState],
+    days: u64,
+    degree_hours: u64,
 ) -> Result<(), DataError> {
     if let Some(farm) = buildings.iter().find(|building| building.kind == "farm") {
         let definition = rules
@@ -241,9 +451,7 @@ pub(super) fn seed_starting_fuel(
                 ));
             }
             for pop in pops {
-                let target = fuel_daily_need(rules, pop)?
-                    .checked_mul(240)
-                    .ok_or_else(|| missing_data("fuel.start".to_owned(), "target overflow"))?;
+                let target = fuel_year_need(rules, pop, days, degree_hours)?;
                 let units = u64::try_from(target.div_ceil(supply))
                     .map_err(|_| missing_data("fuel.start".to_owned(), "stock exceeds u64"))?;
                 receive_pop(rules, pop, index, units)?;
@@ -257,6 +465,14 @@ pub(super) fn seed_starting_fuel(
 mod fuel_tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn seasonal_need_counts_flat_and_degree_hours_with_exact_rounding() {
+        assert_eq!(seasonal_need(3, 20, 9_400, 0).unwrap(), 60);
+        assert_eq!(seasonal_need(3, 20, 9_400, 240).unwrap(), 88);
+        assert_eq!(seasonal_need(0, 20, 9_400, 240).unwrap(), 0);
+        assert!(seasonal_need(u128::MAX, 20, 9_400, 240).is_err());
+    }
 
     #[test]
     fn fuel_order_and_spare_use_price_per_fuel_unit_and_skip_unspareable_loads() {

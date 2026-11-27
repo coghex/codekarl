@@ -130,7 +130,7 @@ pub(crate) fn prepare(
         )
     })?;
     let economy_rules = economy::load_rules(asset_root)?.map(Arc::new);
-    let weather = if economy_rules.is_some() {
+    let weather = if economy_rules.is_some() && asset_root.join("game/weather.toml").exists() {
         Some(Arc::new(WeatherData::load(asset_root, &scenario)?))
     } else {
         None
@@ -299,8 +299,15 @@ pub(crate) fn prepare(
             None => entropy()?,
         };
         log(Level::Info, format!("new game, seed {seed:016x}"));
-        let (economy_state, load_report) =
-            economy::starting_economy_seeded(asset_root, directory, &scenario, seed)?;
+        let climate = match (&weather, &economy_rules) {
+            (Some(weather), Some(rules)) => {
+                weather.normal_fuel_climate(start, rules.fuel_heat_base_tenths)?
+            }
+            _ => BTreeMap::new(),
+        };
+        let (economy_state, load_report) = economy::starting_economy_seeded_with_climate(
+            asset_root, directory, &scenario, seed, &climate,
+        )?;
         for line in load_report {
             log(Level::Info, format!("economy start: {line}"));
         }
@@ -372,7 +379,7 @@ pub(crate) fn prepare(
     })
 }
 
-struct WeatherData {
+pub(super) struct WeatherData {
     backdrop: Option<ck_map::Backdrop>,
     steering_cache: Arc<std::sync::OnceLock<Vec<i64>>>,
     rules: ck_sim::weather::WeatherRules,
@@ -382,7 +389,72 @@ struct WeatherData {
 }
 
 impl WeatherData {
-    fn load(root: &Path, scenario: &ck_map::Scenario) -> Result<Self, String> {
+    pub(super) fn normal_fuel_climate(
+        &self,
+        start: Date,
+        base: i64,
+    ) -> Result<BTreeMap<String, ck_economy::StartFuelClimate>, String> {
+        let year = i64::from(start.year);
+        let epoch = ck_sim::weather::julian_day(1, 1, 1);
+        let last_day = ck_sim::weather::julian_day(year, 12, 31) - epoch;
+        let mut result = BTreeMap::new();
+        for (id, place, _) in &self.places {
+            let mut months = [0_u64; 12];
+            let mut month_days = [0_u8; 12];
+            let mut month_now = 0_u64;
+            let mut year_days = 0_u64;
+            for month in 1..=12_u8 {
+                let days = ck_sim::days_in_month(start.year, month).map_err(|e| e.to_string())?;
+                month_days[usize::from(month - 1)] = days;
+                year_days += u64::from(days);
+                for day in 1..=days {
+                    let offset =
+                        ck_sim::weather::julian_day(year, i64::from(month), i64::from(day)) - epoch;
+                    let prior = if month == 1 && day == 1 {
+                        last_day
+                    } else {
+                        offset - 1
+                    };
+                    let mut daily = 0_u64;
+                    for (date, hours) in [(prior, 12..24), (offset, 0..12)] {
+                        for hour in hours {
+                            let temp = place.hour(&self.rules, date, hour)?;
+                            let difference =
+                                u64::try_from((i128::from(base) - i128::from(temp)).max(0))
+                                    .map_err(|_| "fuel degree-hours overflow")?;
+                            daily = daily
+                                .checked_add(difference)
+                                .ok_or("fuel degree-hours overflow")?;
+                        }
+                    }
+                    let slot = usize::from(month - 1);
+                    months[slot] = months[slot]
+                        .checked_add(daily)
+                        .ok_or("fuel degree-hours overflow")?;
+                    if month == start.month && day < start.day {
+                        month_now = month_now
+                            .checked_add(daily)
+                            .ok_or("fuel degree-hours overflow")?;
+                    }
+                }
+            }
+            months.rotate_left(usize::from(start.month - 1));
+            month_days.rotate_left(usize::from(start.month - 1));
+            result.insert(
+                id.clone(),
+                ck_economy::StartFuelClimate {
+                    months,
+                    month_days,
+                    month_now,
+                    days_now: start.day - 1,
+                    year_days,
+                },
+            );
+        }
+        Ok(result)
+    }
+
+    pub(super) fn load(root: &Path, scenario: &ck_map::Scenario) -> Result<Self, String> {
         use ck_sim::weather::{WeatherPlace, WeatherRules};
         let path = root.join("game/weather.toml");
         let text =
@@ -480,7 +552,7 @@ impl WeatherData {
         }
     }
 
-    fn daily_means(&self, date: Date) -> Result<BTreeMap<String, i64>, String> {
+    fn daily_degree_hours(&self, date: Date, base: i64) -> Result<BTreeMap<String, u64>, String> {
         let day = ck_sim::weather::julian_day(
             i64::from(date.year),
             i64::from(date.month),
@@ -488,7 +560,9 @@ impl WeatherData {
         ) - ck_sim::weather::julian_day(1, 1, 1);
         self.places
             .iter()
-            .map(|(id, place, _)| Ok((id.clone(), place.daily_mean(&self.rules, day)?)))
+            .map(|(id, place, _)| {
+                Ok((id.clone(), place.noon_degree_hours(&self.rules, day, base)?))
+            })
             .collect()
     }
 
@@ -1220,12 +1294,12 @@ fn register_economy_callback_with_context(
             Cadence::Daily { hour: ECONOMY_HOUR },
             &[CHARACTER_STREAM],
             move |state, tick| {
-                // Derived temperatures are available for future economy rules and remain unsaved.
-                let _daily_temperatures = weather
+                let degree_hours = weather
                     .as_ref()
-                    .map(|data| data.daily_means(tick.date()))
+                    .map(|data| data.daily_degree_hours(tick.date(), rules.fuel_heat_base_tenths))
                     .transpose()
-                    .map_err(io::Error::other)?;
+                    .map_err(io::Error::other)?
+                    .unwrap_or_default();
                 // The characters' draws are keyed by this tick's draw of the system's own stream: deterministic under the master
                 // seed, and drawn once for all three phases of the day.
                 let seed = tick.stream(CHARACTER_STREAM)?.draw();
@@ -1246,7 +1320,7 @@ fn register_economy_callback_with_context(
                         .entry((character.pop.place.clone(), character.pop.slot as usize))
                         .or_insert(0_u64) += 1;
                 }
-                ck_economy::run_daily_economy_with_trade_neighbours(
+                ck_economy::run_daily_economy_with_degree_hours(
                     &rules,
                     &mut state.economy,
                     tick.date(),
@@ -1256,6 +1330,7 @@ fn register_economy_callback_with_context(
                     &floors,
                     &land_by_place,
                     &trade_by_place,
+                    &degree_hours,
                 )
                 .map_err(io::Error::other)
                 .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>)?;
@@ -3417,6 +3492,130 @@ mod stretch_save_tests {
     }
 
     #[test]
+    fn fuel_normal_year_one_stays_in_its_calendar_and_starts_empty() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+        let scenario = ck_map::load_scenario(root.join("scenarios/ireland-768")).unwrap();
+        let weather = WeatherData::load(&root, &scenario).unwrap();
+        let start = Date {
+            year: 1,
+            month: 1,
+            day: 1,
+            hour: 0,
+        };
+        let normal = weather.normal_fuel_climate(start, 140).unwrap();
+        let (id, place, _) = &weather.places[0];
+        let climate = &normal[id];
+        assert_eq!(climate.year_days, 365);
+        assert_eq!(climate.days_now, 0);
+        assert_eq!(climate.month_now, 0);
+        assert!(climate.months.iter().any(|value| *value > 0));
+        let first = weather.daily_degree_hours(start, 140).unwrap()[id];
+        assert_eq!(
+            first,
+            place.noon_degree_hours(&weather.rules, 0, 140).unwrap()
+        );
+    }
+
+    #[test]
+    fn normal_fuel_ring_starts_with_current_month() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+        let scenario = ck_map::load_scenario(root.join("scenarios/ireland-768")).unwrap();
+        let weather = WeatherData::load(&root, &scenario).unwrap();
+        let date = |month| Date {
+            year: 768,
+            month,
+            day: 9,
+            hour: 0,
+        };
+        let january = weather.normal_fuel_climate(date(1), 140).unwrap();
+        let october = weather.normal_fuel_climate(date(10), 140).unwrap();
+        for (id, jan) in &january {
+            let oct = &october[id];
+            let mut months = jan.months;
+            let mut days = jan.month_days;
+            months.rotate_left(9);
+            days.rotate_left(9);
+            assert_eq!(oct.months, months, "{id}");
+            assert_eq!(oct.month_days, days, "{id}");
+        }
+    }
+
+    #[test]
+    fn shipped_fuel_normal_year_meets_calibration_and_storage_limits() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+        let scenario = ck_map::load_scenario(root.join("scenarios/ireland-768")).unwrap();
+        let weather = WeatherData::load(&root, &scenario).unwrap();
+        let rules = Rules::load(root.join("game/economy.toml")).unwrap();
+        let start = Date {
+            year: 768,
+            month: 10,
+            day: 9,
+            hour: 12,
+        };
+        let normal = weather
+            .normal_fuel_climate(start, rules.fuel_heat_base_tenths)
+            .unwrap();
+        let kind = rules
+            .pop_types
+            .iter()
+            .find(|kind| kind.id == "peasant")
+            .unwrap();
+        let targets = |climate: &ck_economy::StartFuelClimate| {
+            let dh: u64 = climate.months.iter().sum();
+            let survival = kind.fuel_need_milli_day * climate.year_days
+                + kind.fuel_heat_micro_per_degree_day * dh / 240_000;
+            let comfort =
+                kind.fuel_heat_micro_per_degree_day * dh * u64::from(rules.comfort_heat_pm)
+                    / 240_000_000;
+            (survival, comfort)
+        };
+        let lusk = targets(&normal["lusk"]).0;
+        assert!((24_090..=25_550).contains(&lusk), "Lusk survival {lusk}");
+        let maximum = normal
+            .values()
+            .map(|c| {
+                let (s, c) = targets(c);
+                s + c
+            })
+            .max()
+            .unwrap();
+        eprintln!("largest S+C: hardwood {maximum}/1000 loads, peat {maximum}/700 loads");
+        assert!(maximum <= 45_000, "hardwood maximum {maximum}");
+        assert!(maximum <= 60 * 700, "peat maximum {maximum}");
+    }
+
+    #[test]
+    fn shipped_noon_passes_hourly_degree_hours_into_survival_need() {
+        let dir = crate::testing::Dir::new();
+        let mut game = shipped_start(&dir.0, None);
+        let date = game.simulation.date().unwrap();
+        let rules = game.economy_rules.clone().unwrap();
+        let weather = game.weather.as_ref().unwrap();
+        let place = &game.simulation.state().economy.places[0];
+        let id = place.id.clone();
+        let previous = place.dh_month_now;
+        let daily = weather
+            .daily_degree_hours(date, rules.fuel_heat_base_tenths)
+            .unwrap()[&id];
+        while game.simulation.date().unwrap().hour != 13 {
+            assert!(game.simulation.step().unwrap().is_empty());
+        }
+        let place = &game.simulation.state().economy.places[0];
+        assert_eq!(place.dh_month_now, previous + daily);
+        let pop = &place.pops[0];
+        let kind = rules
+            .pop_types
+            .iter()
+            .find(|kind| kind.id == pop.kind)
+            .unwrap();
+        let people = u128::from(pop.workers) + u128::from(pop.dependents);
+        let need = people * u128::from(kind.fuel_need_milli_day)
+            + people * u128::from(kind.fuel_heat_micro_per_degree_day) * u128::from(daily)
+                / 240_000;
+        assert_eq!(u128::from(pop.consumption.fuel_need_month), need);
+    }
+
+    #[test]
     fn birr_wind_at_noon_survives_real_save_and_load() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
         let scenario = ck_map::load_scenario(root.join("scenarios/ireland-768")).unwrap();
@@ -4540,7 +4739,7 @@ mod stretch_save_tests {
         assert_eq!(
             hashes::rules_hash(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets"))
                 .unwrap(),
-            "51b9cb83438cf7a6"
+            "4ccfd68c8f609e5c"
         );
         let mut save = source.simulation.save(source.identity.meta(42));
         let weather = source.weather.as_ref().unwrap();

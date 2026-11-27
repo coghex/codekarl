@@ -392,6 +392,7 @@ fn want_order_at_prices(rules: &Rules, prices_milli: &[u64], opening: &[u64]) ->
 /// What every pop of the place holds and aims at for the day's exchange. Targets do not change in it; holdings follow the swaps, a
 /// pop's holding being its store and its account together, which a swap moves goods into and out of but never between.
 pub(crate) struct Book {
+    fuel_round: u8,
     /// How many rows are the place's pops; the rows after them are the waiting expeditions' (CK-432).
     pops: usize,
     target: Vec<Vec<u128>>,
@@ -422,6 +423,7 @@ impl Book {
         let live = vec![false; target.first().map_or(0, Vec::len)];
         let (target_height, target_width) = (target.len(), target.first().map_or(0, Vec::len));
         Self {
+            fuel_round: 0,
             pops: target_height,
             target,
             holding,
@@ -451,6 +453,7 @@ impl Book {
     ) -> Result<Self, DataError> {
         let rows = place.pops.len() + visits.len();
         let mut book = Self {
+            fuel_round: 0,
             pops: place.pops.len(),
             target: Vec::with_capacity(rows),
             holding: Vec::with_capacity(rows),
@@ -540,15 +543,15 @@ impl Book {
         pop_index: usize,
     ) -> Result<(), DataError> {
         let pop = &place.pops[pop_index];
-        let target = fuel::fuel_daily_need(rules, pop)?
-            .checked_mul(240)
-            .ok_or_else(|| missing_data("fuel.target".to_owned(), "target overflow"))?;
+        let target = fuel::fuel_year_target(rules, place, pop)?;
         let holding = fuel::fuel_holding(rules, &pop.stock, pop.consumption.hearth_milli)?;
         let spare = fuel::fuel_spare(
             rules,
             &pop.stock,
             pop.consumption.hearth_milli,
-            target,
+            target
+                .checked_add(u128::from(pop.consumption.comfort_milli))
+                .ok_or_else(|| missing_data("fuel.target".to_owned(), "target overflow"))?,
             &self.fuel_prices,
         )?;
         // The pop has one fuel shortfall, which each fuel states as a load count. The heat it was paid into a seller's building for an
@@ -559,7 +562,9 @@ impl Book {
             .enumerate()
             .map(|(i, good)| self.communal[pop_index][i] * good.category_supplied("fuel", 1))
             .sum::<u128>();
-        let short = target.saturating_sub(holding).saturating_sub(paid_heat);
+        let short = target
+            .saturating_sub(holding.saturating_sub(u128::from(pop.consumption.comfort_milli)))
+            .saturating_sub(paid_heat);
         self.fuel[pop_index] = rules
             .goods
             .iter()
@@ -600,12 +605,18 @@ impl Book {
         let (supply, base) = self.fuel_data[good];
         let mut heat = 0_u128;
         let mut value = 0_u128;
+        let mut comfort_heat = 0_u128;
+        let mut comfort_value = 0_u128;
         let mut want = 0_u128;
         for row in rows {
             match row.destination {
-                crate::budget::Destination::Fuel if supply > 0 => {
+                crate::budget::Destination::Fuel if supply > 0 && self.fuel_round != 2 => {
                     heat = heat.saturating_add(row.funded);
                     value = value.saturating_add(row.funded_value);
+                }
+                crate::budget::Destination::ComfortFuel if supply > 0 && self.fuel_round != 1 => {
+                    comfort_heat = comfort_heat.saturating_add(row.funded);
+                    comfort_value = comfort_value.saturating_add(row.funded_value);
                 }
                 crate::budget::Destination::Household(g)
                 | crate::budget::Destination::Herd { good: g, .. }
@@ -619,7 +630,14 @@ impl Book {
         }
         Position {
             spare: old.spare,
-            want: want.saturating_add(crate::budget::fuel_loads(heat, value, supply, base)),
+            want: want
+                .saturating_add(crate::budget::fuel_loads(heat, value, supply, base))
+                .saturating_add(crate::budget::fuel_loads(
+                    comfort_heat,
+                    comfort_value,
+                    supply,
+                    base,
+                )),
         }
     }
 
@@ -1448,6 +1466,7 @@ impl Exchange<'_> {
             limit,
             room,
             to_building.is_some(),
+            book.fuel_round,
             |destination| match destination {
                 crate::budget::Destination::Job { job, good, species } => {
                     place.trade.jobs.get(job).map_or(0, |job| {
@@ -1521,7 +1540,9 @@ impl Exchange<'_> {
             let amount = u64::try_from(amount)
                 .map_err(|_| missing_data("swap.route".into(), "receipt exceeds u64"))?;
             match destination {
-                crate::budget::Destination::Fuel | crate::budget::Destination::Household(_) => {
+                crate::budget::Destination::Fuel
+                | crate::budget::Destination::ComfortFuel
+                | crate::budget::Destination::Household(_) => {
                     let rejected = if let Some(building) = to_building {
                         receive_building(self.rules, &mut place.buildings[building], good, amount)?
                     } else {
@@ -1529,6 +1550,19 @@ impl Exchange<'_> {
                     };
                     if rejected != 0 {
                         return Err(missing_data("swap.route".into(), "destination lost room"));
+                    }
+                    if destination == crate::budget::Destination::ComfortFuel
+                        && to_building.is_none()
+                    {
+                        let heat =
+                            self.rules.goods[good].category_supplied("fuel", u128::from(amount));
+                        let heat = u64::try_from(heat).map_err(|_| {
+                            missing_data("swap.route".into(), "comfort receipt overflow")
+                        })?;
+                        let balance = &mut place.pops[pop].consumption.comfort_milli;
+                        *balance = balance.checked_add(heat).ok_or_else(|| {
+                            missing_data("swap.route".into(), "comfort balance overflow")
+                        })?;
                     }
                 }
                 crate::budget::Destination::Job { job, good, species } => {
@@ -2213,6 +2247,17 @@ struct PlaceDay {
 }
 
 impl PlaceDay {
+    fn fuel_want_order(&self, rules: &Rules) -> Vec<usize> {
+        let mut order = self.order.clone();
+        order.extend(
+            self.order
+                .iter()
+                .copied()
+                .filter(|&good| rules.goods[good].category_supplied("fuel", 1) > 0),
+        );
+        order
+    }
+
     fn new_with(
         rules: &Rules,
         place: &PlaceState,
@@ -2253,7 +2298,8 @@ impl PlaceDay {
         let pops = self.book.pops;
         for visitor in 0..self.visitors.len() {
             let row = pops + visitor;
-            for &get_good in &self.order.clone() {
+            for (turn, get_good) in self.fuel_want_order(rules).into_iter().enumerate() {
+                self.book.fuel_round = if turn < self.order.len() { 1 } else { 2 };
                 if self.book.position(row, get_good).want == 0 {
                     continue;
                 }
@@ -2293,6 +2339,7 @@ impl PlaceDay {
                 }
             }
         }
+        self.book.fuel_round = 0;
         Ok(())
     }
 
@@ -2615,7 +2662,8 @@ impl PlaceDay {
                 continue;
             }
             let mut left = self.capacity[starter];
-            for get_good in self.order.clone() {
+            for (turn_index, get_good) in self.fuel_want_order(rules).into_iter().enumerate() {
+                self.book.fuel_round = if turn_index < self.order.len() { 1 } else { 2 };
                 if self.book.hungry[starter] && rules.goods[get_good].hunger_centi == 0 {
                     continue;
                 }
@@ -2646,6 +2694,7 @@ impl PlaceDay {
             }
             self.capacity[starter] = left;
         }
+        self.book.fuel_round = 0;
         Ok(())
     }
 }
@@ -2911,7 +2960,13 @@ fn neighbour_turn(
             .position(|b| b.storehouse_accounts.is_some()),
     };
     for starter in 0..starter_place.pops.len() {
-        for &get_good in &starter_day.order {
+        for (turn_index, get_good) in starter_day.fuel_want_order(rules).into_iter().enumerate() {
+            starter_day.book.fuel_round = if turn_index < starter_day.order.len() {
+                1
+            } else {
+                2
+            };
+            partner_day.book.fuel_round = starter_day.book.fuel_round;
             if starter_day.book.hungry[starter] && rules.goods[get_good].hunger_centi == 0 {
                 continue;
             }
@@ -3098,6 +3153,8 @@ fn neighbour_turn(
             }
         }
     }
+    starter_day.book.fuel_round = 0;
+    partner_day.book.fuel_round = 0;
     Ok(())
 }
 
@@ -3218,6 +3275,83 @@ impl Turn<'_> {
 mod share_tests {
     use super::*;
     use crate::swap_tests;
+
+    #[test]
+    fn comfort_fuel_paid_into_building_only_enters_set_aside_when_drawn() {
+        let rules = swap_tests::rules();
+        let mut place = swap_tests::place(&rules, 1);
+        swap_tests::small(&mut place, 1);
+        let building = swap_tests::add_building(&rules, &mut place, "farm", 1);
+        place.buildings[building].employment[0].workers = 1;
+        place.pops[0].employment[building].workers = 1;
+        place.dh_months = vec![10_000; 12];
+        let peat = swap_tests::good(&rules, "peat");
+        let wood = swap_tests::good(&rules, "hardwood");
+        let target = fuel::fuel_year_target(&rules, &place, &place.pops[0]).unwrap();
+        place.pops[0].stock[wood] = u64::try_from(target / 1000).unwrap();
+        place.pops[0].consumption.hearth_milli = u64::try_from(target % 1000).unwrap();
+        let width = rules.goods.len();
+        let mut book = Book::from_parts(vec![vec![0; width]], vec![vec![0; width]]);
+        book.funded = Some(vec![vec![crate::budget::Want {
+            tier: 5,
+            units: 700,
+            value: 6000,
+            funded: 700,
+            funded_value: 6000,
+            destination: crate::budget::Destination::ComfortFuel,
+        }]]);
+        let exchange = Exchange {
+            rules: &rules,
+            house: None,
+        };
+        let route = exchange
+            .funded_route(&place, &book, 0, peat, 1, Some(building))
+            .unwrap();
+        let mut herds = herd_wants(&rules, &place).unwrap();
+        exchange
+            .receive_funded(
+                &mut place,
+                &mut book,
+                &mut herds,
+                0,
+                peat,
+                1,
+                Some(building),
+                route,
+            )
+            .unwrap();
+        assert_eq!(place.buildings[building].stock[peat], 1);
+        assert_eq!(place.pops[0].consumption.comfort_milli, 0);
+        assert_eq!(
+            fuel::fuel_holding(
+                &rules,
+                &place.pops[0].stock,
+                place.pops[0].consumption.hearth_milli
+            )
+            .unwrap(),
+            target
+        );
+        let row = &book.funded.as_ref().unwrap()[0][0];
+        assert_eq!((row.funded, row.funded_value), (0, 0));
+        let prices = place.prices_milli.clone();
+        let mut ledger = crate::DailyConsumptionLedger {
+            opened: vec![0; width],
+            ..Default::default()
+        };
+        fuel::draw_and_burn_with_owners(
+            &rules,
+            &mut place,
+            0,
+            &prices,
+            &mut ledger,
+            &[vec![1]],
+            &mut [vec![0; width]],
+            0,
+        )
+        .unwrap();
+        assert_eq!(place.buildings[building].stock[peat], 0);
+        assert_eq!(place.pops[0].consumption.comfort_milli, 700);
+    }
 
     #[test]
     fn a_residents_received_head_does_not_become_an_offer() {
@@ -3357,7 +3491,7 @@ mod share_tests {
         swap_tests::spare(&rules, &mut place, 0, "wool", 1000);
         let wood = swap_tests::good(&rules, "hardwood");
         let peat = swap_tests::good(&rules, "peat");
-        let target = fuel::fuel_daily_need(&rules, &place.pops[0]).unwrap() * 240;
+        let target = fuel::fuel_year_target(&rules, &place, &place.pops[0]).unwrap();
         let supply = rules.goods[wood].category_supplied("fuel", 1);
         for (deficit, w, p) in [
             (1, 0, 0),
@@ -3402,7 +3536,8 @@ mod share_tests {
         let peat = swap_tests::good(&rules, "peat");
         place.prices_milli[wood] = 100;
         place.prices_milli[peat] = 60;
-        place.pops[0].stock[wood] = 5;
+        place.pops[0].stock[wood] = 7;
+        place.pops[0].consumption.hearth_milli = 300;
         place.pops[0].stock[peat] = 1;
         let mut book = Book::new(&rules, &place, &place.prices_milli).unwrap();
         assert_eq!(
@@ -3415,7 +3550,7 @@ mod share_tests {
             (book.position(0, wood).spare, book.position(0, peat).spare),
             (0, 0)
         );
-        assert_eq!(place.pops[0].consumption.hearth_milli, 0);
+        assert_eq!(place.pops[0].consumption.hearth_milli, 300);
     }
 
     #[test]

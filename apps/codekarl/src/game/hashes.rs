@@ -132,9 +132,14 @@ pub(crate) fn rules_hash(asset_root: &Path) -> Result<String, String> {
         // Unit fixtures that exercise only the simulation shell have no M9 data.
         return Ok(content_hash(Vec::new()));
     }
+    let weather = if asset_root.join("game/weather.toml").exists() {
+        read(asset_root, "game/weather.toml")?
+    } else {
+        ("game/weather.toml (absent)".to_owned(), Vec::new())
+    };
     Ok(content_hash(vec![
         read(asset_root, "game/economy.toml")?,
-        read(asset_root, "game/weather.toml")?,
+        weather,
         read(asset_root, "game/peoples.toml")?,
         read(asset_root, "game/genetics/haplogroups.toml")?,
         read(asset_root, "game/genetics/traits.toml")?,

@@ -529,17 +529,8 @@ fn wanted_base(
     let mut shortages = vec![zero.clone(); rules.goods.len()];
     let mut heat = zero.clone();
     for pop in &place.pops {
-        let kind = rules
-            .pop_types
-            .iter()
-            .find(|p| p.id == pop.kind)
-            .ok_or_else(|| missing_data(format!("pop_types.{}", pop.kind), "missing"))?;
         heat = heat.add(&amount(
-            &[
-                u128::from(pop.workers) + u128::from(pop.dependents),
-                u128::from(kind.fuel_need_milli_day),
-                365,
-            ],
+            &[super::fuel::fuel_year_target(rules, place, pop)?],
             &[1000],
         ));
         for (i, good) in rules.goods.iter().enumerate() {

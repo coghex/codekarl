@@ -114,6 +114,35 @@ pub(crate) fn starting_economy_seeded(
     scenario: &Scenario,
     seed: u64,
 ) -> Result<(EconomyState, Vec<String>), String> {
+    let climate = if asset_root.join("game/weather.toml").exists() {
+        let rules = load_rules(asset_root)?;
+        if let Some(rules) = rules {
+            let weather = super::setup::WeatherData::load(asset_root, scenario)?;
+            weather.normal_fuel_climate(
+                ck_sim::Date {
+                    year: scenario.start.year,
+                    month: scenario.start.month,
+                    day: scenario.start.day,
+                    hour: scenario.start.hour,
+                },
+                rules.fuel_heat_base_tenths,
+            )?
+        } else {
+            std::collections::BTreeMap::new()
+        }
+    } else {
+        std::collections::BTreeMap::new()
+    };
+    starting_economy_seeded_with_climate(asset_root, scenario_directory, scenario, seed, &climate)
+}
+
+pub(crate) fn starting_economy_seeded_with_climate(
+    asset_root: &Path,
+    scenario_directory: &Path,
+    scenario: &Scenario,
+    seed: u64,
+    climate: &std::collections::BTreeMap<String, ck_economy::StartFuelClimate>,
+) -> Result<(EconomyState, Vec<String>), String> {
     let rules_path = asset_root.join("game/economy.toml");
     if !rules_path.exists() {
         return Ok((EconomyState::default(), Vec::new()));
@@ -161,7 +190,7 @@ pub(crate) fn starting_economy_seeded(
             land,
         })
         .collect::<Vec<_>>();
-    ck_economy::starting_state_at_seed(
+    ck_economy::starting_state_at_seed_with_fuel_climate(
         &rules,
         &data,
         &starts,
@@ -172,6 +201,7 @@ pub(crate) fn starting_economy_seeded(
             hour: scenario.start.hour,
         },
         seed,
+        climate,
     )
     .map_err(|error| error.to_string())
 }

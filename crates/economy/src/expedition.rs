@@ -1804,7 +1804,7 @@ pub(crate) fn start_trade(
             let Some((good, units)) = trade::wage_goods(rules, &work, trader, pop, wage)? else {
                 return Ok(false);
             };
-            trade::pay_from(&mut work, trader, good, units)?;
+            trade::pay_from(rules, &mut work, trader, good, units)?;
             if crate::receive_pop(rules, &mut work.pops[pop], good, units)? != 0 {
                 return Err(missing_data(
                     "trade.wage".to_owned(),

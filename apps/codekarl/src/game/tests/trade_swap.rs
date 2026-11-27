@@ -385,7 +385,7 @@ fn a_fuel_swap_survives_saves_before_and_after_noon() {
     place.pops[noble].stock[peat] = 0;
     place.pops[noble].consumption.hearth_milli = 0;
     place.pops[peasant].stock[wood] = 2;
-    place.pops[peasant].consumption.hearth_milli = peasant_heads * 20 * 240;
+    place.pops[peasant].consumption.hearth_milli = peasant_heads * 20 * 365;
     place.prices_milli[wood] = 100_000;
     place.prices_milli[oats] = 100_000;
 

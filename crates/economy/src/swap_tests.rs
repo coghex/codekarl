@@ -2155,7 +2155,7 @@ const ACCEPTED_PEASANTS: [(&str, u64); 6] = [
     ("fish", 79661),
     ("honey", 68286),
     ("herbs", 11999),
-    ("hardwood", 4780),
+    ("hardwood", 7280),
 ];
 const ACCEPTED_MONKS: [(&str, u64); 6] = [
     ("oats", 5314),
@@ -2163,7 +2163,7 @@ const ACCEPTED_MONKS: [(&str, u64); 6] = [
     ("fish", 79659),
     ("honey", 68286),
     ("herbs", 11994),
-    ("hardwood", 4780),
+    ("hardwood", 7280),
 ];
 const ACCEPTED_PRICES: [(&str, u64); 22] = [
     ("oats", 95_000),
@@ -2490,7 +2490,8 @@ fn fuel_orders_are_unchanged_by_its_participation_in_exchange() {
     settle_the_rest(&rules, &mut place, &["oats", "hardwood", "peat"]);
     want(&rules, &mut place, PEASANT, "oats", 1);
     spare(&rules, &mut place, MONK, "oats", 1);
-    place.pops[PEASANT].stock[good(&rules, "hardwood")] = 6;
+    place.pops[PEASANT].stock[good(&rules, "hardwood")] = 8;
+    place.pops[PEASANT].consumption.hearth_milli = 300;
     capacity(&mut rules, &mut place, PEASANT, 10_000_000);
     capacity(&mut rules, &mut place, MONK, 10_000_000);
     let wood = good(&rules, "hardwood");
@@ -2503,7 +2504,7 @@ fn fuel_orders_are_unchanged_by_its_participation_in_exchange() {
             orders.sell_units[wood],
             orders.sell_units[peat]
         ),
-        (0, 6, 1, 0)
+        (0, 10, 1, 0)
     );
 }
 
@@ -2522,7 +2523,7 @@ fn fuel_for_oats_moves_whole_loads_and_leaves_hearth_untouched() {
     }
     spare(&rules, &mut place, PEASANT, "oats", 10);
     want(&rules, &mut place, MONK, "oats", 3);
-    let target = fuel::fuel_daily_need(&rules, &place.pops[PEASANT]).unwrap() * 240;
+    let target = fuel::fuel_year_target(&rules, &place, &place.pops[PEASANT]).unwrap();
     place.pops[PEASANT].consumption.hearth_milli = u64::try_from(target - 2_000).unwrap();
     place.pops[MONK].consumption.hearth_milli = u64::try_from(target).unwrap();
     place.pops[MONK].stock[peat] = 3;
@@ -2569,7 +2570,7 @@ fn fuel_fixture(pops: usize) -> (Rules, PlaceState, u64) {
         for id in ["oats", "barley", "fish", "honey"] {
             spare(&rules, &mut place, pop, id, 0);
         }
-        let target = fuel::fuel_daily_need(&rules, &place.pops[pop]).unwrap() * 240;
+        let target = fuel::fuel_year_target(&rules, &place, &place.pops[pop]).unwrap();
         place.pops[pop].consumption.hearth_milli = u64::try_from(target).unwrap();
     }
     spare(&rules, &mut place, PEASANT, "oats", 50);
@@ -2615,14 +2616,14 @@ fn a_partner_can_spare_only_the_whole_load_that_preserves_its_fuel_target() {
     let wood = good(&rules, "hardwood");
     let peat = good(&rules, "peat");
     place.pops[PEASANT].consumption.hearth_milli = target - 700;
-    place.pops[MONK].consumption.hearth_milli = 0;
-    place.pops[MONK].stock[wood] = 5;
+    place.pops[MONK].consumption.hearth_milli = 300;
+    place.pops[MONK].stock[wood] = 7;
     place.pops[MONK].stock[peat] = 1;
     exchange(&rules, &mut place);
     assert_eq!(place.pops[PEASANT].stock[peat], 1);
     assert_eq!(place.pops[MONK].stock[peat], 0);
-    assert_eq!(place.pops[MONK].stock[wood], 5);
-    assert_eq!(place.pops[MONK].consumption.hearth_milli, 0);
+    assert_eq!(place.pops[MONK].stock[wood], 7);
+    assert_eq!(place.pops[MONK].consumption.hearth_milli, 300);
 }
 
 #[test]
@@ -2719,7 +2720,7 @@ fn a_buildings_spare_fuel_is_paid_from_it_into_the_buyers_store() {
     for id in ["barley", "fish", "honey"] {
         spare(&rules, &mut place, MONK, id, 0);
     }
-    let monk_target = fuel::fuel_daily_need(&rules, &place.pops[MONK]).unwrap() * 240;
+    let monk_target = fuel::fuel_year_target(&rules, &place, &place.pops[MONK]).unwrap();
     place.pops[MONK].consumption.hearth_milli = u64::try_from(monk_target).unwrap();
     want(&rules, &mut place, MONK, "oats", 30);
     let farm = add_building(&rules, &mut place, "holdings", 1);
@@ -2766,7 +2767,7 @@ fn scarce_peat_is_shared_and_neither_buyer_exceeds_its_want() {
 
 #[test]
 fn full_store_takes_fuel_up_to_its_limit_and_capacity_counts_load_volume() {
-    for (held, capacity_ml, expected) in [(2, 200_000, 2), (2, 300_000, 2), (5, 300_000, 0)] {
+    for (held, capacity_ml, expected) in [(2, 200_000, 2), (2, 300_000, 3), (5, 300_000, 0)] {
         let (mut rules, mut place, target) = fuel_fixture(2);
         let wood = good(&rules, "hardwood");
         let oats = good(&rules, "oats");
@@ -2797,7 +2798,7 @@ fn full_store_takes_fuel_up_to_its_limit_and_capacity_counts_load_volume() {
         assert_eq!(place.pops[MONK].stock[wood], 4 - expected);
         assert_eq!(before - place.pops[PEASANT].stock[oats], expected);
         assert_eq!(place.pops[PEASANT].consumption.hearth_milli, 0);
-        assert_eq!(target, 4_800);
+        assert_eq!(target, 7_300);
     }
 }
 
@@ -2872,7 +2873,8 @@ fn a_month_without_fuel_offers_preserves_the_nonfuel_day() {
                 .iter()
                 .map(|p| p.prices_milli.clone())
                 .collect();
-            run_daily_consumption_at_prices(&rules, state, date, &prices).unwrap();
+            run_daily_consumption_at_prices(&rules, state, date, &prices, &BTreeMap::new())
+                .unwrap();
         }
         let (a, b) = (&actual.places[0], &reference.places[0]);
         assert_eq!(a.pops, b.pops, "day {day}");
@@ -3296,7 +3298,7 @@ fn a_fuel_payment_into_a_building_also_spends_the_owners_want_once() {
     let supply = rules.goods[peat].category_supplied("fuel", 1);
     // The owner's hearth lacks exactly 24 loads of peat; the buyer holds 100 spare ones and a full hearth.
     let need = |place: &PlaceState, pop: usize| {
-        fuel::fuel_daily_need(&rules, &place.pops[pop]).unwrap() * 240
+        fuel::fuel_year_target(&rules, place, &place.pops[pop]).unwrap()
     };
     let owner_need = need(&place, MONK);
     place.pops[MONK].consumption.hearth_milli = u64::try_from(owner_need - 24 * supply).unwrap();
@@ -3347,10 +3349,10 @@ fn two_fuels_case(loads: u64) -> (Rules, PlaceState, [usize; 3], u128) {
         place.pops[pop].stock[wood] = 0;
     }
     let supply = rules.goods[peat].category_supplied("fuel", 1);
-    let owner_need = fuel::fuel_daily_need(&rules, &place.pops[MONK]).unwrap() * 240;
+    let owner_need = fuel::fuel_year_target(&rules, &place, &place.pops[MONK]).unwrap();
     place.pops[MONK].consumption.hearth_milli =
         u64::try_from(owner_need - u128::from(loads) * supply).unwrap();
-    let buyer_need = fuel::fuel_daily_need(&rules, &place.pops[THIRD]).unwrap() * 240;
+    let buyer_need = fuel::fuel_year_target(&rules, &place, &place.pops[THIRD]).unwrap();
     place.pops[THIRD].consumption.hearth_milli = u64::try_from(buyer_need).unwrap();
     place.pops[THIRD].stock[peat] = 100;
     place.pops[THIRD].stock[good(&rules, "hardwood")] = 100;
@@ -3901,4 +3903,120 @@ fn funded_herds_barter_live_animals_for_live_animals() {
         ),
         building_stocks
     );
+}
+
+#[test]
+fn spare_fuel_sale_preserves_the_survival_target_and_comfort_set_aside() {
+    let (mut rules, mut place, _) = fuel_fixture(2);
+    small(&mut place, 1);
+    settle_the_rest(&rules, &mut place, &["oats", "hardwood", "peat", "wool"]);
+    capacity(&mut rules, &mut place, MONK, 10_000_000);
+    for kind in &mut rules.pop_types {
+        kind.fuel_need_milli_day = 0;
+        kind.fuel_heat_micro_per_degree_day = 1000;
+    }
+    rules.comfort_heat_pm = 700;
+    place.dh_months = vec![20_000; 12];
+    let peat = good(&rules, "peat");
+    let seller = &mut place.pops[MONK];
+    seller.stock[peat] = 3;
+    seller.consumption.hearth_milli = 300;
+    seller.consumption.comfort_milli = 700;
+    assert_eq!(
+        fuel::fuel_year_target(&rules, &place, &place.pops[MONK]).unwrap(),
+        1000
+    );
+    assert_eq!(
+        fuel::comfort_target(&rules, &place, &place.pops[MONK]).unwrap(),
+        700
+    );
+    assert_eq!(position(&rules, &place, MONK, "peat").0, 1);
+    place.pops[PEASANT].consumption.hearth_milli = 0;
+    want(&rules, &mut place, MONK, "oats", 6);
+    spare(&rules, &mut place, PEASANT, "oats", 50);
+    set_price(&rules, &mut place, "oats", 20);
+    exchange(&rules, &mut place);
+    let seller = &place.pops[MONK];
+    assert_eq!(seller.stock[peat], 2);
+    assert_eq!(seller.consumption.comfort_milli, 700);
+    assert_eq!(
+        fuel::fuel_holding(&rules, &seller.stock, seller.consumption.hearth_milli).unwrap(),
+        1700
+    );
+}
+
+#[test]
+fn mixed_fuel_orders_and_exchange_preserve_both_funded_budgets() {
+    let (mut rules, mut place, _) = fuel_fixture(3);
+    small(&mut place, 1);
+    settle_the_rest(&rules, &mut place, &["oats", "hardwood", "peat", "wool"]);
+    capacity(&mut rules, &mut place, MONK, 10_000_000);
+    capacity(&mut rules, &mut place, THIRD, 10_000_000);
+    for kind in &mut rules.pop_types {
+        kind.fuel_need_milli_day = 0;
+        kind.fuel_heat_micro_per_degree_day = 3000;
+    }
+    rules.comfort_heat_pm = 700;
+    rules.fuel_near_pm = 83;
+    place.dh_months = vec![20_000; 12];
+    let wood = good(&rules, "hardwood");
+    let peat = good(&rules, "peat");
+    for pop in &mut place.pops {
+        pop.consumption.hearth_milli = 3000;
+        pop.consumption.comfort_milli = 0;
+    }
+    place.pops[PEASANT].consumption.hearth_milli = 300;
+    place.pops[PEASANT].consumption.comfort_milli = 600;
+    place.pops[PEASANT].stock[wood] = 1;
+    place.pops[PEASANT].stock[peat] = 1;
+    place.pops[MONK].stock[wood] = 1;
+    place.pops[THIRD].stock[peat] = 1;
+    want(&rules, &mut place, MONK, "oats", 6);
+    want(&rules, &mut place, THIRD, "oats", 6);
+    spare(&rules, &mut place, PEASANT, "oats", 50);
+    set_price(&rules, &mut place, "oats", 20);
+    set_price(&rules, &mut place, "hardwood", 80);
+    set_price(&rules, &mut place, "peat", 100);
+    let rows = budget::orders(&rules, &place, &place.prices_milli).unwrap();
+    let buyer = &rows[PEASANT];
+    let totals = |destination| {
+        buyer
+            .iter()
+            .filter(|r| r.destination == destination)
+            .fold((0, 0), |(h, v), r| (h + r.funded, v + r.funded_value))
+    };
+    let survival = totals(budget::Destination::Fuel);
+    let comfort = totals(budget::Destination::ComfortFuel);
+    assert_eq!(survival.0, 1600);
+    assert_eq!(comfort.0, 1500);
+    assert!(survival.1 >= u128::from(rules.goods[wood].base_price) * 1000);
+    assert!(comfort.1 >= u128::from(rules.goods[peat].base_price) * 1000);
+    assert!(
+        buyer
+            .iter()
+            .filter(|r| r.destination == budget::Destination::Fuel)
+            .all(|r| r.tier <= 1)
+    );
+    assert!(
+        buyer
+            .iter()
+            .filter(|r| r.destination == budget::Destination::ComfortFuel)
+            .all(|r| (4..=5).contains(&r.tier))
+    );
+    let posted = daily_market_orders(&rules, &place).unwrap();
+    assert!(posted.buy_units[wood] >= 1);
+    let mut reversed = place.prices_milli.clone();
+    reversed[wood] = 1000;
+    reversed[peat] = 1400;
+    assert_eq!(
+        budget::price_fuel_order(&rules, &reversed, 1050, 9000).unwrap(),
+        Some((peat, 1))
+    );
+    exchange(&rules, &mut place);
+    let pop = &place.pops[PEASANT];
+    assert_eq!(pop.stock[wood], 2);
+    assert_eq!(pop.stock[peat], 2);
+    assert_eq!(pop.consumption.comfort_milli, 1300);
+    assert!(1000 <= survival.0 && u128::from(rules.goods[wood].base_price) * 1000 <= survival.1);
+    assert!(700 <= comfort.0 && u128::from(rules.goods[peat].base_price) * 1000 <= comfort.1);
 }
