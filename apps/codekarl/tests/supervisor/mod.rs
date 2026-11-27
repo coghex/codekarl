@@ -587,5 +587,8 @@ impl<P: Process> Drop for Supervised<P> {
                 panic!("{report}");
             }
         }
+        if thread::panicking() {
+            eprintln!("supervised worker output before failure:\n{}", self.text());
+        }
     }
 }

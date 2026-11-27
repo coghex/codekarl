@@ -950,6 +950,22 @@ end
 }
 
 fn colour_settings_picker_interaction_persists_only_the_selected_colour() {
+    colour_settings_picker(false, false);
+}
+
+fn colour_settings_focus_loss_reports_cancelled_click() {
+    colour_settings_picker(true, false);
+}
+
+fn colour_settings_click_works_after_resigning_key() {
+    colour_settings_picker(false, true);
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "the colour editing scenario and its cancellation share one fixture"
+)]
+fn colour_settings_picker(inject_focus_loss: bool, resign_before_click: bool) {
     fn input(markers: &Path, order: u32, value: &str) {
         let target = markers.join(format!("{order:03}.key"));
         let temporary = markers.join(format!("{order:03}.tmp"));
@@ -967,6 +983,21 @@ fn colour_settings_picker_interaction_persists_only_the_selected_colour() {
     fn click(markers: &Path, order: &mut u32, position: &str) {
         mouse(markers, order, "D", position);
         mouse(markers, order, "U", position);
+    }
+    fn opener_point(markers: &Path, name: &str) -> Result<String, &'static str> {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            if markers.join("opener-cancelled").exists() {
+                return Err("focus lost during the click");
+            }
+            if let Ok(value) = fs::read_to_string(markers.join(name)) {
+                return Ok(value);
+            }
+            if Instant::now() >= deadline {
+                return Err("colour picker marker never appeared");
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
     }
     fn replace(markers: &Path, order: &mut u32, value: &str, enter: bool) {
         for _ in 0..7 {
@@ -1005,16 +1036,31 @@ fn colour_settings_picker_interaction_persists_only_the_selected_colour() {
     fixture.release();
     let mut order = 1;
     let field = point(&markers, "field-ready");
+    if resign_before_click {
+        mouse(&markers, &mut order, "R", "0 0");
+        wait_for_marker(&markers.join("resigned-key"), Duration::from_secs(30));
+        assert!(!markers.join("still-key").exists());
+    }
     click(&markers, &mut order, &field);
     wait_for_marker(&markers.join("field-focused"), Duration::from_secs(30));
     replace(&markers, &mut order, "#111111", false);
     let opener = point(&markers, "draft-ready");
     let saved = || fs::read_to_string(fixture.path("settings.toml")).unwrap_or_default();
     mouse(&markers, &mut order, "D", &opener);
-    wait_for_marker(&markers.join("opener-down"), Duration::from_secs(30));
+    opener_point(&markers, "opener-down").unwrap_or_else(|error| panic!("{error}"));
     assert!(!saved().contains("#111111"));
-    mouse(&markers, &mut order, "U", &opener);
-    let palette = point(&markers, "palette-ready");
+    mouse(
+        &markers,
+        &mut order,
+        if inject_focus_loss { "UF" } else { "U" },
+        &opener,
+    );
+    let result = opener_point(&markers, "palette-ready");
+    if inject_focus_loss {
+        assert_eq!(result, Err("focus lost during the click"));
+        return;
+    }
+    let palette = result.unwrap_or_else(|error| panic!("{error}"));
     assert!(!saved().contains("#111111"));
     mouse(&markers, &mut order, "D", &palette);
     wait_for_marker(&markers.join("palette-down"), Duration::from_secs(30));
@@ -3162,6 +3208,8 @@ fn cases() -> Vec<(&'static str, fn())> {
         case!(a_fixture_scenarios_time_callback_follows_speed_pause_and_load_one_delivery_each),
         case!(a_fixture_scenario_time_bar_changes_speed_pause_and_captures_a_gap_drag),
         case!(colour_settings_picker_interaction_persists_only_the_selected_colour),
+        case!(colour_settings_focus_loss_reports_cancelled_click),
+        case!(colour_settings_click_works_after_resigning_key),
         case!(time_bar_output_assertion_rejects_the_capture_and_accepts_a_doctored_drag_offline),
         case!(a_held_ui_does_not_stop_the_map_and_gets_every_transition_after_the_release),
         case!(a_worker_that_fails_before_opening_the_pipe_is_released_reaped_and_removed_at_once),
@@ -3253,7 +3301,9 @@ fn run_case(name: &str, case: fn()) -> bool {
     SIM_INPUT_CASE.store(name == "a_fixture_scenario_resumes_picks_a_speed_pans_pauses_and_saves_from_marked_keys_and_closes_normally", Ordering::SeqCst);
     KEYS_CASE.store(
         name == "a_fixture_scenarios_time_callback_follows_speed_pause_and_load_one_delivery_each"
-            || name == "colour_settings_picker_interaction_persists_only_the_selected_colour",
+            || name == "colour_settings_picker_interaction_persists_only_the_selected_colour"
+            || name == "colour_settings_focus_loss_reports_cancelled_click"
+            || name == "colour_settings_click_works_after_resigning_key",
         Ordering::SeqCst,
     );
     HELD_UI_CASE.store(

@@ -37,6 +37,11 @@ function startup()
   window.on_opened(function() wait_for(HOLD); ready = true end)
   frame.on_update(function(update)
     if not ready then return end
+    if (phase == 5 or phase == 6) and update.pointer then
+      for _, event in ipairs(update.pointer.events or {}) do
+        if event.kind == 'cancel' and event.key == row.opener.key then mark('opener-cancelled') end
+      end
+    end
     typing.dispatch(update)
     pointer.dispatch(update.pointer)
     theme.refresh()
