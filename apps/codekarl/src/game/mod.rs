@@ -39,6 +39,7 @@ pub(crate) mod saves;
 pub(crate) mod setup;
 pub(crate) mod slot;
 mod stretch;
+mod stretch_tables;
 #[cfg(test)]
 pub(crate) mod tests;
 pub(crate) mod trade_panel;

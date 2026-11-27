@@ -13,6 +13,7 @@ use ck_economy::{Journey, NearbyPlace, Paces, Party, Way, Ways};
 use ck_sim::travel::{TravelProfile, TravelRules, WayState};
 
 use super::expedition_route::{JourneyBuilder, scaled_by_mode};
+use super::stretch_tables::StretchTables;
 use super::travel::{Routes, TravelPlanner};
 
 /// What the network is made of, shared by every look of a game: the scenario with its network, the travel rules and profiles, the
@@ -73,6 +74,10 @@ pub(crate) struct NetworkWays {
     /// The clipped ways already built, by the itinerary they clip: the way a pair of places is clipped to depends on the itinerary the
     /// search chose and not on the pace it was searched at, and many paces choose one itinerary.
     clipped: BTreeMap<ClippedKey, Journey>,
+    /// The exact tables of the land stretches the clips place points along, made once for the game (CK-455).
+    tables: StretchTables,
+    /// The network's ways, measured once for every planner (the measure does not depend on the profile; CK-455).
+    measured: Option<Arc<Vec<ck_sim::travel::LandWay>>>,
     /// Where the searches are tallied, for the evidence's harness and the cases; the game gives none and keeps no counts.
     watch: Option<SearchWatch>,
 }
@@ -87,6 +92,8 @@ impl NetworkWays {
             reverse: BTreeMap::new(),
             journeys: BTreeMap::new(),
             clipped: BTreeMap::new(),
+            tables: StretchTables::default(),
+            measured: None,
             watch,
         }
     }
@@ -140,8 +147,18 @@ impl NetworkWays {
         if !self.planners.contains_key(key) {
             let started = std::time::Instant::now();
             let effective = scaled_by_mode(&self.base(party)?, key.2);
-            let planner =
-                TravelPlanner::new(&self.network.scenario, &effective, &self.network.rules)?;
+            if self.measured.is_none() {
+                self.measured = Some(Arc::new(super::travel::measure_ways(
+                    &self.network.scenario,
+                    &self.network.rules,
+                )?));
+            }
+            let planner = TravelPlanner::with_ways(
+                &self.network.scenario,
+                &effective,
+                &self.network.rules,
+                Arc::clone(self.measured.as_ref().ok_or("ways not measured")?),
+            )?;
             let spent = started.elapsed();
             self.note(|counts| {
                 counts.planners += 1;
@@ -174,6 +191,13 @@ impl NetworkWays {
     /// The forward search from `home` and the reverse search into it for a key, made once for the hour.
     fn searches(&mut self, home: &str, key: &Key, party: &Party) -> Result<(), String> {
         self.forward_search(home, key, party)?;
+        self.reverse_search(home, key, party)
+    }
+
+    /// The reverse search into `home` for a key, made once for the hour. A way out is read from the forward search alone and a way
+    /// back from the reverse one alone, so a look asks for the one it needs (CK-455).
+    fn reverse_search(&mut self, home: &str, key: &Key, party: &Party) -> Result<(), String> {
+        self.planner(key, party)?;
         let node = self.node(home)?;
         let slot = (home.to_owned(), key.clone());
         if !self.reverse.contains_key(&slot) {
@@ -296,7 +320,10 @@ impl NetworkWays {
         if let Some(found) = self.journeys.get(&cached) {
             return Ok(found.clone());
         }
-        self.searches(home, &key, party)?;
+        match way {
+            Way::Out => self.forward_search(home, &key, party)?,
+            Way::Back => self.reverse_search(home, &key, party)?,
+        }
         let (home_node, other_node) = (self.node(home)?, self.node(other)?);
         let slot = (home.to_owned(), key.clone());
         let base = self.base(party)?;
@@ -329,6 +356,7 @@ impl NetworkWays {
                     &self.planners[&key],
                     &self.states,
                     self.network.radius_m,
+                    Some(&self.tables),
                 );
                 let clip_started = std::time::Instant::now();
                 let journey = builder.way_in(routes, from, to, way == Way::Back, geometry)?;
@@ -359,6 +387,8 @@ impl NetworkWays {
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Write as _;
+
     use num_rational::BigRational;
 
     use super::*;
@@ -555,8 +585,12 @@ mod tests {
                 let counts = watch.lock().unwrap();
                 (counts.forward, counts.reverse, counts.planners)
             },
-            (2, 2, 2)
+            // A way out is read from the forward search alone (CK-455): the reverse search of the new pace waits for a way back.
+            (2, 1, 2)
         );
+        ways.journey("tara", "clonmacnoise", &cart, on_land(800), Way::Back)
+            .unwrap();
+        assert_eq!(watch.lock().unwrap().reverse, 2);
         // Asked again in the same hour, nothing is searched; the next hour searches afresh and keeps the planners.
         ways.journey("tara", "clonmacnoise", &cart, on_land(800), Way::Out)
             .unwrap();
@@ -1062,6 +1096,210 @@ mod tests {
             strait.hours(1000) < BigRational::from_integer(41.into()),
             "the strait takes {} h at walking pace",
             strait.hours(1000)
+        );
+    }
+    /// The canonical digest the trace writes after each day: FNV-1a over the state's `Debug` form.
+    fn fnv(text: &str) -> u64 {
+        text.bytes().fold(0xcbf2_9ce4_8422_2325, |digest, byte| {
+            (digest ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+        })
+    }
+
+    /// CK-455 section 1: the look trace of a small hand-built world on the shipped network (seven places round Armagh, two of them homes
+    /// whose peasants have a hand cart and want fish, the others offering it and wanting barley), through the real adapter and its
+    /// caches: the opening, two days of hours with the network's state given afresh each hour as the game gives it, looks every seven
+    /// hours after it, the roads' condition changing twice (at hours 18 and 30, so what an hour's cache kept must not be read after), and
+    /// a digest of the economy after each day.
+    fn fixture_look_trace() -> String {
+        let (scenario, rules, mut states) = world();
+        let mut economy = ck_economy::fixtures::rules_with(&["hand_cart"]);
+        economy.expedition.looks = true;
+        economy.expedition.look_hours = 7;
+        let neighbours = super::super::setup::trade_neighbours(&scenario);
+        let network = Arc::new(TradeNetwork {
+            scenario,
+            rules,
+            neighbours,
+            radius_m: 2000,
+        });
+        let mut state = ck_economy::fixtures::world(vec![
+            ck_economy::fixtures::home_place(&economy, "armagh", 4000, 4000),
+            ck_economy::fixtures::dest_place(&economy, "clogher", 8000, 1500),
+            ck_economy::fixtures::dest_place(&economy, "clones", 3000, 1500),
+            ck_economy::fixtures::home_place(&economy, "dromore", 2500, 2500),
+            ck_economy::fixtures::dest_place(&economy, "dunleer", 1000, 500),
+            ck_economy::fixtures::dest_place(&economy, "dromiskin", 5000, 1200),
+            ck_economy::fixtures::dest_place(&economy, "connor", 2000, 900),
+        ]);
+        let mut date = ck_sim::Date {
+            year: 768,
+            month: 3,
+            day: 10,
+            hour: 6,
+        };
+        let start = ck_sim::GameTime::from_date(date).unwrap().hours();
+        let mut ways = NetworkWays::new(Arc::clone(&network), None);
+        let mut watcher = ck_economy::LookTrace::default();
+        ways.begin(states.clone());
+        ck_economy::run_opening(&economy, &mut state, start, 42, &mut ways, &mut watcher).unwrap();
+        writeln!(
+            watcher.text,
+            "opening digest {:016x}",
+            fnv(&format!("{state:?}"))
+        )
+        .unwrap();
+        for hour in 0..48_u32 {
+            // The roads' condition changes partway, so what a cache kept before it must not be read after it.
+            let condition = match hour {
+                0..18 => None,
+                18..30 => Some(500),
+                _ => Some(300),
+            };
+            if let Some(condition) = condition {
+                for way in states.values_mut().filter(|way| way.road) {
+                    way.condition = condition;
+                }
+            }
+            ways.begin(states.clone());
+            ck_economy::run_trade_hour_with_looks(
+                &economy,
+                &mut state,
+                date,
+                &mut ways,
+                &mut watcher,
+            )
+            .unwrap();
+            if date.hour == 23 {
+                writeln!(
+                    watcher.text,
+                    "day {}-{:02}-{:02} digest {:016x}",
+                    date.year,
+                    date.month,
+                    date.day,
+                    fnv(&format!("{state:?}"))
+                )
+                .unwrap();
+            }
+            date.hour += 1;
+            if date.hour == 24 {
+                date.hour = 0;
+                date.day += 1;
+            }
+        }
+        watcher.text
+    }
+
+    /// CK-455 section 1: the fixture's reference trace, recorded with the original planner and clipper before any speed change, which a
+    /// change to the clipper, its caches or its searches must reproduce byte for byte. `CK455_RECORD_TRACE=1` writes it anew.
+    #[test]
+    fn the_fixture_look_trace_is_the_one_recorded_with_the_original_clipper() {
+        let trace = fixture_look_trace();
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src/game/trade_looks_fixture_trace.txt");
+        if std::env::var_os("CK455_RECORD_TRACE").is_some() {
+            std::fs::write(&path, &trace).unwrap();
+            return;
+        }
+        assert!(
+            trace.contains("outcome=trade ") || trace.contains("outcome=given "),
+            "the world chooses a trip"
+        );
+        assert!(trace.lines().count() > 20);
+        assert!(
+            trace == include_str!("trade_looks_fixture_trace.txt"),
+            "the look trace changed: an outcome of a look is not the one recorded"
+        );
+    }
+    /// CK-455 fix A: the clipper with the exact tables gives the very way the rational walk gives: for the pairs of places of a few homes
+    /// (the nearest, the farthest and a spread between, for a cart and a currach, out and back, with and without the frozen geometry)
+    /// every leg, its path and its arrival are equal. The farthest pairs are the most extreme geometry the shipped map offers.
+    fn tabled_and_rational_clips_agree(homes: &[&str], per_home: usize) {
+        let (scenario, rules, states) = world();
+        let tables = StretchTables::default();
+        let network = scenario.network.as_ref().unwrap();
+        for profile in ["cart", "currach"] {
+            let base = rules.profiles[profile].clone();
+            let effective = scaled_by_mode(&base, Paces::uniform(1000));
+            let planner = TravelPlanner::new(&scenario, &effective, &rules).unwrap();
+            for home in homes {
+                let from = network.place_node(home).unwrap().id;
+                let forward = planner.routes_from(&scenario, &states, from).unwrap();
+                let reverse = planner.routes_to(&scenario, &states, from).unwrap();
+                // The places reached both ways, by the hours of the way out, so the nearest and the farthest are in the sample.
+                let mut reached: Vec<(BigRational, u64, &str)> = network
+                    .nodes
+                    .iter()
+                    .filter(|node| node.kind == ck_map::LandNodeKind::Place)
+                    .filter_map(|node| {
+                        let name = node.place.as_deref()?;
+                        let (out, back) = (forward.to(node.id)?, reverse.to(node.id)?);
+                        (name != *home && back.hours >= BigRational::from_integer(0.into()))
+                            .then(|| (out.hours.clone(), node.id, name))
+                    })
+                    .collect();
+                reached.sort();
+                let take = per_home.min(reached.len());
+                let chosen: Vec<_> = (0..take)
+                    .map(|index| reached[index * (reached.len() - 1) / (take - 1).max(1)].clone())
+                    .collect();
+                for (_, to, name) in chosen {
+                    for (routes, reversed) in [(&forward, false), (&reverse, true)] {
+                        for geometry in [false, true] {
+                            let with_tables = JourneyBuilder::with_planner(
+                                &scenario,
+                                &rules,
+                                &base,
+                                &planner,
+                                &states,
+                                2000,
+                                Some(&tables),
+                            );
+                            let walked = JourneyBuilder::with_planner(
+                                &scenario, &rules, &base, &planner, &states, 2000, None,
+                            );
+                            let (one, other) = if reversed { (to, from) } else { (from, to) };
+                            let (a, b) = (
+                                with_tables.way_in(routes, one, other, reversed, geometry),
+                                walked.way_in(routes, one, other, reversed, geometry),
+                            );
+                            let what = format!(
+                                "{profile} {home}->{name} reversed {reversed} geometry {geometry}"
+                            );
+                            match (a, b) {
+                                (Ok(a), Ok(b)) => {
+                                    assert!(a.legs == b.legs && a.arrival == b.arrival, "{what}");
+                                }
+                                (Err(a), Err(b)) => assert_eq!(a, b, "{what}"),
+                                (a, b) => panic!("{what}: {:?} against {:?}", a.is_ok(), b.is_ok()),
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_exact_tables_give_the_ways_the_rational_walk_gives() {
+        tabled_and_rational_clips_agree(&["armagh"], 3);
+    }
+
+    /// The evidence's larger sample, run on request: `cargo test --release -- --ignored`.
+    #[test]
+    #[ignore = "evidence: a large sample of the clips, in a release build"]
+    fn the_exact_tables_give_the_ways_the_rational_walk_gives_over_many_homes() {
+        tabled_and_rational_clips_agree(
+            &[
+                "armagh",
+                "cork",
+                "derry",
+                "cashel",
+                "antrim",
+                "birr",
+                "clonmacnoise",
+                "ardfert",
+            ],
+            40,
         );
     }
 }

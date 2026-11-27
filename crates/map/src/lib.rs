@@ -26,8 +26,8 @@ pub use network::{
 };
 
 pub use water::{
-    Bank, Joint, Landing, MAX_REACH_M, Reach, ReachKind, RiverBreak, SeaMark, Strait, Water,
-    WaterClass, WaterJoin,
+    Bank, Joint, Landing, MAX_REACH_M, Reach, ReachKind, ReachLine, RiverBreak, SeaMark, Strait,
+    Water, WaterClass, WaterJoin,
 };
 
 pub use loading::{

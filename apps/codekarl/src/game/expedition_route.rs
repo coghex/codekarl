@@ -21,6 +21,7 @@ use ck_sim::travel::{LandWay, TravelProfile, TravelRules, WayState};
 use num_bigint::BigInt;
 use num_rational::BigRational;
 
+use super::stretch_tables::{self, StretchTables, WaterTable};
 use super::travel::{Routes, TravelPlanner, TripKind, TripLeg, WaterStep};
 
 /// The fixed-point units in a cell side (the drawing positions of CK-402).
@@ -109,6 +110,8 @@ pub(crate) struct JourneyBuilder<'a> {
     planner: PlannerRef<'a>,
     states: &'a BTreeMap<u64, WayState>,
     radius_m: u64,
+    /// The exact tables of the land stretches a clip places points along, when the caller keeps them (CK-455).
+    tables: Option<&'a StretchTables>,
 }
 
 impl<'a> JourneyBuilder<'a> {
@@ -132,6 +135,7 @@ impl<'a> JourneyBuilder<'a> {
             planner: PlannerRef::Owned(TravelPlanner::new(scenario, effective, rules)?),
             states,
             radius_m,
+            tables: None,
         })
     }
 
@@ -144,6 +148,7 @@ impl<'a> JourneyBuilder<'a> {
         planner: &'a TravelPlanner,
         states: &'a BTreeMap<u64, WayState>,
         radius_m: u64,
+        tables: Option<&'a StretchTables>,
     ) -> Self {
         Self {
             scenario,
@@ -152,6 +157,7 @@ impl<'a> JourneyBuilder<'a> {
             planner: PlannerRef::Shared(planner),
             states,
             radius_m,
+            tables,
         }
     }
 
@@ -217,6 +223,8 @@ impl<'a> JourneyBuilder<'a> {
             routes,
             trip: &trip,
             units_per_mm: self.units_per_mm()?,
+            tables: self.tables,
+            water: std::cell::RefCell::default(),
         };
         let start = clipper.first_outside(&home, &leave_radius)?;
         let end = clipper.first_inside(&away, &arrive_radius, &start)?;
@@ -519,6 +527,138 @@ struct Along {
     along: BigRational,
 }
 
+/// The distances along a leg where its path bends, as the exact rationals or as whole micrometres (the same distances, kept as
+/// integers where the leg's tables have them, so that reading them costs no rational arithmetic).
+enum Bends {
+    Exact(Vec<BigRational>),
+    /// In order.
+    Micro(std::sync::Arc<[i128]>),
+}
+
+impl Bends {
+    fn len(&self) -> usize {
+        match self {
+            Self::Exact(bends) => bends.len(),
+            Self::Micro(bends) => bends.len(),
+        }
+    }
+
+    fn get(&self, index: usize) -> BigRational {
+        match self {
+            Self::Exact(bends) => bends[index].clone(),
+            Self::Micro(bends) => stretch_tables::from_um(bends[index]),
+        }
+    }
+
+    /// How many bends are at or before `at`.
+    fn up_to(&self, at: &BigRational) -> usize {
+        match self {
+            Self::Exact(bends) => bends.partition_point(|bend| bend <= at),
+            // A bend is a whole number of micrometres, so it is at or before `at` exactly when it is at or before the micrometre
+            // at or below `at`.
+            Self::Micro(bends) => {
+                let micrometres = (at * whole(1000)).floor().to_integer();
+                let limit = i128::try_from(micrometres).unwrap_or(i128::MAX);
+                bends.partition_point(|bend| *bend <= limit)
+            }
+        }
+    }
+
+    fn into_exact(self) -> Vec<BigRational> {
+        match self {
+            Self::Exact(bends) => bends,
+            Self::Micro(bends) => bends
+                .iter()
+                .map(|bend| stretch_tables::from_um(*bend))
+                .collect(),
+        }
+    }
+}
+
+/// The samples of a leg from a start, read one after another: the start, a point every [`SAMPLE_MM`] before the leg's end, every bend
+/// between the start and the end, and the end, in order and with no point twice. The scan can ask for the sample after a distance, and
+/// for the last one at or before it, without making the ones between.
+struct Samples {
+    from: BigRational,
+    length: BigRational,
+    /// The bends of the leg, in order.
+    bends: Bends,
+}
+
+impl Samples {
+    fn new(bends: Bends, from: BigRational, length: BigRational) -> Self {
+        let bends = match bends {
+            Bends::Exact(mut bends) => {
+                bends.sort();
+                bends.dedup();
+                Bends::Exact(bends)
+            }
+            micro @ Bends::Micro(_) => micro,
+        };
+        Self {
+            from,
+            length,
+            bends,
+        }
+    }
+
+    /// The least sample after `at`, if there is one (`at` is at or after the start).
+    fn after(&self, at: &BigRational) -> Option<BigRational> {
+        let step = whole(SAMPLE_MM);
+        // The first point of the grid after `at`, if it is before the end of the leg.
+        let count = ((at - &self.from) / &step).floor() + whole(1);
+        let grid = &self.from + count * step;
+        let mut found = (grid < self.length).then_some(grid);
+        // The bends are in order, so the first one after `at` is the only one that can be the least.
+        let first = self.bends.up_to(at);
+        if first < self.bends.len() {
+            let bend = self.bends.get(first);
+            if bend > self.from
+                && bend < self.length
+                && found.as_ref().is_none_or(|best| bend < *best)
+            {
+                found = Some(bend);
+            }
+        }
+        if self.length > self.from
+            && self.length > *at
+            && found.as_ref().is_none_or(|best| self.length < *best)
+        {
+            found = Some(self.length.clone());
+        }
+        found
+    }
+
+    /// The greatest sample at or before `at` (which is at or after the start).
+    fn at_or_before(&self, at: &BigRational) -> BigRational {
+        // The end is the last sample of a leg that has one.
+        if self.length > self.from && self.length <= *at {
+            return self.length.clone();
+        }
+        let step = whole(SAMPLE_MM);
+        let mut found = self.from.clone();
+        let count = ((at - &self.from) / &step).floor();
+        if count >= whole(1) {
+            let grid = &self.from + count * step;
+            if grid < self.length && grid > found {
+                found = grid;
+            }
+        }
+        let mut past = self.bends.up_to(at);
+        while past > 0 {
+            let bend = self.bends.get(past - 1);
+            if bend > self.from && bend < self.length {
+                if bend > found {
+                    found = bend;
+                }
+                break;
+            }
+            past -= 1;
+        }
+        found
+    }
+}
+
 /// Finds the points of a route where it leaves or reaches a disc, to the millimetre.
 struct Clipper<'a> {
     scenario: &'a ck_map::Scenario,
@@ -526,6 +666,11 @@ struct Clipper<'a> {
     routes: &'a Routes,
     trip: &'a [TripLeg],
     units_per_mm: BigRational,
+    /// The exact tables of the land stretches (CK-455): the point at a distance along a land leg is then found from them and not by
+    /// the walk of `Routes::position`, which gives the same point.
+    tables: Option<&'a StretchTables>,
+    /// The tables of the water legs this clip has placed points along, made once for each leg.
+    water: std::cell::RefCell<BTreeMap<usize, Option<std::rc::Rc<WaterTable>>>>,
 }
 
 /// The distance between samples along a leg, in millimetres, where nothing else is known of its shape.
@@ -554,32 +699,60 @@ fn chord_entry(
 
 impl Clipper<'_> {
     fn point(&self, at: &Along) -> Result<Point, String> {
-        self.routes
-            .position(self.scenario, self.ways, &self.trip[at.leg], &at.along)
-            .ok_or_else(|| "a point of the way cannot be placed".to_owned())
+        let leg = &self.trip[at.leg];
+        let found = match (self.tables, &leg.kind) {
+            (Some(tables), TripKind::Land { .. } | TripKind::Tidal { .. }) => tables
+                .of_leg(self.scenario, self.ways, leg)
+                .and_then(|table| table.position(leg, &at.along)),
+            (Some(tables), TripKind::Water { .. }) => self
+                .water_table(at.leg)
+                .and_then(|table| {
+                    table.position(self.scenario, self.routes, tables, leg, &at.along)
+                })
+                .or_else(|| {
+                    self.routes
+                        .position(self.scenario, self.ways, leg, &at.along)
+                }),
+            _ => self
+                .routes
+                .position(self.scenario, self.ways, leg, &at.along),
+        };
+        found.ok_or_else(|| "a point of the way cannot be placed".to_owned())
     }
 
-    /// The samples of leg `leg` from `from_mm` on: every step, every bend of its path, and the leg's end, in order.
-    fn samples(&self, leg: usize, from_mm: &BigRational) -> Vec<BigRational> {
-        let length = &self.trip[leg].length_mm;
-        let mut out = vec![from_mm.clone()];
-        let mut at = from_mm + whole(SAMPLE_MM);
-        while at < *length {
-            out.push(at.clone());
-            at += whole(SAMPLE_MM);
+    /// The table of water leg `leg`, made once for the clip (`None` for a leg that is not water or whose steps the tables do not hold).
+    fn water_table(&self, leg: usize) -> Option<std::rc::Rc<WaterTable>> {
+        let tables = self.tables?;
+        self.water
+            .borrow_mut()
+            .entry(leg)
+            .or_insert_with(|| {
+                tables
+                    .water(self.scenario, self.routes, &self.trip[leg])
+                    .map(std::rc::Rc::new)
+            })
+            .clone()
+    }
+
+    /// The distances along `leg` where its path bends, as `Routes::breakpoints` gives them.
+    fn breakpoints(&self, leg: usize) -> Bends {
+        let trip_leg = &self.trip[leg];
+        let exact = || Bends::Exact(self.routes.breakpoints(self.scenario, self.ways, trip_leg));
+        match (self.tables, &trip_leg.kind) {
+            (Some(tables), TripKind::Land { .. }) => {
+                match tables.of_leg(self.scenario, self.ways, trip_leg) {
+                    Some(table) => table
+                        .breakpoints_um()
+                        .map_or_else(|| Bends::Exact(table.breakpoints()), Bends::Micro),
+                    None => Bends::Exact(Vec::new()),
+                }
+            }
+            (Some(tables), TripKind::Water { .. }) => self
+                .water_table(leg)
+                .and_then(|table| table.breakpoints_um(self.scenario, self.routes, tables))
+                .map_or_else(exact, Bends::Micro),
+            _ => exact(),
         }
-        out.extend(
-            self.routes
-                .breakpoints(self.scenario, self.ways, &self.trip[leg])
-                .into_iter()
-                .filter(|bend| bend > from_mm && bend < length),
-        );
-        if *length > *from_mm {
-            out.push(length.clone());
-        }
-        out.sort();
-        out.dedup();
-        out
     }
 
     /// The frozen path of the part `[from_mm, to_mm]` of leg `leg`: its points rounded to whole map units and each one's distance from
@@ -596,8 +769,8 @@ impl Clipper<'_> {
                 .map_err(|_| "a point is outside the map".to_owned())
         };
         let mut stops: Vec<BigRational> = self
-            .routes
-            .breakpoints(self.scenario, self.ways, &self.trip[leg])
+            .breakpoints(leg)
+            .into_exact()
             .into_iter()
             .filter(|bend| bend > from_mm && bend < to_mm)
             .collect();
@@ -694,6 +867,97 @@ impl Clipper<'_> {
             .ok_or_else(|| "the way never comes within the radius of its last place".to_owned())
     }
 
+    /// Whether the path of leg `leg` moves no faster across the map than [`Self::units_per_mm`] with a margin (a land leg of whole steps
+    /// of the cells: a step covers its cells' distance in the length of a move between them, which is at most a thousandth over the
+    /// side of the smallest cell for a diagonal), so that the distance from a point of the leg to the centre changes at most that fast
+    /// along it. A tidal stretch, a transfer, a strait or a water leg is placed by its own stored length and is not held to it.
+    fn jumpable(&self, leg: usize) -> bool {
+        let trip_leg = &self.trip[leg];
+        self.tables.is_some_and(|tables| {
+            matches!(trip_leg.kind, TripKind::Land { .. })
+                && tables
+                    .of_leg(self.scenario, self.ways, trip_leg)
+                    .is_some_and(|table| table.is_whole_land())
+        })
+    }
+
+    /// A distance along a [jumpable](Self::jumpable) leg, in whole millimetres, within which every point of the leg from `here` is
+    /// farther from `centre` than `radius`, or `None` when that is not a distance worth skipping. The distance from `here` to the centre
+    /// is bounded below by the integer square root of the floor of its square, the radius is rounded up with a unit's margin, and the
+    /// path moves at most 1.01 times [`Self::units_per_mm`] map units in a millimetre: all of it exact, none of it rounded the other way.
+    fn safe_arc(&self, here: &Point, centre: &Point, radius: &BigRational) -> Option<BigRational> {
+        let squared = distance_squared(here, centre).floor().to_integer();
+        let far = BigRational::from_integer(squared.sqrt());
+        let margin = radius.ceil() + whole(1);
+        if far <= margin {
+            return None;
+        }
+        let rate = &self.units_per_mm * ratio(101, 100);
+        let arc = ((far - margin) / rate).floor();
+        (arc >= whole(SAMPLE_MM)).then_some(arc)
+    }
+
+    /// An arc along water leg `leg` up to which every point of the leg after the one at `along` is outside the circle, and so is every
+    /// piece of straight path between two samples there, or `None`. Each piece of a water leg (a step: a reach, a join, a move between
+    /// two cells) holds all the points the leg has while it is on that step, in a box known exactly; the sample at `along` is on one
+    /// piece, and while the box of that piece and of the pieces after it, taken together, is farther from the centre than the radius
+    /// (with a unit's margin), no sample on them is inside, and no straight piece between two of them comes within it either.
+    fn water_reach(
+        &self,
+        leg: usize,
+        along: &BigRational,
+        centre: &Point,
+        radius: &BigRational,
+    ) -> Option<BigRational> {
+        let tables = self.tables?;
+        let trip_leg = &self.trip[leg];
+        let table = self.water_table(leg)?;
+        let length = stretch_tables::to_um(&trip_leg.length_mm)?;
+        let at = stretch_tables::to_um(along)?.min(length);
+        let first = table.piece_at(at);
+        let sums = table.sums_um();
+        let reach = i128::try_from(radius.ceil().to_integer()).ok()? + 1;
+        let (cx, cy) = (
+            i128::try_from(centre.0.to_integer())
+                .ok()
+                .filter(|_| centre.0.is_integer())?,
+            i128::try_from(centre.1.to_integer())
+                .ok()
+                .filter(|_| centre.1.is_integer())?,
+        );
+        let far = |bounds: &stretch_tables::Bbox| {
+            let gap = |at: i128, low: i128, high: i128| (low - at).max(at - high).max(0);
+            let (dx, dy) = (gap(cx, bounds[0], bounds[2]), gap(cy, bounds[1], bounds[3]));
+            dx.checked_mul(dx)
+                .zip(dy.checked_mul(dy))
+                .and_then(|(x, y)| x.checked_add(y))
+                .zip(reach.checked_mul(reach))
+                .is_some_and(|(squared, limit)| squared > limit)
+        };
+        let mut bounds = table.piece_box(self.scenario, self.routes, tables, first)?;
+        if !far(&bounds) {
+            return None;
+        }
+        let mut last = first;
+        while last + 1 < sums.len() {
+            let Some(next) = table.piece_box(self.scenario, self.routes, tables, last + 1) else {
+                break;
+            };
+            let joined = [
+                bounds[0].min(next[0]),
+                bounds[1].min(next[1]),
+                bounds[2].max(next[2]),
+                bounds[3].max(next[3]),
+            ];
+            if !far(&joined) {
+                break;
+            }
+            bounds = joined;
+            last += 1;
+        }
+        Some(stretch_tables::from_um(sums[last]))
+    }
+
     /// The first point at or after `begin` where `test` holds. With `near` (a centre and radius) a leg that cannot come within the
     /// radius, because its start is farther from the centre than the leg is long plus the radius, is skipped without sampling, and
     /// between two samples the straight piece of path is tested at its nearest point to the centre, so a crossing that falls wholly
@@ -723,7 +987,15 @@ impl Clipper<'_> {
                     continue;
                 }
             }
-            for along in self.samples(leg, &from) {
+            let samples = Samples::new(
+                self.breakpoints(leg),
+                from.clone(),
+                self.trip[leg].length_mm.clone(),
+            );
+            // Where the path is provably far from the circle, the samples are not looked at one by one (see `safe_arc`).
+            let jumps = near.filter(|_| self.jumpable(leg));
+            let mut cursor = Some(from.clone());
+            while let Some(along) = cursor.take() {
                 let here = self.point(&Along {
                     leg,
                     along: along.clone(),
@@ -752,6 +1024,31 @@ impl Clipper<'_> {
                         leg,
                         along: self.bisect(leg, before_along.clone(), nearest, test)?,
                     }));
+                }
+                cursor = samples.after(&along);
+                // Where the path is provably far from the circle, the samples are not looked at one by one: up to `reach`, none of them
+                // is inside and no piece of path between two of them comes within the radius (`safe_arc` for a land leg, `water_reach`
+                // for a water one).
+                let reach = near.and_then(|(centre, radius)| {
+                    if jumps.is_some() {
+                        self.safe_arc(&here, centre, radius).map(|arc| &along + arc)
+                    } else {
+                        self.water_reach(leg, &along, centre, radius)
+                    }
+                });
+                if let Some(reach) = reach
+                    && cursor.as_ref().is_some_and(|next| *next <= reach)
+                {
+                    // The scan goes on from the last sample at or before `reach`, which is the sample before the first one it looks
+                    // at, as in the walk over every sample.
+                    let last = samples.at_or_before(&reach);
+                    let point = self.point(&Along {
+                        leg,
+                        along: last.clone(),
+                    })?;
+                    cursor = samples.after(&last);
+                    previous = Some((leg, last, point));
+                    continue;
                 }
                 previous = Some((leg, along, here));
             }
@@ -1063,6 +1360,8 @@ mod tests {
             routes: &routes,
             trip: &trip,
             units_per_mm: builder.units_per_mm().unwrap(),
+            tables: None,
+            water: std::cell::RefCell::default(),
         };
         let mut bends = 0;
         let mut worst = (whole(0), 0);
@@ -1126,6 +1425,8 @@ mod tests {
                 routes: &routes,
                 trip: &trip,
                 units_per_mm: builder.units_per_mm().unwrap(),
+                tables: None,
+                water: std::cell::RefCell::default(),
             };
             for (index, leg) in trip.iter().enumerate() {
                 if leg.length_mm <= whole(0) {
@@ -1545,5 +1846,100 @@ mod tests {
             return;
         }
         panic!("the shipped route contains no land leg with unequal step lengths");
+    }
+    /// CK-455 fix A: the samples read lazily are the whole list of samples, whatever the start, the end and the bends, and the sample
+    /// after any distance and the last one at or before it are the ones the list holds there.
+    #[test]
+    fn the_lazy_samples_are_the_whole_list_of_samples() {
+        let whole_list = |from: &BigRational, length: &BigRational, bends: &[BigRational]| {
+            let mut out = vec![from.clone()];
+            let mut at = from + whole(SAMPLE_MM);
+            while at < *length {
+                out.push(at.clone());
+                at += whole(SAMPLE_MM);
+            }
+            out.extend(bends.iter().filter(|b| *b > from && *b < length).cloned());
+            if length > from {
+                out.push(length.clone());
+            }
+            out.sort();
+            out.dedup();
+            out
+        };
+        let thousandths = |value: i64| ratio(value, 1000);
+        let cases: Vec<(BigRational, BigRational, Vec<BigRational>)> = vec![
+            (whole(0), whole(0), vec![]),
+            (whole(0), whole(50_000), vec![]),
+            (whole(0), whole(100_000), vec![whole(100_000)]),
+            (
+                whole(0),
+                whole(350_000),
+                vec![
+                    thousandths(99_999_999),
+                    whole(200_000),
+                    whole(200_000),
+                    thousandths(310_123_456),
+                ],
+            ),
+            (whole(1_234), whole(1_234), vec![whole(1_234)]),
+            (
+                whole(1_234),
+                whole(1_000_000),
+                vec![
+                    thousandths(1_234_000),
+                    thousandths(1_334_000),
+                    thousandths(5_000_001),
+                    whole(2_000_000),
+                ],
+            ),
+            (
+                ratio(7, 3),
+                thousandths(540_000_007),
+                vec![ratio(7, 3) + whole(SAMPLE_MM), thousandths(300_000_000)],
+            ),
+            (whole(500_000), whole(100_000), vec![whole(300_000)]),
+        ];
+        for (from, length, bends) in cases {
+            let list = whole_list(&from, &length, &bends);
+            // The bends as exact rationals, and, when they are all whole micrometres, as the integers the tables keep.
+            let mut forms = vec![Bends::Exact(bends.clone())];
+            let micro: Option<Vec<i128>> = {
+                let mut sorted = bends.clone();
+                sorted.sort();
+                sorted.iter().map(stretch_tables::to_um).collect()
+            };
+            if let Some(micro) = micro {
+                forms.push(Bends::Micro(micro.into()));
+            }
+            for form in forms {
+                let samples = Samples::new(form, from.clone(), length.clone());
+                // Walking the samples one after another gives the list.
+                let mut walked = vec![from.clone()];
+                while let Some(next) = samples.after(walked.last().unwrap()) {
+                    walked.push(next);
+                }
+                assert_eq!(walked, list, "from {from} to {length}");
+                // And a distance between the samples (or on one, or beyond the end) finds the list's neighbours.
+                let mut probes: Vec<BigRational> = list.clone();
+                probes.extend(list.windows(2).map(|pair| (&pair[0] + &pair[1]) / whole(2)));
+                probes.push(&length + whole(7));
+                for at in probes.into_iter().filter(|at| *at >= from) {
+                    assert_eq!(
+                        samples.after(&at),
+                        list.iter().find(|sample| **sample > at).cloned(),
+                        "after {at}"
+                    );
+                    assert_eq!(
+                        samples.at_or_before(&at),
+                        list.iter()
+                            .rev()
+                            .find(|sample| **sample <= at)
+                            .cloned()
+                            .unwrap(),
+                        "at or before {at}"
+                    );
+                }
+            }
+        }
     }
 }

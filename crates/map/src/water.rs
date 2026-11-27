@@ -788,24 +788,86 @@ impl Water {
     /// (and the ends) the reach is a straight line. Empty for a reach whose line is unknown or straight.
     #[must_use]
     pub fn bends_along(&self, reach: &Reach) -> Vec<u64> {
-        let Some(line) = self.survey.get(&reach.stretch) else {
-            return Vec::new();
-        };
-        let length = u128::from(reach.length_mm);
-        let (begin, end) = (u128::from(reach.begin), u128::from(reach.end));
-        let Some(span) = end.checked_sub(begin).filter(|span| *span > 0) else {
-            return Vec::new();
-        };
-        let mut lengths = Vec::new();
+        self.reach_line(reach)
+            .map_or_else(Vec::new, |line| line.bends().to_vec())
+    }
+
+    /// The point of the surveyed line a distance along a reach, in proportion between its stored beginning and end.
+    #[must_use]
+    pub fn position_along(&self, reach: &Reach, distance_mm: u64) -> Option<FixedPoint> {
+        self.reach_line(reach)?.position(distance_mm)
+    }
+
+    /// A reach's surveyed line measured once, which answers [`Self::position_along`] and [`Self::bends_along`] for the reach with the very
+    /// arithmetic they have (they are made from it). A caller that asks about one reach again and again keeps it, and so does not measure
+    /// every segment of the line each time. `None` for a reach whose line is unknown.
+    #[must_use]
+    pub fn reach_line(&self, reach: &Reach) -> Option<ReachLine> {
+        let line = self.survey.get(&reach.stretch)?;
+        let mut lengths = Some(Vec::with_capacity(line.len().saturating_sub(1)));
         for pair in line.windows(2) {
             let dx = i128::from(pair[1].x) - i128::from(pair[0].x);
             let dy = i128::from(pair[1].y) - i128::from(pair[0].y);
-            let Ok(squared) = u128::try_from(dx * dx + dy * dy) else {
-                return Vec::new();
-            };
-            lengths.push(isqrt(squared));
+            match (u128::try_from(dx * dx + dy * dy), lengths.as_mut()) {
+                (Ok(squared), Some(lengths)) => lengths.push(isqrt(squared)),
+                _ => lengths = None,
+            }
         }
-        let total: u128 = lengths.iter().sum();
+        let sums = lengths.as_ref().map(|lengths| {
+            let mut total = 0_u128;
+            lengths
+                .iter()
+                .map(|length| {
+                    total += length;
+                    total
+                })
+                .collect::<Vec<_>>()
+        });
+        let mut measured = ReachLine {
+            line: line.clone(),
+            lengths,
+            sums: sums.unwrap_or_default(),
+            length: u128::from(reach.length_mm),
+            begin: u128::from(reach.begin),
+            end: u128::from(reach.end),
+            bends: Vec::new(),
+        };
+        measured.bends = measured.find_bends();
+        Some(measured)
+    }
+}
+
+/// A reach's surveyed line with the length of each of its segments and their running sums, measured once (see [`Water::reach_line`]).
+#[derive(Clone, Debug)]
+pub struct ReachLine {
+    line: Vec<FixedPoint>,
+    /// The length of each segment, or `None` when the square of one does not fit.
+    lengths: Option<Vec<u128>>,
+    /// The running sums of `lengths`, empty when they are `None`.
+    sums: Vec<u128>,
+    /// The stored length of the reach, in millimetres, and its beginning and end along the line, in millionths of it.
+    length: u128,
+    begin: u128,
+    end: u128,
+    bends: Vec<u64>,
+}
+
+impl ReachLine {
+    /// The distances along the reach, in millimetres, strictly between its two ends, at which its line bends.
+    #[must_use]
+    pub fn bends(&self) -> &[u64] {
+        &self.bends
+    }
+
+    fn find_bends(&self) -> Vec<u64> {
+        let Some(span) = self.end.checked_sub(self.begin).filter(|span| *span > 0) else {
+            return Vec::new();
+        };
+        let Some(lengths) = &self.lengths else {
+            return Vec::new();
+        };
+        let total = self.sums.last().copied().unwrap_or(0);
+        let (begin, end, length) = (self.begin, self.end, self.length);
         let mut bends = Vec::new();
         let mut before = 0_u128;
         for segment in lengths.iter().take(lengths.len().saturating_sub(1)) {
@@ -826,44 +888,75 @@ impl Water {
         bends
     }
 
-    /// The point of the surveyed line a distance along a reach, in proportion between its stored beginning and end.
+    /// The smallest box, as `[x least, y least, x greatest, y greatest]`, that holds every point [`Self::position`] gives for the reach
+    /// (whatever the distance): the vertices of the segments of the line from the one the reach begins in to the one it ends in, and the
+    /// line's last vertex when the walk runs off its end. `None` for a line whose points cannot be placed.
     #[must_use]
-    pub fn position_along(&self, reach: &Reach, distance_mm: u64) -> Option<FixedPoint> {
-        let line = self.survey.get(&reach.stretch)?;
-        let length = u128::from(reach.length_mm);
-        let along = u128::from(distance_mm).min(length);
-        let begin = u128::from(reach.begin);
-        let span = u128::from(reach.end.checked_sub(reach.begin)?);
-        let position = begin * length + span * along; // millionths of the stretch, times length
-        let mut lengths = Vec::new();
-        for pair in line.windows(2) {
-            let dx = i128::from(pair[1].x) - i128::from(pair[0].x);
-            let dy = i128::from(pair[1].y) - i128::from(pair[0].y);
-            lengths.push(isqrt(u128::try_from(dx * dx + dy * dy).ok()?));
+    pub fn extent(&self) -> Option<[i32; 4]> {
+        let span = self.end.checked_sub(self.begin)?;
+        let lengths = self.lengths.as_ref()?;
+        let last = self.line.len().checked_sub(1)?;
+        let total = self.sums.last().copied().unwrap_or(0);
+        let scale = MICRO * self.length;
+        let segment_of = |target: u128| {
+            let mut at = self.sums.partition_point(|sum| {
+                sum.checked_mul(scale)
+                    .is_some_and(|reached| reached < target)
+            });
+            while at < lengths.len() && lengths[at] == 0 {
+                at += 1;
+            }
+            at
+        };
+        let first = segment_of(total * self.begin * self.length);
+        let end = segment_of(total * (self.begin * self.length + span * self.length)).max(first);
+        let points = &self.line[first.min(last)..=(end + 1).min(last)];
+        let mut found = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];
+        for point in points {
+            found = [
+                found[0].min(point.x),
+                found[1].min(point.y),
+                found[2].max(point.x),
+                found[3].max(point.y),
+            ];
         }
-        let total: u128 = lengths.iter().sum();
+        Some(found)
+    }
+
+    /// The point of the line a distance along the reach, in proportion between its stored beginning and end.
+    #[must_use]
+    pub fn position(&self, distance_mm: u64) -> Option<FixedPoint> {
+        let span = self.end.checked_sub(self.begin)?;
+        let lengths = self.lengths.as_ref()?;
+        let length = self.length;
+        let along = u128::from(distance_mm).min(length);
+        let position = self.begin * length + span * along; // millionths of the stretch, times length
+        let total = self.sums.last().copied().unwrap_or(0);
         let target = total * position; // scaled by MICRO * length
         let scale = MICRO * length;
-        let mut before = 0_u128;
-        for (pair, &segment) in line.windows(2).zip(&lengths) {
-            if segment == 0 {
-                continue;
-            }
-            if target <= (before + segment) * scale {
-                let into = i128::try_from(target.saturating_sub(before * scale)).ok()?;
-                let size = i128::try_from(segment * scale).ok()?;
-                let lerp = |a: i32, b: i32| -> Option<i32> {
-                    let (a, b) = (i128::from(a), i128::from(b));
-                    i32::try_from(a + ((b - a) * into + size / 2).div_euclid(size)).ok()
-                };
-                return Some(FixedPoint {
-                    x: lerp(pair[0].x, pair[1].x)?,
-                    y: lerp(pair[0].y, pair[1].y)?,
-                });
-            }
-            before += segment;
+        // The first segment whose running sum reaches the target (the walk along the line stops there), but never one of no length.
+        let mut at = self.sums.partition_point(|sum| {
+            sum.checked_mul(scale)
+                .is_some_and(|reached| reached < target)
+        });
+        while at < lengths.len() && lengths[at] == 0 {
+            at += 1;
         }
-        line.last().copied()
+        let Some(&segment) = lengths.get(at) else {
+            return self.line.last().copied();
+        };
+        let before = if at == 0 { 0 } else { self.sums[at - 1] };
+        let (from, to) = (self.line[at], self.line[at + 1]);
+        let into = i128::try_from(target.saturating_sub(before * scale)).ok()?;
+        let size = i128::try_from(segment * scale).ok()?;
+        let lerp = |a: i32, b: i32| -> Option<i32> {
+            let (a, b) = (i128::from(a), i128::from(b));
+            i32::try_from(a + ((b - a) * into + size / 2).div_euclid(size)).ok()
+        };
+        Some(FixedPoint {
+            x: lerp(from.x, to.x)?,
+            y: lerp(from.y, to.y)?,
+        })
     }
 }
 
