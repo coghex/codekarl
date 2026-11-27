@@ -126,6 +126,7 @@ pub(crate) struct MapController<R: RiverViewSelector = PreparedRivers> {
     scroll_remainder: [i32; 2],
     scroll_direction: [i8; 2],
     camera: Option<Camera>,
+    manual_generation: u64,
     ui_units: Option<ck_render_2d::ui_scale::UnitMap>,
     /// The scene bridge's metrics generation the camera was last published (or staged) for. A newer generation (the window's points
     /// or pixels changed, even when the view, pan and zoom did not: a change of display scale moves only the pixels) means the
@@ -369,6 +370,7 @@ impl<R: RiverViewSelector> MapController<R> {
             scroll_remainder: [0; 2],
             scroll_direction: [0; 2],
             camera: None,
+            manual_generation: 0,
             ui_units: None,
             layers: ck_sim::MapLayers::default(),
             published_generation: 0,
@@ -438,6 +440,7 @@ impl<R: RiverViewSelector> MapController<R> {
             ViewSize::from_points(update.metrics.points.0, update.metrics.points.1)
         };
         let mut changed = false;
+        let mut manual = false;
         if camera.view != view {
             camera.resize(view);
             changed = true;
@@ -479,6 +482,7 @@ impl<R: RiverViewSelector> MapController<R> {
                         drag.dragged |= total != (0, 0);
                         let delta = (total.0 - drag.applied.0, total.1 - drag.applied.1);
                         if delta != (0, 0) {
+                            manual = true;
                             let before = camera;
                             camera.pan(delta.0, delta.1, self.crop);
                             changed |= camera != before;
@@ -513,6 +517,7 @@ impl<R: RiverViewSelector> MapController<R> {
                     if !map_pointer_in_view(position, update.mode, update.metrics.points) {
                         continue;
                     }
+                    manual |= amount != 0;
                     let index = usize::from(unit == ScrollUnit::Points);
                     let direction = amount.signum() as i8;
                     if direction != 0
@@ -545,6 +550,7 @@ impl<R: RiverViewSelector> MapController<R> {
                 let total = drag_delta(drag.anchor, position);
                 let delta = (total.0 - drag.applied.0, total.1 - drag.applied.1);
                 if delta != (0, 0) {
+                    manual = true;
                     camera.pan(delta.0, delta.1, self.crop);
                     changed = true;
                 }
@@ -563,6 +569,7 @@ impl<R: RiverViewSelector> MapController<R> {
         let dx = i32::from(right) - i32::from(left);
         let dy = i32::from(down) - i32::from(up);
         if dx != 0 || dy != 0 {
+            manual = true;
             let before = camera;
             camera.pan(
                 dx * self.pan_pixels_per_frame,
@@ -583,6 +590,7 @@ impl<R: RiverViewSelector> MapController<R> {
             _ => None,
         };
         if let Some((direction, state)) = direction {
+            manual = true;
             let elapsed = if direction > 0 {
                 &mut self.zoom_in_elapsed
             } else {
@@ -604,6 +612,9 @@ impl<R: RiverViewSelector> MapController<R> {
             self.zoom_out_elapsed = Duration::ZERO;
         }
 
+        if manual {
+            self.manual_generation = self.manual_generation.wrapping_add(1);
+        }
         self.pointer_position = update.input.pointer_position;
         self.hover = if update.input.reset || update.input.pointer_held || suppress_hover {
             None
@@ -652,6 +663,10 @@ impl<R: RiverViewSelector> MapController<R> {
         }
         self.camera = Some(camera);
         self.publish_for_generation(camera, self.bridge.metrics_generation())
+    }
+
+    pub(crate) fn manual_generation(&self) -> u64 {
+        self.manual_generation
     }
 
     /// Ends a map-owned gesture without applying any movement to the next pointer position.
@@ -2029,6 +2044,22 @@ pub(crate) mod tests {
                 i64::from(dy) * pixels
             );
         }
+    }
+
+    #[test]
+    fn manual_generation_changes_for_pan_and_zoom_but_not_go_to() {
+        let mut map = controller(3, 20);
+        let camera = at_step(&mut map, 40);
+        let initial = map.manual_generation();
+        map.go_to(camera.center, false).unwrap();
+        assert_eq!(map.manual_generation(), initial);
+        map.update(&update(&[(PAN_RIGHT, true, false)], Duration::ZERO))
+            .unwrap();
+        let after_pan = map.manual_generation();
+        assert_ne!(after_pan, initial);
+        map.update(&update(&[(ZOOM_IN, true, true)], Duration::ZERO))
+            .unwrap();
+        assert_ne!(map.manual_generation(), after_pan);
     }
 
     #[test]

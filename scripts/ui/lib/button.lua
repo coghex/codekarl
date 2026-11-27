@@ -12,10 +12,10 @@ local CUT = 3
 local LEAST = 2 * CUT + 3 -- the least size of a cut-3 frame, in UI pixels
 local ICON_HEIGHT = 11
 local ICON_WIDTHS = {event_log = 9, layers = 9, rewind = 9, fast_forward = 9, pause = 7, play = 7, stockpile = 9, yield = 9, elevation = 9, fertility = 9,
-  location = 9, pops = 9, characters = 9, cards = 9, rows = 9, filter = 9, sort = 9, scroll = 9}
+  location = 9, follow = 9, pops = 9, characters = 9, cards = 9, rows = 9, filter = 9, sort = 9, scroll = 9}
 -- An icon drawn from other art than `ui/theme/icon_<name>.png`, and its height if it is not `ICON_HEIGHT` (centred in the button): the character
 -- screen's life-log button wears the `scroll` of the approved character set (CK-378).
-local ICON_ART = {scroll = {texture = "ui/characters/scroll.png", height = 9}}
+local ICON_ART = {scroll = {texture = "ui/characters/scroll.png", height = 9}, follow = {texture = "ui/expeditions/follow.png", height = 11}}
 
 local function icon_texture(name)
   local art = ICON_ART[name]

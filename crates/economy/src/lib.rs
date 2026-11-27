@@ -27,8 +27,8 @@ pub mod switching;
 mod trade;
 pub use events::{Epithet, EpithetScope, EpithetTrigger, EventRules};
 pub use expedition::{
-    Delays, DrivenAnimal, Expedition, ExpeditionRules, ExpeditionVehicle, Group, Hours, Leg,
-    Limiter, MOST_LEG_PATH, Mode, Phase, Plan, Speed, Term,
+    Assigned, Delays, DrivenAnimal, Expedition, ExpeditionRules, ExpeditionVehicle, Group, Hours,
+    Leg, Limiter, MOST_LEG_PATH, Mode, Phase, Plan, Speed, Term,
 };
 pub use genetics::{Genetics, PopGenetics};
 pub use lifecycle::LifeCycle;
@@ -36,7 +36,8 @@ pub use peoples::Peoples;
 pub use personality::Personality;
 pub use trade::{
     Hands, Job, JobKind, PlaceTrade, TradeCounters, Vehicle, VehicleAnimal, VehicleInput,
-    VehicleKind, VehicleWear, run_trade_hour, validate_trade_state, validate_trade_state_at,
+    VehicleKind, VehicleMaterials, VehicleWear, run_trade_hour, validate_trade_state,
+    validate_trade_state_at,
 };
 
 const WAGE_HISTORY_MONTHS: usize = 12;

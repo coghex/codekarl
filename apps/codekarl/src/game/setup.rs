@@ -735,6 +735,7 @@ fn core_over(
     let hourly_weather = wiring.weather.clone();
     let fuel_rules = prepared.economy_rules.clone();
     let expedition_rules = prepared.economy_rules.clone();
+    let trade_panel_rules = prepared.economy_rules.clone();
     let stretch_ids = prepared
         .simulation
         .state()
@@ -773,6 +774,11 @@ fn core_over(
     .with_expeditions(move |state: &GameState| {
         expedition_rules.as_deref().map_or_else(Vec::new, |rules| {
             super::expedition_map::build(&state.economy, rules)
+        })
+    })
+    .with_pop_trade(move |state: &GameState| {
+        trade_panel_rules.as_deref().map_or_else(Vec::new, |rules| {
+            super::trade_panel::build(&state.economy, rules)
         })
     })
     .with_state_validation(move |state: &GameState, date| {
@@ -873,6 +879,10 @@ impl SchedulerInputs {
 }
 
 /// Wires `prepared` to the run: `wake` wakes the main thread whenever the owner publishes.
+#[expect(
+    clippy::too_many_lines,
+    reason = "The connected simulation wires its hourly readbacks and lifecycle together."
+)]
 pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> Connected {
     let wiring = prepared.view_wiring();
     let level_validation = wiring.level_validation();
@@ -900,6 +910,7 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
     let wiring_gameplay = gameplay.clone();
     let fuel_rules = economy_rules.clone();
     let expedition_rules = economy_rules.clone();
+    let trade_panel_rules = economy_rules.clone();
     let (sender, receiver) = channel();
     let controls = SimControls::with_wake(sender.clone(), Arc::clone(&wake));
     let slot = SimSlot::new(wake);
@@ -941,6 +952,11 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
             .with_expeditions(move |state: &GameState| {
                 expedition_rules.as_deref().map_or_else(Vec::new, |rules| {
                     super::expedition_map::build(&state.economy, rules)
+                })
+            })
+            .with_pop_trade(move |state: &GameState| {
+                trade_panel_rules.as_deref().map_or_else(Vec::new, |rules| {
+                    super::trade_panel::build(&state.economy, rules)
                 })
             })
             .with_state_validation(move |state: &GameState, date| {
@@ -4829,6 +4845,7 @@ mod switch_replay_tests {
             .unwrap(),
             pop: 0,
             free: true,
+            materials: None,
         });
         economy.places[0].pops[0].stock[good("oats")] += 20;
         economy.places[0].pops[0].stock[good("barley")] += 10;
@@ -4858,6 +4875,30 @@ mod switch_replay_tests {
         economy
             .order_trade(&rules, 0, 0, plan, start_hour.hours())
             .unwrap();
+        let gathering = crate::game::trade_panel::build(&economy, &rules);
+        let pop = gathering
+            .iter()
+            .find(|p| p.place == economy.places[0].id && p.pop == 0)
+            .unwrap();
+        assert!(
+            pop.jobs
+                .iter()
+                .any(|job| job.label == "trip to elsewhere" && job.state == "gathering")
+        );
+        assert_eq!(pop.vehicles.len(), 1);
+        let mut building = economy.clone();
+        building.places[0].pops[0].stock[good("hardwood")] = 0;
+        building
+            .order_build(&rules, 0, 0, "hand_cart", start_hour.hours())
+            .unwrap();
+        let views = crate::game::trade_panel::build(&building, &rules);
+        let pop = views
+            .iter()
+            .find(|p| p.place == building.places[0].id && p.pop == 0)
+            .unwrap();
+        assert!(pop.jobs.iter().any(|job| job.label == "building hand_cart"
+            && job.state == "gathering"
+            && !job.lacks.is_empty()));
         let mut unbroken = Simulation::new(
             start_hour,
             42,
@@ -4929,6 +4970,28 @@ mod switch_replay_tests {
             }
             let trade = &unbroken.state().economy.places[0].trade;
             if let Some(expedition) = trade.expeditions.first() {
+                let panel = crate::game::expedition_panel::build(
+                    &unbroken.state().economy,
+                    0,
+                    expedition,
+                    &rules,
+                )
+                .expect("a live expedition has a panel assignment");
+                assert_eq!(panel.destination, "elsewhere");
+                assert_eq!(panel.people.iter().map(|group| group.count).sum::<u64>(), 2);
+                assert_eq!(panel.vehicles[0].number, 1);
+                assert_eq!(panel.people[0].roles.iter().map(|(_, n)| n).sum::<u64>(), 2);
+                if expedition.phase == ck_economy::Phase::Waiting {
+                    assert_eq!(panel.remaining, 0);
+                }
+                let views = crate::game::trade_panel::build(&unbroken.state().economy, &rules);
+                let pop = views
+                    .iter()
+                    .find(|p| p.place == panel.home && p.pop == 0)
+                    .unwrap();
+                assert_eq!(pop.vehicles[0].expedition, Some(expedition.number));
+                assert!(pop.jobs.iter().any(|job| job.label == "trip to elsewhere"));
+                assert!(panel.cargo.iter().any(|good| good.id == "barley") || expedition.traded);
                 saw_out |= expedition.phase == ck_economy::Phase::Outbound;
                 saw_waiting |= expedition.phase == ck_economy::Phase::Waiting;
             } else if saw_waiting {

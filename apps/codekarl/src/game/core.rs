@@ -129,6 +129,7 @@ type FailureProbe<S> = Box<dyn FnMut(&S) -> Option<String> + Send>;
 pub(crate) type ViewBuilder<S> = Box<dyn Fn(&S, Date) -> EconomyView + Send>;
 pub(crate) type WeatherBuilder<S> = Box<dyn Fn(&S, Date) -> super::slot::HourlyWeather + Send>;
 type ExpeditionBuilder<S> = Box<dyn Fn(&S) -> Vec<super::expedition_map::ExpeditionMap> + Send>;
+type TradeBuilder<S> = Box<dyn Fn(&S) -> Vec<super::trade_panel::PopTrade> + Send>;
 
 type ExternalStorage<S> = (
     super::character_storage::Storage,
@@ -160,6 +161,7 @@ pub(crate) struct Core<S, C> {
     views: Option<ViewBuilder<S>>,
     weather: Option<WeatherBuilder<S>>,
     expeditions: Option<ExpeditionBuilder<S>>,
+    pop_trade: Option<TradeBuilder<S>>,
     /// The revision of `view`; `0` while the core has no view.
     revision: u64,
     view: Option<Arc<EconomyView>>,
@@ -317,6 +319,7 @@ where
             views,
             weather,
             expeditions: None,
+            pop_trade: None,
             revision: 0,
             view: None,
             world: 0,
@@ -380,6 +383,15 @@ where
         self
     }
 
+    pub(crate) fn with_pop_trade(
+        mut self,
+        build: impl Fn(&S) -> Vec<super::trade_panel::PopTrade> + Send + 'static,
+    ) -> Self {
+        self.pop_trade = Some(Box::new(build));
+        self.publish_if_changed();
+        self
+    }
+
     /// Lets a host callback mark a missed gameplay-VM deadline as a terminal run failure.
     pub(crate) fn with_terminal_probe(
         mut self,
@@ -409,6 +421,11 @@ where
                 self.expeditions
                     .as_ref()
                     .filter(|_| self.layers.expeditions)
+                    .map_or_else(Vec::new, |build| build(self.simulation.state())),
+            ),
+            pop_trade: Arc::new(
+                self.pop_trade
+                    .as_ref()
                     .map_or_else(Vec::new, |build| build(self.simulation.state())),
             ),
             weather: self

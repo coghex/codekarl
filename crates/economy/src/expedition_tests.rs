@@ -186,6 +186,7 @@ fn the_slowest_member_sets_the_pace_and_each_vehicles_load_and_crew_lower_its_ow
         drovers: 0,
         driven: Vec::new(),
         loads: vec![(0, 0), (700_000, 0)],
+        carried: vec![],
     };
     let (pace, limiter) = pace_of(&rules, &convoy, &assigned, Mode::Land, false, false);
     assert_eq!(pace, 682);
@@ -201,6 +202,7 @@ fn the_slowest_member_sets_the_pace_and_each_vehicles_load_and_crew_lower_its_ow
         drovers: 0,
         driven: Vec::new(),
         loads: vec![(0, 0)],
+        carried: vec![],
     };
     assert_eq!(
         pace_of(&rules, &cart, &alone, Mode::Land, false, false).0,
@@ -214,6 +216,7 @@ fn the_slowest_member_sets_the_pace_and_each_vehicles_load_and_crew_lower_its_ow
         drovers: 0,
         driven: Vec::new(),
         loads: vec![(0, 0)],
+        carried: vec![],
     };
     let (pace, limiter) = pace_of(&rules, &wagon, &with_walker, Mode::Land, false, false);
     assert_eq!((pace, limiter), (1000, Limiter::Walkers));
@@ -308,6 +311,7 @@ fn boats_ride_in_carts_on_land_and_carts_ride_in_boats_on_water_by_weight_and_sp
     let on_land = assign_leg(&rules, &in_wagon, 6, &none, &none, Mode::Land)
         .expect("the wagon carries the currach");
     assert_eq!(on_land.moving.len(), 1);
+    assert_eq!(on_land.carried, vec![(1, 0)]);
     assert_eq!(
         on_land.moving[0].2, 150_000,
         "the currach's weight is the wagon's load"
@@ -319,6 +323,7 @@ fn boats_ride_in_carts_on_land_and_carts_ride_in_boats_on_water_by_weight_and_sp
     let on_water = assign_leg(&rules, &barge, 6, &none, &none, Mode::Water)
         .expect("the barge carries the cart");
     assert_eq!(on_water.moving.len(), 1);
+    assert_eq!(on_water.carried, vec![(0, 1)]);
     assert_eq!(on_water.moving[0].1, 3, "the barge's full crew");
     assert_eq!(on_water.walkers, 3);
 }
@@ -396,6 +401,7 @@ pub(crate) fn two_places(rules: &mut Rules) -> EconomyState {
         kind: kind(rules, "ox_cart"),
         pop: u32::try_from(PEASANT).unwrap(),
         free: true,
+        materials: None,
     });
     EconomyState {
         places: vec![home, dest],
@@ -660,6 +666,7 @@ pub(crate) fn add_vehicle(state: &mut EconomyState, rules: &Rules, id: &str) -> 
         kind: kind(rules, id),
         pop: u32::try_from(PEASANT).unwrap(),
         free: true,
+        materials: None,
     });
     number
 }
@@ -2516,6 +2523,7 @@ fn a_valid_load_still_reloads_after_consuming_one_unit_of_provisions() {
             kind: v.kind,
             pop: u32::try_from(PEASANT).unwrap(),
             free: true,
+            materials: None,
         })
         .collect();
     state.trade.vehicles = 3;
@@ -2560,6 +2568,11 @@ fn a_valid_load_still_reloads_after_consuming_one_unit_of_provisions() {
     validate_trade_state_at(&rules, &state, hours(at(10, 12))).unwrap();
     tick(&rules, &mut state, at(10, 12));
     assert_eq!(trip_expedition(&state).supplies[oats], 2);
+    // The panel reads the original packing less consumed supplies, not a fresh packing of the smaller load (which fails above).
+    let assignment = trip_expedition(&state)
+        .assignment(&rules)
+        .expect("the saved packing still fits");
+    assert_eq!(assignment.loads.iter().map(|load| load.0).sum::<u128>(), 36);
     let mut bytes = Vec::new();
     state.encode(&mut bytes).unwrap();
     let decoded = EconomyState::decode(&mut Reader::new(&bytes)).unwrap();
@@ -2678,6 +2691,7 @@ fn three_carrier_convoy() -> (Rules, EconomyState, Plan) {
             kind: v.kind,
             pop: u32::try_from(PEASANT).unwrap(),
             free: true,
+            materials: None,
         })
         .collect();
     state.trade.vehicles = 3;

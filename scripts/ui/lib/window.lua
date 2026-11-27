@@ -13,6 +13,7 @@ local BOTTOM = 5 * P -- the bottom padding: the content rectangle lies wholly in
 local CUT = 7
 local TITLE_X = (CUT + 1) * P -- the title starts inside the cut title bar
 local windows = {}
+local open_observers = {}
 local viewport = {width = 800, height = 600}
 local counter = 0
 local modal_backdrop
@@ -177,9 +178,11 @@ local function publish_chrome(self)
   if self.close_button ~= nil then
     self.close_button:move(self.outer_width - self.close_width - P, 0)
   end
-  if self.title_button ~= nil then
-    local width = self.title_button:size()
-    self.title_button:move(self.outer_width - self.close_width - P - P - width, 0)
+  local right = self.outer_width - self.close_width - 2 * P
+  for _, control in ipairs(self.title_buttons) do
+    local width = control:size()
+    control:move(right - width, 0)
+    right = right - width - P
   end
   for _, item in ipairs(self.title_items) do
     item:place_in_title(self)
@@ -245,7 +248,7 @@ function window.new(spec)
     closed = false,
     attached = {},
     title_items = {},
-    title_button = nil,
+    title_buttons = {},
     title_button_room = 0,
     _pointer_children = {},
   }, Window)
@@ -326,8 +329,11 @@ function window.new(spec)
   ui.raise_groups{self.chrome, self.content}
   windows[#windows + 1] = self
   restack()
+  for _, observer in ipairs(open_observers) do observer(self, spec) end
   return self
 end
+
+function window.observe_open(observer) open_observers[#open_observers + 1] = observer end
 
 function Window:on_child_down()
   raise(self)
@@ -456,10 +462,7 @@ function Window:add_title_button(spec)
   if self.closed then
     error("window:add_title_button: the window is closed", 2)
   end
-  if self.title_button ~= nil then
-    error("window:add_title_button: the window has one already", 2)
-  end
-  self.title_button = button.new{
+  local control = button.new{
     x = 0,
     y = 0,
     icons = {spec.icon},
@@ -471,10 +474,12 @@ function Window:add_title_button(spec)
     tooltip = spec.tooltip,
     on_click = spec.on_click,
   }
-  self.title_button_room = window.title_button_room(spec.icon)
+  self.title_buttons[#self.title_buttons + 1] = control
+  self.title_button_room = self.title_button_room + window.title_button_room(spec.icon)
   dimensions(self)
   publish_chrome(self)
   set_position(self, self.x, self.y)
+  return control
 end
 
 -- Adds an item to the title bar: `place_in_title(window)` is called now and whenever the title bar changes, and the item's quads

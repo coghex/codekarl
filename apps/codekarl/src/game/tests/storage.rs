@@ -650,6 +650,34 @@ fn a_save_from_before_the_expeditions_slice_is_refused_by_its_build_id_before_it
 }
 
 #[test]
+fn a_save_from_before_vehicle_materials_is_refused_before_state_decode() {
+    let scenario_hash = "ab".repeat(32);
+    let simulation = Simulation::<crate::game::GameState, crate::game::GameCommand>::new(
+        start(),
+        42,
+        crate::game::GameState {
+            economy: ck_economy::EconomyState::default(),
+            characters: ck_characters::CharacterStore::default(),
+            stretches: std::collections::BTreeMap::new(),
+            lows: crate::game::lows::Lows::default(),
+        },
+        Scheduler::new(),
+        crate::game::apply,
+    );
+    let mut older = identity(&scenario_hash);
+    older.build = format!("{}+d91a5240eded0677", env!("CARGO_PKG_VERSION"));
+    assert_ne!(older.build, identity(&scenario_hash).build);
+    let bytes = simulation.save(older.meta(42)).to_bytes().unwrap();
+    assert!(matches!(
+        ck_sim::Save::<crate::game::GameState>::from_bytes(
+            &bytes,
+            &identity(&scenario_hash).expected()
+        ),
+        Err(ck_sim::SaveError::BuildMismatch { .. })
+    ));
+}
+
+#[test]
 fn a_quicksave_while_paused_stays_paused_and_a_second_one_replaces_the_first() {
     let mut harness = Harness::new(7);
     harness.run_until(1, &[1000], after(0, 5));

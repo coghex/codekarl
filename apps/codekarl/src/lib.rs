@@ -835,7 +835,18 @@ fn supervise_with_owner_factory(
                 )
                 .function(
                     "expeditions",
-                    expedition_api::function(connected.slot, map_controller.clone()),
+                    expedition_api::function(Arc::clone(&connected.slot), map_controller.clone()),
+                )
+                .function(
+                    "expedition_camera",
+                    expedition_api::camera_function(
+                        Arc::clone(&connected.slot),
+                        map_controller.clone(),
+                    ),
+                )
+                .function(
+                    "pop_trade",
+                    expedition_api::pop_trade_function(connected.slot),
                 )
                 .function(
                     "scenario",

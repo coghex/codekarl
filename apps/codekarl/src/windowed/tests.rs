@@ -497,6 +497,7 @@ fn the_late_drain_returns_a_failing_game_time_call_and_posts_nothing_new() {
             economy_revision: 0,
             economy: None,
             expeditions: std::sync::Arc::new(Vec::new()),
+            pop_trade: std::sync::Arc::new(Vec::new()),
             weather: std::collections::BTreeMap::new(),
             events: std::sync::Arc::new(Vec::new()),
             events_revision: 0,

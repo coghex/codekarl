@@ -27,6 +27,7 @@ pub(crate) mod core;
 pub(crate) mod economy;
 pub(crate) mod events;
 pub(crate) mod expedition_map;
+pub(crate) mod expedition_panel;
 pub(crate) mod expedition_route;
 pub(crate) mod gameplay;
 pub(crate) mod hashes;
@@ -38,6 +39,7 @@ pub(crate) mod slot;
 mod stretch;
 #[cfg(test)]
 pub(crate) mod tests;
+pub(crate) mod trade_panel;
 pub mod travel;
 pub(crate) mod view;
 pub(crate) mod weather_trial;

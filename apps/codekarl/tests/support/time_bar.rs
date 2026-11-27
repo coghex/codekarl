@@ -55,6 +55,10 @@ pub(crate) fn script() -> String {
     format!("{QUIT_THROUGH_MENU}{}", observed_script())
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "The witness instruments the production callbacks at their real boundaries."
+)]
 fn observed_script() -> String {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/ui/main.lua");
     let mut script = fs::read_to_string(path).expect("the shipped UI script");
@@ -149,10 +153,12 @@ end
       time_bar_log("time-bar box up " .. event.key .. " inside " .. tostring(event.inside))
     end
   end
-  typing.dispatch(update) pointer.dispatch(update.pointer)
+  typing.dispatch(update)
+  if expedition_layer ~= nil then expedition_layer:update(game.expeditions(expedition_layer.selected or false), update.width, update.height) end
+  pointer.dispatch(update.pointer)
 "#;
     script = script.replace(
-        "frame.on_update(function(update)\n  -- An update's typing is handled first, all of it, and then its pointer events (lib/typing.lua).\n  typing.dispatch(update)\n  pointer.dispatch(update.pointer)\n",
+        "frame.on_update(function(update)\n  -- An update's typing is handled first, all of it, and then its pointer events (lib/typing.lua).\n  typing.dispatch(update)\n  if expedition_layer ~= nil then expedition_layer:update(game.expeditions(expedition_layer.selected or false), update.width, update.height) end\n  pointer.dispatch(update.pointer)\n",
         frame,
     );
     script
