@@ -1261,15 +1261,28 @@ herd stays. These are counts, not individual animals, so livestock stays abstrac
     look is whole, so an error leaves the looks before it.
   - **What it wants (item 1).** Its deficits against its targets, less what the plans under way will bring it, necessities first (food
     and fuel), the biggest share of the target first; a trader holding under 60 days of food plans for food only (T6). A trader
-    considers only places within its type's round-trip limit (`limit_hours`: peasant and labourer 168, monk and noble 720, r137); a type
-    with none does not trade.
-  - **No screen (11d.2 rule 3).** The destinations are every place the network reaches from home, other than home and its neighbours, found
-    by one forward and one reverse single-source search from home for each effective profile (the party's profile with every speed scaled
-    by the pace, rounded down, at least 1, rule 6) with no time cut-off, because a clipped trip can be within the limit when its
-    centre-to-centre time is not. The searches are shared by every trader due in the hour with the same effective profile and kept for the
-    hour; the application's `trade_ways` makes the reverse search by turning every transition of the forward search round, with the same
+    considers only places within its type's round-trip limit (`limit_hours`: peasant and labourer 168, monk and noble 720, r137); a type with none does not trade.
+  - **The time screen (11d.2 rule 3; CK-460).** The destinations are the places the network reaches from home, other than home and its
+    neighbours, that no plan is **proved** unable to reach within the trader's limit: a place is left out only when a lower bound on the
+    clipped hours of its two ways (the noon wait counted as nothing, so the bound holds whether or not the limit counts it), at paces no
+    faster than the fastest any plan gets (`fastest_paces`: the greatest base pace of a land vehicle, a walker or a driven species on land,
+    and walking pace on water), is over the limit. The bound is made of the network's own charged hours, never of map distances (a strait's
+    charged length is not tied to its drawn span): the quickest time at the fastest paces to a node a transition touching the disc of the
+    place leaves, less what the clipper can remove at home's end, and the way back by the triangle inequality on the reverse search. The
+    clipper removes the part of each way within the visiting radius of its first place and the part after the first point within the
+    radius of its last, so the bound allows for a prefix that winds in the departure disc, a landing or boarding outside the kept part, the
+    row-specific radii and a departure sample at or outside its disc (the proof is in `trade_bounds`). The searches are one forward and one
+    reverse single-source search from home for each effective profile (the party's profile with every speed scaled by the pace, rounded
+    down, at least 1, rule 6), stopped at a frontier: a kept search records how far it reaches, and a request for a place it does not
+    reach grows it, never reading it as "not reachable", so a way is always the one a complete search gives. They are shared by every
+    trader with the same effective profile and kept while the network, the rules and every stretch's state are unchanged; the
+    application's `trade_ways` makes the reverse search by turning every transition of the forward search round, with the same
     exact-time order and fixed tie order, so the way home is reckoned in its own direction and a place's time home is the time a forward
-    search from it takes (a test). Each destination is then worked exactly for each plan.
+    search from it takes (a test). A look whose screen leaves no place keeps its reason: "no destination" when the network reaches no
+    place but a neighbour, "no destination gains within the time limit" when it reaches one that was left out (the places the network
+    reaches are found by a walk over its transitions, which a test holds equal to the places a complete forward and a complete reverse
+    search both reach). Each destination left is
+    then worked exactly for each plan. A look's outcome is exactly what it was with no screen (a test, and the shipped trace).
   - **The plans tried (rule 12).** On foot with 1 to 4 people (`foot_people`); or one land vehicle of each kind the trader has free (the
     lower number of two equal ones) or could build, alone or with one boat of each kind it has free or could build, each with its full
     crew or its fewest; and a boat alone, whose way must have no land leg (11c.3 rule 10). A plan that needs a vehicle the trader lacks
